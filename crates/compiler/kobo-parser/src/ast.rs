@@ -97,6 +97,17 @@ impl KoboFile {
         )
     }
 
+    pub fn line_col(&self, span: KoboSpan) -> (usize, usize) {
+        let offset = span.start as usize;
+        let line_index = self
+            .line_starts
+            .partition_point(|line_start| *line_start <= offset)
+            .saturating_sub(1);
+        let line_start = self.line_starts[line_index];
+
+        (line_index + 1, offset.saturating_sub(line_start) + 1)
+    }
+
     fn byte_offset(&self, line_column: LineColumn) -> usize {
         let line_index = line_column.line.saturating_sub(1);
         let line_start = self

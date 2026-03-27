@@ -58,12 +58,14 @@ fn inspect_hello_fixture_matches_snapshot() {
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
     assert!(output.stdout.contains("Rc<RefCell<Vec<&str>>>"));
     assert!(!output.stdout.contains("Rc<RefCell<i32>>"));
+    assert!(output.stdout.contains("// kobo: names @ line 2"));
+    assert!(case.fixture_path.with_extension("kobo.map").is_file());
 
     insta::with_settings!({
         prepend_module_to_snapshot => false,
         snapshot_path => "../../../tests/snapshots",
     }, {
-        insta::assert_snapshot!("test_inspect__hello", output.stdout);
+        insta::assert_snapshot!("test_inspect__hello_annotated", output.stdout);
     });
 }
 
@@ -84,6 +86,73 @@ fn inspect_resource_fixture_wraps_file_in_scoped_handle() {
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
     assert!(output.stdout.contains("ScopedHandle::new"));
+}
+
+#[test]
+fn fmt_copy_only_fixture_rewrites_lossless_source() {
+    let workspace_root = workspace_root();
+    let unique_id = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = workspace_root
+        .join("target-test-fixtures")
+        .join(format!("fmt-copy-only-{}-{unique_id}", std::process::id()));
+    fs::create_dir_all(&root).expect("temp fixture dir should be creatable");
+    let fixture_path = root.join("copy_only.kobo");
+    fs::write(
+        &fixture_path,
+        "fn main(){\nlet count=1;\nprintln!(\"{}\", count);\n}\n",
+    )
+    .expect("fixture should write");
+
+    let output = run_kobo(["fmt"], &fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.is_empty(), "stdout should stay empty");
+    let formatted = fs::read_to_string(&fixture_path).expect("formatted file should exist");
+    assert!(formatted.contains("fn main() {"));
+    assert!(formatted.contains("let count = 1;"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn fmt_mapped_fixture_rewrites_lossless_user_source() {
+    let workspace_root = workspace_root();
+    let unique_id = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = workspace_root
+        .join("target-test-fixtures")
+        .join(format!("fmt-mapped-{}-{unique_id}", std::process::id()));
+    fs::create_dir_all(&root).expect("temp fixture dir should be creatable");
+    let fixture_path = root.join("mapped.kobo");
+    fs::write(
+        &fixture_path,
+        "fn main( ){\nlet names=vec![\"alice\",\"bob\"];\nprintln!(\"{:?}\",names);\n}\n",
+    )
+    .expect("fixture should write");
+
+    let output = run_kobo(["fmt"], &fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.is_empty(), "stdout should stay empty");
+    let formatted = fs::read_to_string(&fixture_path).expect("formatted file should exist");
+    assert!(formatted.contains("fn main() {"));
+    assert!(formatted.contains("let names = vec![\"alice\", \"bob\"];"));
+    assert!(formatted.contains("println!(\"{:?}\", names);"));
+    assert!(!formatted.contains("kobo-fmt-"));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn fmt_wrapped_fixture_keeps_compiler_wrappers_out_of_kobo_source() {
+    let case = FixtureCase::new("fmt-wrapped", "hello.kobo");
+
+    let output = run_kobo(["fmt"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    let formatted = fs::read_to_string(&case.fixture_path).expect("formatted file should exist");
+    assert!(formatted.contains("let names = vec![\"alice\", \"bob\"];"));
+    assert!(!formatted.contains("Rc<RefCell"));
+    assert!(!formatted.contains("// kobo:"));
 }
 
 struct KoboOutput {

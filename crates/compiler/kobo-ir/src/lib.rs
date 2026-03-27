@@ -6,7 +6,10 @@ mod solution_map;
 mod span;
 
 pub use kir::{Kir, KirNode};
-pub use node_id::{CfgBlockId, FileEntry, FileId, FileSet, KirNodeId, KoboAstNodeId, NodeIdGen};
+pub use kir::{BorrowKind, NodeKind, UseKind};
+pub use node_id::{
+    CfgBlockId, FileEntry, FileId, FileSet, FileSetBuilder, KirNodeId, KoboAstNodeId, NodeIdGen,
+};
 pub use ownership::OwnershipTier;
 pub use resource::ResourceKind;
 pub use solution_map::SolutionMap;

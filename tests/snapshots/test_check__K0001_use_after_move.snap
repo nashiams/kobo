@@ -1,0 +1,18 @@
+---
+source: bin/kobo-cli/tests/test_ui.rs
+assertion_line: 22
+expression: output.stderr
+---
+error[K0001]: value used after move
+  --> tests\ui\K0001_use_after_move.kobo:4:9
+  |
+3 |     process(config);
+  |             ------ value moved here
+4 |     log(config);
+  |         ^^^^^^ value used after move
+  |
+   = `config` was moved on line 3; the original binding is no longer valid at this later use
+   = kobo decision: flagged before lowering; no automatic rewrite applied
+help: if you want both calls to share the same value, clone explicitly at the move site
+run: kobo check tests\ui\K0001_use_after_move.kobo:3
+Error: analysis failed

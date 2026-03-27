@@ -13,6 +13,31 @@ macro_rules! define_error_codes {
                     $( Self::$code => $label, )*
                 }
             }
+
+            pub const fn short_description(self) -> &'static str {
+                match self {
+                    Self::K0001 => "value used after move",
+                    Self::K0002 => "cannot borrow as mutable - already borrowed",
+                    Self::K0020 => "RefCell accessed >10,000 times in hot path",
+                    Self::K0025 => "soft hint ignored - constraint conflict",
+                    Self::K0030 => "resource handle moved - cannot alias file handle",
+                    Self::K0041 => "cannot enter @strict block - value has active aliases",
+                    Self::K0042 => "closure captures LocalOwned<T> across @strict boundary",
+                    Self::K0043 => "value moved inside @strict block - cannot re-wrap on exit",
+                    Self::K0060 => "RefCell borrow is live at suspend point",
+                    Self::K0061 => "future requires Send but value cannot safely cross thread boundary",
+                    Self::K0062 => "Mutex guard would live across .await",
+                    Self::K0063 => "@strict block inside async fn without @strict async fn",
+                    Self::K0080 => "structural ownership conflict - no automatic fix possible",
+                    Self::K0080P1 => "ownership pattern will require architectural decision at migration",
+                    Self::K0081 => "ownership cluster too large for automatic solving",
+                    Self::K0082 => "solver exceeded its time budget",
+                    Self::K0090 => "migration cannot continue - value crosses into external crate",
+                    Self::K0095 => "ownership of macro-generated value cannot be inferred",
+                    Self::K0099 => "rustc error remapped to Kobo source",
+                    _ => "diagnostic stub",
+                }
+            }
         }
 
         impl fmt::Display for KErrorCode {
@@ -21,6 +46,11 @@ macro_rules! define_error_codes {
             }
         }
     };
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct KErrorMetadata {
+    pub short_description: &'static str,
 }
 
 define_error_codes! {
@@ -152,6 +182,22 @@ impl fmt::Display for Severity {
     }
 }
 
+impl KErrorCode {
+    pub const fn metadata(self) -> KErrorMetadata {
+        match self {
+            Self::K0001 => KErrorMetadata {
+                short_description: "value used after move",
+            },
+            Self::K0002 => KErrorMetadata {
+                short_description: "cannot borrow as mutable - already borrowed",
+            },
+            _ => KErrorMetadata {
+                short_description: self.short_description(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{KErrorCode, Severity};
@@ -159,6 +205,19 @@ mod tests {
     #[test]
     fn precursor_code_uses_dash_suffix() {
         assert_eq!(KErrorCode::K0080P1.as_str(), "K0080-P1");
+    }
+
+    #[test]
+    fn short_descriptions_match_v02_contract_for_move_and_borrow() {
+        assert_eq!(KErrorCode::K0001.short_description(), "value used after move");
+        assert_eq!(
+            KErrorCode::K0002.short_description(),
+            "cannot borrow as mutable - already borrowed"
+        );
+        assert_eq!(
+            KErrorCode::K0001.metadata().short_description,
+            "value used after move"
+        );
     }
 
     #[test]

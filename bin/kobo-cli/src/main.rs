@@ -13,6 +13,16 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum KoboCommand {
+    /// Analyze a .kobo file without generating or running a binary.
+    Check {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    /// Reformat a .kobo file when the source map proves the edit is lossless.
+    Fmt {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
     /// Compile and run a .kobo file.
     Run {
         #[arg(value_name = "FILE")]

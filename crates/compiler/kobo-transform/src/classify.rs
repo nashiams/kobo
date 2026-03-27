@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use kobo_ir::{OwnershipTier, ResourceKind};
+use kobo_ir::{KirNodeId, OwnershipTier, ResourceKind};
 use kobo_parser::KoboBinding;
 
 /// Classification result for a single binding.
@@ -13,6 +13,7 @@ pub(crate) struct BindingClassification {
 /// Ownership state already known in the current lexical scope.
 #[derive(Clone, Copy)]
 pub(crate) struct BindingState {
+    pub decl_id: KirNodeId,
     pub ownership: OwnershipTier,
     pub resource_kind: Option<ResourceKind>,
 }

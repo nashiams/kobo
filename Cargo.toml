@@ -1,9 +1,14 @@
 [workspace]
 resolver = "2"
+# v0.2 crate-boundary note:
+# - kobo-transform must not depend on kobo-errors
+# - kobo-transform must not depend on kobo-analysis
+# - kobo-analysis must not depend on kobo-transform
 members = [
     "crates/compiler/kobo-ir",
     "crates/compiler/kobo-parser",
     "crates/compiler/kobo-transform",
+    "crates/compiler/kobo-analysis",
     "crates/compiler/kobo-migrate",
     "crates/compiler/kobo-codegen",
     "crates/compiler/kobo-debt",

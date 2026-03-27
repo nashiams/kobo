@@ -7,6 +7,28 @@ use crate::span::KoboSpan;
 
 // --- Types first ---
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum UseKind {
+    Read,
+    Write,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum BorrowKind {
+    Immutable,
+    Mutable,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub enum NodeKind {
+    ScopeStart,
+    ScopeEnd,
+    Decl,
+    Use(UseKind),
+    Move,
+    Borrow(BorrowKind),
+}
+
 /// A single node in the Kobo Intermediate Representation.
 ///
 /// KIR nodes are produced by `kobo-transform` and frozen thereafter.
@@ -15,8 +37,9 @@ use crate::span::KoboSpan;
 #[derive(Clone, Debug)]
 pub struct KirNode {
     pub id: KirNodeId,
+    pub kind: NodeKind,
     /// Back-pointer to the originating Kobo AST node.
-    pub ast_id: KoboAstNodeId,
+    pub ast_id: Option<KoboAstNodeId>,
     /// Ownership tier assigned during transform. `Undecided` until migration runs.
     pub ownership: OwnershipTier,
     /// Set for resource-kind bindings (files, locks, sockets). `None` otherwise.
@@ -25,6 +48,8 @@ pub struct KirNode {
     pub cfg_block: Option<CfgBlockId>,
     /// Source location in the `.kobo` file.
     pub span: KoboSpan,
+    /// For use, move, and borrow nodes: points back to the declaration site.
+    pub decl_id: Option<KirNodeId>,
 }
 
 /// The Kobo Intermediate Representation for a single source file.
@@ -41,7 +66,11 @@ pub struct Kir {
 
 impl Kir {
     pub fn from_nodes(nodes: Vec<KirNode>) -> Self {
-        let ast_to_kir = nodes.iter().map(|node| (node.ast_id, node.id)).collect();
+        let ast_to_kir = nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Decl)
+            .filter_map(|node| node.ast_id.map(|ast_id| (ast_id, node.id)))
+            .collect();
 
         Self { nodes, ast_to_kir }
     }
@@ -52,6 +81,14 @@ impl Kir {
 
     pub fn iter_nodes(&self) -> impl Iterator<Item = &KirNode> {
         self.nodes.iter()
+    }
+
+    pub fn nodes_in_source_order(&self) -> impl Iterator<Item = &KirNode> {
+        self.nodes.iter()
+    }
+
+    pub fn iter_decl_nodes(&self) -> impl Iterator<Item = &KirNode> {
+        self.nodes.iter().filter(|node| node.kind == NodeKind::Decl)
     }
 
     pub fn kir_for_ast(&self, ast_id: KoboAstNodeId) -> Option<KirNodeId> {

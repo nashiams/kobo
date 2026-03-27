@@ -238,6 +238,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "kobo-analysis"
+version = "0.1.0"
+dependencies = [
+ "kobo-errors",
+ "kobo-ir",
+]
+
+[[package]]
 name = "kobo-cli"
 version = "0.1.0"
 dependencies = [
@@ -257,6 +265,8 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
+ "serde",
+ "serde_json",
  "syn",
 ]
 
@@ -275,6 +285,7 @@ version = "0.1.0"
 name = "kobo-driver"
 version = "0.1.0"
 dependencies = [
+ "kobo-analysis",
  "kobo-codegen",
  "kobo-debt",
  "kobo-errors",
@@ -283,6 +294,7 @@ dependencies = [
  "kobo-parser",
  "kobo-transform",
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
 ]
@@ -300,6 +312,7 @@ name = "kobo-ir"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
+ "serde",
 ]
 
 [[package]]

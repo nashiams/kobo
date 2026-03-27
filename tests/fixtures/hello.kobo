@@ -1,0 +1,11 @@
+fn main() {
+    let names = vec!["alice", "bob"];
+    let count = 2;
+    let _count_copy = count;
+    let greeting = greet(names);
+    println!("{}", greeting);
+}
+
+fn greet(names: Vec<&str>) -> String {
+    names.join(", ")
+}

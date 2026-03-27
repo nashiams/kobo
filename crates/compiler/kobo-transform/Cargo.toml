@@ -1,0 +1,9 @@
+[package]
+name    = "kobo-transform"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kobo-ir     = { path = "../kobo-ir" }
+kobo-parser = { path = "../kobo-parser" }
+syn         = { workspace = true }

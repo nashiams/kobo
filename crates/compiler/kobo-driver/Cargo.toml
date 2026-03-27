@@ -1,0 +1,16 @@
+[package]
+name    = "kobo-driver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kobo-ir        = { path = "../kobo-ir" }
+kobo-parser    = { path = "../kobo-parser" }
+kobo-transform = { path = "../kobo-transform" }
+kobo-migrate   = { path = "../kobo-migrate" }
+kobo-codegen   = { path = "../kobo-codegen" }
+kobo-debt      = { path = "../kobo-debt" }
+kobo-errors    = { path = "../kobo-errors" }
+thiserror      = { workspace = true }
+toml           = { workspace = true }
+serde          = { workspace = true }

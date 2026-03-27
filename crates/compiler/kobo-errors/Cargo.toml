@@ -1,0 +1,8 @@
+[package]
+name    = "kobo-errors"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kobo-ir   = { path = "../kobo-ir" }
+thiserror = { workspace = true }

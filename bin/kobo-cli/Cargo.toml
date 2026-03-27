@@ -1,0 +1,17 @@
+[package]
+name    = "kobo-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kobo"
+path = "src/main.rs"
+
+[dependencies]
+kobo-driver = { path = "../../crates/compiler/kobo-driver" }
+kobo-errors = { path = "../../crates/compiler/kobo-errors" }
+clap        = { workspace = true }
+anyhow      = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

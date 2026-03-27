@@ -1,0 +1,16 @@
+# Rust build outputs
+/target/
+/target-*/
+
+# Generated fixture and CLI outputs
+/tests/fixtures/*.exe
+/tests/fixtures/*.pdb
+/tests/fixtures/*.rs
+
+# Windows and editor noise
+Thumbs.db
+.DS_Store
+*.tmp
+
+.claude
+claude-spec

@@ -1,0 +1,12 @@
+[package]
+name    = "kobo-codegen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kobo-ir     = { path = "../kobo-ir" }
+kobo-parser = { path = "../kobo-parser" }
+syn         = { workspace = true }
+proc-macro2 = { workspace = true }
+quote       = { workspace = true }
+prettyplease = { workspace = true }

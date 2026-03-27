@@ -1,0 +1,51 @@
+use syn::parse_quote;
+
+pub(crate) fn support_items(needs_rc_refcell: bool, needs_scoped_handle: bool) -> Vec<syn::Item> {
+    let mut items = Vec::new();
+
+    if needs_rc_refcell {
+        items.push(parse_quote!(
+            use std::cell::RefCell;
+        ));
+        items.push(parse_quote!(
+            use std::rc::Rc;
+        ));
+    }
+
+    if needs_scoped_handle {
+        items.extend(scoped_handle_items());
+    }
+
+    items
+}
+
+fn scoped_handle_items() -> Vec<syn::Item> {
+    vec![
+        parse_quote!(
+            struct ScopedHandle<T>(T);
+        ),
+        parse_quote!(
+            impl<T> ScopedHandle<T> {
+                fn new(inner: T) -> Self {
+                    Self(inner)
+                }
+            }
+        ),
+        parse_quote!(
+            impl<T> std::ops::Deref for ScopedHandle<T> {
+                type Target = T;
+
+                fn deref(&self) -> &Self::Target {
+                    &self.0
+                }
+            }
+        ),
+        parse_quote!(
+            impl<T> std::ops::DerefMut for ScopedHandle<T> {
+                fn deref_mut(&mut self) -> &mut Self::Target {
+                    &mut self.0
+                }
+            }
+        ),
+    ]
+}

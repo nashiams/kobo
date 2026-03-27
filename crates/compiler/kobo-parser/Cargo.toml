@@ -1,0 +1,10 @@
+[package]
+name    = "kobo-parser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kobo-ir     = { path = "../kobo-ir" }
+syn         = { workspace = true }
+proc-macro2 = { workspace = true }
+thiserror   = { workspace = true }

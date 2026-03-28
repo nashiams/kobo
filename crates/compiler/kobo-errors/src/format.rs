@@ -36,10 +36,9 @@ fn render_label_group(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
     };
 
     let labels = ordered_labels(diagnostic);
-    if labels
-        .iter()
-        .any(|label| label.span.file_id != diagnostic.primary.span.file_id || !label.span.is_valid_for(file))
-    {
+    if labels.iter().any(|label| {
+        label.span.file_id != diagnostic.primary.span.file_id || !label.span.is_valid_for(file)
+    }) {
         return render_individual_blocks(file_set, diagnostic);
     }
 
@@ -80,7 +79,10 @@ fn render_grouped_block(file: &FileEntry, labels: &[&DiagLabel], primary: &DiagL
         rendered.push('\n');
         rendered.push_str(&format!("{line:>gutter_width$} | {line_text}"));
         rendered.push('\n');
-        rendered.push_str(&format!("{:>gutter_width$} | {}{}", "", caret_padding, caret));
+        rendered.push_str(&format!(
+            "{:>gutter_width$} | {}{}",
+            "", caret_padding, caret
+        ));
         if !label.text.is_empty() {
             rendered.push(' ');
             rendered.push_str(&label.text);
@@ -132,9 +134,7 @@ fn render_label_block(file_set: &FileSet, label: &DiagLabel, include_label_text:
     rendered.push('\n');
     rendered.push_str(&format!(
         "{:>gutter_width$} | {}{}",
-        "",
-        caret_padding,
-        caret
+        "", caret_padding, caret
     ));
     if include_label_text && !label.text.is_empty() {
         rendered.push(' ');

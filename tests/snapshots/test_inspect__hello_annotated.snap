@@ -2,18 +2,16 @@
 source: bin/kobo-cli/tests/test_run.rs
 expression: output.stdout
 ---
-use std::cell::RefCell;
-use std::rc::Rc;
 fn main() {
-// kobo: names @ line 2 -> rc_refcell (non-Copy shared binding)
-    let names = Rc::new(RefCell::new(vec!["alice", "bob"]));
+// kobo: names @ line 2 -> plain (dead original after assignment)
+    let names = vec!["alice", "bob"];
     let count = 2;
     let _count_copy = count;
-// kobo: greeting @ line 5 -> rc_refcell (non-Copy shared binding)
-    let greeting = Rc::new(RefCell::new(greet(names.clone())));
-    println!("{}", greeting.borrow());
+// kobo: greeting @ line 5 -> plain (local-only non-Copy binding)
+    let greeting = greet(names);
+    println!("{}", greeting);
 }
-// kobo: names @ line 9 -> rc_refcell (non-Copy shared binding)
-fn greet(names: Rc<RefCell<Vec<&str>>>) -> String {
-    names.borrow().join(", ")
+// kobo: names @ line 9 -> plain (local-only non-Copy binding)
+fn greet(names: Vec<&str>) -> String {
+    names.join(", ")
 }

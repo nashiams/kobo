@@ -9,7 +9,7 @@ use std::path::Path;
 use kobo_ir::{KoboSpan, OwnershipTier};
 use serde::{Deserialize, Serialize};
 
-use crate::lower::LoweringSite;
+use crate::lower::{LoweringSite, ResolvedAnchorMap};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RsSpan {
@@ -34,23 +34,22 @@ pub struct KoboSourceMap {
     pub x_kobo_mappings: Vec<SourceMapEntry>,
 }
 
-pub fn build_source_map_entries(formatted: &str, sites: &[LoweringSite]) -> Vec<SourceMapEntry> {
-    let lines: Vec<&str> = formatted.lines().collect();
-    let mut search_start = 0usize;
+pub(crate) fn build_source_map_entries(
+    sites: &[LoweringSite],
+    anchors: &ResolvedAnchorMap,
+) -> Vec<SourceMapEntry> {
     let mut entries = Vec::with_capacity(sites.len());
 
     for site in sites {
-        let line_index = find_binding_line(&lines, &site.binding_name, search_start)
-            .or_else(|| find_binding_line(&lines, &site.binding_name, 0))
-            .unwrap_or(0);
-        let line_text = lines.get(line_index).copied().unwrap_or("");
-        search_start = line_index.saturating_add(1);
+        let anchor = anchors.get(site.node).unwrap_or_else(|| {
+            unreachable!("invariant: every lowering site must resolve to an anchor")
+        });
 
         entries.push(SourceMapEntry {
             rs_span: RsSpan {
-                line: line_index + 1,
-                column_start: 0,
-                column_end: line_text.len(),
+                line: anchor.line,
+                column_start: anchor.column_start,
+                column_end: anchor.column_end,
             },
             kobo_span: site.kobo_span,
             ownership_tier: ownership_tier_label(site.ownership_tier).to_owned(),
@@ -89,8 +88,7 @@ impl KoboSourceMap {
         self.x_kobo_mappings
             .iter()
             .find(|entry| {
-                entry.rs_span.line == rs_span.line
-                    && spans_overlap(&entry.rs_span, &rs_span)
+                entry.rs_span.line == rs_span.line && spans_overlap(&entry.rs_span, &rs_span)
             })
             .map(|entry| entry.kobo_span)
             .or_else(|| {
@@ -114,29 +112,6 @@ impl KoboSourceMap {
     }
 }
 
-fn find_binding_line(lines: &[&str], binding_name: &str, start: usize) -> Option<usize> {
-    lines
-        .iter()
-        .enumerate()
-        .skip(start)
-        .find_map(|(index, line)| contains_token(line, binding_name).then_some(index))
-}
-
-fn contains_token(line: &str, binding_name: &str) -> bool {
-    let Some(start) = line.find(binding_name) else {
-        return false;
-    };
-    let end = start + binding_name.len();
-    let before = line[..start].chars().next_back();
-    let after = line[end..].chars().next();
-
-    !before.is_some_and(is_ident_char) && !after.is_some_and(is_ident_char)
-}
-
-fn is_ident_char(ch: char) -> bool {
-    ch == '_' || ch.is_ascii_alphanumeric()
-}
-
 fn spans_overlap(left: &RsSpan, right: &RsSpan) -> bool {
     left.column_start <= right.column_end && right.column_start <= left.column_end
 }
@@ -158,22 +133,31 @@ fn ownership_tier_label(tier: OwnershipTier) -> &'static str {
 mod tests {
     use kobo_ir::{KoboSpan, OwnershipTier};
 
-    use crate::lower::LoweringSite;
+    use crate::lower::{LoweringSite, ResolvedAnchor, ResolvedAnchorMap};
 
     use super::{build_source_map_entries, wrap_source_map, RsSpan};
 
     #[test]
     fn source_map_supports_forward_and_reverse_lookup() {
-        let formatted = "fn main() {\n    let names = Rc::new(RefCell::new(vec![\"a\"]));\n}\n";
+        let mut anchors = ResolvedAnchorMap::default();
+        anchors.insert(
+            kobo_ir::KirNodeId(1),
+            ResolvedAnchor {
+                line: 2,
+                column_start: 4,
+                column_end: 9,
+            },
+        );
         let entries = build_source_map_entries(
-            formatted,
-            &[LoweringSite {
-                binding_name: "names".to_owned(),
-                ownership_tier: OwnershipTier::RcMutShared,
-                kobo_span: KoboSpan::new(4, 9, kobo_ir::FileId(0)),
-                kobo_line: 2,
-                reason: "non-Copy shared binding".to_owned(),
-            }],
+            &[LoweringSite::new(
+                kobo_ir::KirNodeId(1),
+                "names",
+                OwnershipTier::RcMutShared,
+                KoboSpan::new(4, 9, kobo_ir::FileId(0)),
+                2,
+                "non-Copy shared binding",
+            )],
+            &anchors,
         );
         let source_map = wrap_source_map("src/main.kobo".as_ref(), "src/main.rs".as_ref(), entries);
         assert_eq!(source_map.generated_file(), "src/main.rs");

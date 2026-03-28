@@ -27,7 +27,10 @@ fn cmd_check(file: &Path) -> anyhow::Result<()> {
     let mut session = build_session(file)?;
 
     match run_check_pipeline(&mut session, file) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            render_diagnostics(&session);
+            Ok(())
+        }
         Err(()) => {
             render_diagnostics(&session);
             anyhow::bail!("analysis failed");
@@ -60,10 +63,11 @@ fn cmd_run(file: &Path) -> anyhow::Result<()> {
 fn cmd_inspect(file: &Path) -> anyhow::Result<()> {
     let mut session = build_session(file)?;
 
-    let CodegenArtifacts { rs_source, .. } = run_codegen_pipeline(&mut session, file).map_err(|()| {
-        render_diagnostics(&session);
-        anyhow::anyhow!("compilation failed")
-    })?;
+    let CodegenArtifacts { rs_source, .. } =
+        run_codegen_pipeline(&mut session, file).map_err(|()| {
+            render_diagnostics(&session);
+            anyhow::anyhow!("compilation failed")
+        })?;
 
     print!("{rs_source}");
     Ok(())
@@ -167,8 +171,8 @@ fn run_rustfmt_file(path: &Path) -> anyhow::Result<()> {
 }
 
 fn rustfmt_original_kobo_source(file: &Path) -> anyhow::Result<String> {
-    let source = fs::read_to_string(file)
-        .with_context(|| format!("failed to read {}", file.display()))?;
+    let source =
+        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
     let temp_path = rustfmt_temp_path(file);
     fs::write(&temp_path, &source)
         .with_context(|| format!("failed to stage {}", temp_path.display()))?;
@@ -181,13 +185,15 @@ fn rustfmt_original_kobo_source(file: &Path) -> anyhow::Result<String> {
     formatted
 }
 
-fn rewrite_lossless_kobo_source(file: &Path, artifacts: &CodegenArtifacts) -> anyhow::Result<String> {
+fn rewrite_lossless_kobo_source(
+    file: &Path,
+    artifacts: &CodegenArtifacts,
+) -> anyhow::Result<String> {
     debug_assert!(
-        artifacts.source_map.kobo_path().ends_with(
-            &file
-                .to_string_lossy()
-                .replace('/', "\\")
-        ),
+        artifacts
+            .source_map
+            .kobo_path()
+            .ends_with(&file.to_string_lossy().replace('/', "\\")),
         "source map and fmt target should refer to the same .kobo file"
     );
 

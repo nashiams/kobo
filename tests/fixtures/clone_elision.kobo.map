@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "file": "tests\\fixtures\\clone_elision.rs",
+  "sources": [
+    "tests\\fixtures\\clone_elision.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 7,
+        "column_start": 0,
+        "column_end": 25
+      },
+      "kobo_span": {
+        "start": 11,
+        "end": 17,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    },
+    {
+      "rs_span": {
+        "line": 7,
+        "column_start": 0,
+        "column_end": 40
+      },
+      "kobo_span": {
+        "start": 80,
+        "end": 87,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    },
+    {
+      "rs_span": {
+        "line": 9,
+        "column_start": 0,
+        "column_end": 25
+      },
+      "kobo_span": {
+        "start": 121,
+        "end": 127,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    }
+  ]
+}

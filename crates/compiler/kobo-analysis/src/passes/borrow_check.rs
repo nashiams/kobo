@@ -13,7 +13,9 @@ pub(crate) fn visit(
     };
 
     match node.kind {
-        NodeKind::Borrow(borrow_kind) => handle_borrow(node, binding, borrow_kind, binding_table, borrow_facts),
+        NodeKind::Borrow(borrow_kind) => {
+            handle_borrow(node, binding, borrow_kind, binding_table, borrow_facts)
+        }
         NodeKind::Use(UseKind::Write) => handle_write(node, binding, binding_table, borrow_facts),
         _ => {}
     }

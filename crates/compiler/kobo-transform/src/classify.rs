@@ -1,24 +1,24 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use kobo_ir::{KirNodeId, OwnershipTier, ResourceKind};
+use kobo_ir::{KirNodeId, ResourceKind};
 use kobo_parser::KoboBinding;
 
-/// Classification result for a single binding.
-#[derive(Clone, Copy)]
-pub(crate) struct BindingClassification {
-    pub ownership: OwnershipTier,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BindingMetadata {
     pub resource_kind: Option<ResourceKind>,
+    pub is_copy_known: bool,
+    pub is_generic: bool,
 }
 
-/// Ownership state already known in the current lexical scope.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BindingState {
     pub decl_id: KirNodeId,
-    pub ownership: OwnershipTier,
     pub resource_kind: Option<ResourceKind>,
+    pub is_copy_known: bool,
+    pub is_generic: bool,
 }
 
-/// Scope-aware context used during the v0.1 transform.
+/// Scope-aware context used while transform resolves concrete binding identity.
 pub(crate) struct TransformCtx {
     scopes: Vec<HashMap<String, BindingState>>,
 }
@@ -50,11 +50,25 @@ impl TransformCtx {
     }
 }
 
+pub(crate) fn binding_metadata(
+    binding: &KoboBinding,
+    init: Option<&syn::Expr>,
+    ctx: &TransformCtx,
+    generic_params: &HashSet<String>,
+) -> BindingMetadata {
+    BindingMetadata {
+        resource_kind: detect_resource_kind(binding.ty.as_ref(), init, ctx),
+        is_copy_known: binding.ty.as_ref().is_some_and(is_copy_type)
+            || init.is_some_and(|expr| is_copy_expr(expr, ctx)),
+        is_generic: binding
+            .ty
+            .as_ref()
+            .is_some_and(|ty| is_generic_type(ty, generic_params))
+            || init.is_some_and(|expr| is_generic_expr(expr, ctx)),
+    }
+}
+
 /// Returns `true` if `ty` is a `Copy` type that should never be wrapped.
-///
-/// Covers primitives, `bool`, `char`, and tuples and arrays of `Copy` types.
-/// Returns `false` (wrap conservatively) when uncertain. Full trait-based
-/// determination requires `rustc` integration (future).
 pub(crate) fn is_copy_type(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Path(path) => {
@@ -89,32 +103,23 @@ pub(crate) fn is_copy_type(ty: &syn::Type) -> bool {
     }
 }
 
-/// Classifies a binding according to the v0.1 script-mode rules.
-pub(crate) fn classify_binding(
-    binding: &KoboBinding,
+pub(crate) fn detect_resource_kind(
+    ty: Option<&syn::Type>,
     init: Option<&syn::Expr>,
     ctx: &TransformCtx,
-) -> BindingClassification {
-    if let Some(resource_kind) = detect_resource_kind(binding.ty.as_ref(), init, ctx) {
-        return BindingClassification {
-            ownership: OwnershipTier::Scoped,
-            resource_kind: Some(resource_kind),
-        };
-    }
+) -> Option<ResourceKind> {
+    detect_resource_kind_from_type(ty)
+        .or_else(|| init.and_then(|expr| detect_resource_kind_from_expr(expr, ctx)))
+}
 
-    if binding.ty.as_ref().is_some_and(is_copy_type)
-        || init.is_some_and(|expr| is_copy_expr(expr, ctx))
-    {
-        return BindingClassification {
-            ownership: OwnershipTier::PlainOwned,
-            resource_kind: None,
-        };
-    }
+pub(crate) fn is_generic_type(ty: &syn::Type, generic_params: &HashSet<String>) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
 
-    BindingClassification {
-        ownership: OwnershipTier::RcMutShared,
-        resource_kind: None,
-    }
+    path.qself.is_none()
+        && path.path.segments.len() == 1
+        && generic_params.contains(&path.path.segments[0].ident.to_string())
 }
 
 fn is_copy_expr(expr: &syn::Expr, ctx: &TransformCtx) -> bool {
@@ -125,8 +130,6 @@ fn is_copy_expr(expr: &syn::Expr, ctx: &TransformCtx) -> bool {
                 | syn::Lit::Float(_)
                 | syn::Lit::Bool(_)
                 | syn::Lit::Char(_)
-                | syn::Lit::Str(_)
-                | syn::Lit::ByteStr(_)
                 | syn::Lit::Byte(_)
         ),
         syn::Expr::Path(path) => {
@@ -136,7 +139,7 @@ fn is_copy_expr(expr: &syn::Expr, ctx: &TransformCtx) -> bool {
             };
 
             ctx.lookup(ident)
-                .is_some_and(|binding| binding.ownership == OwnershipTier::PlainOwned)
+                .is_some_and(|binding| binding.is_copy_known)
         }
         syn::Expr::Paren(paren) => is_copy_expr(&paren.expr, ctx),
         syn::Expr::Group(group) => is_copy_expr(&group.expr, ctx),
@@ -149,13 +152,20 @@ fn is_copy_expr(expr: &syn::Expr, ctx: &TransformCtx) -> bool {
     }
 }
 
-fn detect_resource_kind(
-    ty: Option<&syn::Type>,
-    init: Option<&syn::Expr>,
-    ctx: &TransformCtx,
-) -> Option<ResourceKind> {
-    detect_resource_kind_from_type(ty)
-        .or_else(|| init.and_then(|expr| detect_resource_kind_from_expr(expr, ctx)))
+fn is_generic_expr(expr: &syn::Expr, ctx: &TransformCtx) -> bool {
+    match expr {
+        syn::Expr::Path(path) => {
+            let Some(ident) = single_ident(path.path.segments.iter().map(|segment| &segment.ident))
+            else {
+                return false;
+            };
+
+            ctx.lookup(ident).is_some_and(|binding| binding.is_generic)
+        }
+        syn::Expr::Paren(paren) => is_generic_expr(&paren.expr, ctx),
+        syn::Expr::Group(group) => is_generic_expr(&group.expr, ctx),
+        _ => false,
+    }
 }
 
 fn detect_resource_kind_from_type(ty: Option<&syn::Type>) -> Option<ResourceKind> {

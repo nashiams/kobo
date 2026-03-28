@@ -201,7 +201,11 @@ mod tests {
         let second = BindingId(KirNodeId(2));
         table.declare_binding(first, "x".to_owned(), kobo_ir::KoboSpan::new(0, 1, file_id));
         env.declare_binding(first);
-        table.declare_binding(second, "x".to_owned(), kobo_ir::KoboSpan::new(2, 3, file_id));
+        table.declare_binding(
+            second,
+            "x".to_owned(),
+            kobo_ir::KoboSpan::new(2, 3, file_id),
+        );
         env.declare_binding(second);
 
         assert_eq!(table.state(first), Some(LivenessState::Live));

@@ -1,0 +1,50 @@
+struct LargePlan {
+    a0: u64,
+    a1: u64,
+    a2: u64,
+    a3: u64,
+    a4: u64,
+    a5: u64,
+    a6: u64,
+    a7: u64,
+    a8: u64,
+    a9: u64,
+    a10: u64,
+    a11: u64,
+    a12: u64,
+    a13: u64,
+    a14: u64,
+    a15: u64,
+}
+
+impl LargePlan {
+    fn build() -> Self {
+        Self {
+            a0: 1,
+            a1: 2,
+            a2: 3,
+            a3: 4,
+            a4: 5,
+            a5: 6,
+            a6: 7,
+            a7: 8,
+            a8: 9,
+            a9: 10,
+            a10: 11,
+            a11: 12,
+            a12: 13,
+            a13: 14,
+            a14: 15,
+            a15: 16,
+        }
+    }
+
+    fn checksum(&self) -> u64 {
+        self.a0 + self.a15
+    }
+}
+
+fn main() {
+    let plan: LargePlan = LargePlan::build();
+    println!("{}", plan.checksum());
+}

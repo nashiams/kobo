@@ -37,13 +37,19 @@ fn scope_end(id: u32, span: KoboSpan) -> KirNode {
 
 #[test]
 fn k0001_exact_fixture_produces_move_fact() {
-    let source = "fn main() {\n    let config = make_config();\n    process(config);\n    log(config);\n}\n";
+    let source =
+        "fn main() {\n    let config = make_config();\n    process(config);\n    log(config);\n}\n";
     let (file_set, file_id) = build_file(source);
     let kir = Kir::from_nodes(vec![
         scope_start(1, KoboSpan::new(0, source.len() as u32, file_id)),
         decl(2, KoboSpan::new(20, 26, file_id)),
         node(3, NodeKind::Move, KoboSpan::new(58, 64, file_id), Some(2)),
-        node(4, NodeKind::Use(UseKind::Read), KoboSpan::new(77, 83, file_id), Some(2)),
+        node(
+            4,
+            NodeKind::Use(UseKind::Read),
+            KoboSpan::new(77, 83, file_id),
+            Some(2),
+        ),
         scope_end(5, KoboSpan::new(0, source.len() as u32, file_id)),
     ]);
 
@@ -61,7 +67,8 @@ fn k0001_exact_fixture_produces_move_fact() {
 
 #[test]
 fn k0002_exact_fixture_produces_borrow_fact() {
-    let source = "fn main() {\n    let data = vec![1, 2, 3];\n    let r = &data;\n    data.push(4);\n}\n";
+    let source =
+        "fn main() {\n    let data = vec![1, 2, 3];\n    let r = &data;\n    data.push(4);\n}\n";
     let (file_set, file_id) = build_file(source);
     let kir = Kir::from_nodes(vec![
         scope_start(1, KoboSpan::new(0, source.len() as u32, file_id)),
@@ -73,7 +80,12 @@ fn k0002_exact_fixture_produces_borrow_fact() {
             KoboSpan::new(57, 61, file_id),
             Some(2),
         ),
-        node(5, NodeKind::Use(UseKind::Write), KoboSpan::new(67, 71, file_id), Some(2)),
+        node(
+            5,
+            NodeKind::Use(UseKind::Write),
+            KoboSpan::new(67, 71, file_id),
+            Some(2),
+        ),
         scope_end(6, KoboSpan::new(0, source.len() as u32, file_id)),
     ]);
 
@@ -92,7 +104,8 @@ fn k0002_exact_fixture_produces_borrow_fact() {
 
 #[test]
 fn moved_while_borrowed_drops_spurious_borrow_conflict() {
-    let source = "fn main() {\n    let data = vec![1, 2, 3];\n    let r = &data;\n    consume(data);\n}\n";
+    let source =
+        "fn main() {\n    let data = vec![1, 2, 3];\n    let r = &data;\n    consume(data);\n}\n";
     let (file_set, file_id) = build_file(source);
     let kir = Kir::from_nodes(vec![
         scope_start(1, KoboSpan::new(0, source.len() as u32, file_id)),
@@ -124,7 +137,12 @@ fn nested_shadowing_keeps_distinct_binding_ids() {
         decl(4, KoboSpan::new(52, 53, file_id)),
         node(5, NodeKind::Move, KoboSpan::new(76, 77, file_id), Some(4)),
         scope_end(6, KoboSpan::new(38, 91, file_id)),
-        node(7, NodeKind::Use(UseKind::Read), KoboSpan::new(106, 107, file_id), Some(2)),
+        node(
+            7,
+            NodeKind::Use(UseKind::Read),
+            KoboSpan::new(106, 107, file_id),
+            Some(2),
+        ),
         scope_end(8, KoboSpan::new(0, source.len() as u32, file_id)),
     ]);
 

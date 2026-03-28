@@ -1,0 +1,15 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::cell::RefCell;
+use std::rc::Rc;
+fn mutate<T>(_value: &mut T) {}
+fn main() {
+// kobo: x @ line 4 -> rc_refcell (mutable shared, last resort)
+    let x = Rc::new(RefCell::new(String::from("kobo")));
+    if true {
+        mutate(&mut *x.borrow_mut());
+    }
+    println!("{}", x.borrow().len());
+}

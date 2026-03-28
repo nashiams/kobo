@@ -1,0 +1,13 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+// kobo: x @ line 1 -> plain (local-only non-Copy binding)
+fn id<T>(x: T) -> T {
+    x
+}
+fn main() {
+// kobo: value @ line 6 -> plain (local-only non-Copy binding)
+    let value = id(String::from("kobo"));
+    println!("{}", value);
+}

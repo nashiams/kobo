@@ -1,0 +1,11 @@
+fn main() {
+    let x = String::from("outer");
+    println!("{}", x.len());
+    println!("{}", x.len());
+
+    {
+        let mut x: Vec<String> = Vec::new();
+        x.push(String::from("inner"));
+        println!("{}", x.len());
+    }
+}

@@ -45,7 +45,10 @@ pub fn dump_binding_table(table: &BindingTable, file_set: &FileSet) {
                 format!("Borrowed({kind:?})@{}", render_span(file_set, at))
             }
         };
-        eprintln!("  {} {} {} {}", record.id.0 .0, record.name, decl_site, state);
+        eprintln!(
+            "  {} {} {} {}",
+            record.id.0 .0, record.name, decl_site, state
+        );
     }
 }
 

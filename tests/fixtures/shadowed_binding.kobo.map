@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/shadowed_binding.rs",
+  "sources": [
+    "tests/fixtures/shadowed_binding.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 5,
+        "column_start": 8,
+        "column_end": 9
+      },
+      "kobo_span": {
+        "start": 20,
+        "end": 21,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    },
+    {
+      "rs_span": {
+        "line": 10,
+        "column_start": 12,
+        "column_end": 13
+      },
+      "kobo_span": {
+        "start": 128,
+        "end": 129,
+        "file_id": 0
+      },
+      "ownership_tier": "rc_refcell"
+    }
+  ]
+}

@@ -26,7 +26,11 @@ pub fn run_analysis(kir: &Kir, file_set: &FileSet) -> AnalysisFacts {
             NodeKind::Decl => {
                 let binding_id = BindingId(node.id);
                 lexical_env.declare_binding(binding_id);
-                binding_table.declare_binding(binding_id, binding_name(file_set, node.span), node.span);
+                binding_table.declare_binding(
+                    binding_id,
+                    binding_name(file_set, node.span),
+                    node.span,
+                );
             }
             _ => {}
         }
@@ -101,7 +105,12 @@ mod tests {
             scope_start(1, KoboSpan::new(0, source.len() as u32, file_id)),
             decl(2, KoboSpan::new(4, 10, file_id)),
             node(3, NodeKind::Move, KoboSpan::new(29, 35, file_id), Some(2)),
-            node(4, NodeKind::Use(UseKind::Read), KoboSpan::new(43, 49, file_id), Some(2)),
+            node(
+                4,
+                NodeKind::Use(UseKind::Read),
+                KoboSpan::new(43, 49, file_id),
+                Some(2),
+            ),
             scope_end(5, KoboSpan::new(0, source.len() as u32, file_id)),
         ]);
 
@@ -142,7 +151,12 @@ mod tests {
                 KoboSpan::new(36, 40, file_id),
                 Some(2),
             ),
-            node(5, NodeKind::Use(UseKind::Write), KoboSpan::new(42, 46, file_id), Some(2)),
+            node(
+                5,
+                NodeKind::Use(UseKind::Write),
+                KoboSpan::new(42, 46, file_id),
+                Some(2),
+            ),
             scope_end(6, KoboSpan::new(0, source.len() as u32, file_id)),
         ]);
 
@@ -151,7 +165,10 @@ mod tests {
         assert!(facts.moves.is_empty());
         assert_eq!(facts.borrows.len(), 1);
         assert_eq!(facts.borrows[0].borrow_site, KoboSpan::new(36, 40, file_id));
-        assert_eq!(facts.borrows[0].conflict_site, KoboSpan::new(42, 46, file_id));
+        assert_eq!(
+            facts.borrows[0].conflict_site,
+            KoboSpan::new(42, 46, file_id)
+        );
     }
 
     #[test]
@@ -170,7 +187,12 @@ mod tests {
                 Some(2),
             ),
             scope_end(6, KoboSpan::new(27, 51, file_id)),
-            node(7, NodeKind::Use(UseKind::Write), KoboSpan::new(52, 56, file_id), Some(2)),
+            node(
+                7,
+                NodeKind::Use(UseKind::Write),
+                KoboSpan::new(52, 56, file_id),
+                Some(2),
+            ),
             scope_end(8, KoboSpan::new(0, source.len() as u32, file_id)),
         ]);
 
@@ -213,7 +235,12 @@ mod tests {
             decl(4, KoboSpan::new(26, 27, file_id)),
             node(5, NodeKind::Move, KoboSpan::new(48, 49, file_id), Some(4)),
             scope_end(6, KoboSpan::new(16, 58, file_id)),
-            node(7, NodeKind::Use(UseKind::Read), KoboSpan::new(69, 70, file_id), Some(2)),
+            node(
+                7,
+                NodeKind::Use(UseKind::Read),
+                KoboSpan::new(69, 70, file_id),
+                Some(2),
+            ),
             scope_end(8, KoboSpan::new(0, source.len() as u32, file_id)),
         ]);
 

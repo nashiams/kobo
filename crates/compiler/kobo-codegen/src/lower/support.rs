@@ -1,14 +1,28 @@
 use syn::parse_quote;
 
-pub(crate) fn support_items(needs_rc_refcell: bool, needs_scoped_handle: bool) -> Vec<syn::Item> {
+pub(crate) fn support_items(
+    needs_rc: bool,
+    needs_refcell: bool,
+    needs_arc: bool,
+    needs_scoped_handle: bool,
+) -> Vec<syn::Item> {
     let mut items = Vec::new();
 
-    if needs_rc_refcell {
+    if needs_refcell {
         items.push(parse_quote!(
             use std::cell::RefCell;
         ));
+    }
+
+    if needs_rc {
         items.push(parse_quote!(
             use std::rc::Rc;
+        ));
+    }
+
+    if needs_arc {
+        items.push(parse_quote!(
+            use std::sync::Arc;
         ));
     }
 

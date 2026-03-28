@@ -70,7 +70,8 @@ mod tests {
     #[test]
     fn span_helpers_cover_boundaries() {
         let mut file_set_builder = FileSetBuilder::new();
-        let file_id = file_set_builder.add_file(FileId(0).0.to_string().into(), "ab\ncd".to_owned());
+        let file_id =
+            file_set_builder.add_file(FileId(0).0.to_string().into(), "ab\ncd".to_owned());
         let file_set = file_set_builder.finish();
         let file = file_set.get(file_id).expect("registered file should exist");
 

@@ -1,0 +1,14 @@
+fn use_mut<T>(_value: &mut T) {}
+
+fn first<T>(mut value: T) {
+    use_mut(&mut value);
+}
+
+fn second<U>(mut value: U) {
+    use_mut(&mut value);
+}
+
+fn main() {
+    first(String::from("a"));
+    second(String::from("b"));
+}

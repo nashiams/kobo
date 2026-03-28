@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::node_id::{CfgBlockId, KirNodeId, KoboAstNodeId};
-use crate::ownership::OwnershipTier;
+use crate::ownership::{OwnershipTier, TierDecision, TransformFacts};
 use crate::resource::ResourceKind;
 use crate::span::KoboSpan;
 
@@ -60,6 +60,8 @@ pub struct Kir {
     nodes: Vec<KirNode>,
     /// Maps from AST node ID back to KIR node ID for fast lookup.
     ast_to_kir: HashMap<KoboAstNodeId, KirNodeId>,
+    transform_facts: TransformFacts,
+    tier_decisions: Vec<TierDecision>,
 }
 
 // --- Public read API ---
@@ -72,7 +74,12 @@ impl Kir {
             .filter_map(|node| node.ast_id.map(|ast_id| (ast_id, node.id)))
             .collect();
 
-        Self { nodes, ast_to_kir }
+        Self {
+            nodes,
+            ast_to_kir,
+            transform_facts: TransformFacts::default(),
+            tier_decisions: Vec::new(),
+        }
     }
 
     pub fn get_node(&self, id: KirNodeId) -> Option<&KirNode> {
@@ -81,6 +88,10 @@ impl Kir {
 
     pub fn iter_nodes(&self) -> impl Iterator<Item = &KirNode> {
         self.nodes.iter()
+    }
+
+    pub fn iter_nodes_mut(&mut self) -> impl Iterator<Item = &mut KirNode> {
+        self.nodes.iter_mut()
     }
 
     pub fn nodes_in_source_order(&self) -> impl Iterator<Item = &KirNode> {
@@ -93,6 +104,29 @@ impl Kir {
 
     pub fn kir_for_ast(&self, ast_id: KoboAstNodeId) -> Option<KirNodeId> {
         self.ast_to_kir.get(&ast_id).copied()
+    }
+
+    pub fn transform_facts(&self) -> &TransformFacts
+    {
+        &self.transform_facts
+    }
+
+    pub fn set_transform_facts(&mut self, facts: TransformFacts) {
+        self.transform_facts = facts;
+    }
+
+    pub fn tier_decision(&self, node_id: KirNodeId) -> Option<&TierDecision> {
+        self.tier_decisions
+            .iter()
+            .find(|decision| decision.node == node_id)
+    }
+
+    pub fn iter_tier_decisions(&self) -> impl Iterator<Item = &TierDecision> {
+        self.tier_decisions.iter()
+    }
+
+    pub fn set_tier_decisions(&mut self, decisions: Vec<TierDecision>) {
+        self.tier_decisions = decisions;
     }
 
     pub fn len(&self) -> usize {

@@ -41,6 +41,27 @@ fn check_k0002_fixture_matches_snapshot() {
 }
 
 #[test]
+fn check_k0025_fixture_matches_snapshot() {
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("K0025_hint_ignored.kobo");
+    let output = run_kobo_check(&fixture);
+
+    assert!(
+        output.status.success(),
+        "check should succeed for warning-only diagnostics"
+    );
+    assert!(output.stderr.contains("warning[K0025]"));
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_check__K0025_hint_ignored", output.stderr);
+    });
+}
+
+#[test]
 fn run_k0001_fixture_stops_at_analysis() {
     let fixture = workspace_root()
         .join("tests")
@@ -76,7 +97,10 @@ fn run_kobo_command(command: &str, fixture_path: &Path) -> KoboOutput {
         .strip_prefix(&workspace_root)
         .expect("fixture should live under workspace root");
     let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
-        .args([command, relative_fixture.to_str().expect("utf8 fixture path")])
+        .args([
+            command,
+            relative_fixture.to_str().expect("utf8 fixture path"),
+        ])
         .current_dir(&workspace_root)
         .output()
         .expect("kobo command should run");

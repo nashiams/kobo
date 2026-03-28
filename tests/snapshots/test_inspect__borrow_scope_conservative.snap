@@ -1,0 +1,14 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::cell::RefCell;
+use std::rc::Rc;
+fn main() {
+// kobo: x @ line 2 -> rc_refcell (mutable shared, last resort)
+// kobo: r @ line 3 -> borrow-scope-conservative
+    let x = Rc::new(RefCell::new(vec![1]));
+    let r = &mut *x.borrow_mut();
+    r.iter_mut().for_each(|value| *value += 1);
+    println!("{}", r[0]);
+}

@@ -49,7 +49,11 @@ pub(crate) fn unparsed_output_diagnostic(
     .with_run(run_suggestion(source_map))
 }
 
-fn remap_error(error: RustcJsonError, source_map: &KoboSourceMap, kobo_file_id: FileId) -> KDiagnostic {
+fn remap_error(
+    error: RustcJsonError,
+    source_map: &KoboSourceMap,
+    kobo_file_id: FileId,
+) -> KDiagnostic {
     let remapped = remap_labels(&error, source_map, kobo_file_id);
     if remapped.mapped_label_count == 0 {
         return tier_three_diagnostic(&error, source_map, kobo_file_id, remapped.help.as_deref());
@@ -60,7 +64,10 @@ fn remap_error(error: RustcJsonError, source_map: &KoboSourceMap, kobo_file_id: 
         Severity::Error,
         remapped.primary,
         remap_explanation(&error, remapped.remapping_unavailable),
-        DiagDecision("rustc rejected generated output; Kobo remapped the spans back to .kobo source".to_owned()),
+        DiagDecision(
+            "rustc rejected generated output; Kobo remapped the spans back to .kobo source"
+                .to_owned(),
+        ),
     );
 
     for label in remapped.secondary {
@@ -87,10 +94,8 @@ fn remap_labels(
     source_map: &KoboSourceMap,
     kobo_file_id: FileId,
 ) -> RemappedLabels {
-    let primary_span_result =
-        remap_span_collection(&error.spans, source_map, kobo_file_id);
-    let child_result =
-        remap_child_messages(&error.children, source_map, kobo_file_id);
+    let primary_span_result = remap_span_collection(&error.spans, source_map, kobo_file_id);
+    let child_result = remap_child_messages(&error.children, source_map, kobo_file_id);
     let mut primary = primary_span_result.primary;
     let mut secondary = primary_span_result.secondary;
     secondary.extend(child_result.secondary);
@@ -106,7 +111,8 @@ fn remap_labels(
         primary,
         secondary,
         help: child_result.help,
-        mapped_label_count: primary_span_result.mapped_label_count + child_result.mapped_label_count,
+        mapped_label_count: primary_span_result.mapped_label_count
+            + child_result.mapped_label_count,
         remapping_unavailable,
     }
 }
@@ -326,7 +332,10 @@ mod tests {
 
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].secondary.len(), 1);
-        assert_eq!(diagnostics[0].run.as_ref().map(|run| run.0.as_str()), Some("kobo inspect src/main.kobo"));
+        assert_eq!(
+            diagnostics[0].run.as_ref().map(|run| run.0.as_str()),
+            Some("kobo inspect src/main.kobo")
+        );
     }
 
     #[test]
@@ -344,9 +353,15 @@ mod tests {
         let raw = r#"{"message":"type mismatch","code":null,"level":"error","spans":[{"file_name":"src/main.rs","line_start":40,"column_start":1,"line_end":40,"column_end":5,"is_primary":true,"label":"expected type"}],"children":[]}"#;
         let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
 
-        assert!(diagnostics[0].explanation.0.starts_with("[remapping unavailable]"));
+        assert!(diagnostics[0]
+            .explanation
+            .0
+            .starts_with("[remapping unavailable]"));
         assert_eq!(diagnostics[0].primary.span, KoboSpan::new(0, 0, FileId(0)));
-        assert_eq!(diagnostics[0].primary.text, "compiler output could not be remapped");
+        assert_eq!(
+            diagnostics[0].primary.text,
+            "compiler output could not be remapped"
+        );
     }
 
     #[test]
@@ -366,7 +381,10 @@ mod tests {
         let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
 
         assert_eq!(diagnostics[0].secondary.len(), 1);
-        assert_eq!(diagnostics[0].secondary[0].text, "immutable borrow occurs here");
+        assert_eq!(
+            diagnostics[0].secondary[0].text,
+            "immutable borrow occurs here"
+        );
     }
 
     #[test]
@@ -375,7 +393,10 @@ mod tests {
         let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
 
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].explanation.0.starts_with("[remapping unavailable]"));
+        assert!(diagnostics[0]
+            .explanation
+            .0
+            .starts_with("[remapping unavailable]"));
         assert_eq!(diagnostics[0].secondary.len(), 1);
     }
 

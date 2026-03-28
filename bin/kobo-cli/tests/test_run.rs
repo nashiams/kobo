@@ -56,8 +56,10 @@ fn inspect_hello_fixture_matches_snapshot() {
     let output = run_kobo(["inspect"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
-    assert!(output.stdout.contains("Rc<RefCell<Vec<&str>>>"));
-    assert!(!output.stdout.contains("Rc<RefCell<i32>>"));
+    assert!(output
+        .stdout
+        .contains("let names = vec![\"alice\", \"bob\"];"));
+    assert!(!output.stdout.contains("Rc<RefCell<Vec<&str>>>"));
     assert!(output.stdout.contains("// kobo: names @ line 2"));
     assert!(case.fixture_path.with_extension("kobo.map").is_file());
 
@@ -75,8 +77,338 @@ fn dump_hello_fixture_reports_expected_tiers() {
     let output = run_kobo(["dump"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
-    assert!(output.stdout.contains("tier=RcMutShared"));
     assert!(output.stdout.contains("tier=PlainOwned"));
+    assert!(output.stdout.contains("tier=PlainOwned"));
+}
+
+#[test]
+fn inspect_tiered_mix_fixture_shows_v03_tiers_and_map_labels() {
+    let case = FixtureCase::new("inspect-tiered-mix", "tiered_mix.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("-> plain (local-only non-Copy binding)"));
+    assert!(output
+        .stdout
+        .contains("-> rc (sequential read-only; &T likely at migration"));
+    assert!(output
+        .stdout
+        .contains("-> rc_refcell (mutable shared, last resort)"));
+    assert!(output
+        .stdout
+        .contains("let config = Rc::new(AppConfig::load());"));
+    assert!(output
+        .stdout
+        .contains("let names: Rc<RefCell<Vec<String>>>"));
+
+    let source_map =
+        fs::read_to_string(case.fixture_path.with_extension("kobo.map")).expect("map should exist");
+    assert!(source_map.contains("\"ownership_tier\": \"plain\""));
+    assert!(source_map.contains("\"ownership_tier\": \"rc\""));
+    assert!(source_map.contains("\"ownership_tier\": \"rc_refcell\""));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__tiered_mix", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_box_large_fixture_uses_box_owned() {
+    let case = FixtureCase::new("inspect-box-large", "box_large.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("-> box (single owner, heap required (size heuristic))"));
+    assert!(output
+        .stdout
+        .contains("let plan: Box<LargePlan> = Box::new"));
+}
+
+#[test]
+fn inspect_generic_shared_fixture_uses_conservative_wrapper() {
+    let case = FixtureCase::new("inspect-generic-shared", "generic_shared.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("fn touch_twice<T>(mut value: Rc<RefCell<T>>)"));
+    assert!(output.stdout.contains("generic T: Copy unknown"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__generic_shared", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_borrowed_mutable_only_fixture_uses_rc_refcell() {
+    let case = FixtureCase::new(
+        "inspect-borrowed-mutable-only",
+        "borrowed_mutable_only.kobo",
+    );
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("-> rc_refcell (generic T: Copy unknown)"));
+    assert!(output.stdout.contains("use_mut(&mut *value.borrow_mut());"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__borrowed_mutable_only", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_generic_local_fixture_stays_plain() {
+    let case = FixtureCase::new("inspect-generic-local", "generic_local.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("fn id<T>(x: T) -> T"));
+    assert!(!output.stdout.contains("Rc<RefCell<T>>"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__generic_local", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_dead_and_live_borrow_move_fixtures_split_correctly() {
+    let dead_case = FixtureCase::new("inspect-dead-borrow-move", "dead_borrow_move.kobo");
+    let dead_output = run_kobo(["inspect"], &dead_case.fixture_path);
+    assert!(
+        dead_output.status.success(),
+        "stderr:\n{}",
+        dead_output.stderr
+    );
+    assert!(dead_output
+        .stdout
+        .contains("-> plain (dead original after assignment)"));
+    assert!(dead_output.stdout.contains("let z = x;"));
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__dead_borrow_move", dead_output.stdout.clone());
+    });
+
+    let live_case = FixtureCase::new("inspect-live-borrow-move", "live_borrow_at_move.kobo");
+    let live_output = run_kobo(["inspect"], &live_case.fixture_path);
+    assert!(
+        live_output.status.success(),
+        "stderr:\n{}",
+        live_output.stderr
+    );
+    assert!(live_output
+        .stdout
+        .contains("-> rc (read-only shared across 2 call sites)"));
+    assert!(live_output.stdout.contains("let z = x.clone();"));
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__live_borrow_at_move", live_output.stdout.clone());
+    });
+}
+
+#[test]
+fn inspect_conditional_mutation_fixture_uses_rc_refcell() {
+    let case = FixtureCase::new("inspect-conditional-mutation", "conditional_mutation.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("-> rc_refcell (mutable shared, last resort)"));
+    assert!(output.stdout.contains("mutate(&mut *x.borrow_mut());"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__conditional_mutation", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_clone_elision_fixture_matches_snapshot() {
+    let case = FixtureCase::new("inspect-clone-elision", "clone_elision.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("-> plain (dead original after assignment)"));
+    assert!(output.stdout.contains("let result = builder;"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__clone_elision", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_borrow_scope_simple_fixture_shrinks_borrow_scope() {
+    let case = FixtureCase::new("inspect-borrow-scope-simple", "borrow_scope_simple.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("x.borrow_mut().push(2);"));
+    assert!(!output.stdout.contains("let r = &mut *x.borrow_mut();"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__borrow_scope_simple", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_borrow_scope_conservative_fixture_emits_annotation() {
+    let case = FixtureCase::new(
+        "inspect-borrow-scope-conservative",
+        "borrow_scope_conservative.kobo",
+    );
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("borrow-scope-conservative"));
+    assert!(output.stdout.contains("let r = &mut *x.borrow_mut();"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__borrow_scope_conservative", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_generic_equiv_fixture_is_structurally_stable() {
+    let case = FixtureCase::new("inspect-generic-equiv", "generic_equiv.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("fn first<T>(mut value: Rc<RefCell<T>>)"));
+    assert!(output
+        .stdout
+        .contains("fn second<U>(mut value: Rc<RefCell<U>>)"));
+    assert_eq!(output.stdout.matches("generic T: Copy unknown").count(), 2);
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__generic_equiv", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_shadowed_binding_fixture_keeps_shadowed_x_sites_distinct() {
+    let case = FixtureCase::new("inspect-shadowed-binding", "shadowed_binding.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.matches("// kobo: x @ line").count(), 2);
+    assert!(output.stdout.contains("x @ line 2 -> plain"));
+    assert!(output.stdout.contains("x @ line 7 -> rc_refcell"));
+
+    let source_map =
+        fs::read_to_string(case.fixture_path.with_extension("kobo.map")).expect("map should exist");
+    assert_eq!(source_map.matches("\"ownership_tier\"").count(), 2);
+    assert!(source_map.contains("\"ownership_tier\": \"plain\""));
+    assert!(source_map.contains("\"ownership_tier\": \"rc_refcell\""));
+    let rs_lines = source_map
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("\"line\": ")
+                .and_then(|value| value.strip_suffix(','))
+                .and_then(|value| value.parse::<usize>().ok())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rs_lines.len(), 2);
+    assert_ne!(rs_lines[0], rs_lines[1]);
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__shadowed_binding", output.stdout);
+    });
+}
+
+#[test]
+fn run_tiered_mix_fixture_executes_with_shared_wrappers() {
+    let case = FixtureCase::new("run-tiered-mix", "tiered_mix.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("COUNT: 3"));
+    assert!(output.stdout.contains("kobo"));
+    assert!(output.stdout.ends_with('4'));
+}
+
+#[test]
+fn run_conditional_mutation_fixture_drops_borrow_before_println() {
+    let case = FixtureCase::new("run-conditional-mutation", "conditional_mutation.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "4");
+}
+
+#[test]
+fn run_borrow_scope_simple_fixture_executes_without_borrow_panic() {
+    let case = FixtureCase::new("run-borrow-scope-simple", "borrow_scope_simple.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "2");
+}
+
+#[test]
+fn run_borrow_scope_conservative_fixture_executes_without_borrow_panic() {
+    let case = FixtureCase::new(
+        "run-borrow-scope-conservative",
+        "borrow_scope_conservative.kobo",
+    );
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "2");
+}
+
+#[test]
+fn run_live_borrow_move_fixture_clones_shared_binding() {
+    let case = FixtureCase::new("run-live-borrow-move", "live_borrow_at_move.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("5"));
 }
 
 #[test]

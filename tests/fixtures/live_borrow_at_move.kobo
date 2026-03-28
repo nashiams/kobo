@@ -1,0 +1,11 @@
+fn use_ref(value: &String) {
+    println!("{}", value.len());
+}
+
+fn main() {
+    let x = String::from("hello");
+    let y = &x;
+    let z = x;
+    use_ref(y);
+    println!("{}", z.len());
+}

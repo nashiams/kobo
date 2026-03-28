@@ -1,0 +1,40 @@
+struct AppConfig {
+    name: String,
+}
+
+impl AppConfig {
+    fn load() -> Self {
+        Self {
+            name: String::from("kobo"),
+        }
+    }
+}
+
+fn render(config: &AppConfig) {
+    println!("{}", config.name);
+}
+
+fn validate(config: &AppConfig) {
+    println!("{}", config.name.len());
+}
+
+fn push_name(names: &mut Vec<String>) {
+    names.push(String::from("alice"));
+}
+
+fn sort_names(names: &mut Vec<String>) {
+    names.sort();
+}
+
+fn main() {
+    let label = format!("count: {}", 3);
+    println!("{}", label.to_uppercase());
+
+    let config = AppConfig::load();
+    render(&config);
+    validate(&config);
+
+    let names: Vec<String> = Vec::new();
+    push_name(&mut names);
+    sort_names(&mut names);
+}

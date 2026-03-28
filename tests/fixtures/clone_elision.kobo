@@ -1,0 +1,9 @@
+fn process(result: String) {
+    println!("{}", result);
+}
+
+fn main() {
+    let builder = String::from("hello");
+    let result = builder;
+    process(result);
+}

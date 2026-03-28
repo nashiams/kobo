@@ -1,0 +1,18 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::cell::RefCell;
+use std::rc::Rc;
+fn main() {
+// kobo: x @ line 2 -> plain (local-only non-Copy binding)
+    let x = String::from("outer");
+    println!("{}", x.len());
+    println!("{}", x.len());
+    {
+// kobo: x @ line 7 -> rc_refcell (mutable shared, last resort)
+        let x: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        x.borrow_mut().push(String::from("inner"));
+        println!("{}", x.borrow().len());
+    }
+}

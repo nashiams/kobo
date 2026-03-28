@@ -1,0 +1,39 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::cell::RefCell;
+use std::rc::Rc;
+struct AppConfig {
+    name: String,
+}
+impl AppConfig {
+    fn load() -> Self {
+        Self { name: String::from("kobo") }
+    }
+}
+fn render(config: &AppConfig) {
+    println!("{}", config.name);
+}
+fn validate(config: &AppConfig) {
+    println!("{}", config.name.len());
+}
+fn push_name(names: &mut Vec<String>) {
+    names.push(String::from("alice"));
+}
+fn sort_names(names: &mut Vec<String>) {
+    names.sort();
+}
+fn main() {
+// kobo: label @ line 30 -> plain (local-only non-Copy binding)
+    let label = format!("count: {}", 3);
+    println!("{}", label.to_uppercase());
+// kobo: config @ line 33 -> rc (sequential read-only; &T likely at migration (2 call sites))
+    let config = Rc::new(AppConfig::load());
+    render(&config);
+    validate(&config);
+// kobo: names @ line 37 -> rc_refcell (mutable shared, last resort)
+    let names: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    push_name(&mut *names.borrow_mut());
+    sort_names(&mut *names.borrow_mut());
+}

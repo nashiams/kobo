@@ -3,14 +3,20 @@ use kobo_ir::{KirNode, NodeKind};
 use crate::liveness::{BindingId, BindingTable, LivenessState};
 use crate::ownership_facts::MoveFact;
 
-pub(crate) fn visit(node: &KirNode, binding_table: &mut BindingTable, move_facts: &mut Vec<MoveFact>) {
+pub(crate) fn visit(
+    node: &KirNode,
+    binding_table: &mut BindingTable,
+    move_facts: &mut Vec<MoveFact>,
+) {
     let Some(binding) = node.decl_id.map(BindingId) else {
         return;
     };
 
     match node.kind {
         NodeKind::Move => handle_move(binding, node.span, binding_table, move_facts),
-        NodeKind::Use(_) | NodeKind::Borrow(_) => handle_use_like(binding, node.span, binding_table, move_facts),
+        NodeKind::Use(_) | NodeKind::Borrow(_) => {
+            handle_use_like(binding, node.span, binding_table, move_facts)
+        }
         _ => {}
     }
 }

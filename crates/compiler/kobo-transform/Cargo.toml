@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 kobo-ir     = { path = "../kobo-ir" }
 kobo-parser = { path = "../kobo-parser" }
+proc-macro2 = { workspace = true }
 syn         = { workspace = true }

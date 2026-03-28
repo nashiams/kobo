@@ -1,11 +1,15 @@
 use kobo_errors::{CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLabel, KDiagnostic};
 use kobo_errors::{KErrorCode, Severity};
-use kobo_ir::FileSet;
+use kobo_ir::{FileSet, OwnershipTier, TransformFacts};
 
 use crate::ownership_facts::{BorrowFact, BorrowKind, MoveFact};
 use crate::runner::AnalysisFacts;
 
-pub fn facts_to_diagnostics(facts: &AnalysisFacts, file_set: &FileSet) -> Vec<KDiagnostic> {
+pub fn facts_to_diagnostics(
+    facts: &AnalysisFacts,
+    transform_facts: &TransformFacts,
+    file_set: &FileSet,
+) -> Vec<KDiagnostic> {
     let mut diagnostics = Vec::new();
 
     for move_fact in &facts.moves {
@@ -14,6 +18,12 @@ pub fn facts_to_diagnostics(facts: &AnalysisFacts, file_set: &FileSet) -> Vec<KD
 
     for borrow_fact in &facts.borrows {
         diagnostics.push(borrow_fact_diagnostic(borrow_fact, file_set));
+    }
+
+    for hint_conflict in &transform_facts.hint_conflicts {
+        if let Some(binding) = transform_facts.binding(hint_conflict.node) {
+            diagnostics.push(hint_conflict_diagnostic(hint_conflict, binding, file_set));
+        }
     }
 
     diagnostics
@@ -27,7 +37,10 @@ fn move_fact_diagnostic(move_fact: &MoveFact, file_set: &FileSet) -> KDiagnostic
         move_explanation(move_fact, file_set),
         DiagDecision("flagged before lowering; no automatic rewrite applied".to_owned()),
     )
-    .with_secondary_label(DiagLabel::secondary(move_fact.move_site, "value moved here"))
+    .with_secondary_label(DiagLabel::secondary(
+        move_fact.move_site,
+        "value moved here",
+    ))
     .with_help(DiagHelp(
         "if you want both calls to share the same value, clone explicitly at the move site"
             .to_owned(),
@@ -53,6 +66,38 @@ fn borrow_fact_diagnostic(borrow_fact: &BorrowFact, file_set: &FileSet) -> KDiag
     .with_run(CliSuggestion(run_target(file_set, borrow_fact.borrow_site)))
 }
 
+fn hint_conflict_diagnostic(
+    hint_conflict: &kobo_ir::HintConflictFact,
+    binding: &kobo_ir::TransformBindingFacts,
+    file_set: &FileSet,
+) -> KDiagnostic {
+    KDiagnostic::new(
+        KErrorCode::K0025,
+        Severity::Warning,
+        DiagLabel::primary(
+            hint_conflict.hint_span,
+            format!(
+                "hint requests {} ownership here",
+                hint_conflict.hint.as_str()
+            ),
+        ),
+        hint_conflict_explanation(hint_conflict, binding),
+        DiagDecision(format!(
+            "assigned {} (greedy priority {}) after the hinted candidate failed",
+            hint_conflict.chosen_tier.label(),
+            tier_priority(hint_conflict.chosen_tier)
+        )),
+    )
+    .with_secondary_label(DiagLabel::secondary(
+        binding.span,
+        "hint applies to this binding",
+    ))
+    .with_help(DiagHelp(
+        "drop the later alias, or change the hint to match the actual usage pattern".to_owned(),
+    ))
+    .with_run(CliSuggestion(run_target(file_set, hint_conflict.hint_span)))
+}
+
 fn move_explanation(move_fact: &MoveFact, file_set: &FileSet) -> DiagExplanation {
     if move_fact.move_site == move_fact.later_use {
         return DiagExplanation(
@@ -73,6 +118,35 @@ fn borrow_explanation(borrow_fact: &BorrowFact, file_set: &FileSet) -> DiagExpla
     let borrow_mode = borrow_mode_text(borrow_fact.borrow_kind);
     DiagExplanation(format!(
         "`{binding_name}` is already borrowed {borrow_mode} on line {borrow_line}; simultaneous mutable borrow would panic at runtime"
+    ))
+}
+
+fn hint_conflict_explanation(
+    hint_conflict: &kobo_ir::HintConflictFact,
+    binding: &kobo_ir::TransformBindingFacts,
+) -> DiagExplanation {
+    let conflict = match hint_conflict.reason {
+        kobo_ir::HintConflictReason::Aliasing => {
+            "an active borrow is still live at the later move site"
+        }
+        kobo_ir::HintConflictReason::MutableUse => {
+            "mutable borrowing requires the shared-mutable floor"
+        }
+        kobo_ir::HintConflictReason::SendRequired => {
+            "thread-crossing usage requires a Send-safe shared tier"
+        }
+        kobo_ir::HintConflictReason::AsyncDeferred => "Box<T> is deferred inside async fn in v0.3",
+        kobo_ir::HintConflictReason::SharedUsage => {
+            "multiple read-only borrow sites still require sharing in script mode"
+        }
+        kobo_ir::HintConflictReason::Unknown => "later usage invalidated the hinted candidate",
+    };
+
+    DiagExplanation(format!(
+        "hint `ownership = \"{}\"` conflicts with {} for `{}`",
+        hint_conflict.hint.as_str(),
+        conflict,
+        binding.binding_name,
     ))
 }
 
@@ -111,4 +185,8 @@ fn run_target(file_set: &FileSet, span: kobo_ir::KoboSpan) -> String {
     };
     let (line, _) = file.line_col(span.start);
     format!("kobo check {}:{line}", file.path.display())
+}
+
+fn tier_priority(tier: OwnershipTier) -> usize {
+    tier.priority()
 }

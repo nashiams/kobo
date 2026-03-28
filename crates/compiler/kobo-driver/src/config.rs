@@ -20,6 +20,7 @@ pub struct KoboConfig {
     pub solver_cluster_limit: usize,
     pub solver_budget_seconds: f64,
     pub lsp_solver_budget_ms: u64,
+    pub small_struct_clone_threshold_bytes: usize,
     pub output_dir: Option<PathBuf>,
 }
 
@@ -32,12 +33,15 @@ struct RawKoboConfig {
     #[serde(default)]
     solver: RawSolverSection,
     #[serde(default)]
+    transform: RawTransformSection,
+    #[serde(default)]
     output: RawOutputSection,
     mode: Option<KoboMode>,
     hot_borrow_threshold: Option<u64>,
     solver_cluster_limit: Option<usize>,
     solver_budget_seconds: Option<f64>,
     lsp_solver_budget_ms: Option<u64>,
+    small_struct_clone_threshold_bytes: Option<usize>,
     output_dir: Option<PathBuf>,
 }
 
@@ -57,6 +61,11 @@ struct RawSolverSection {
     cluster_limit: Option<usize>,
     budget_seconds: Option<f64>,
     lsp_budget_ms: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawTransformSection {
+    small_struct_clone_threshold_bytes: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -95,6 +104,7 @@ impl Default for KoboConfig {
             solver_cluster_limit: 256,
             solver_budget_seconds: 5.0,
             lsp_solver_budget_ms: 200,
+            small_struct_clone_threshold_bytes: 128,
             output_dir: None,
         }
     }
@@ -175,6 +185,13 @@ impl RawKoboConfig {
             config.lsp_solver_budget_ms = lsp_solver_budget_ms;
         }
 
+        if let Some(small_struct_clone_threshold_bytes) = self
+            .small_struct_clone_threshold_bytes
+            .or(self.transform.small_struct_clone_threshold_bytes)
+        {
+            config.small_struct_clone_threshold_bytes = small_struct_clone_threshold_bytes;
+        }
+
         if let Some(output_dir) = self
             .output_dir
             .or(self.kobo.output_dir)
@@ -242,6 +259,7 @@ mod tests {
         assert_eq!(config.mode, KoboMode::Script);
         assert_eq!(config.hot_borrow_threshold, 10_000);
         assert_eq!(config.solver_cluster_limit, 256);
+        assert_eq!(config.small_struct_clone_threshold_bytes, 128);
         assert_eq!(config.output_dir, None);
     }
 
@@ -264,6 +282,9 @@ hot_borrow_threshold = 1200
 cluster_limit = 400
 budget_seconds = 7.5
 lsp_budget_ms = 250
+
+[transform]
+small_struct_clone_threshold_bytes = 192
 "#,
         )
         .unwrap();
@@ -287,6 +308,7 @@ output_dir = "generated"
         assert_eq!(config.solver_cluster_limit, 400);
         assert_eq!(config.solver_budget_seconds, 7.5);
         assert_eq!(config.lsp_solver_budget_ms, 250);
+        assert_eq!(config.small_struct_clone_threshold_bytes, 192);
         assert_eq!(config.output_dir, Some(crate_dir.join("generated")));
     }
 }

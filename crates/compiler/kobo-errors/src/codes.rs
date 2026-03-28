@@ -209,7 +209,10 @@ mod tests {
 
     #[test]
     fn short_descriptions_match_v02_contract_for_move_and_borrow() {
-        assert_eq!(KErrorCode::K0001.short_description(), "value used after move");
+        assert_eq!(
+            KErrorCode::K0001.short_description(),
+            "value used after move"
+        );
         assert_eq!(
             KErrorCode::K0002.short_description(),
             "cannot borrow as mutable - already borrowed"

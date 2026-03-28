@@ -15,7 +15,9 @@ pub struct KirNodeId(pub u32);
 pub struct CfgBlockId(pub u32);
 
 /// Index into `CompileSession.file_set`.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct FileId(pub u32);
 
 // --- NodeIdGen ---
@@ -130,7 +132,10 @@ impl FileEntry {
             .saturating_sub(1);
         let line_start = self.line_starts[line_index];
 
-        (line_index + 1, clamped_offset.saturating_sub(line_start) + 1)
+        (
+            line_index + 1,
+            clamped_offset.saturating_sub(line_start) + 1,
+        )
     }
 
     /// Returns the text for a 1-based line number without its trailing newline.
@@ -158,8 +163,7 @@ impl FileEntry {
             return None;
         }
 
-        self.source
-            .get(span.start as usize..span.end as usize)
+        self.source.get(span.start as usize..span.end as usize)
     }
 }
 

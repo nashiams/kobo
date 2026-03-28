@@ -5,7 +5,7 @@ use kobo_codegen::{codegen_file, CodegenOutput, KoboSourceMap};
 use kobo_ir::{FileId, Kir, SolutionMap};
 use kobo_migrate::{solve, ConstraintGraph, SolveResult, SolverBudget};
 use kobo_parser::{parse_file, KoboFile};
-use kobo_transform::build_kir;
+use kobo_transform::{build_kir, TransformOptions};
 
 use crate::filesystem::{
     map_path_for, output_path_for, read_kobo_file, write_map_file, write_rs_file,
@@ -39,7 +39,13 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         }
     };
 
-    let kir = build_kir(&kobo_file, &mut session.id_gen);
+    let kir = build_kir(
+        &kobo_file,
+        &mut session.id_gen,
+        TransformOptions {
+            small_struct_clone_threshold_bytes: session.config.small_struct_clone_threshold_bytes,
+        },
+    );
     Ok((kobo_file, kir))
 }
 
@@ -99,9 +105,11 @@ pub fn run_pipeline(session: &mut CompileSession, input: &Path) -> Result<String
 
 fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()> {
     let facts = run_analysis(kir, session.file_set());
-    session
-        .diagnostics
-        .extend(facts_to_diagnostics(&facts, session.file_set()));
+    session.diagnostics.extend(facts_to_diagnostics(
+        &facts,
+        kir.transform_facts(),
+        session.file_set(),
+    ));
 
     if session.has_errors() {
         Err(())

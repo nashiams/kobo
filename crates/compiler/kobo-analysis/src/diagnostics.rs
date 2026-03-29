@@ -2,7 +2,7 @@ use kobo_errors::{CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLa
 use kobo_errors::{KErrorCode, Severity};
 use kobo_ir::{FileSet, OwnershipTier, TransformFacts};
 
-use crate::ownership_facts::{BorrowFact, BorrowKind, MoveFact};
+use crate::ownership_facts::{BorrowFact, BorrowKind, HintConflictFact, MoveFact};
 use crate::runner::AnalysisFacts;
 
 pub fn facts_to_diagnostics(
@@ -13,6 +13,9 @@ pub fn facts_to_diagnostics(
     let mut diagnostics = Vec::new();
 
     for move_fact in &facts.moves {
+        if move_fact_is_rewritten_as_plain_clone(move_fact, transform_facts) {
+            continue;
+        }
         diagnostics.push(move_fact_diagnostic(move_fact, file_set));
     }
 
@@ -48,6 +51,17 @@ fn move_fact_diagnostic(move_fact: &MoveFact, file_set: &FileSet) -> KDiagnostic
     .with_run(CliSuggestion(run_target(file_set, move_fact.move_site)))
 }
 
+fn move_fact_is_rewritten_as_plain_clone(
+    move_fact: &MoveFact,
+    transform_facts: &TransformFacts,
+) -> bool {
+    transform_facts.iter_bindings().any(|binding| {
+        binding.plain_clone_alias
+            && binding.plain_clone_source == Some(move_fact.binding)
+            && binding.plain_clone_move_span == Some(move_fact.move_site)
+    })
+}
+
 fn borrow_fact_diagnostic(borrow_fact: &BorrowFact, file_set: &FileSet) -> KDiagnostic {
     KDiagnostic::new(
         KErrorCode::K0002,
@@ -67,7 +81,7 @@ fn borrow_fact_diagnostic(borrow_fact: &BorrowFact, file_set: &FileSet) -> KDiag
 }
 
 fn hint_conflict_diagnostic(
-    hint_conflict: &kobo_ir::HintConflictFact,
+    hint_conflict: &HintConflictFact,
     binding: &kobo_ir::TransformBindingFacts,
     file_set: &FileSet,
 ) -> KDiagnostic {
@@ -188,5 +202,5 @@ fn run_target(file_set: &FileSet, span: kobo_ir::KoboSpan) -> String {
 }
 
 fn tier_priority(tier: OwnershipTier) -> usize {
-    tier.priority()
+    tier.greedy_priority()
 }

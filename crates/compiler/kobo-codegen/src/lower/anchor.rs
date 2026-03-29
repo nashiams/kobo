@@ -52,7 +52,8 @@ impl LoweringAnchorMap {
     pub(crate) fn resolve(&self, formatted: &str) -> ResolvedAnchorMap {
         let parsed = syn::parse_file(formatted)
             .unwrap_or_else(|_| unreachable!("invariant: emitted Rust should always parse"));
-        let formatted_anchors = FormattedBindingCollector::collect(&parsed, self.support_item_count);
+        let formatted_anchors =
+            FormattedBindingCollector::collect(&parsed, self.support_item_count);
         debug_assert_eq!(self.anchors.len(), formatted_anchors.len());
 
         let mut by_node = HashMap::with_capacity(self.anchors.len());

@@ -12,11 +12,11 @@ use kobo_parser::KoboFile;
 use self::plan::LoweringPlan;
 use self::rewrite::Lowerer;
 
+#[cfg(test)]
+pub(crate) use self::anchor::ResolvedAnchor;
 pub(crate) use self::anchor::{
     LoweringAnchor, LoweringAnchorKind, LoweringAnchorMap, ResolvedAnchorMap,
 };
-#[cfg(test)]
-pub(crate) use self::anchor::ResolvedAnchor;
 pub use self::plan::{AnnotationNote, LoweringSite};
 
 pub(crate) struct LoweredFile {

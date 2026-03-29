@@ -14,11 +14,9 @@ pub(crate) fn collect_box_reasons(
             continue;
         };
 
-        if struct_is_recursive(item_struct) {
-            reasons.insert(item_struct.ident.to_string(), BoxReason::RecursiveType);
-            continue;
-        }
-
+        // Recursive type handling belongs to type-definition validation, not
+        // v0.3's binding-level BoxOwned lowering. Keep the enum variant reserved
+        // for future work, but do not synthesize it from transform today.
         if struct_size_bytes(item_struct)
             .is_some_and(|size| size >= small_struct_clone_threshold_bytes)
             && !struct_has_heap_fields(item_struct)
@@ -42,19 +40,6 @@ pub(crate) fn type_box_reason(
         }
         _ => None,
     }
-}
-
-fn struct_is_recursive(item_struct: &syn::ItemStruct) -> bool {
-    struct_field_types(item_struct).any(|ty| {
-        let syn::Type::Path(path) = ty else {
-            return false;
-        };
-
-        path.path
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident == item_struct.ident)
-    })
 }
 
 fn struct_size_bytes(item_struct: &syn::ItemStruct) -> Option<usize> {
@@ -101,4 +86,47 @@ fn type_is_heap_like(ty: &syn::Type) -> bool {
         segment.ident.to_string().as_str(),
         "String" | "Vec" | "Box" | "Rc" | "Arc"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use kobo_ir::{FileId, NodeIdGen};
+    use kobo_parser::parse_file;
+
+    use super::collect_box_reasons;
+
+    #[test]
+    fn recursive_structs_do_not_produce_box_reason_in_v0_3() {
+        let source = r#"
+struct Node {
+    next: Node,
+}
+"#;
+        let mut id_gen = NodeIdGen::new();
+        let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+
+        let reasons = collect_box_reasons(&ast, 512);
+
+        assert!(reasons.is_empty());
+    }
+
+    #[test]
+    fn large_plain_structs_still_get_stack_size_reason() {
+        let source = r#"
+struct Large {
+    a: u64,
+    b: u64,
+    c: u64,
+}
+"#;
+        let mut id_gen = NodeIdGen::new();
+        let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+
+        let reasons = collect_box_reasons(&ast, 16);
+
+        assert_eq!(
+            reasons.get("Large").copied(),
+            Some(kobo_ir::BoxReason::StackSizeHeuristic)
+        );
+    }
 }

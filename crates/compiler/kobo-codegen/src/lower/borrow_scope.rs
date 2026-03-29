@@ -163,7 +163,7 @@ impl<'ast> Visit<'ast> for IdentUseCounter<'_> {
 mod tests {
     use syn::parse_quote;
 
-    use super::has_scope_boundary;
+    use super::{has_scope_boundary, rewritable_method_call};
 
     #[test]
     fn if_expressions_are_scope_boundaries() {
@@ -227,5 +227,28 @@ mod tests {
     fn simple_method_calls_can_still_shrink() {
         let statement: syn::Stmt = parse_quote!(alias.push(1););
         assert!(!has_scope_boundary(&statement));
+    }
+
+    #[test]
+    fn repeated_alias_use_in_one_statement_is_not_rewritable() {
+        let statement: syn::Stmt = parse_quote!(alias.push(alias.len()););
+
+        assert!(rewritable_method_call(&statement, &parse_quote!(alias)).is_none());
+    }
+
+    #[test]
+    fn if_boundary_keeps_statement_conservative() {
+        let statement: syn::Stmt = parse_quote!(if cond {
+            alias.push(1);
+        });
+
+        assert!(rewritable_method_call(&statement, &parse_quote!(alias)).is_none());
+    }
+
+    #[test]
+    fn closure_boundary_keeps_statement_conservative() {
+        let statement: syn::Stmt = parse_quote!((|| alias.push(1))(););
+
+        assert!(rewritable_method_call(&statement, &parse_quote!(alias)).is_none());
     }
 }

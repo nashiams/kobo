@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 fn mutate<T>(_value: &mut T) {}
 fn main() {
+// kobo: x @ line 4 -> conditional mutation path
 // kobo: x @ line 4 -> rc_refcell (mutable shared, last resort)
     let x = Rc::new(RefCell::new(String::from("kobo")));
     if true {

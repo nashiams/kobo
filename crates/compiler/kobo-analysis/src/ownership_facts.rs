@@ -1,4 +1,5 @@
 pub use kobo_ir::BorrowKind;
+pub use kobo_ir::HintConflictFact;
 
 use kobo_ir::{KirNodeId, KoboSpan};
 

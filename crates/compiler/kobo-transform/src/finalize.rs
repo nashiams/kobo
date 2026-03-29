@@ -10,7 +10,12 @@ use kobo_ir::{
 
 pub(crate) fn finalize_transform(builder: TransformFactsBuilder<'_>) -> BuilderOutput {
     let mut output = builder.finish();
-    finalize_transform_facts(&mut output.transform_facts, &output.borrow_aliases);
+    finalize_transform_facts(
+        &mut output.transform_facts,
+        &output.borrow_aliases,
+        &output.move_aliases,
+        &output.clone_elision_candidates,
+    );
     output
 }
 

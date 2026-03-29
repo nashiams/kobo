@@ -8,10 +8,10 @@ use super::binding::{
     apply_tier_to_fn_arg_type, apply_tier_to_local, binding_for_pat, binding_tier_from_expr,
     is_mutating_method, wrapper_binding_from_expr,
 };
-use super::{LoweringAnchor, LoweringAnchorKind};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
 use super::plan::{AnnotationNote, LoweringPlan};
 use super::scope::ScopeStack;
+use super::{LoweringAnchor, LoweringAnchorKind};
 
 pub(crate) struct Lowerer<'a> {
     ast: &'a KoboFile,
@@ -43,7 +43,9 @@ impl<'a> Lowerer<'a> {
     fn lower_item(&mut self, item: &mut syn::Item) {
         match item {
             syn::Item::Fn(function) => self.lower_function(function),
-            syn::Item::Const(item_const) => self.record_item_anchor(&item_const.ident, LoweringAnchorKind::Const),
+            syn::Item::Const(item_const) => {
+                self.record_item_anchor(&item_const.ident, LoweringAnchorKind::Const)
+            }
             syn::Item::Static(item_static) => {
                 self.record_item_anchor(&item_static.ident, LoweringAnchorKind::Static)
             }
@@ -163,9 +165,11 @@ impl<'a> Lowerer<'a> {
             return;
         };
         let (kobo_line, _) = self.ast.line_col(binding.span);
-        if self.annotation_notes.iter().any(|note| {
-            note.node == node && note.reason == "borrow-scope-conservative"
-        }) {
+        if self
+            .annotation_notes
+            .iter()
+            .any(|note| note.node == node && note.reason == "borrow-scope-conservative")
+        {
             return;
         }
 
@@ -186,7 +190,7 @@ impl<'a> Lowerer<'a> {
 
         let tier = self.plan.tier_for_binding(binding);
         self.record_binding_anchor(binding, LoweringAnchorKind::Local);
-        let already_wrapped = self.lower_local_initializer(local, tier, scopes);
+        let already_wrapped = self.lower_local_initializer(local, binding, tier, scopes);
         apply_tier_to_local(local, tier, already_wrapped);
         scopes.insert(&binding.ident, tier);
     }
@@ -202,12 +206,20 @@ impl<'a> Lowerer<'a> {
     fn lower_local_initializer(
         &mut self,
         local: &mut syn::Local,
+        binding: &kobo_parser::KoboBinding,
         target_tier: OwnershipTier,
         scopes: &mut ScopeStack,
     ) -> bool {
         let Some(init) = &mut local.init else {
             return false;
         };
+
+        if self.plan.binding_uses_plain_clone_alias(binding) {
+            if let Some((ident, _)) = binding_tier_from_expr(init.expr.as_ref(), scopes) {
+                init.expr = Box::new(parse_quote!(#ident.clone()));
+                return true;
+            }
+        }
 
         if let Some((ident, source_tier)) = binding_tier_from_expr(init.expr.as_ref(), scopes) {
             if source_tier.is_cloneable_wrapper() {
@@ -452,7 +464,11 @@ impl<'a> Lowerer<'a> {
         *tokens = quote!(#exprs);
     }
 
-    fn record_binding_anchor(&mut self, binding: &kobo_parser::KoboBinding, kind: LoweringAnchorKind) {
+    fn record_binding_anchor(
+        &mut self,
+        binding: &kobo_parser::KoboBinding,
+        kind: LoweringAnchorKind,
+    ) {
         let Some(node) = self.plan.node_for_binding(binding) else {
             return;
         };

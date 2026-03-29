@@ -237,6 +237,7 @@ fn inspect_conditional_mutation_fixture_uses_rc_refcell() {
     assert!(output
         .stdout
         .contains("-> rc_refcell (mutable shared, last resort)"));
+    assert!(output.stdout.contains("conditional mutation path"));
     assert!(output.stdout.contains("mutate(&mut *x.borrow_mut());"));
 
     insta::with_settings!({
@@ -263,6 +264,79 @@ fn inspect_clone_elision_fixture_matches_snapshot() {
         snapshot_path => "../../../tests/snapshots",
     }, {
         insta::assert_snapshot!("test_inspect__clone_elision", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_small_copy_alias_fixture_uses_plain_clone_fast_path() {
+    let case = FixtureCase::new("inspect-small-copy-alias", "small_copy_alias.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("let y = x.clone();"));
+    assert!(!output.stdout.contains("Rc::new(SmallCopy"));
+    assert!(!output.stdout.contains("clone-elision skipped"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__small_copy_alias", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_small_string_alias_fixture_uses_wrapper_fallback() {
+    let case = FixtureCase::new("inspect-small-string-alias", "small_string_alias.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("let x = Rc::new(SmallText"));
+    assert!(output.stdout.contains("let y = x.clone();"));
+    assert!(!output.stdout.contains("clone-elision skipped"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__small_string_alias", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_large_copy_alias_fixture_keeps_wrapper_path_for_large_values() {
+    let case = FixtureCase::new("inspect-large-copy-alias", "large_copy_alias.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output.stdout.contains("let x = Rc::new(LargeCopy"));
+    assert!(output.stdout.contains("let y = x.clone();"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__large_copy_alias", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_opaque_alias_fixture_emits_skip_annotation() {
+    let case = FixtureCase::new("inspect-opaque-alias", "opaque_alias.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(output
+        .stdout
+        .contains("clone-elision skipped: field type unknown, may allocate"));
+    assert!(output.stdout.contains("let x = Rc::new(MaybeAlloc"));
+    assert!(output.stdout.contains("let y = x.clone();"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__opaque_alias", output.stdout);
     });
 }
 
@@ -362,6 +436,46 @@ fn inspect_shadowed_binding_fixture_keeps_shadowed_x_sites_distinct() {
 }
 
 #[test]
+fn inspect_return_escape_fixture_defers_box_to_rc_with_annotation() {
+    // Known Limitation 6: ReturnedFromFunction escape escalates to RcShared (not BoxOwned)
+    // because Box<T> requires rewriting the function return type (v0.4 work).
+    // The annotation "return escape: Box<T> requires signature rewrite (v0.4)" makes
+    // the deferral visible in kobo inspect output.
+    let case = FixtureCase::new("inspect-return-escape", "return_escape.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        output
+            .stdout
+            .contains("return escape: Box<T> requires signature rewrite (v0.4)"),
+        "expected return-escape annotation; got:\n{}",
+        output.stdout
+    );
+    assert!(
+        !output.stdout.contains("Box::new"),
+        "return escape must not produce Box::new in v0.3; got:\n{}",
+        output.stdout
+    );
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__return_escape", output.stdout);
+    });
+}
+
+#[test]
+fn run_return_escape_fixture_executes_without_type_error() {
+    let case = FixtureCase::new("run-return-escape", "return_escape.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "kobo");
+}
+
+#[test]
 fn run_tiered_mix_fixture_executes_with_shared_wrappers() {
     let case = FixtureCase::new("run-tiered-mix", "tiered_mix.kobo");
     let output = run_kobo(["run"], &case.fixture_path);
@@ -409,6 +523,42 @@ fn run_live_borrow_move_fixture_clones_shared_binding() {
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
     assert!(output.stdout.contains("5"));
+}
+
+#[test]
+fn run_small_copy_alias_fixture_uses_plain_clone_output() {
+    let case = FixtureCase::new("run-small-copy-alias", "small_copy_alias.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "3");
+}
+
+#[test]
+fn run_small_string_alias_fixture_executes_with_wrapper_fallback() {
+    let case = FixtureCase::new("run-small-string-alias", "small_string_alias.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "8");
+}
+
+#[test]
+fn run_large_copy_alias_fixture_executes_with_large_value_wrapper() {
+    let case = FixtureCase::new("run-large-copy-alias", "large_copy_alias.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "18");
+}
+
+#[test]
+fn run_opaque_alias_fixture_executes_with_skip_annotation_path() {
+    let case = FixtureCase::new("run-opaque-alias", "opaque_alias.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "20");
 }
 
 #[test]

@@ -1,0 +1,9 @@
+fn build_name() -> String {
+    let name = String::from("kobo");
+    return name;
+}
+
+fn main() {
+    let greeting = build_name();
+    println!("{}", greeting);
+}

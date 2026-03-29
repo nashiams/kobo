@@ -3,7 +3,7 @@ source: bin/kobo-cli/tests/test_run.rs
 expression: output.stdout
 ---
 fn main() {
-// kobo: names @ line 2 -> plain (dead original after assignment)
+// kobo: names @ line 2 -> plain (local-only non-Copy binding)
     let names = vec!["alice", "bob"];
     let count = 2;
     let _count_copy = count;

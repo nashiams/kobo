@@ -106,8 +106,7 @@ impl Kir {
         self.ast_to_kir.get(&ast_id).copied()
     }
 
-    pub fn transform_facts(&self) -> &TransformFacts
-    {
+    pub fn transform_facts(&self) -> &TransformFacts {
         &self.transform_facts
     }
 

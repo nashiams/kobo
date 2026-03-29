@@ -1,21 +1,26 @@
 use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{KirNodeId, ResourceKind};
-use kobo_parser::KoboBinding;
+use kobo_parser::{KoboBinding, KoboBindingKind};
+
+use crate::small_clone::{type_small_clone_profile, SmallCloneProfile};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BindingMetadata {
     pub resource_kind: Option<ResourceKind>,
     pub is_copy_known: bool,
     pub is_generic: bool,
+    pub small_clone_profile: Option<SmallCloneProfile>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BindingState {
     pub decl_id: KirNodeId,
+    pub kind: KoboBindingKind,
     pub resource_kind: Option<ResourceKind>,
     pub is_copy_known: bool,
     pub is_generic: bool,
+    pub small_clone_profile: Option<SmallCloneProfile>,
 }
 
 /// Scope-aware context used while transform resolves concrete binding identity.
@@ -55,6 +60,7 @@ pub(crate) fn binding_metadata(
     init: Option<&syn::Expr>,
     ctx: &TransformCtx,
     generic_params: &HashSet<String>,
+    small_clone_profiles: &HashMap<String, SmallCloneProfile>,
 ) -> BindingMetadata {
     BindingMetadata {
         resource_kind: detect_resource_kind(binding.ty.as_ref(), init, ctx),
@@ -65,6 +71,13 @@ pub(crate) fn binding_metadata(
             .as_ref()
             .is_some_and(|ty| is_generic_type(ty, generic_params))
             || init.is_some_and(|expr| is_generic_expr(expr, ctx)),
+        small_clone_profile: binding
+            .ty
+            .as_ref()
+            .and_then(|ty| type_small_clone_profile(ty, small_clone_profiles))
+            .or_else(|| {
+                init.and_then(|expr| small_clone_profile_from_expr(expr, ctx, small_clone_profiles))
+            }),
     }
 }
 
@@ -165,6 +178,30 @@ fn is_generic_expr(expr: &syn::Expr, ctx: &TransformCtx) -> bool {
         syn::Expr::Paren(paren) => is_generic_expr(&paren.expr, ctx),
         syn::Expr::Group(group) => is_generic_expr(&group.expr, ctx),
         _ => false,
+    }
+}
+
+fn small_clone_profile_from_expr(
+    expr: &syn::Expr,
+    ctx: &TransformCtx,
+    small_clone_profiles: &HashMap<String, SmallCloneProfile>,
+) -> Option<SmallCloneProfile> {
+    match expr {
+        syn::Expr::Struct(expr_struct) => {
+            let ident = expr_struct.path.segments.last()?.ident.to_string();
+            small_clone_profiles.get(&ident).copied()
+        }
+        syn::Expr::Path(path) => {
+            let ident = single_ident(path.path.segments.iter().map(|segment| &segment.ident))?;
+            ctx.lookup(ident)?.small_clone_profile
+        }
+        syn::Expr::Paren(paren) => {
+            small_clone_profile_from_expr(&paren.expr, ctx, small_clone_profiles)
+        }
+        syn::Expr::Group(group) => {
+            small_clone_profile_from_expr(&group.expr, ctx, small_clone_profiles)
+        }
+        _ => None,
     }
 }
 

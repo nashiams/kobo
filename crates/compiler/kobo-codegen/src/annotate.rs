@@ -35,11 +35,34 @@ pub(crate) fn annotate(
         inserted_before += 1;
     }
 
-    for note in notes {
+    let site_anchor_lines = sites
+        .iter()
+        .filter_map(|site| anchors.get(site.node).map(|anchor| anchor.line))
+        .collect::<Vec<_>>();
+    let mut ordered_notes = notes.iter().enumerate().collect::<Vec<_>>();
+    ordered_notes.sort_by_key(|(index, note)| {
+        let line = anchors
+            .get(note.node)
+            .map(|anchor| anchor.line)
+            .unwrap_or(usize::MAX);
+        (line, *index)
+    });
+    let mut inserted_notes = 0usize;
+
+    for (_, note) in ordered_notes {
         let anchor = anchors.get(note.node).unwrap_or_else(|| {
             unreachable!("invariant: every annotation note must resolve to an anchor")
         });
-        let insertion_index = anchor.line.saturating_sub(1).min(lines.len());
+        let prior_site_insertions = site_anchor_lines
+            .iter()
+            .filter(|line| **line < anchor.line)
+            .count();
+        let insertion_index = anchor
+            .line
+            .saturating_sub(1)
+            .saturating_add(prior_site_insertions)
+            .saturating_add(inserted_notes)
+            .min(lines.len());
         let inserted_line = insertion_index + 1;
         lines.insert(
             insertion_index,
@@ -55,6 +78,7 @@ pub(crate) fn annotate(
                 entry.rs_span.line += 1;
             }
         }
+        inserted_notes += 1;
     }
 
     let mut annotated = lines.join("\n");

@@ -1,0 +1,9 @@
+[package]
+name    = "kobo-ir"
+version = "0.1.0"
+edition = "2021"
+
+# kobo-ir has zero dependencies on other Kobo crates — it is the shared vocabulary.
+[dependencies]
+proc-macro2 = { workspace = true }
+serde       = { workspace = true }

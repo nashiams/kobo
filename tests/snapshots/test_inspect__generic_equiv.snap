@@ -1,0 +1,19 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::cell::RefCell;
+use std::rc::Rc;
+fn use_mut<T>(_value: &mut T) {}
+// kobo: value @ line 3 -> rc_refcell (generic T: Copy unknown)
+fn first<T>(mut value: Rc<RefCell<T>>) {
+    use_mut(&mut *value.borrow_mut());
+}
+// kobo: value @ line 7 -> rc_refcell (generic T: Copy unknown)
+fn second<U>(mut value: Rc<RefCell<U>>) {
+    use_mut(&mut *value.borrow_mut());
+}
+fn main() {
+    first(Rc::new(RefCell::new(String::from("a"))));
+    second(Rc::new(RefCell::new(String::from("b"))));
+}

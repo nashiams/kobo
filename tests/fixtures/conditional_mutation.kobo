@@ -1,0 +1,9 @@
+fn mutate<T>(_value: &mut T) {}
+
+fn main() {
+    let x = String::from("kobo");
+    if true {
+        mutate(&mut x);
+    }
+    println!("{}", x.len());
+}

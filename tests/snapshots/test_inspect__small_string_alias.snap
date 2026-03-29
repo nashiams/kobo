@@ -1,0 +1,21 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+assertion_line: 302
+expression: output.stdout
+---
+use std::rc::Rc;
+#[derive(Clone)]
+struct SmallText {
+    name: String,
+}
+fn main() {
+// kobo: x @ line 7 -> rc (sequential read-only; &T likely at migration (2 call sites))
+    let x = Rc::new(SmallText {
+        name: String::from("kobo"),
+    });
+// kobo: y @ line 10 -> plain (local-only non-Copy binding)
+    let y = x.clone();
+// kobo: total @ line 11 -> plain (local-only non-Copy binding)
+    let total = x.name.len() + y.name.len();
+    println!("{}", total);
+}

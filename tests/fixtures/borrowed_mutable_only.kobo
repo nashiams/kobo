@@ -1,0 +1,9 @@
+fn use_mut<T>(_value: &mut T) {}
+
+fn touch<T>(mut value: T) {
+    use_mut(&mut value);
+}
+
+fn main() {
+    touch(String::from("kobo"));
+}

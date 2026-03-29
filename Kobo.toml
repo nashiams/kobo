@@ -1,0 +1,13 @@
+# Kobo workspace configuration
+# All fields are optional; defaults shown here.
+
+[kobo]
+mode = "script"
+
+[diagnostics]
+hot_borrow_threshold = 10000
+
+[solver]
+cluster_limit      = 256
+budget_seconds     = 5
+lsp_budget_ms      = 200

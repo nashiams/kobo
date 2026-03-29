@@ -1,0 +1,16 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+assertion_line: 266
+expression: output.stdout
+---
+// kobo: result @ line 1 -> plain (local-only non-Copy binding)
+fn process(result: String) {
+    println!("{}", result);
+}
+fn main() {
+// kobo: builder @ line 6 -> plain (dead original after assignment)
+    let builder = String::from("hello");
+// kobo: result @ line 7 -> plain (local-only non-Copy binding)
+    let result = builder;
+    process(result);
+}

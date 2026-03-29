@@ -1,0 +1,23 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+assertion_line: 339
+expression: output.stdout
+---
+use std::rc::Rc;
+use std::path::PathBuf;
+#[derive(Clone)]
+struct MaybeAlloc {
+    path: PathBuf,
+}
+fn main() {
+// kobo: x @ line 9 -> rc (sequential read-only; &T likely at migration (2 call sites))
+    let x = Rc::new(MaybeAlloc {
+        path: PathBuf::from("Cargo.toml"),
+    });
+// kobo: y @ line 12 -> clone-elision skipped: field type unknown, may allocate
+// kobo: y @ line 12 -> plain (local-only non-Copy binding)
+    let y = x.clone();
+// kobo: total @ line 13 -> plain (local-only non-Copy binding)
+    let total = x.path.display().to_string().len() + y.path.display().to_string().len();
+    println!("{}", total);
+}

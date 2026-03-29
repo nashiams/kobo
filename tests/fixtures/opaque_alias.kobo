@@ -1,0 +1,15 @@
+use std::path::PathBuf;
+
+#[derive(Clone)]
+struct MaybeAlloc {
+    path: PathBuf,
+}
+
+fn main() {
+    let x = MaybeAlloc {
+        path: PathBuf::from("Cargo.toml"),
+    };
+    let y = x;
+    let total = x.path.display().to_string().len() + y.path.display().to_string().len();
+    println!("{}", total);
+}

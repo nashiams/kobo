@@ -1,0 +1,7 @@
+[package]
+name    = "kobo-debt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kobo-ir     = { path = "../kobo-ir" }

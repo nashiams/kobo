@@ -1,0 +1,18 @@
+---
+source: bin/kobo-cli/tests/test_ui.rs
+assertion_line: 39
+expression: output.stderr
+---
+error[K0002]: cannot borrow as mutable - already borrowed
+  --> tests\ui\K0002_mutable_borrow_conflict.kobo:4:5
+  |
+3 |     let r = &data;
+  |              ---- immutable borrow occurs here
+4 |     data.push(4);
+  |     ^^^^ mutable borrow occurs here
+  |
+   = `data` is already borrowed immutably on line 3; simultaneous mutable borrow would panic at runtime
+   = kobo decision: flagged as conflict; simultaneous borrows would panic at runtime
+help: restructure the code so the earlier borrow ends before mutation
+run: kobo check tests\ui\K0002_mutable_borrow_conflict.kobo:3
+Error: analysis failed

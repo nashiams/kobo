@@ -1,0 +1,13 @@
+#[derive(Clone)]
+struct SmallText {
+    name: String,
+}
+
+fn main() {
+    let x = SmallText {
+        name: String::from("kobo"),
+    };
+    let y = x;
+    let total = x.name.len() + y.name.len();
+    println!("{}", total);
+}

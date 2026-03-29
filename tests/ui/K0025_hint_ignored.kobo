@@ -1,0 +1,8 @@
+fn use_mut<T>(_value: &mut T) {}
+
+fn main() {
+    #[kobo::hint(ownership = "move")]
+    let buf = String::from("kobo");
+    use_mut(&mut buf);
+    use_mut(&mut buf);
+}

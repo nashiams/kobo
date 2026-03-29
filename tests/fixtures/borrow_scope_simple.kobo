@@ -1,0 +1,6 @@
+fn main() {
+    let x = vec![1];
+    let r = &mut x;
+    r.push(2);
+    println!("{}", x.len());
+}

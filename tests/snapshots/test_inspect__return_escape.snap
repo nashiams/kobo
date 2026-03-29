@@ -1,0 +1,15 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+assertion_line: 465
+expression: output.stdout
+---
+fn build_name() -> String {
+// kobo: name @ line 2 -> rc (return escape: Box<T> requires signature rewrite (v0.4))
+    let name = String::from("kobo");
+    return name;
+}
+fn main() {
+// kobo: greeting @ line 7 -> plain (local-only non-Copy binding)
+    let greeting = build_name();
+    println!("{}", greeting);
+}

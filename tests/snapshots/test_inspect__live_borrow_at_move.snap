@@ -1,0 +1,18 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: live_output.stdout.clone()
+---
+use std::rc::Rc;
+fn use_ref(value: &String) {
+    println!("{}", value.len());
+}
+fn main() {
+// kobo: x @ line 6 -> clone-elision fallback: move safety check failed - conservative clone
+// kobo: x @ line 6 -> rc (read-only shared across 2 call sites)
+    let x = Rc::new(String::from("hello"));
+    let y = &x;
+// kobo: z @ line 8 -> plain (local-only non-Copy binding)
+    let z = x.clone();
+    use_ref(y);
+    println!("{}", z.len());
+}

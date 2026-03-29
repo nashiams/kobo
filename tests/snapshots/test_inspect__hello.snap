@@ -1,0 +1,16 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::cell::RefCell;
+use std::rc::Rc;
+fn main() {
+    let names = Rc::new(RefCell::new(vec!["alice", "bob"]));
+    let count = 2;
+    let _count_copy = count;
+    let greeting = Rc::new(RefCell::new(greet(names.clone())));
+    println!("{}", greeting.borrow());
+}
+fn greet(names: Rc<RefCell<Vec<&str>>>) -> String {
+    names.borrow().join(", ")
+}

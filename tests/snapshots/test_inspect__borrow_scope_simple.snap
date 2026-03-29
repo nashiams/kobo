@@ -1,0 +1,15 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+assertion_line: 217
+expression: output.stdout
+---
+use std::cell::RefCell;
+use std::rc::Rc;
+fn main() {
+// kobo: x @ line 2 -> rc_refcell (mutable shared, last resort)
+    let x = Rc::new(RefCell::new(vec![1]));
+    {
+        x.borrow_mut().push(2);
+    }
+    println!("{}", x.borrow().len());
+}

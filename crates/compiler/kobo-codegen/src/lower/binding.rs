@@ -1,0 +1,154 @@
+use kobo_ir::OwnershipTier;
+use kobo_parser::{KoboBinding, KoboFile};
+use syn::parse_quote;
+
+use super::scope::ScopeStack;
+
+pub(crate) fn binding_for_pat<'a>(ast: &'a KoboFile, pat: &syn::Pat) -> Option<&'a KoboBinding> {
+    let ident = binding_ident(pat)?;
+    let span = ast.span_from_syn(ident.span());
+    ast.binding_for_span(span)
+}
+
+pub(crate) fn apply_tier_to_local(
+    local: &mut syn::Local,
+    tier: OwnershipTier,
+    already_wrapped: bool,
+) {
+    if matches!(tier, OwnershipTier::RcMutShared | OwnershipTier::Scoped) {
+        strip_binding_mutability(&mut local.pat);
+    }
+
+    apply_tier_to_pat_type(&mut local.pat, tier);
+
+    let Some(init) = &mut local.init else {
+        return;
+    };
+
+    match tier {
+        OwnershipTier::BoxOwned if !already_wrapped => {
+            let expr = (*init.expr).clone();
+            init.expr = Box::new(parse_quote!(Box::new(#expr)));
+        }
+        OwnershipTier::RcShared if !already_wrapped => {
+            let expr = (*init.expr).clone();
+            init.expr = Box::new(parse_quote!(Rc::new(#expr)));
+        }
+        OwnershipTier::ArcShared if !already_wrapped => {
+            let expr = (*init.expr).clone();
+            init.expr = Box::new(parse_quote!(Arc::new(#expr)));
+        }
+        OwnershipTier::RcMutShared if !already_wrapped => {
+            let expr = (*init.expr).clone();
+            init.expr = Box::new(parse_quote!(Rc::new(RefCell::new(#expr))));
+        }
+        OwnershipTier::Scoped => {
+            let expr = (*init.expr).clone();
+            init.expr = Box::new(parse_quote!(ScopedHandle::new(#expr)));
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn apply_tier_to_fn_arg_type(argument: &mut syn::PatType, tier: OwnershipTier) {
+    let original_ty = (*argument.ty).clone();
+    argument.ty = Box::new(wrap_owned_type(original_ty, tier));
+}
+
+pub(crate) fn binding_tier_from_expr(
+    expr: &syn::Expr,
+    scopes: &ScopeStack,
+) -> Option<(syn::Ident, OwnershipTier)> {
+    match expr {
+        syn::Expr::Path(path) => binding_tier_from_path(path, scopes),
+        syn::Expr::Paren(paren) => binding_tier_from_expr(&paren.expr, scopes),
+        syn::Expr::Group(group) => binding_tier_from_expr(&group.expr, scopes),
+        _ => None,
+    }
+}
+
+pub(crate) fn wrapper_binding_from_expr(
+    expr: &syn::Expr,
+    scopes: &ScopeStack,
+) -> Option<(syn::Ident, OwnershipTier)> {
+    let (ident, tier) = binding_tier_from_expr(expr, scopes)?;
+    matches!(
+        tier,
+        OwnershipTier::RcShared
+            | OwnershipTier::ArcShared
+            | OwnershipTier::RcMutShared
+            | OwnershipTier::ArcMutShared
+    )
+    .then_some((ident, tier))
+}
+
+pub(crate) fn is_mutating_method(method: &syn::Ident) -> bool {
+    matches!(
+        method.to_string().as_str(),
+        "append"
+            | "clear"
+            | "extend"
+            | "insert"
+            | "insert_str"
+            | "pop"
+            | "push"
+            | "push_str"
+            | "remove"
+            | "replace"
+            | "retain"
+            | "reverse"
+            | "sort"
+            | "sort_by"
+            | "swap"
+            | "truncate"
+    )
+}
+
+fn binding_ident(pat: &syn::Pat) -> Option<&syn::Ident> {
+    match pat {
+        syn::Pat::Ident(ident) => Some(&ident.ident),
+        syn::Pat::Type(typed) => binding_ident(&typed.pat),
+        _ => None,
+    }
+}
+
+fn apply_tier_to_pat_type(pat: &mut syn::Pat, tier: OwnershipTier) {
+    let syn::Pat::Type(typed) = pat else {
+        return;
+    };
+
+    let original_ty = (*typed.ty).clone();
+    typed.ty = Box::new(wrap_owned_type(original_ty, tier));
+}
+
+fn wrap_owned_type(original_ty: syn::Type, tier: OwnershipTier) -> syn::Type {
+    match tier {
+        OwnershipTier::BoxOwned => parse_quote!(Box<#original_ty>),
+        OwnershipTier::RcShared => parse_quote!(Rc<#original_ty>),
+        OwnershipTier::ArcShared => parse_quote!(Arc<#original_ty>),
+        OwnershipTier::RcMutShared => parse_quote!(Rc<RefCell<#original_ty>>),
+        OwnershipTier::Scoped => parse_quote!(ScopedHandle<#original_ty>),
+        _ => original_ty,
+    }
+}
+
+fn strip_binding_mutability(pat: &mut syn::Pat) {
+    match pat {
+        syn::Pat::Ident(ident) => ident.mutability = None,
+        syn::Pat::Type(typed) => strip_binding_mutability(&mut typed.pat),
+        _ => {}
+    }
+}
+
+fn binding_tier_from_path(
+    path: &syn::ExprPath,
+    scopes: &ScopeStack,
+) -> Option<(syn::Ident, OwnershipTier)> {
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+
+    let ident = path.path.segments.first()?.ident.clone();
+    let tier = scopes.lookup(&ident)?;
+    Some((ident, tier))
+}

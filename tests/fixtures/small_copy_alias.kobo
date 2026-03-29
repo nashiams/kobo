@@ -1,0 +1,12 @@
+#[derive(Clone, Copy)]
+struct SmallCopy {
+    a: u64,
+    b: u64,
+}
+
+fn main() {
+    let x = SmallCopy { a: 1, b: 2 };
+    let y = x;
+    let sum = x.a + y.b;
+    println!("{}", sum);
+}

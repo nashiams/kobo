@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "file": "tests\\ui\\K0002_mutable_borrow_conflict.rs",
+  "sources": [
+    "tests\\ui\\K0002_mutable_borrow_conflict.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 5,
+        "column_start": 0,
+        "column_end": 52
+      },
+      "kobo_span": {
+        "start": 20,
+        "end": 24,
+        "file_id": 0
+      },
+      "ownership_tier": "rc_refcell"
+    },
+    {
+      "rs_span": {
+        "line": 9,
+        "column_start": 0,
+        "column_end": 23
+      },
+      "kobo_span": {
+        "start": 87,
+        "end": 91,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    }
+  ]
+}

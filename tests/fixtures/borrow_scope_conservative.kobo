@@ -1,0 +1,6 @@
+fn main() {
+    let x = vec![1];
+    let r = &mut x;
+    r.iter_mut().for_each(|value| *value += 1);
+    println!("{}", r[0]);
+}

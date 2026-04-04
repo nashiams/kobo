@@ -1,0 +1,21 @@
+// diag_owner_threshold fixture: Rc<RefCell<T>> binding accessed many times.
+//
+// With KOBO_DIAG=1 and a threshold < iteration count, the DiagOwner drop
+// output must include [kobo-diag] stats exceeding the threshold.
+//
+// Run: KOBO_DIAG=1 KOBO_DIAG_THRESHOLD=100 kobo run tests/fixtures/diag_owner_threshold.kobo 2>diag.log
+// Then: kobo perf tests/fixtures/diag_owner_threshold.kobo --from diag.log
+
+struct State {
+    count: i32,
+}
+
+fn main() {
+    let state = State { count: 0 };
+    let mut i = 0;
+    while i < 600 {
+        state.count = state.count + 1;
+        i = i + 1;
+    }
+    println!("final count: {}", state.count);
+}

@@ -237,6 +237,7 @@ mod tests {
         report.warn_early.push(p1_fact(false));
         // Suppressed fact goes to acknowledged
         report.acknowledged.push(kobo_ir::debt::AcknowledgedDebtRecord {
+            node_id: KirNodeId(0),
             span: dummy_span(),
             reason: "known tree pattern".to_owned(),
             pattern: WarnEarlyPattern::ParentChildBackPointer {

@@ -88,6 +88,7 @@ pub fn build_debt_report(kir: &Kir, file_count: usize, line_count: usize) -> Deb
     for fact in kir.warn_early_facts() {
         if fact.suppressed {
             report.acknowledged.push(AcknowledgedDebtRecord {
+                node_id: fact.node_id,
                 span: fact.span,
                 reason: fact
                     .known_debt_reason

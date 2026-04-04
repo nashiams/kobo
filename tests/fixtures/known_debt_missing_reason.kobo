@@ -1,0 +1,11 @@
+// known_debt_missing_reason fixture: bare #[kobo::known_debt] without reason.
+//
+// Must fail to compile with error:
+//   `#[kobo::known_debt]` requires a reason string
+
+#[kobo::known_debt]
+struct Node {
+    next: Rc<RefCell<Node>>,
+}
+
+fn main() {}

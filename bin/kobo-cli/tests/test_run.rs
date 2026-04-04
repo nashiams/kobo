@@ -658,6 +658,48 @@ fn run_kobo<const N: usize>(args: [&str; N], fixture_path: &Path) -> KoboOutput 
     }
 }
 
+// ---------------------------------------------------------------------------
+// v0.4 — kobo debt / kobo perf integration tests (BUG-10)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn debt_summary_output_is_single_line() {
+    let case = FixtureCase::new("debt-summary", "debt_report_full.kobo");
+    let output = run_kobo(["debt", "--summary"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    let lines: Vec<&str> = output.stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "summary must be exactly one line, got: {}", output.stdout);
+    assert!(output.stdout.contains("file(s)"), "summary must mention file count");
+    assert!(output.stdout.contains("line(s)"), "summary must mention line count");
+}
+
+#[test]
+fn debt_json_has_schema_version() {
+    let case = FixtureCase::new("debt-json", "debt_report_full.kobo");
+    let output = run_kobo(["debt", "--json"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        output.stdout.contains("\"schema_version\": 1"),
+        "JSON must contain schema_version=1, got:\n{}",
+        output.stdout,
+    );
+}
+
+#[test]
+fn perf_no_from_flag_prints_advisory() {
+    let case = FixtureCase::new("perf-no-from", "hello.kobo");
+    let output = run_kobo(["perf"], &case.fixture_path);
+
+    assert!(output.status.success(), "perf without --from should succeed");
+    assert!(
+        output.stderr.contains("advisory"),
+        "stderr must contain 'advisory', got:\n{}",
+        output.stderr,
+    );
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")

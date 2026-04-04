@@ -1,7 +1,8 @@
 mod diag_owner;
-pub(crate) mod thresholds;
+pub mod thresholds;
 
 pub use diag_owner::DiagOwner;
+pub use thresholds::DiagThreshold;
 
 #[cfg(feature = "diag")]
 pub use diag_owner::{DiagCounters, DiagRef, DiagRefMut};

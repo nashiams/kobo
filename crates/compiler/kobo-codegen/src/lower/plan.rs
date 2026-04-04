@@ -75,7 +75,7 @@ impl LoweringPlan {
         }
 
         let function_param_tiers = build_function_param_tiers(ast, &lowering_tiers_by_ast);
-        let annotation_sites = build_annotation_sites(ast, kir, &annotation_tiers_by_ast);
+        let mut annotation_sites = build_annotation_sites(ast, kir, &annotation_tiers_by_ast);
         let annotation_notes = build_annotation_notes(ast, kir);
         let plain_clone_aliases = kir
             .transform_facts()
@@ -109,6 +109,19 @@ impl LoweringPlan {
         let support_item_count =
             support_items(needs_rc, needs_refcell, needs_arc, needs_scoped_handle, needs_diag_owner)
                 .len();
+
+        // Mark annotation sites that will be wrapped in DiagOwner.
+        if options.diag_mode {
+            let diag_node_ids: HashSet<KirNodeId> = diag_source_locs
+                .keys()
+                .filter_map(|ast_id| nodes_by_ast.get(ast_id).copied())
+                .collect();
+            for site in &mut annotation_sites {
+                if diag_node_ids.contains(&site.node) {
+                    site.diag_wrapped = true;
+                }
+            }
+        }
 
         Self {
             nodes_by_ast,
@@ -259,6 +272,7 @@ fn build_annotation_sites(
             kobo_span: binding.span,
             kobo_line,
             reason: decision.annotation_text(),
+            diag_wrapped: false,
         });
     }
 

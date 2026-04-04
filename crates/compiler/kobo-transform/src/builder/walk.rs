@@ -31,14 +31,30 @@ impl TransformFactsBuilder<'_> {
         let span = self.ast.span_from_syn(item.span());
 
         // Parse #[kobo::known_debt = "reason"] if present.
-        let (known_debt_reason, known_debt_span) = item
-            .attrs
-            .iter()
-            .find_map(|attr| parse_known_debt_attr(attr))
-            .map(|(reason, attr_span)| {
-                (Some(reason), Some(self.ast.span_from_syn(attr_span)))
-            })
-            .unwrap_or((None, None));
+        let mut known_debt_reason = None;
+        let mut known_debt_span = None;
+        let mut known_debt_parse_error = None;
+        for attr in &item.attrs {
+            match parse_known_debt_attr(attr) {
+                KnownDebtResult::Valid(reason, attr_span) => {
+                    known_debt_reason = Some(reason);
+                    known_debt_span = Some(self.ast.span_from_syn(attr_span));
+                }
+                KnownDebtResult::MissingReason(attr_span) => {
+                    known_debt_span = Some(self.ast.span_from_syn(attr_span));
+                    known_debt_parse_error = Some(
+                        "`#[kobo::known_debt]` requires a reason string".to_owned(),
+                    );
+                }
+                KnownDebtResult::EmptyReason(attr_span) => {
+                    known_debt_span = Some(self.ast.span_from_syn(attr_span));
+                    known_debt_parse_error = Some(
+                        "`#[kobo::known_debt]` reason string must not be empty".to_owned(),
+                    );
+                }
+                KnownDebtResult::NotKnownDebt => {}
+            }
+        }
 
         let fields: Vec<KirStructFieldDef> = match &item.fields {
             syn::Fields::Named(named) => named
@@ -63,6 +79,7 @@ impl TransformFactsBuilder<'_> {
             fields,
             known_debt_reason,
             known_debt_span,
+            known_debt_parse_error,
         });
     }
 
@@ -338,13 +355,25 @@ impl TransformFactsBuilder<'_> {
 // Free helpers for struct-def collection
 // ---------------------------------------------------------------------------
 
+/// Result of parsing a `#[kobo::known_debt]` attribute.
+enum KnownDebtResult {
+    /// Attribute is not a `kobo::known_debt` attribute.
+    NotKnownDebt,
+    /// Valid `#[kobo::known_debt = "reason"]`.
+    Valid(String, proc_macro2::Span),
+    /// `#[kobo::known_debt]` without a reason string.
+    MissingReason(proc_macro2::Span),
+    /// `#[kobo::known_debt = ""]` with an empty reason string.
+    EmptyReason(proc_macro2::Span),
+}
+
 /// Parse `#[kobo::known_debt = "reason"]` from a single attribute.
 ///
-/// Returns `(reason_string, span_of_attribute)` when the attribute matches,
-/// `None` otherwise.
-fn parse_known_debt_attr(attr: &syn::Attribute) -> Option<(String, proc_macro2::Span)> {
-    // Match path `kobo::known_debt`
-    let segments: Vec<_> = match &attr.meta {
+/// Returns `Valid` when the attribute matches with a non-empty reason,
+/// `MissingReason` for bare `#[kobo::known_debt]`, `EmptyReason` for
+/// `#[kobo::known_debt = ""]`, and `NotKnownDebt` otherwise.
+fn parse_known_debt_attr(attr: &syn::Attribute) -> KnownDebtResult {
+    match &attr.meta {
         syn::Meta::NameValue(nv) => {
             let segs: Vec<_> = nv.path.segments.iter().map(|s| s.ident.to_string()).collect();
             if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "known_debt" {
@@ -353,15 +382,24 @@ fn parse_known_debt_attr(attr: &syn::Attribute) -> Option<(String, proc_macro2::
                     ..
                 }) = &nv.value
                 {
-                    return Some((lit_str.value(), attr.span()));
+                    let reason = lit_str.value();
+                    if reason.is_empty() {
+                        return KnownDebtResult::EmptyReason(attr.span());
+                    }
+                    return KnownDebtResult::Valid(reason, attr.span());
                 }
             }
-            segs
+            KnownDebtResult::NotKnownDebt
         }
-        _ => return None,
-    };
-    let _ = segments;
-    None
+        syn::Meta::Path(path) => {
+            let segs: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "known_debt" {
+                return KnownDebtResult::MissingReason(attr.span());
+            }
+            KnownDebtResult::NotKnownDebt
+        }
+        _ => KnownDebtResult::NotKnownDebt,
+    }
 }
 
 /// Map a `syn::Type` to the simplified `FieldTypeShape` used for K0080-P detection.

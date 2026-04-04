@@ -1,0 +1,25 @@
+// diag_owner_contention fixture: overlapping borrow and borrow_mut.
+//
+// A binding where an immutable borrow is live when a mutable borrow is
+// requested. DiagOwner contention detection must count this overlap.
+//
+// Run: KOBO_DIAG=1 kobo run tests/fixtures/diag_owner_contention.kobo 2>diag.log
+
+struct Config {
+    value: i32,
+}
+
+fn read_config(config: Config) -> i32 {
+    config.value
+}
+
+fn update_config(config: Config) {
+    config.value = config.value + 1;
+}
+
+fn main() {
+    let config = Config { value: 10 };
+    let v = read_config(config);
+    update_config(config);
+    println!("{}", v);
+}

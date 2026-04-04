@@ -1,0 +1,11 @@
+// known_debt_empty_reason fixture: #[kobo::known_debt = ""] with empty reason.
+//
+// Must fail to compile with error:
+//   `#[kobo::known_debt]` reason string must not be empty
+
+#[kobo::known_debt = ""]
+struct Node {
+    next: Rc<RefCell<Node>>,
+}
+
+fn main() {}

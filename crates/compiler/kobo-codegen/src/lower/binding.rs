@@ -162,3 +162,56 @@ fn binding_tier_from_path(
     let tier = scopes.lookup(&ident)?;
     Some((ident, tier))
 }
+
+#[cfg(test)]
+mod tests {
+    use kobo_ir::OwnershipTier;
+    use syn::parse_quote;
+
+    use super::apply_tier_to_local;
+
+    /// Build a `let x: i32 = <init>;` local statement for testing.
+    fn make_local(init_expr: syn::Expr) -> syn::Local {
+        let stmt: syn::Stmt = parse_quote! { let x: i32 = #init_expr; };
+        match stmt {
+            syn::Stmt::Local(local) => local,
+            _ => panic!("expected Local statement"),
+        }
+    }
+
+    #[test]
+    fn diag_mode_wraps_rc_refcell_in_diag_owner() {
+        let init: syn::Expr = parse_quote!(value);
+        let mut local = make_local(init);
+
+        apply_tier_to_local(&mut local, OwnershipTier::RcMutShared, false, Some("test.kobo:5"));
+
+        let output = quote::quote!(#local).to_string();
+        assert!(
+            output.contains("DiagOwner"),
+            "diag_mode=true must wrap in DiagOwner, got: {output}"
+        );
+        assert!(
+            output.contains("test.kobo:5"),
+            "must embed source location literal, got: {output}"
+        );
+    }
+
+    #[test]
+    fn normal_mode_wraps_rc_refcell_without_diag_owner() {
+        let init: syn::Expr = parse_quote!(value);
+        let mut local = make_local(init);
+
+        apply_tier_to_local(&mut local, OwnershipTier::RcMutShared, false, None);
+
+        let output = quote::quote!(#local).to_string();
+        assert!(
+            !output.contains("DiagOwner"),
+            "diag_mode=false must NOT wrap in DiagOwner, got: {output}"
+        );
+        assert!(
+            output.contains("Rc") && output.contains("RefCell"),
+            "must wrap in Rc<RefCell<…>>, got: {output}"
+        );
+    }
+}

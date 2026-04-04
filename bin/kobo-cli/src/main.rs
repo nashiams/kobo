@@ -60,6 +60,9 @@ pub(crate) enum KoboCommand {
         /// Output a single summary line
         #[arg(long)]
         summary: bool,
+        /// [v0.5] Watch mode — re-run on file changes.
+        #[arg(long, hide = true)]
+        watch: bool,
     },
 }
 

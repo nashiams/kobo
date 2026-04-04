@@ -8,6 +8,7 @@ pub struct LoweringSite {
     pub kobo_span: KoboSpan,
     pub kobo_line: usize,
     pub reason: String,
+    pub diag_wrapped: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -39,6 +40,7 @@ impl LoweringSite {
             kobo_span,
             kobo_line,
             reason: reason.into(),
+            diag_wrapped: false,
         }
     }
 }

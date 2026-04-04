@@ -19,11 +19,14 @@ use kobo_ir::{
     FieldTypeShape, Kir, KirNodeId, WarnEarlyFact, WarnEarlyPattern,
 };
 
-/// Detect all K0080-P structural patterns in `kir` and return one `WarnEarlyFact`
-/// per detected pattern instance.
+/// Detect K0080-P1 through K0080-P4 structural ownership patterns.
 ///
-/// This function is called once per source file, after `kir.transform_facts()`,
-/// `kir.struct_defs()`, and `kir.tier_decisions()` are all set.
+/// # Dependencies
+///
+/// This function reads `kir.transform_facts()` and `kir.iter_tier_decisions()`
+/// internally. The caller must ensure `Kir::set_transform_facts()` and
+/// `Kir::set_tier_decisions()` have been called before invoking this function.
+/// See `transform.rs::build_kir()` for the correct call sequence.
 pub fn detect_warn_early(kir: &Kir) -> Vec<WarnEarlyFact> {
     let mut facts: Vec<WarnEarlyFact> = Vec::new();
 
@@ -273,6 +276,7 @@ mod tests {
             }],
             known_debt_reason: None,
             known_debt_span: None,
+            known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
         assert_eq!(facts.len(), 1);
@@ -294,6 +298,7 @@ mod tests {
             }],
             known_debt_reason: None,
             known_debt_span: None,
+            known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
         // P4 should not fire; P1 may fire (self-loop Rc field)
@@ -320,6 +325,7 @@ mod tests {
             ],
             known_debt_reason: None,
             known_debt_span: None,
+            known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
         assert!(facts.iter().any(|f| matches!(
@@ -352,6 +358,7 @@ mod tests {
                 }],
                 known_debt_reason: None,
                 known_debt_span: None,
+                known_debt_parse_error: None,
             },
             KirStructDef {
                 name: "B".to_owned(),
@@ -362,6 +369,7 @@ mod tests {
                 }],
                 known_debt_reason: None,
                 known_debt_span: None,
+                known_debt_parse_error: None,
             },
         ]);
         let facts = detect_warn_early(&kir);
@@ -382,6 +390,7 @@ mod tests {
             }],
             known_debt_reason: Some("intentional for v0.5 refactor".to_owned()),
             known_debt_span: Some(dummy_span()),
+            known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
         assert_eq!(facts.len(), 1);
@@ -390,5 +399,321 @@ mod tests {
             facts[0].known_debt_reason.as_deref(),
             Some("intentional for v0.5 refactor")
         );
+    }
+
+    // --- P1 additional tests ---
+
+    #[test]
+    fn p1_within_struct_self_loop() {
+        // Two Rc<RefCell<Self>> fields in the same struct form a self-loop pair.
+        let kir = make_kir_with_structs(vec![KirStructDef {
+            name: "Graph".to_owned(),
+            span: dummy_span(),
+            fields: vec![
+                KirStructFieldDef {
+                    name: "left".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("Graph".to_owned()),
+                },
+                KirStructFieldDef {
+                    name: "right".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("Graph".to_owned()),
+                },
+            ],
+            known_debt_reason: None,
+            known_debt_span: None,
+            known_debt_parse_error: None,
+        }]);
+        let facts = detect_warn_early(&kir);
+        let p1 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. }));
+        assert!(p1.is_some(), "P1 should fire for within-struct self-loop");
+        if let WarnEarlyPattern::BidirectionalRcLinks { field_pairs, .. } = &p1.unwrap().pattern {
+            assert_eq!(field_pairs.len(), 1);
+            assert_eq!(field_pairs[0], ("left".to_owned(), "right".to_owned()));
+        }
+    }
+
+    #[test]
+    fn p1_multi_pair_dedup() {
+        // Three Rc<RefCell<Self>> fields produce 3 pairs, deduplicated.
+        let kir = make_kir_with_structs(vec![KirStructDef {
+            name: "Mesh".to_owned(),
+            span: dummy_span(),
+            fields: vec![
+                KirStructFieldDef {
+                    name: "a".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("Mesh".to_owned()),
+                },
+                KirStructFieldDef {
+                    name: "b".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("Mesh".to_owned()),
+                },
+                KirStructFieldDef {
+                    name: "c".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("Mesh".to_owned()),
+                },
+            ],
+            known_debt_reason: None,
+            known_debt_span: None,
+            known_debt_parse_error: None,
+        }]);
+        let facts = detect_warn_early(&kir);
+        let p1 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. }));
+        assert!(p1.is_some());
+        if let WarnEarlyPattern::BidirectionalRcLinks { field_pairs, .. } = &p1.unwrap().pattern {
+            assert_eq!(field_pairs.len(), 3, "3 self-loop pairs from 3 fields");
+        }
+    }
+
+    #[test]
+    fn p1_option_rc_refcell_pair_detected() {
+        // Option<Rc<RefCell<T>>> fields also count for P1 detection.
+        let kir = make_kir_with_structs(vec![
+            KirStructDef {
+                name: "X".to_owned(),
+                span: dummy_span(),
+                fields: vec![KirStructFieldDef {
+                    name: "y_ref".to_owned(),
+                    shape: FieldTypeShape::OptionRcRefCellOf("Y".to_owned()),
+                }],
+                known_debt_reason: None,
+                known_debt_span: None,
+                known_debt_parse_error: None,
+            },
+            KirStructDef {
+                name: "Y".to_owned(),
+                span: dummy_span(),
+                fields: vec![KirStructFieldDef {
+                    name: "x_ref".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("X".to_owned()),
+                }],
+                known_debt_reason: None,
+                known_debt_span: None,
+                known_debt_parse_error: None,
+            },
+        ]);
+        let facts = detect_warn_early(&kir);
+        assert!(facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. })));
+    }
+
+    // --- P2 additional tests ---
+
+    #[test]
+    fn p2_children_only_no_parent() {
+        // Vec<Rc<RefCell<Self>>> without Option<Rc<RefCell<Self>>> → no P2.
+        let kir = make_kir_with_structs(vec![KirStructDef {
+            name: "List".to_owned(),
+            span: dummy_span(),
+            fields: vec![KirStructFieldDef {
+                name: "items".to_owned(),
+                shape: FieldTypeShape::VecRcRefCellOf("List".to_owned()),
+            }],
+            known_debt_reason: None,
+            known_debt_span: None,
+            known_debt_parse_error: None,
+        }]);
+        let facts = detect_warn_early(&kir);
+        assert!(!facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::ParentChildBackPointer { .. })));
+    }
+
+    #[test]
+    fn p2_parent_only_no_children() {
+        // Option<Rc<RefCell<Self>>> without Vec<Rc<RefCell<Self>>> → no P2.
+        let kir = make_kir_with_structs(vec![KirStructDef {
+            name: "Leaf".to_owned(),
+            span: dummy_span(),
+            fields: vec![KirStructFieldDef {
+                name: "parent".to_owned(),
+                shape: FieldTypeShape::OptionRcRefCellOf("Leaf".to_owned()),
+            }],
+            known_debt_reason: None,
+            known_debt_span: None,
+            known_debt_parse_error: None,
+        }]);
+        let facts = detect_warn_early(&kir);
+        assert!(!facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::ParentChildBackPointer { .. })));
+    }
+
+    #[test]
+    fn p2_supersedes_p1_isolation() {
+        // Two structs: one with P2, one with P1. P2 struct must not also get P1.
+        let kir = make_kir_with_structs(vec![
+            // P2 struct: has both Vec and Option self-refs.
+            KirStructDef {
+                name: "Tree".to_owned(),
+                span: dummy_span(),
+                fields: vec![
+                    KirStructFieldDef {
+                        name: "children".to_owned(),
+                        shape: FieldTypeShape::VecRcRefCellOf("Tree".to_owned()),
+                    },
+                    KirStructFieldDef {
+                        name: "parent".to_owned(),
+                        shape: FieldTypeShape::OptionRcRefCellOf("Tree".to_owned()),
+                    },
+                ],
+                known_debt_reason: None,
+                known_debt_span: None,
+                known_debt_parse_error: None,
+            },
+            // P1 struct: cross-links with another type.
+            KirStructDef {
+                name: "Foo".to_owned(),
+                span: dummy_span(),
+                fields: vec![KirStructFieldDef {
+                    name: "bar_ref".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("Bar".to_owned()),
+                }],
+                known_debt_reason: None,
+                known_debt_span: None,
+                known_debt_parse_error: None,
+            },
+            KirStructDef {
+                name: "Bar".to_owned(),
+                span: dummy_span(),
+                fields: vec![KirStructFieldDef {
+                    name: "foo_ref".to_owned(),
+                    shape: FieldTypeShape::RcRefCellOf("Foo".to_owned()),
+                }],
+                known_debt_reason: None,
+                known_debt_span: None,
+                known_debt_parse_error: None,
+            },
+        ]);
+        let facts = detect_warn_early(&kir);
+        // Tree should have P2 only, not P1.
+        assert!(facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::ParentChildBackPointer { struct_name, .. } if struct_name == "Tree")));
+        assert!(!facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { struct_name, .. } if struct_name == "Tree")));
+        // Foo should have P1.
+        assert!(facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { struct_name, .. } if struct_name == "Foo")));
+    }
+
+    // --- P3 additional tests ---
+
+    fn make_kir_with_binding(mutable_sites: usize) -> Kir {
+        use kobo_ir::{
+            BindingUsage, KoboAstNodeId, SharedBindingFacts, TransformBindingFacts,
+            TransformFacts,
+        };
+        let mut kir = Kir::default();
+        let mut facts = TransformFacts::default();
+        facts.bindings.push(TransformBindingFacts {
+            node: KirNodeId(1),
+            ast_id: KoboAstNodeId(1),
+            binding_name: "x".to_owned(),
+            span: dummy_span(),
+            resource_kind: None,
+            hint: None,
+            hint_span: None,
+            is_copy_known: false,
+            is_generic: false,
+            is_async: false,
+            usage: BindingUsage::new(dummy_span()),
+            shared_facts: SharedBindingFacts {
+                node_id: KirNodeId(1),
+                mutable_sites,
+                ..SharedBindingFacts::default()
+            },
+            clone_elision: None,
+            elision_fallback: None,
+            plain_clone_alias: false,
+            plain_clone_source: None,
+            plain_clone_move_span: None,
+            elision_skip_reason: None,
+        });
+        kir.set_transform_facts(facts);
+        kir
+    }
+
+    #[test]
+    fn p3_below_threshold() {
+        // 2 mutable sites → no P3 (threshold is 3).
+        let kir = make_kir_with_binding(2);
+        let facts = detect_warn_early(&kir);
+        assert!(!facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::SharedMutableAt3PlusSites { .. })));
+    }
+
+    #[test]
+    fn p3_at_threshold() {
+        // Exactly 3 mutable sites → P3 detected.
+        let kir = make_kir_with_binding(3);
+        let facts = detect_warn_early(&kir);
+        let p3 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::SharedMutableAt3PlusSites { .. }));
+        assert!(p3.is_some(), "P3 should fire at exactly 3 sites");
+        if let WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } = &p3.unwrap().pattern {
+            assert_eq!(*site_count, 3);
+        }
+    }
+
+    #[test]
+    fn p3_above_threshold() {
+        // 10 mutable sites → P3 detected with site_count=10.
+        let kir = make_kir_with_binding(10);
+        let facts = detect_warn_early(&kir);
+        let p3 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::SharedMutableAt3PlusSites { .. }));
+        assert!(p3.is_some());
+        if let WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } = &p3.unwrap().pattern {
+            assert_eq!(*site_count, 10);
+        }
+    }
+
+    // --- P4 additional tests ---
+
+    #[test]
+    fn p4_multiple_self_fields() {
+        // Struct with 2 direct Self fields → still one P4 fact.
+        let kir = make_kir_with_structs(vec![KirStructDef {
+            name: "Double".to_owned(),
+            span: dummy_span(),
+            fields: vec![
+                KirStructFieldDef {
+                    name: "left".to_owned(),
+                    shape: FieldTypeShape::DirectNamed("Double".to_owned()),
+                },
+                KirStructFieldDef {
+                    name: "right".to_owned(),
+                    shape: FieldTypeShape::DirectNamed("Double".to_owned()),
+                },
+            ],
+            known_debt_reason: None,
+            known_debt_span: None,
+            known_debt_parse_error: None,
+        }]);
+        let facts = detect_warn_early(&kir);
+        let p4_count = facts.iter().filter(|f| matches!(&f.pattern, WarnEarlyPattern::SelfReferentialStruct { .. })).count();
+        assert_eq!(p4_count, 1, "one P4 fact per struct regardless of field count");
+    }
+
+    // --- Edge case tests ---
+
+    #[test]
+    fn empty_struct_no_detection() {
+        let kir = make_kir_with_structs(vec![KirStructDef {
+            name: "Empty".to_owned(),
+            span: dummy_span(),
+            fields: Vec::new(),
+            known_debt_reason: None,
+            known_debt_span: None,
+            known_debt_parse_error: None,
+        }]);
+        let facts = detect_warn_early(&kir);
+        assert!(facts.is_empty(), "empty struct should produce no facts");
+    }
+
+    #[test]
+    fn known_debt_empty_struct() {
+        // Struct with known_debt but no problematic fields → no facts.
+        let kir = make_kir_with_structs(vec![KirStructDef {
+            name: "Safe".to_owned(),
+            span: dummy_span(),
+            fields: vec![KirStructFieldDef {
+                name: "value".to_owned(),
+                shape: FieldTypeShape::Other,
+            }],
+            known_debt_reason: Some("precautionary".to_owned()),
+            known_debt_span: Some(dummy_span()),
+            known_debt_parse_error: None,
+        }]);
+        let facts = detect_warn_early(&kir);
+        assert!(facts.is_empty(), "no problematic fields means no facts");
     }
 }

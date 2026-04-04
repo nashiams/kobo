@@ -1,0 +1,16 @@
+// diag_owner_saturated fixture: synthetic test for saturation path.
+//
+// Saturating a u64 counter in practice is impractical (2^64 borrows would
+// take centuries). This fixture is a minimal struct that exercises the
+// DiagOwner wrapping path; the actual saturation logic is tested via unit
+// tests in kobo-diag, not integration fixtures.
+
+struct Tracker {
+    count: i32,
+}
+
+fn main() {
+    let tracker = Tracker { count: 0 };
+    tracker.count = tracker.count + 1;
+    println!("{}", tracker.count);
+}

@@ -1,0 +1,28 @@
+// K0080-P3 fixture: shared mutable state mutated from 3+ distinct call sites.
+//
+// The binding `c` is mutated from three distinct function call sites
+// (inc, dec, reset). `kobo check` must emit note[K0080-P3] for this binding.
+
+struct Counter {
+    val: i32,
+}
+
+fn inc(c: Counter) {
+    c.val = c.val + 1;
+}
+
+fn dec(c: Counter) {
+    c.val = c.val - 1;
+}
+
+fn reset(c: Counter) {
+    c.val = 0;
+}
+
+fn main() {
+    let c = Counter { val: 0 };
+    inc(c);
+    dec(c);
+    reset(c);
+    println!("{}", c.val);
+}

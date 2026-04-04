@@ -44,6 +44,10 @@ pub enum WarnEarlyPattern {
     ///
     /// Detected structurally (same inner type on both fields), not nominally.
     /// Supersedes P1 when both patterns match the same struct.
+    ///
+    /// Spec originally defined a single `back_field`. Implementation uses
+    /// separate `children_field` + `parent_field` for richer diagnostic
+    /// messages. This is an intentional enhancement over the spec.
     ParentChildBackPointer {
         struct_name: String,
         /// Field holding `Vec<Rc<RefCell<Self>>>` (children direction).
@@ -89,11 +93,13 @@ pub enum DebtComplexityTier {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DebtSiteRecord {
     pub node_id: KirNodeId,
+    #[serde(rename = "source_span")]
     pub span: KoboSpan,
     pub tier: OwnershipTier,
     /// Structural complexity estimate. Not a solver result. (v0.8 will add exact field.)
     pub complexity_estimate: DebtComplexityTier,
     /// All K0080-P pattern variants associated with this site.
+    #[serde(rename = "patterns")]
     pub warn_early: Vec<WarnEarlyPattern>,
     /// `true` when `#[kobo::known_debt]` suppresses all K0080-P notes for this site.
     pub suppressed: bool,
@@ -131,6 +137,7 @@ pub struct ComplexityBreakdown {
 /// active structural warnings.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AcknowledgedDebtRecord {
+    pub node_id: KirNodeId,
     pub span: KoboSpan,
     pub reason: String,
     pub pattern: WarnEarlyPattern,
@@ -149,7 +156,9 @@ pub struct DebtReport {
     pub schema_version: u32,
     pub file_count: usize,
     pub line_count: usize,
+    #[serde(rename = "wrapper_inventory")]
     pub inventory: WrapperInventory,
+    #[serde(rename = "complexity_breakdown")]
     pub complexity: ComplexityBreakdown,
     /// Active (non-suppressed) structural warnings.
     pub warn_early: Vec<WarnEarlyFact>,
@@ -222,6 +231,9 @@ pub struct KirStructDef {
     pub known_debt_reason: Option<String>,
     /// Span of the `#[kobo::known_debt]` attribute, for error reporting.
     pub known_debt_span: Option<KoboSpan>,
+    /// Parse error from `#[kobo::known_debt]` if malformed (missing reason or
+    /// empty reason string). The driver converts this to a `KDiagnostic`.
+    pub known_debt_parse_error: Option<String>,
 }
 
 // --- Tests ---

@@ -17,6 +17,12 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         KoboCommand::Perf { file, from, threshold } => {
             perf::cmd_perf(&file, from.as_deref(), threshold)
         }
-        KoboCommand::Debt { file, json, summary } => debt::cmd_debt(&file, json, summary),
+        KoboCommand::Debt { file, json, summary, watch } => {
+            if watch {
+                eprintln!("kobo debt --watch is planned for v0.5");
+                return Ok(());
+            }
+            debt::cmd_debt(&file, json, summary)
+        }
     }
 }

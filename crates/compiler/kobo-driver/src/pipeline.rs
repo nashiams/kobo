@@ -119,6 +119,20 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
         session.file_set(),
     ));
 
+    // Emit errors for malformed #[kobo::known_debt] attributes (C07).
+    for def in kir.struct_defs() {
+        if let Some(error_msg) = &def.known_debt_parse_error {
+            let span = def.known_debt_span.unwrap_or(def.span);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0025,
+                Severity::Error,
+                DiagLabel::primary(span, error_msg.clone()),
+                error_msg.clone(),
+                DiagDecision(String::new()),
+            ));
+        }
+    }
+
     // Emit K0080-P advisory notes for non-suppressed structural patterns.
     // Contract C08: these are always `note` severity, never `warning` or `error`.
     for fact in kir.warn_early_facts() {

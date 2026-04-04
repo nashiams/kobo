@@ -1,0 +1,17 @@
+// K0080-P1 suppressed: bidirectional links acknowledged with known_debt.
+//
+// The #[kobo::known_debt = "will use arena"] attribute suppresses the K0080-P1
+// note. `kobo debt` must list this struct under "Acknowledged debt:" with the
+// reason "will use arena".
+
+#[kobo::known_debt = "will use arena"]
+struct Node {
+    left: Rc<RefCell<Node>>,
+    right: Rc<RefCell<Node>>,
+    value: i32,
+}
+
+fn main() {
+    let value = 42;
+    println!("{}", value);
+}

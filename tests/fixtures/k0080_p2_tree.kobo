@@ -1,0 +1,16 @@
+// K0080-P2 fixture: parent↔child back-pointer tree.
+//
+// `TreeNode` has both Vec<Rc<RefCell<TreeNode>>> (children) and
+// Option<Rc<RefCell<TreeNode>>> (parent) fields.
+// `kobo check` must emit note[K0080-P2] pointing to this struct.
+
+struct TreeNode {
+    children: Vec<Rc<RefCell<TreeNode>>>,
+    parent: Option<Rc<RefCell<TreeNode>>>,
+    label: String,
+}
+
+fn main() {
+    let label = String::from("root");
+    println!("{}", label);
+}

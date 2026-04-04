@@ -38,6 +38,29 @@ pub(crate) enum KoboCommand {
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
+    /// Show hot borrow paths from a prior `KOBO_DIAG=1` run.
+    Perf {
+        /// Path to source file for context (used in run suggestions).
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Path to stderr capture from `KOBO_DIAG=1 kobo run FILE 2>diag.log`
+        #[arg(long, value_name = "FILE")]
+        from: Option<PathBuf>,
+        /// Override display threshold (default: KOBO_DIAG_THRESHOLD env or 10000)
+        #[arg(long)]
+        threshold: Option<u64>,
+    },
+    /// Show ownership debt report for a .kobo file.
+    Debt {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Output JSON (schema_version=1, stable from v0.4)
+        #[arg(long)]
+        json: bool,
+        /// Output a single summary line
+        #[arg(long)]
+        summary: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {

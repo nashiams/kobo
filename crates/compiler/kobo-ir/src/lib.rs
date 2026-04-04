@@ -1,3 +1,4 @@
+pub mod debt;
 mod kir;
 mod node_id;
 mod ownership;
@@ -5,6 +6,11 @@ mod resource;
 mod solution_map;
 mod span;
 
+pub use debt::{
+    AcknowledgedDebtRecord, ComplexityBreakdown, DebtComplexityTier, DebtReport, DebtSiteRecord,
+    FieldTypeShape, KirStructDef, KirStructFieldDef, WarnEarlyFact, WarnEarlyPattern,
+    WrapperInventory,
+};
 pub use kir::{BorrowKind, NodeKind, UseKind};
 pub use kir::{Kir, KirNode};
 pub use node_id::{

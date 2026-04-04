@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::debt::{KirStructDef, WarnEarlyFact};
 use crate::node_id::{CfgBlockId, KirNodeId, KoboAstNodeId};
 use crate::ownership::{OwnershipTier, TierDecision, TransformFacts};
 use crate::resource::ResourceKind;
@@ -62,6 +63,10 @@ pub struct Kir {
     ast_to_kir: HashMap<KoboAstNodeId, KirNodeId>,
     transform_facts: TransformFacts,
     tier_decisions: Vec<TierDecision>,
+    /// Struct definitions collected during the transform pass, for K0080-P detection.
+    struct_defs: Vec<KirStructDef>,
+    /// K0080-P structural warnings detected by the warn_early pass.
+    warn_early_facts: Vec<WarnEarlyFact>,
 }
 
 // --- Public read API ---
@@ -79,6 +84,8 @@ impl Kir {
             ast_to_kir,
             transform_facts: TransformFacts::default(),
             tier_decisions: Vec::new(),
+            struct_defs: Vec::new(),
+            warn_early_facts: Vec::new(),
         }
     }
 
@@ -126,6 +133,22 @@ impl Kir {
 
     pub fn set_tier_decisions(&mut self, decisions: Vec<TierDecision>) {
         self.tier_decisions = decisions;
+    }
+
+    pub fn struct_defs(&self) -> &[KirStructDef] {
+        &self.struct_defs
+    }
+
+    pub fn set_struct_defs(&mut self, defs: Vec<KirStructDef>) {
+        self.struct_defs = defs;
+    }
+
+    pub fn warn_early_facts(&self) -> &[WarnEarlyFact] {
+        &self.warn_early_facts
+    }
+
+    pub fn set_warn_early_facts(&mut self, facts: Vec<WarnEarlyFact>) {
+        self.warn_early_facts = facts;
     }
 
     pub fn len(&self) -> usize {

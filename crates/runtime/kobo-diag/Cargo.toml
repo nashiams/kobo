@@ -1,8 +1,15 @@
 [package]
 name    = "kobo-diag"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
+publish = true
 
 # Ships to crates.io — used by generated .rs files at runtime.
-# Intentionally has no kobo-* deps.
+# Zero kobo-* deps. Contract C02.
+[features]
+diag = []
+
 [dependencies]
+
+[dev-dependencies]
+static_assertions = "1"

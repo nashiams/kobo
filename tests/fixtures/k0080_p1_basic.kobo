@@ -1,0 +1,15 @@
+// K0080-P1 fixture: bidirectional Rc<RefCell<T>> links.
+//
+// `Node` holds two `Rc<RefCell<Node>>` fields that form bidirectional links.
+// `kobo check` must emit note[K0080-P1] pointing to this struct.
+
+struct Node {
+    left: Rc<RefCell<Node>>,
+    right: Rc<RefCell<Node>>,
+    value: i32,
+}
+
+fn main() {
+    let value = 42;
+    println!("{}", value);
+}

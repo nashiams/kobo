@@ -1,0 +1,14 @@
+---
+source: bin/kobo-cli/tests/test_ui.rs
+assertion_line: 156
+expression: output.stderr
+---
+note[K0080-P1]: ownership pattern will require architectural decision at migration
+  --> tests\ui\K0080_P1_node.kobo:6:1
+  |
+6 | struct GraphNode {
+  | ^ bidirectional Rc links in `GraphNode`
+  |
+   = struct `GraphNode` has Rc<RefCell<T>> links that form a cycle (left↔right)
+   = this will leak memory unless Weak references are used
+   = kobo decision: advisory only — no automatic fix; see `kobo debt` for migration guidance

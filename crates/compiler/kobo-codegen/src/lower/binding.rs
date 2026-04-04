@@ -14,6 +14,7 @@ pub(crate) fn apply_tier_to_local(
     local: &mut syn::Local,
     tier: OwnershipTier,
     already_wrapped: bool,
+    diag_source_location: Option<&str>,
 ) {
     if matches!(tier, OwnershipTier::RcMutShared | OwnershipTier::Scoped) {
         strip_binding_mutability(&mut local.pat);
@@ -40,7 +41,16 @@ pub(crate) fn apply_tier_to_local(
         }
         OwnershipTier::RcMutShared if !already_wrapped => {
             let expr = (*init.expr).clone();
-            init.expr = Box::new(parse_quote!(Rc::new(RefCell::new(#expr))));
+            if let Some(loc) = diag_source_location {
+                // DiagOwner wraps the Rc<RefCell<T>> for borrow instrumentation.
+                // The source location literal is baked at codegen time — it never
+                // allocates at runtime (it is a &'static str).
+                init.expr = Box::new(parse_quote!(
+                    DiagOwner::new(Rc::new(RefCell::new(#expr)), #loc)
+                ));
+            } else {
+                init.expr = Box::new(parse_quote!(Rc::new(RefCell::new(#expr))));
+            }
         }
         OwnershipTier::Scoped => {
             let expr = (*init.expr).clone();

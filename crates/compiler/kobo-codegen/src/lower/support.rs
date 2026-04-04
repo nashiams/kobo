@@ -5,8 +5,19 @@ pub(crate) fn support_items(
     needs_refcell: bool,
     needs_arc: bool,
     needs_scoped_handle: bool,
+    needs_diag_owner: bool,
 ) -> Vec<syn::Item> {
     let mut items = Vec::new();
+
+    if needs_diag_owner {
+        // DiagOwner must come before Rc/RefCell imports so the reader sees the
+        // wrapper type first. The `diag` feature is activated by the compiler
+        // when KOBO_DIAG=1 is set at compile time via build.rs (v0.5 task).
+        // For v0.4 the user must add `kobo-diag` to their Cargo.toml.
+        items.push(parse_quote!(
+            use kobo_diag::DiagOwner;
+        ));
+    }
 
     if needs_refcell {
         items.push(parse_quote!(

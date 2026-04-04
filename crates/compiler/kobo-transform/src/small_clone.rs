@@ -146,6 +146,11 @@ fn analyze_field_type(
             }
             let ident = segment.ident.to_string();
             if let Some(item_struct) = struct_defs.get(&ident) {
+                // Cycle guard: if we're already visiting this type, treat it as
+                // opaque — the struct has an infinite-size field (K0080-P4 case).
+                if visiting.contains(&ident) {
+                    return opaque_field();
+                }
                 let nested_profile =
                     analyze_struct(&ident, struct_defs, threshold_bytes, cache, visiting);
                 let nested_size = item_struct

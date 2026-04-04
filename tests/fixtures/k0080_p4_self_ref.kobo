@@ -1,0 +1,14 @@
+// K0080-P4 fixture: self-referential struct without indirection.
+//
+// `Raw` directly contains a field of type `Raw`, which has infinite size.
+// `kobo check` must emit note[K0080-P4] pointing to this struct.
+
+struct Raw {
+    next: Raw,
+    value: i32,
+}
+
+fn main() {
+    let value = 1;
+    println!("{}", value);
+}

@@ -7,6 +7,7 @@ use crate::finalize::{
 use crate::options::TransformOptions;
 use crate::tier_validate::validate_tiers;
 use crate::tiered::{apply_decisions, choose_tiers};
+use crate::warn_early::detect_warn_early;
 use kobo_ir::{Kir, NodeIdGen};
 use kobo_parser::KoboFile;
 
@@ -40,8 +41,12 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     }
 
     collect_hint_conflicts(&mut built.transform_facts, &decisions);
+    kir.set_struct_defs(built.struct_defs);
     kir.set_transform_facts(built.transform_facts);
     kir.set_tier_decisions(decisions);
+
+    let warn_early = detect_warn_early(&kir);
+    kir.set_warn_early_facts(warn_early);
 
     let _cfg = build_cfg(&kir);
     kir

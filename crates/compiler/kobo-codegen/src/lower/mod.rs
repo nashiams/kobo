@@ -6,9 +6,12 @@ mod rewrite;
 mod scope;
 mod support;
 
+use std::path::Path;
+
 use kobo_ir::SolutionMap;
 use kobo_parser::KoboFile;
 
+use crate::CodegenOptions;
 use self::plan::LoweringPlan;
 use self::rewrite::Lowerer;
 
@@ -27,9 +30,15 @@ pub(crate) struct LoweredFile {
 }
 
 /// Formatted Rust lowering driven by the frozen KIR plus any solved ownership overrides.
-pub(crate) fn lower(kir: &kobo_ir::Kir, ast: &KoboFile, solution: &SolutionMap) -> LoweredFile {
+pub(crate) fn lower(
+    kir: &kobo_ir::Kir,
+    ast: &KoboFile,
+    solution: &SolutionMap,
+    kobo_path: &Path,
+    options: &CodegenOptions,
+) -> LoweredFile {
     let mut file = ast.inner.clone();
-    let plan = LoweringPlan::from_kir(ast, kir, solution);
+    let plan = LoweringPlan::from_kir(ast, kir, solution, kobo_path, options);
     let mut lowerer = Lowerer::new(ast, &plan);
     lowerer.lower_items(&mut file.items);
     plan.insert_support_items(&mut file);

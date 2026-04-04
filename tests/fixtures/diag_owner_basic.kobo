@@ -1,0 +1,17 @@
+// diag_owner_basic fixture: Rc<RefCell<T>> binding accessed in a loop.
+//
+// With KOBO_DIAG=1, kobo-codegen wraps the `cache` binding in DiagOwner.
+// Without KOBO_DIAG, it emits a plain Rc<RefCell<T>>.
+//
+// Run: KOBO_DIAG=1 kobo run tests/fixtures/diag_owner_basic.kobo 2>diag.log
+// Then: kobo perf tests/fixtures/diag_owner_basic.kobo --from diag.log
+
+struct Cache {
+    hits: i32,
+}
+
+fn main() {
+    let cache = Cache { hits: 0 };
+    let count = 100;
+    println!("cache hits: {} count: {}", cache.hits, count);
+}

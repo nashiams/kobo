@@ -1,0 +1,98 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::Context;
+use kobo_driver::{run_codegen_pipeline, CodegenArtifacts};
+
+use super::session::{build_session, render_diagnostics};
+
+pub(super) fn cmd_fmt(file: &Path) -> anyhow::Result<()> {
+    let mut session = build_session(file)?;
+    let artifacts = run_codegen_pipeline(&mut session, file).map_err(|()| {
+        render_diagnostics(&session);
+        anyhow::anyhow!("compilation failed")
+    })?;
+    run_rustfmt_file(&artifacts.rs_path)?;
+
+    let formatted_source = rewrite_lossless_kobo_source(file, &artifacts)?;
+    fs::write(file, formatted_source)
+        .with_context(|| format!("failed to write {}", file.display()))?;
+
+    Ok(())
+}
+
+fn run_rustfmt_file(path: &Path) -> anyhow::Result<()> {
+    let rustfmt_output = Command::new("rustfmt")
+        .arg(path)
+        .output()
+        .with_context(|| format!("failed to invoke rustfmt for {}", path.display()));
+
+    let rustfmt_output = match rustfmt_output {
+        Ok(output) => output,
+        Err(error) if is_command_not_found(&error) => {
+            anyhow::bail!("rustfmt is unavailable; install the Rust toolchain component first");
+        }
+        Err(error) => return Err(error),
+    };
+
+    if !rustfmt_output.status.success() {
+        anyhow::bail!("rustfmt exited with a non-zero status");
+    }
+
+    Ok(())
+}
+
+fn rewrite_lossless_kobo_source(
+    file: &Path,
+    artifacts: &CodegenArtifacts,
+) -> anyhow::Result<String> {
+    debug_assert!(
+        artifacts
+            .source_map
+            .kobo_path()
+            .ends_with(&file.to_string_lossy().replace('/', "\\")),
+        "source map and fmt target should refer to the same .kobo file"
+    );
+
+    // v0.2 only back-propagates formatting from the original `.kobo` text.
+    // Compiler-owned wrapper lines exist only in generated Rust, so they never
+    // flow back into the user file through `kobo fmt`.
+    rustfmt_original_kobo_source(file)
+}
+
+fn rustfmt_original_kobo_source(file: &Path) -> anyhow::Result<String> {
+    let source =
+        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
+    let temp_path = rustfmt_temp_path(file);
+    fs::write(&temp_path, &source)
+        .with_context(|| format!("failed to stage {}", temp_path.display()))?;
+    run_rustfmt_file(&temp_path)?;
+
+    let formatted = fs::read_to_string(&temp_path)
+        .with_context(|| format!("failed to read {}", temp_path.display()));
+    let _ = fs::remove_file(&temp_path);
+
+    formatted
+}
+
+fn rustfmt_temp_path(file: &Path) -> PathBuf {
+    let stem = file
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "kobo".to_owned());
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+
+    std::env::temp_dir().join(format!("kobo-fmt-{stem}-{}-{nonce}.rs", std::process::id()))
+}
+
+fn is_command_not_found(error: &anyhow::Error) -> bool {
+    error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|io_error| io_error.kind() == std::io::ErrorKind::NotFound)
+}

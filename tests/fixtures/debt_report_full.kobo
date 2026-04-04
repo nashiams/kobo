@@ -1,0 +1,29 @@
+// debt_report_full fixture: mixed wrapper tiers for a complete debt report.
+//
+// Contains PlainOwned, RcShared, and RcMutShared bindings so that
+// `kobo debt` reports a meaningful WrapperInventory. Also includes a
+// P1-pattern struct to populate warn_early, and a P1-suppressed struct
+// for the acknowledged section.
+
+#[kobo::known_debt = "will migrate to arena allocation"]
+struct GraphNode {
+    left: Rc<RefCell<GraphNode>>,
+    right: Rc<RefCell<GraphNode>>,
+}
+
+struct Counter {
+    value: i32,
+}
+
+fn increment(counter: &mut Counter) {
+    counter.value = counter.value + 1;
+}
+
+fn main() {
+    let x = 1;
+    let name = String::from("kobo");
+    println!("{} {}", x, name);
+    let mut c = Counter { value: 0 };
+    increment(&mut c);
+    println!("{}", c.value);
+}

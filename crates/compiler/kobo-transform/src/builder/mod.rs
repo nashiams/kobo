@@ -7,8 +7,8 @@ use crate::escape::{BorrowAlias, MoveAlias};
 use crate::options::TransformOptions;
 use crate::small_clone::{collect_small_clone_profiles, SmallCloneProfile};
 use kobo_ir::{
-    BoxReason, CloneElisionCandidate, ElisionSkipReason, HintConflictFact, KirNode, NodeIdGen,
-    TransformFacts,
+    BoxReason, CloneElisionCandidate, ElisionSkipReason, HintConflictFact, KirNode, KirStructDef,
+    NodeIdGen, TransformFacts,
 };
 use kobo_parser::{KoboBinding, KoboFile};
 
@@ -33,6 +33,7 @@ pub(crate) struct BuilderOutput {
     pub(crate) borrow_aliases: Vec<BorrowAlias>,
     pub(crate) move_aliases: Vec<MoveAlias>,
     pub(crate) clone_elision_candidates: Vec<CloneElisionCandidate>,
+    pub(crate) struct_defs: Vec<KirStructDef>,
 }
 
 pub(crate) struct TransformFactsBuilder<'a> {
@@ -51,6 +52,7 @@ pub(crate) struct TransformFactsBuilder<'a> {
     small_clone_profiles: HashMap<String, SmallCloneProfile>,
     function_names: HashSet<String>,
     pending_elision_candidates: HashMap<kobo_ir::KoboAstNodeId, AstCloneElisionCandidate>,
+    struct_defs: Vec<KirStructDef>,
 }
 
 mod emit;
@@ -107,6 +109,7 @@ impl<'a> TransformFactsBuilder<'a> {
                 .into_iter()
                 .map(|candidate| (candidate.alias_ast_id, candidate))
                 .collect(),
+            struct_defs: Vec::new(),
         }
     }
 
@@ -118,6 +121,7 @@ impl<'a> TransformFactsBuilder<'a> {
             move_aliases,
             clone_elision_candidates,
             hint_conflicts,
+            struct_defs,
             ..
         } = self;
 
@@ -144,6 +148,7 @@ impl<'a> TransformFactsBuilder<'a> {
             borrow_aliases,
             move_aliases,
             clone_elision_candidates,
+            struct_defs,
         }
     }
 

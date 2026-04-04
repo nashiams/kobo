@@ -11,7 +11,9 @@ mod small_clone;
 mod tier_validate;
 mod tiered;
 mod transform;
+pub(crate) mod warn_early;
 
 pub use cfg::CfgGraph;
 pub use options::TransformOptions;
 pub use transform::build_kir;
+pub use warn_early::detect_warn_early;

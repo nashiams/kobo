@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use kobo_analysis::{facts_to_diagnostics, run_analysis};
-use kobo_codegen::{codegen_file, CodegenOutput, KoboSourceMap};
-use kobo_ir::{FileId, Kir, SolutionMap};
+use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
+use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
+use kobo_ir::{FileId, Kir, SolutionMap, WarnEarlyPattern};
 use kobo_migrate::{solve, ConstraintGraph, SolveResult, SolverBudget};
 use kobo_parser::{parse_file, KoboFile};
 use kobo_transform::{build_kir, TransformOptions};
@@ -66,7 +67,14 @@ pub fn run_codegen_pipeline(
     let CodegenOutput {
         rs_source,
         source_map,
-    } = codegen_file(&kir, &kobo_file, &solution, input, &rs_path);
+    } = codegen_file(
+        &kir,
+        &kobo_file,
+        &solution,
+        input,
+        &rs_path,
+        &CodegenOptions { diag_mode: session.diag_enabled },
+    );
     let map_json = source_map.to_json_string().map_err(|error| {
         eprintln!("kobo: failed to serialize source map: {error}");
     })?;
@@ -110,6 +118,65 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
         kir.transform_facts(),
         session.file_set(),
     ));
+
+    // Emit K0080-P advisory notes for non-suppressed structural patterns.
+    // Contract C08: these are always `note` severity, never `warning` or `error`.
+    for fact in kir.warn_early_facts() {
+        if fact.suppressed {
+            continue;
+        }
+        let (code, label_text, explanation) = match &fact.pattern {
+            WarnEarlyPattern::BidirectionalRcLinks { struct_name, field_pairs } => {
+                let pairs_str = field_pairs
+                    .iter()
+                    .map(|(a, b)| format!("{a}↔{b}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    KErrorCode::K0080P1,
+                    format!("bidirectional Rc links in `{struct_name}`"),
+                    format!(
+                        "struct `{struct_name}` has Rc<RefCell<T>> links that form a cycle ({pairs_str})\n   \
+                         = this will leak memory unless Weak references are used"
+                    ),
+                )
+            }
+            WarnEarlyPattern::ParentChildBackPointer { struct_name, children_field, parent_field } => {
+                (
+                    KErrorCode::K0080P2,
+                    format!("parent↔child back-pointer in `{struct_name}`"),
+                    format!(
+                        "struct `{struct_name}` has `{children_field}` (children) and `{parent_field}` (parent) — Rc cycle\n   \
+                         = this will leak unless parent uses Weak references"
+                    ),
+                )
+            }
+            WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } => (
+                KErrorCode::K0080P3,
+                format!("shared mutable state at {site_count} call sites"),
+                format!(
+                    "the binding is mutated from {site_count} distinct call sites\n   \
+                     = migration will require an architectural decision on ownership"
+                ),
+            ),
+            WarnEarlyPattern::SelfReferentialStruct { struct_name } => (
+                KErrorCode::K0080P4,
+                format!("self-referential struct `{struct_name}` without indirection"),
+                format!(
+                    "struct `{struct_name}` contains a direct (non-indirected) field of the same type\n   \
+                     = this would have infinite size; use Box<{struct_name}> or Rc<RefCell<{struct_name}>>"
+                ),
+            ),
+        };
+
+        session.diagnostics.push(KDiagnostic::new(
+            code,
+            Severity::Note,
+            DiagLabel::primary(fact.span, label_text),
+            explanation,
+            DiagDecision("advisory only — no automatic fix; see `kobo debt` for migration guidance".to_owned()),
+        ));
+    }
 
     if session.has_errors() {
         Err(())

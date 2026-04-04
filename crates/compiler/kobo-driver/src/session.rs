@@ -13,15 +13,21 @@ pub struct CompileSession {
     file_set_builder: FileSetBuilder,
     pub id_gen: NodeIdGen,
     pub diagnostics: Vec<KDiagnostic>,
+    /// `true` when `KOBO_DIAG=1` was set in the process environment at session
+    /// creation time. Controls whether codegen wraps `RcMutShared` bindings in
+    /// `DiagOwner::new(…)` and whether the `diag` feature is activated.
+    pub diag_enabled: bool,
 }
 
 impl CompileSession {
     pub fn new(config: KoboConfig) -> Self {
+        let diag_enabled = std::env::var("KOBO_DIAG").as_deref() == Ok("1");
         Self {
             config,
             file_set_builder: FileSetBuilder::new(),
             id_gen: NodeIdGen::new(),
             diagnostics: Vec::new(),
+            diag_enabled,
         }
     }
 

@@ -1,0 +1,15 @@
+// UI test: K0080-P1 diagnostic format verification.
+//
+// `kobo check` on this file must emit note[K0080-P1] with the struct location.
+// The snapshot must match the expected diagnostic output from examples.md.
+
+struct GraphNode {
+    left: Rc<RefCell<GraphNode>>,
+    right: Rc<RefCell<GraphNode>>,
+    data: i32,
+}
+
+fn main() {
+    let data = 0;
+    println!("{}", data);
+}

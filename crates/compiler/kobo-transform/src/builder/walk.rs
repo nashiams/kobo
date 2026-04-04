@@ -1,7 +1,7 @@
 use syn::spanned::Spanned;
 
 use crate::hint::parse_hint;
-use kobo_ir::{EscapeKind, UseKind};
+use kobo_ir::{EscapeKind, FieldTypeShape, KirStructDef, KirStructFieldDef, UseKind};
 
 use super::helpers::{assignment_escape_kind, borrow_kind, is_mutating_method};
 use super::{FunctionCtx, PendingHint, TransformFactsBuilder};
@@ -10,6 +10,7 @@ impl TransformFactsBuilder<'_> {
     pub(super) fn walk_item(&mut self, item: &syn::Item) {
         match item {
             syn::Item::Fn(function) => self.walk_function(function),
+            syn::Item::Struct(item_struct) => self.collect_struct_def(item_struct),
             syn::Item::Const(item_const) => {
                 self.emit_declared_binding(&item_const.ident, Some(&item_const.expr), None);
             }
@@ -18,6 +19,51 @@ impl TransformFactsBuilder<'_> {
             }
             _ => {}
         }
+    }
+
+    /// Collect a struct definition for K0080-P pattern detection.
+    ///
+    /// Parses `#[kobo::known_debt = "reason"]` attributes and extracts
+    /// simplified field type shapes. Only shapes relevant to P1–P4 are kept;
+    /// everything else becomes `FieldTypeShape::Other`.
+    fn collect_struct_def(&mut self, item: &syn::ItemStruct) {
+        let struct_name = item.ident.to_string();
+        let span = self.ast.span_from_syn(item.span());
+
+        // Parse #[kobo::known_debt = "reason"] if present.
+        let (known_debt_reason, known_debt_span) = item
+            .attrs
+            .iter()
+            .find_map(|attr| parse_known_debt_attr(attr))
+            .map(|(reason, attr_span)| {
+                (Some(reason), Some(self.ast.span_from_syn(attr_span)))
+            })
+            .unwrap_or((None, None));
+
+        let fields: Vec<KirStructFieldDef> = match &item.fields {
+            syn::Fields::Named(named) => named
+                .named
+                .iter()
+                .map(|field| {
+                    let name = field
+                        .ident
+                        .as_ref()
+                        .map(|i| i.to_string())
+                        .unwrap_or_default();
+                    let shape = field_type_shape(&field.ty, &struct_name);
+                    KirStructFieldDef { name, shape }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        self.struct_defs.push(KirStructDef {
+            name: struct_name,
+            span,
+            fields,
+            known_debt_reason,
+            known_debt_span,
+        });
     }
 
     fn walk_function(&mut self, function: &syn::ItemFn) {
@@ -286,4 +332,138 @@ impl TransformFactsBuilder<'_> {
 
         self.walk_expr(reference.expr.as_ref());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Free helpers for struct-def collection
+// ---------------------------------------------------------------------------
+
+/// Parse `#[kobo::known_debt = "reason"]` from a single attribute.
+///
+/// Returns `(reason_string, span_of_attribute)` when the attribute matches,
+/// `None` otherwise.
+fn parse_known_debt_attr(attr: &syn::Attribute) -> Option<(String, proc_macro2::Span)> {
+    // Match path `kobo::known_debt`
+    let segments: Vec<_> = match &attr.meta {
+        syn::Meta::NameValue(nv) => {
+            let segs: Vec<_> = nv.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "known_debt" {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(lit_str),
+                    ..
+                }) = &nv.value
+                {
+                    return Some((lit_str.value(), attr.span()));
+                }
+            }
+            segs
+        }
+        _ => return None,
+    };
+    let _ = segments;
+    None
+}
+
+/// Map a `syn::Type` to the simplified `FieldTypeShape` used for K0080-P detection.
+///
+/// `struct_name` is passed so `Self` references can be canonicalized to the
+/// containing struct name.
+fn field_type_shape(ty: &syn::Type, struct_name: &str) -> FieldTypeShape {
+    match ty {
+        syn::Type::Path(type_path) => {
+            let segs: Vec<String> = type_path
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+
+            match segs.as_slice() {
+                // Rc<...>
+                [rc] if rc == "Rc" => {
+                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
+                        if let Some(inner_name) = extract_rc_refcell_inner(inner, struct_name) {
+                            return FieldTypeShape::RcRefCellOf(inner_name);
+                        }
+                    }
+                    FieldTypeShape::Other
+                }
+                // Option<...>
+                [opt] if opt == "Option" => {
+                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
+                        if let syn::GenericArgument::Type(inner_ty) = inner {
+                            if let FieldTypeShape::RcRefCellOf(name) =
+                                field_type_shape(inner_ty, struct_name)
+                            {
+                                return FieldTypeShape::OptionRcRefCellOf(name);
+                            }
+                        }
+                    }
+                    FieldTypeShape::Other
+                }
+                // Vec<...>
+                [vec] if vec == "Vec" => {
+                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
+                        if let syn::GenericArgument::Type(inner_ty) = inner {
+                            match field_type_shape(inner_ty, struct_name) {
+                                FieldTypeShape::RcRefCellOf(name) => {
+                                    return FieldTypeShape::VecRcRefCellOf(name)
+                                }
+                                FieldTypeShape::DirectNamed(name) => {
+                                    return FieldTypeShape::VecDirectNamed(name)
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    FieldTypeShape::Other
+                }
+                // Self
+                [s] if s == "Self" => FieldTypeShape::DirectNamed(struct_name.to_owned()),
+                // Any other single-segment name
+                [name] => FieldTypeShape::DirectNamed(name.clone()),
+                _ => FieldTypeShape::Other,
+            }
+        }
+        _ => FieldTypeShape::Other,
+    }
+}
+
+/// Extract the first generic argument from a path segment.
+fn first_generic_arg(seg: &syn::PathSegment) -> Option<&syn::GenericArgument> {
+    match &seg.arguments {
+        syn::PathArguments::AngleBracketed(args) => args.args.first(),
+        _ => None,
+    }
+}
+
+/// If `ty` is `RefCell<X>`, return the canonical name of `X` (with "Self"
+/// replaced by `struct_name`).
+fn extract_rc_refcell_inner(arg: &syn::GenericArgument, struct_name: &str) -> Option<String> {
+    if let syn::GenericArgument::Type(inner_ty) = arg {
+        if let syn::Type::Path(tp) = inner_ty {
+            let segs: Vec<_> = tp.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if segs.first().map(String::as_str) == Some("RefCell") {
+                if let Some(inner_arg) = first_generic_arg(tp.path.segments.first()?) {
+                    if let syn::GenericArgument::Type(value_ty) = inner_arg {
+                        if let syn::Type::Path(vp) = value_ty {
+                            let name = vp
+                                .path
+                                .segments
+                                .last()
+                                .map(|s| s.ident.to_string())
+                                .unwrap_or_default();
+                            let canonical = if name == "Self" {
+                                struct_name.to_owned()
+                            } else {
+                                name
+                            };
+                            return Some(canonical);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }

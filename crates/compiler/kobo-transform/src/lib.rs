@@ -12,6 +12,9 @@ mod tier_validate;
 mod tiered;
 mod transform;
 pub(crate) mod warn_early;
+pub(crate) mod strict;
+#[cfg(test)]
+mod strict_integration_tests;
 
 pub use cfg::CfgGraph;
 pub use options::TransformOptions;

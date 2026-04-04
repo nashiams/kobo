@@ -5,6 +5,7 @@ use crate::node_id::{CfgBlockId, KirNodeId, KoboAstNodeId};
 use crate::ownership::{OwnershipTier, TierDecision, TransformFacts};
 use crate::resource::ResourceKind;
 use crate::span::KoboSpan;
+use crate::strict::{CaptureSet, StrictBoundaryFact};
 
 // --- Types first ---
 
@@ -67,6 +68,10 @@ pub struct Kir {
     struct_defs: Vec<KirStructDef>,
     /// K0080-P structural warnings detected by the warn_early pass.
     warn_early_facts: Vec<WarnEarlyFact>,
+    /// Capture sets for all @strict blocks in this file (Contract C09).
+    strict_capture_sets: Vec<CaptureSet>,
+    /// Boundary violation facts for all @strict blocks (Contract C09, C05).
+    strict_boundary_facts: Vec<StrictBoundaryFact>,
 }
 
 // --- Public read API ---
@@ -86,6 +91,8 @@ impl Kir {
             tier_decisions: Vec::new(),
             struct_defs: Vec::new(),
             warn_early_facts: Vec::new(),
+            strict_capture_sets: Vec::new(),
+            strict_boundary_facts: Vec::new(),
         }
     }
 
@@ -149,6 +156,22 @@ impl Kir {
 
     pub fn set_warn_early_facts(&mut self, facts: Vec<WarnEarlyFact>) {
         self.warn_early_facts = facts;
+    }
+
+    pub fn strict_capture_sets(&self) -> &[CaptureSet] {
+        &self.strict_capture_sets
+    }
+
+    pub fn set_strict_capture_sets(&mut self, sets: Vec<CaptureSet>) {
+        self.strict_capture_sets = sets;
+    }
+
+    pub fn strict_boundary_facts(&self) -> &[StrictBoundaryFact] {
+        &self.strict_boundary_facts
+    }
+
+    pub fn set_strict_boundary_facts(&mut self, facts: Vec<StrictBoundaryFact>) {
+        self.strict_boundary_facts = facts;
     }
 
     pub fn len(&self) -> usize {

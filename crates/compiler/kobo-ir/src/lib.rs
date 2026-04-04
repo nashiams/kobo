@@ -5,6 +5,9 @@ mod ownership;
 mod resource;
 mod solution_map;
 mod span;
+pub mod strict;
+#[cfg(test)]
+mod strict_tests;
 
 pub use debt::{
     AcknowledgedDebtRecord, ComplexityBreakdown, DebtComplexityTier, DebtReport, DebtSiteRecord,
@@ -25,3 +28,7 @@ pub use ownership::{
 pub use resource::ResourceKind;
 pub use solution_map::SolutionMap;
 pub use span::KoboSpan;
+pub use strict::{
+    CaptureAccessKind, CaptureSet, CapturedBinding, ClosureCaptureDetail, ClosureCaptureMode,
+    NestedStrictBlock, StrictBoundaryFact, StrictBoundaryViolation,
+};

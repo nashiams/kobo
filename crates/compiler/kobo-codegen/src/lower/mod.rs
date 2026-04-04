@@ -4,6 +4,7 @@ mod borrow_scope;
 mod plan;
 mod rewrite;
 mod scope;
+pub(crate) mod strict;
 mod support;
 
 use std::path::Path;
@@ -39,7 +40,7 @@ pub(crate) fn lower(
 ) -> LoweredFile {
     let mut file = ast.inner.clone();
     let plan = LoweringPlan::from_kir(ast, kir, solution, kobo_path, options);
-    let mut lowerer = Lowerer::new(ast, &plan);
+    let mut lowerer = Lowerer::new(ast, &plan, kir, options);
     lowerer.lower_items(&mut file.items);
     plan.insert_support_items(&mut file);
     let (mut lowerer_notes, lowerer_anchors) = lowerer.into_parts();

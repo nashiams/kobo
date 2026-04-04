@@ -13,6 +13,36 @@ pub struct KoboFile {
     bindings: Vec<KoboBinding>,
     binding_index_by_id: HashMap<KoboAstNodeId, usize>,
     binding_index_by_span: HashMap<KoboSpan, usize>,
+    /// @strict blocks collected before marker-stripping (P3 / v0.5).
+    strict_blocks: Vec<KoboBlock>,
+    /// @strict fn items collected before marker-stripping (P3 / v0.5).
+    strict_fns: Vec<KoboItemFn>,
+}
+
+/// A Kobo block that may carry `@strict` annotation.
+///
+/// Used by kobo-transform's strict analysis. Contract C09: `is_strict` is
+/// set during parsing (P1); the field is the sole source of truth.
+#[derive(Clone)]
+pub struct KoboBlock {
+    pub body: syn::Block,
+    pub span: KoboSpan,
+    pub is_strict: bool,
+    /// Original byte offset of the `@strict` keyword, for diagnostic spans.
+    pub strict_keyword_span: Option<KoboSpan>,
+}
+
+/// A Kobo function item that may carry `@strict` annotation.
+///
+/// Used by kobo-transform's strict analysis. `is_async` is true when the
+/// function is declared with `async fn` (needed for K0063 detection).
+#[derive(Clone)]
+pub struct KoboItemFn {
+    pub inner: syn::ItemFn,
+    pub span: KoboSpan,
+    pub is_strict: bool,
+    pub strict_keyword_span: Option<KoboSpan>,
+    pub is_async: bool,
 }
 
 /// A top-level item in the Kobo AST, wrapped with a stable ID and source span.
@@ -72,7 +102,25 @@ impl KoboFile {
             bindings,
             binding_index_by_id,
             binding_index_by_span,
+            strict_blocks: Vec::new(),
+            strict_fns: Vec::new(),
         }
+    }
+
+    /// Store @strict blocks/fns collected during preprocessing (before marker-stripping).
+    pub fn set_strict_items(&mut self, blocks: Vec<KoboBlock>, fns: Vec<KoboItemFn>) {
+        self.strict_blocks = blocks;
+        self.strict_fns = fns;
+    }
+
+    /// All @strict blocks in this file (populated by `collect_strict_items_from_syn`).
+    pub fn strict_blocks(&self) -> &[KoboBlock] {
+        &self.strict_blocks
+    }
+
+    /// All @strict fn items in this file (populated by `collect_strict_items_from_syn`).
+    pub fn strict_fns(&self) -> &[KoboItemFn] {
+        &self.strict_fns
     }
 
     pub fn iter_bindings(&self) -> impl Iterator<Item = &KoboBinding> {

@@ -274,3 +274,71 @@ fn run_kobo_command_with_args(command: &str, fixture_path: &Path, extra_args: &[
         stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// v0.5 — @strict boundary violation snapshot tests (BUG-06)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_strict_k0041_active_alias() {
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("strict_k0041_active_alias.kobo");
+    let output = run_kobo_check(&fixture);
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_check__strict_k0041_active_alias", output.stderr);
+    });
+}
+
+#[test]
+fn check_strict_k0042_closure_capture() {
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("strict_k0042_closure_capture.kobo");
+    let output = run_kobo_check(&fixture);
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_check__strict_k0042_closure_capture", output.stderr);
+    });
+}
+
+#[test]
+fn check_strict_k0043_moved_binding() {
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("strict_k0043_moved_binding.kobo");
+    let output = run_kobo_check(&fixture);
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_check__strict_k0043_moved_binding", output.stderr);
+    });
+}
+
+#[test]
+fn check_strict_k0063_async_context() {
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("strict_k0063_async_context.kobo");
+    let output = run_kobo_check(&fixture);
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_check__strict_k0063_async_context", output.stderr);
+    });
+}

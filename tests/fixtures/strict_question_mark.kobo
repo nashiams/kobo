@@ -1,0 +1,17 @@
+// @strict with ? operator: IIFE wrapper for guard safety.
+struct Config { value: i32 }
+
+fn try_modify() -> Result<(), String> {
+    let cfg = Config { value: 0 };
+    @strict {
+        if cfg.value < 0 {
+            return Err("negative".to_string())?;
+        }
+        cfg.value = 42;
+    }
+    Ok(())
+}
+
+fn main() {
+    let _ = try_modify();
+}

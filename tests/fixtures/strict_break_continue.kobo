@@ -1,0 +1,13 @@
+// @strict with break/continue: CF enum dispatch.
+struct Acc { total: i32 }
+
+fn main() {
+    let acc = Acc { total: 0 };
+    for i in 0..10 {
+        @strict {
+            if i == 5 { continue; }
+            if i == 8 { break; }
+            acc.total = acc.total + i;
+        }
+    }
+}

@@ -65,6 +65,16 @@ pub fn build_debt_report(kir: &Kir, file_count: usize, line_count: usize) -> Deb
             .map(|b| b.binding_name.clone())
             .unwrap_or_else(|| format!("_{}", node.id.0));
 
+        let is_strict_covered = kir.strict_capture_sets().iter().any(|cap| {
+            cap.bindings.iter().any(|b| b.binding_id == node.id)
+        });
+
+        let strict_annotation = if is_strict_covered {
+            Some("covered by @strict \u{2014} no runtime overhead".into())
+        } else {
+            None
+        };
+
         let record = DebtSiteRecord {
             node_id: node.id,
             span: node.span,
@@ -73,6 +83,7 @@ pub fn build_debt_report(kir: &Kir, file_count: usize, line_count: usize) -> Deb
             warn_early: node_patterns,
             suppressed,
             binding_name,
+            strict_annotation,
         };
         report.sites.push(record);
 

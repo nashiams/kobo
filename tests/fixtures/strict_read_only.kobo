@@ -1,0 +1,10 @@
+// All captures Read: borrow() only, no borrow_mut().
+struct Config { max: i32, min: i32 }
+
+fn main() {
+    let cfg = Config { max: 100, min: 0 };
+    let result;
+    @strict {
+        result = cfg.max - cfg.min;
+    }
+}

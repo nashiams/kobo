@@ -1,0 +1,9 @@
+// @strict with diag mode: no lowering, pass-through.
+struct Counter { val: i32 }
+
+fn main() {
+    let c = Counter { val: 0 };
+    @strict {
+        c.val = c.val + 1;
+    }
+}

@@ -1,4 +1,4 @@
-use kobo_ir::{FileEntry, FileSet, KoboSpan};
+use kobo_ir::{FileEntry, FileSet, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
 
 use crate::diagnostic::{CliSuggestion, DiagHelp, DiagLabel, DiagLabelKind, KDiagnostic};
 
@@ -292,6 +292,186 @@ pub fn render_k0021(stats: &DiagOwnerStats) -> KDiagnostic {
     )
 }
 
+// ---------------------------------------------------------------------------
+// @strict boundary diagnostics (K0041 / K0042 / K0043 / K0063) — P4 v0.5
+// ---------------------------------------------------------------------------
+
+/// Render a K0041 diagnostic: active Rc aliases at @strict block entry.
+///
+/// Contract C03: Severity::Error.
+pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
+    use crate::codes::{KErrorCode, Severity};
+
+    let alias_sites = match &fact.violation {
+        StrictBoundaryViolation::ActiveAliases { alias_sites, .. } => alias_sites.as_slice(),
+        _ => panic!("render_k0041 called with wrong violation type"),
+    };
+
+    let primary = DiagLabel::primary(
+        fact.block_span,
+        "active aliases at @strict block entry",
+    );
+
+    let alias_count = alias_sites.len();
+    let explanation = format!(
+        "value has {alias_count} active Rc alias{} at the point of entering @strict; \
+         all aliases must be dropped before the @strict block is entered",
+        if alias_count == 1 { "" } else { "es" }
+    );
+
+    let mut diag = KDiagnostic::new(
+        KErrorCode::K0041,
+        Severity::Error,
+        primary,
+        explanation,
+        "drop or explicitly clone-then-drop aliases before the @strict { } boundary",
+    );
+
+    for &alias_span in alias_sites {
+        diag.secondary.push(DiagLabel::secondary(alias_span, "alias created here"));
+    }
+
+    diag
+}
+
+/// Render a K0042 diagnostic: closure captures Rc<RefCell<T>> across @strict boundary.
+///
+/// Contract C03: Severity::Error.
+pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
+    use crate::codes::{KErrorCode, Severity};
+
+    let closure_span = match &fact.violation {
+        StrictBoundaryViolation::ClosureCapture { closure_span, .. } => *closure_span,
+        _ => panic!("render_k0042 called with wrong violation type"),
+    };
+
+    let primary = DiagLabel::primary(
+        closure_span,
+        "closure captures Rc<RefCell<T>> binding across @strict boundary",
+    );
+
+    let explanation =
+        "a closure defined inside an @strict block captures a wrapped binding; \
+         borrowing through Rc<RefCell<T>> inside a closure may panic if the @strict \
+         guard is still active when the closure is called";
+
+    let mut diag = KDiagnostic::new(
+        KErrorCode::K0042,
+        Severity::Error,
+        primary,
+        explanation,
+        "extract the closure outside the @strict block, or refactor to avoid capturing \
+         the wrapped value",
+    );
+
+    diag.secondary.push(DiagLabel::secondary(fact.block_span, "@strict block here"));
+    diag
+}
+
+/// Render a K0043 diagnostic: value moved inside @strict block.
+///
+/// Contract C03: Severity::Error.
+pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
+    use crate::codes::{KErrorCode, Severity};
+
+    let move_site = match &fact.violation {
+        StrictBoundaryViolation::MovedInside { move_site, .. } => *move_site,
+        _ => panic!("render_k0043 called with wrong violation type"),
+    };
+
+    let primary = DiagLabel::primary(move_site, "value moved here");
+
+    let explanation =
+        "a binding is moved inside an @strict block; the borrow guard is dropped \
+         on exit from the block and the now-moved value cannot be re-wrapped with \
+         Rc<RefCell<T>>; this would leave the handle in an inconsistent state";
+
+    let mut diag = KDiagnostic::new(
+        KErrorCode::K0043,
+        Severity::Error,
+        primary,
+        explanation,
+        "clone the value before moving, or drop the guard before the move statement",
+    );
+
+    diag.secondary.push(DiagLabel::secondary(fact.block_span, "@strict block"));
+    diag
+}
+
+/// Render a K0063 diagnostic: @strict block inside async fn.
+///
+/// Contract C03: Severity::Error.
+pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
+    use crate::codes::{KErrorCode, Severity};
+
+    let async_fn_span = match &fact.violation {
+        StrictBoundaryViolation::AsyncContext { async_fn_span } => *async_fn_span,
+        _ => panic!("render_k0063 called with wrong violation type"),
+    };
+
+    let primary = DiagLabel::primary(
+        fact.block_span,
+        "@strict block inside async fn — borrow guards cannot cross .await",
+    );
+
+    let explanation =
+        "@strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped \
+         before any .await point; placing an @strict block directly inside an async \
+         fn makes this invariant unenforceable at compile time";
+
+    let mut diag = KDiagnostic::new(
+        KErrorCode::K0063,
+        Severity::Error,
+        primary,
+        explanation,
+        "annotate the fn as `@strict async fn` to opt in to the async-aware guard \
+         protocol, or refactor to avoid @strict inside async context",
+    );
+
+    diag.secondary
+        .push(DiagLabel::secondary(async_fn_span, "async fn defined here"));
+    diag
+}
+
+/// Render a labeled break/continue crossing @strict boundary diagnostic.
+///
+/// v0.5: uses K0041 code as placeholder (K0044 reserved for v0.6).
+/// Contract C03: Severity::Error.
+pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
+    use crate::codes::{KErrorCode, Severity};
+
+    let (label, break_span) = match &fact.violation {
+        StrictBoundaryViolation::LabeledCrossBoundary {
+            label,
+            break_or_continue_span,
+            ..
+        } => (label.as_str(), *break_or_continue_span),
+        _ => panic!("render_labeled_cross_boundary called with wrong violation type"),
+    };
+
+    let primary = DiagLabel::primary(
+        break_span,
+        format!("labeled `{label}` crosses @strict boundary"),
+    );
+
+    let explanation = format!(
+        "break or continue to label `{label}` would exit the @strict block without \
+         dropping borrow guards in the correct order; this is not allowed in v0.5"
+    );
+
+    let mut diag = KDiagnostic::new(
+        KErrorCode::K0041,
+        Severity::Error,
+        primary,
+        explanation,
+        "restructure the code to avoid labeled break/continue across @strict boundaries",
+    );
+
+    diag.secondary
+        .push(DiagLabel::secondary(fact.block_span, "@strict block here"));
+    diag
+}
+
 #[cfg(test)]
 mod diag_owner_tests {
     use super::*;
@@ -457,5 +637,162 @@ mod tests {
         let rendered = format_diagnostic(&file_set, &diagnostic);
         assert!(rendered.contains("[bytes 10..20]"));
         assert!(rendered.contains("src/main.kobo"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P4 @strict renderer tests — written FAILING first (TDD)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod strict_renderer_tests {
+    use kobo_ir::{FileId, KirNodeId, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
+
+    use crate::codes::{KErrorCode, Severity};
+
+    use super::{render_k0041, render_k0042, render_k0043, render_k0063};
+
+    fn span(s: u32, e: u32) -> KoboSpan {
+        KoboSpan::new(s, e, FileId(0))
+    }
+
+    fn node(id: u32) -> KirNodeId {
+        KirNodeId(id)
+    }
+
+    // ── K0041 ──────────────────────────────────────────────────────────────
+
+    /// Test 1: render_k0041 produces K0041 with Severity::Error (Contract C03).
+    #[test]
+    fn test_render_k0041_code_and_severity() {
+        let fact = StrictBoundaryFact {
+            block_span: span(10, 50),
+            violation: StrictBoundaryViolation::ActiveAliases {
+                binding_id: node(1),
+                alias_sites: vec![span(5, 8)],
+            },
+        };
+        let diag = render_k0041(&fact);
+        assert_eq!(diag.code, KErrorCode::K0041, "K0041 code expected");
+        assert_eq!(diag.severity, Severity::Error, "K0041 must use Severity::Error (C03)");
+    }
+
+    /// Test 2: render_k0041 primary span is the @strict block_span.
+    #[test]
+    fn test_render_k0041_primary_span_is_block_span() {
+        let block_span = span(10, 50);
+        let fact = StrictBoundaryFact {
+            block_span,
+            violation: StrictBoundaryViolation::ActiveAliases {
+                binding_id: node(2),
+                alias_sites: vec![span(3, 6), span(7, 9)],
+            },
+        };
+        let diag = render_k0041(&fact);
+        assert_eq!(
+            diag.primary.span, block_span,
+            "K0041 primary label must span the @strict block"
+        );
+        // Secondary labels cover each alias site
+        assert_eq!(
+            diag.secondary.len(),
+            2,
+            "one secondary label per alias site"
+        );
+    }
+
+    // ── K0042 ──────────────────────────────────────────────────────────────
+
+    /// Test 3: render_k0042 produces K0042 with Severity::Error (Contract C03).
+    #[test]
+    fn test_render_k0042_code_and_severity() {
+        let fact = StrictBoundaryFact {
+            block_span: span(20, 80),
+            violation: StrictBoundaryViolation::ClosureCapture {
+                closure_span: span(30, 60),
+                captured_binding_id: node(3),
+                is_move_closure: false,
+                captures: vec![],
+            },
+        };
+        let diag = render_k0042(&fact);
+        assert_eq!(diag.code, KErrorCode::K0042, "K0042 code expected");
+        assert_eq!(diag.severity, Severity::Error, "K0042 must use Severity::Error (C03)");
+    }
+
+    /// Test 4: render_k0042 primary span is the closure_span; block appears as secondary.
+    #[test]
+    fn test_render_k0042_has_secondary_block_label() {
+        let block_span = span(20, 80);
+        let closure_span = span(30, 60);
+        let fact = StrictBoundaryFact {
+            block_span,
+            violation: StrictBoundaryViolation::ClosureCapture {
+                closure_span,
+                captured_binding_id: node(4),
+                is_move_closure: false,
+                captures: vec![],
+            },
+        };
+        let diag = render_k0042(&fact);
+        assert_eq!(
+            diag.primary.span, closure_span,
+            "K0042 primary label must span the closure"
+        );
+        assert!(
+            diag.secondary.iter().any(|s| s.span == block_span),
+            "K0042 must have a secondary label at the @strict block_span"
+        );
+    }
+
+    // ── K0043 ──────────────────────────────────────────────────────────────
+
+    /// Test 5: render_k0043 produces K0043 with Severity::Error (Contract C03).
+    #[test]
+    fn test_render_k0043_code_and_severity() {
+        let fact = StrictBoundaryFact {
+            block_span: span(10, 90),
+            violation: StrictBoundaryViolation::MovedInside {
+                binding_id: node(5),
+                move_site: span(40, 55),
+            },
+        };
+        let diag = render_k0043(&fact);
+        assert_eq!(diag.code, KErrorCode::K0043, "K0043 code expected");
+        assert_eq!(diag.severity, Severity::Error, "K0043 must use Severity::Error (C03)");
+    }
+
+    /// Test 6: render_k0043 primary span is the move_site.
+    #[test]
+    fn test_render_k0043_primary_span_is_move_site() {
+        let move_site = span(40, 55);
+        let fact = StrictBoundaryFact {
+            block_span: span(10, 90),
+            violation: StrictBoundaryViolation::MovedInside {
+                binding_id: node(6),
+                move_site,
+            },
+        };
+        let diag = render_k0043(&fact);
+        assert_eq!(
+            diag.primary.span, move_site,
+            "K0043 primary label must span the move site"
+        );
+    }
+
+    // ── K0063 ──────────────────────────────────────────────────────────────
+
+    /// Test 7: render_k0063 produces K0063 with Severity::Error (Contract C03).
+    #[test]
+    fn test_render_k0063_code_and_severity() {
+        let fact = StrictBoundaryFact {
+            block_span: span(50, 100),
+            violation: StrictBoundaryViolation::AsyncContext {
+                async_fn_span: span(0, 120),
+            },
+        };
+        let diag = render_k0063(&fact);
+        assert_eq!(diag.code, KErrorCode::K0063, "K0063 code expected");
+        assert_eq!(diag.severity, Severity::Error, "K0063 must use Severity::Error (C03)");
     }
 }

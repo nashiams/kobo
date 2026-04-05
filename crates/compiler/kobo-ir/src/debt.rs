@@ -104,6 +104,8 @@ pub struct DebtSiteRecord {
     /// `true` when `#[kobo::known_debt]` suppresses all K0080-P notes for this site.
     pub suppressed: bool,
     pub binding_name: String,
+    /// v0.5: annotation when binding is covered by @strict block.
+    pub strict_annotation: Option<String>,
 }
 
 // --- Wrapper inventory types ---

@@ -9,20 +9,33 @@ use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
 use super::plan::{AnnotationNote, LoweringPlan};
 use super::scope::ScopeStack;
+use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
+use crate::CodegenOptions;
 
 pub(crate) struct Lowerer<'a> {
     pub(super) ast: &'a KoboFile,
     pub(super) plan: &'a LoweringPlan,
+    pub(super) kir: &'a kobo_ir::Kir,
+    pub(super) options: &'a CodegenOptions,
+    pub(super) strict_counter: StrictGuardCounter,
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
 }
 
 impl<'a> Lowerer<'a> {
-    pub(crate) fn new(ast: &'a KoboFile, plan: &'a LoweringPlan) -> Self {
+    pub(crate) fn new(
+        ast: &'a KoboFile,
+        plan: &'a LoweringPlan,
+        kir: &'a kobo_ir::Kir,
+        options: &'a CodegenOptions,
+    ) -> Self {
         Self {
             ast,
             plan,
+            kir,
+            options,
+            strict_counter: StrictGuardCounter::new(),
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
         }
@@ -40,7 +53,34 @@ impl<'a> Lowerer<'a> {
 
     fn lower_item(&mut self, item: &mut syn::Item) {
         match item {
-            syn::Item::Fn(function) => self.lower_function(function),
+            syn::Item::Fn(function) => {
+                // P5: check if this is an @strict fn (by span matching against ast.strict_fns()).
+                use syn::spanned::Spanned;
+                let fn_span = self.ast.span_from_syn(function.span());
+                if let Some(kfn) = self.ast.strict_fns().iter().find(|f| f.span == fn_span).cloned() {
+                    let fn_body_span = self.ast.span_from_syn(function.block.span());
+                    let cap = self.kir.strict_capture_sets().iter()
+                        .find(|cs| cs.block_span == fn_body_span)
+                        .cloned();
+                    let mode = self.kir.strict_fn_modes().get(&kfn.span)
+                        .copied()
+                        .unwrap_or(kobo_ir::StrictFnMode::Full);
+                    let ts = super::strict::lower_strict_fn(
+                        &kfn,
+                        mode,
+                        cap.as_ref(),
+                        &mut self.strict_counter,
+                        self.options,
+                    );
+                    if let Ok(lowered) = syn::parse2::<syn::ItemFn>(ts) {
+                        *function = lowered;
+                    } else {
+                        self.lower_function(function);
+                    }
+                } else {
+                    self.lower_function(function);
+                }
+            }
             syn::Item::Const(item_const) => {
                 self.record_item_anchor(&item_const.ident, LoweringAnchorKind::Const)
             }
@@ -53,6 +93,8 @@ impl<'a> Lowerer<'a> {
 
     fn lower_function(&mut self, function: &mut syn::ItemFn) {
         util::strip_kobo_attrs(&mut function.attrs);
+        // Reset guard counter per function (Contract C08 / Trap 16).
+        self.strict_counter = StrictGuardCounter::new();
         let mut scopes = ScopeStack::new();
         scopes.push();
         self.lower_function_params(&mut function.sig.inputs, &mut scopes);

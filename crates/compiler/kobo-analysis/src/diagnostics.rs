@@ -1,6 +1,7 @@
 use kobo_errors::{CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLabel, KDiagnostic};
 use kobo_errors::{KErrorCode, Severity};
-use kobo_ir::{FileSet, OwnershipTier, TransformFacts};
+use kobo_errors::{render_k0041, render_k0042, render_k0043, render_k0063, render_labeled_cross_boundary};
+use kobo_ir::{FileSet, Kir, OwnershipTier, StrictBoundaryViolation, TransformFacts};
 
 use crate::ownership_facts::{BorrowFact, BorrowKind, HintConflictFact, MoveFact};
 use crate::runner::AnalysisFacts;
@@ -9,6 +10,7 @@ pub fn facts_to_diagnostics(
     facts: &AnalysisFacts,
     transform_facts: &TransformFacts,
     file_set: &FileSet,
+    kir: &Kir,
 ) -> Vec<KDiagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -26,6 +28,22 @@ pub fn facts_to_diagnostics(
     for hint_conflict in &transform_facts.hint_conflicts {
         if let Some(binding) = transform_facts.binding(hint_conflict.node) {
             diagnostics.push(hint_conflict_diagnostic(hint_conflict, binding, file_set));
+        }
+    }
+
+    // v0.5: Convert strict boundary facts → diagnostics (BUG-02 fix).
+    if !kir.strict_boundary_facts().is_empty() {
+        for fact in kir.strict_boundary_facts() {
+            let diag = match &fact.violation {
+                StrictBoundaryViolation::ActiveAliases { .. } => render_k0041(fact),
+                StrictBoundaryViolation::ClosureCapture { .. } => render_k0042(fact),
+                StrictBoundaryViolation::MovedInside { .. } => render_k0043(fact),
+                StrictBoundaryViolation::AsyncContext { .. } => render_k0063(fact),
+                StrictBoundaryViolation::LabeledCrossBoundary { .. } => {
+                    render_labeled_cross_boundary(fact)
+                }
+            };
+            diagnostics.push(diag);
         }
     }
 

@@ -2,8 +2,10 @@ use kobo_ir::OwnershipTier;
 use quote::quote;
 use syn::parse::Parser;
 use syn::parse_quote;
+use syn::spanned::Spanned;
 
 use super::super::binding::{binding_tier_from_expr, wrapper_binding_from_expr};
+use super::super::strict::lower_strict_block;
 use super::{ScopeStack, util};
 
 impl super::Lowerer<'_> {
@@ -19,7 +21,34 @@ impl super::Lowerer<'_> {
                 self.lower_expr(binary.left.as_mut(), scopes);
                 self.lower_expr(binary.right.as_mut(), scopes);
             }
-            syn::Expr::Block(block) => self.lower_nested_block(&mut block.block, scopes),
+            syn::Expr::Block(block) => {
+                // P5: detect @strict blocks by span-matching against ast.strict_blocks().
+                // The span uses the INNER block's span (node.block.span()), which is stable
+                // across postprocess_strict_markers (Contract C06, Trap 17).
+                let bspan = self.ast.span_from_syn(block.block.span());
+                let strict_kblock = self.ast.strict_blocks().iter()
+                    .find(|kb| kb.span == bspan)
+                    .cloned();
+                let strict_cs = self.kir.strict_capture_sets().iter()
+                    .find(|cs| cs.block_span == bspan)
+                    .cloned();
+                if let (Some(kblock), Some(cap)) = (strict_kblock, strict_cs) {
+                    // @strict block: use guard extraction instead of normal Rc lowering.
+                    // Original stmts are used (not Rc-lowered) — guard extraction handles
+                    // the borrow logic for all RcMutShared bindings in the capture set.
+                    let ts = lower_strict_block(
+                        &kblock.body.stmts,
+                        &cap,
+                        &mut self.strict_counter,
+                        self.options,
+                    );
+                    match syn::parse2::<syn::Expr>(ts) {
+                        Ok(lowered) => { *expr = lowered; return; }
+                        Err(_) => {} // fallback: normal lowering
+                    }
+                }
+                self.lower_nested_block(&mut block.block, scopes)
+            }
             syn::Expr::Call(call) => self.lower_call_expr(call, scopes),
             syn::Expr::Cast(cast) => self.lower_expr(cast.expr.as_mut(), scopes),
             syn::Expr::Field(field) => self.lower_expr(field.base.as_mut(), scopes),

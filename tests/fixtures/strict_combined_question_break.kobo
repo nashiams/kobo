@@ -1,0 +1,18 @@
+// Both ? and break in same @strict block.
+struct Acc { total: i32 }
+
+fn try_loop() -> Result<i32, String> {
+    let acc = Acc { total: 0 };
+    for i in 0..10 {
+        @strict {
+            if i == 7 { break; }
+            let val = i.checked_div(1).ok_or("div error".to_string())?;
+            acc.total = acc.total + val;
+        }
+    }
+    Ok(acc.total)
+}
+
+fn main() {
+    let _ = try_loop();
+}

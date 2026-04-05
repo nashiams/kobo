@@ -1,5 +1,14 @@
 mod ast;
 mod parse;
+pub mod preprocess;
 
-pub use ast::{KoboAstNode, KoboBinding, KoboBindingKind, KoboFile};
+#[cfg(test)]
+mod tests;
+
+pub use ast::{KoboAstNode, KoboBinding, KoboBindingKind, KoboBlock, KoboFile, KoboItemFn};
 pub use parse::{parse_file, ParseError};
+pub use preprocess::{
+    collect_strict_items_from_syn, postprocess_strict_markers, preprocess_kobo_keywords,
+    preprocess_strict_reject_invalid, v05_keyword_configs, KeywordMarker,
+    KoboKeywordConfig, PreprocessError,
+};

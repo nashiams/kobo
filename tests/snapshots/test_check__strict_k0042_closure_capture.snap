@@ -1,5 +1,28 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
+assertion_line: 310
 expression: output.stderr
 ---
+error[K0041]: cannot enter @strict block - value has active aliases
+  --> tests\ui\strict_k0042_closure_capture.kobo
+   |
+   | [bytes 108..174] active aliases at @strict block entry
 
+  --> tests\ui\strict_k0042_closure_capture.kobo:3:19
+  |
+3 |     let _shared = data.clone();
+  |                   ------------ alias created here
+   = value has 1 active Rc alias at the point of entering @strict; all aliases must be dropped before the @strict block is entered
+   = kobo decision: drop or explicitly clone-then-drop aliases before the @strict { } boundary
+error[K0042]: closure captures LocalOwned<T> across @strict boundary
+  --> tests\ui\strict_k0042_closure_capture.kobo:5:27
+  |
+5 |         let f = || data.borrow_mut().push(4);
+  |                           ^ closure captures Rc<RefCell<T>> binding across @strict boundary
+
+  --> tests\ui\strict_k0042_closure_capture.kobo
+   |
+   | [bytes 108..174] @strict block here
+   = a closure defined inside an @strict block captures a wrapped binding; borrowing through Rc<RefCell<T>> inside a closure may panic if the @strict guard is still active when the closure is called
+   = kobo decision: extract the closure outside the @strict block, or refactor to avoid capturing the wrapped value
+Error: analysis failed

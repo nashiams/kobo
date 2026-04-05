@@ -1,5 +1,6 @@
 fn main() {
     let data = kobo::bind(vec![1, 2, 3]);
+    let _shared = data.clone();
     @strict {
         let f = || data.borrow_mut().push(4);
         f();

@@ -8,7 +8,7 @@
 /// Contract C03: produces StrictBoundaryViolation::ActiveAliases (never Warning).
 /// Contract C05: produces facts, NOT KDiagnostic.
 use kobo_ir::{
-    CaptureSet, Kir, KirNodeId, KoboSpan, OwnershipTier,
+    CaptureSet, Kir, KirNodeId, KoboSpan,
     StrictBoundaryFact, StrictBoundaryViolation,
 };
 use kobo_parser::KoboBlock;
@@ -28,22 +28,22 @@ pub(super) fn check_k0041_active_aliases(
         return;
     }
 
-    let rc_mut_names: std::collections::HashSet<&str> = capture_set
+    let shared_names: std::collections::HashSet<&str> = capture_set
         .bindings
         .iter()
         .filter(|b| {
             kir.tier_decision(b.binding_id)
-                .map(|td| td.tier == OwnershipTier::RcMutShared)
+                .map(|td| td.tier.is_shared())
                 .unwrap_or(false)
         })
         .map(|b| b.name.as_str())
         .collect();
 
-    if rc_mut_names.is_empty() {
+    if shared_names.is_empty() {
         return;
     }
 
-    let mut alias_visitor = AliasScanVisitor::new(&rc_mut_names, sc);
+    let mut alias_visitor = AliasScanVisitor::new(&shared_names, sc);
 
     for stmt in enclosing_stmts {
         alias_visitor.visit_stmt(stmt);

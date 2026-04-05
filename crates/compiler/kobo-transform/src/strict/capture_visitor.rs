@@ -2,7 +2,7 @@
 ///
 /// Walks the block body, records accesses to RcMutShared bindings,
 /// and detects control-flow operators (?, break, continue).
-use kobo_ir::{KoboSpan, OwnershipTier, TransformFacts, Kir};
+use kobo_ir::{KoboSpan, TransformFacts, Kir};
 use syn::visit::Visit;
 
 use super::span_convert::SpanConvert;
@@ -62,7 +62,7 @@ impl<'a> StrictCaptureVisitor<'a> {
         let Some(decision) = self.kir.tier_decision(binding_facts.node) else {
             return;
         };
-        if decision.tier != OwnershipTier::RcMutShared {
+        if !decision.tier.is_shared() {
             return;
         }
         let span = self.sc.span(ident.span());

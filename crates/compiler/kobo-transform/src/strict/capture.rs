@@ -338,6 +338,18 @@ mod tests {
     }
 
     #[test]
+    fn test_rc_shared_binding_captured() {
+        let node = node_id(10);
+        let facts = make_facts(vec![make_binding(node, "data")]);
+        let kir = make_kir_with_tier(node, OwnershipTier::RcShared);
+        let block = make_block("{ let _x = &data; }");
+        let sc = test_sc();
+        let cs = analyze_strict_capture_set(&block, &facts, &kir, &sc);
+        assert_eq!(cs.bindings.len(), 1, "RcShared should be captured");
+        assert_eq!(cs.bindings[0].name, "data");
+    }
+
+    #[test]
     fn test_c05_no_kdiagnostic_in_capture() {
         assert!(true);
     }

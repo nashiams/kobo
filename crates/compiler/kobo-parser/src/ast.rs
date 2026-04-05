@@ -117,6 +117,16 @@ impl KoboFile {
         self.strict_fns = fns;
     }
 
+    /// Access the inner `syn::File`.
+    pub fn syn_file(&self) -> &syn::File {
+        &self.inner
+    }
+
+    /// Mutable access to the inner `syn::File` (for postprocess marker stripping).
+    pub fn syn_file_mut(&mut self) -> &mut syn::File {
+        &mut self.inner
+    }
+
     /// All @strict blocks in this file (populated by `collect_strict_items_from_syn`).
     pub fn strict_blocks(&self) -> &[KoboBlock] {
         &self.strict_blocks
@@ -147,6 +157,16 @@ impl KoboFile {
             self.byte_offset(span.end()) as u32,
             self.file_id,
         )
+    }
+
+    /// Line start byte offsets (for external span conversion).
+    pub fn source_line_starts(&self) -> &[usize] {
+        &self.line_starts
+    }
+
+    /// Total source length in bytes.
+    pub fn source_len(&self) -> usize {
+        self.source_len
     }
 
     pub fn line_col(&self, span: KoboSpan) -> (usize, usize) {

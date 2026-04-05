@@ -1,0 +1,5 @@
+---
+source: bin/kobo-cli/tests/test_ui.rs
+expression: output.stderr
+---
+

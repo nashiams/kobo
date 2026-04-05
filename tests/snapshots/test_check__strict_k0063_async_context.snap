@@ -1,0 +1,15 @@
+---
+source: bin/kobo-cli/tests/test_ui.rs
+expression: output.stderr
+---
+error[K0063]: @strict block inside async fn without @strict async fn
+  --> tests\ui\strict_k0063_async_context.kobo
+   |
+   | [bytes 85..127] @strict block inside async fn — borrow guards cannot cross .await
+
+  --> tests\ui\strict_k0063_async_context.kobo
+   |
+   | [bytes 0..129] async fn defined here
+   = @strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped before any .await point; placing an @strict block directly inside an async fn makes this invariant unenforceable at compile time
+   = kobo decision: annotate the fn as `@strict async fn` to opt in to the async-aware guard protocol, or refactor to avoid @strict inside async context
+Error: analysis failed

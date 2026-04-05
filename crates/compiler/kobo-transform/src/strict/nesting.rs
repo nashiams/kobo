@@ -2,7 +2,7 @@
 ///
 /// Reference: P3 Task 3.2.
 /// Merge rule (R-12): max(Read, Write) = Write.
-use kobo_ir::{CaptureAccessKind, CaptureSet, CapturedBinding, KirNodeId, NestedStrictBlock};
+use kobo_ir::{CaptureAccessKind, CaptureSet, CapturedBinding, NestedStrictBlock};
 
 /// Merge inner @strict captures into the outer capture set.
 ///

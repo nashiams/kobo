@@ -5,7 +5,10 @@ use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
 use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{FileId, Kir, SolutionMap, WarnEarlyPattern};
 use kobo_migrate::{solve, ConstraintGraph, SolveResult, SolverBudget};
-use kobo_parser::{parse_file, KoboFile};
+use kobo_parser::{
+    collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
+    preprocess_kobo_keywords, preprocess_strict_reject_invalid, v05_keyword_configs, KoboFile,
+};
 use kobo_transform::{build_kir, TransformOptions};
 
 use crate::filesystem::{
@@ -32,13 +35,30 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     };
     let file_id = session.register_source_file(input.to_path_buf(), source.clone());
 
-    let kobo_file = match parse_file(&source, file_id, &mut session.id_gen) {
+    // v0.5 preprocessing: rewrite @strict → marker attributes before syn parse.
+    let configs = v05_keyword_configs();
+    if let Err(e) = preprocess_strict_reject_invalid(&source, &configs) {
+        eprintln!("kobo: preprocess error: {e}");
+        return Err(());
+    }
+    let (rewritten, markers) = preprocess_kobo_keywords(&source, &configs);
+
+    let mut kobo_file = match parse_file(&rewritten, file_id, &mut session.id_gen) {
         Ok(file) => file,
         Err(error) => {
             eprintln!("kobo: parse error: {error}");
             return Err(());
         }
     };
+
+    // Collect @strict blocks/fns before stripping marker attributes.
+    let (strict_blocks, strict_fns) =
+        collect_strict_items_from_syn(kobo_file.syn_file(), &rewritten, file_id);
+    if let Err(e) = postprocess_strict_markers(kobo_file.syn_file_mut(), &markers) {
+        eprintln!("kobo: postprocess error: {e}");
+        return Err(());
+    }
+    kobo_file.set_strict_items(strict_blocks, strict_fns);
 
     let kir = build_kir(
         &kobo_file,

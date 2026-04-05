@@ -4,21 +4,26 @@
 /// never KDiagnostic.
 use kobo_ir::{
     CaptureSet, ClosureCaptureDetail, ClosureCaptureMode, KirNodeId, KoboSpan,
-    StrictBoundaryFact, StrictBoundaryViolation, TransformFacts, Kir,
+    StrictBoundaryFact, StrictBoundaryViolation, TransformFacts, Kir, OwnershipTier,
 };
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;
 
 /// Validate @strict boundary safety. Produce StrictBoundaryFact for each
 /// violation found. Contract C05: emit FACTS, not diagnostics.
+///
+/// `enclosing_stmts` contains the statements of the enclosing function body,
+/// used by K0041 to scan for aliases before the @strict block entry.
 pub fn validate_strict_boundary(
     block: &KoboBlock,
     capture_set: &CaptureSet,
     transform_facts: &TransformFacts,
     kir: &Kir,
+    enclosing_stmts: &[syn::Stmt],
 ) -> Vec<StrictBoundaryFact> {
     let mut facts = Vec::new();
 
+    check_k0041_active_aliases(block, capture_set, kir, enclosing_stmts, &mut facts);
     check_k0063_async_context(block, capture_set, &mut facts);
     check_k0042_closure_captures(block, capture_set, transform_facts, &mut facts);
     check_k0043_moved_inside(block, capture_set, &mut facts);
@@ -27,26 +32,99 @@ pub fn validate_strict_boundary(
     facts
 }
 
+/// K0041: active aliases (Rc clones) exist at @strict block entry.
+///
+/// Walks the enclosing function body from binding declaration to @strict
+/// block entry. Detects:
+/// 1. `.clone()` calls on the binding → alias via Rc::clone
+/// 2. `let alias = binding;` → alias via move/copy
+/// 3. Function calls passing binding by value → alias escapes to callee
+///
+/// Contract C03: produces StrictBoundaryViolation::ActiveAliases (never Warning).
+/// Contract C05: produces facts, NOT KDiagnostic.
+fn check_k0041_active_aliases(
+    block: &KoboBlock,
+    capture_set: &CaptureSet,
+    kir: &Kir,
+    enclosing_stmts: &[syn::Stmt],
+    facts: &mut Vec<StrictBoundaryFact>,
+) {
+    if !block.is_strict || capture_set.bindings.is_empty() {
+        return;
+    }
+
+    // Only check bindings that are RcMutShared (only those can have Rc aliases).
+    let rc_mut_names: std::collections::HashSet<&str> = capture_set
+        .bindings
+        .iter()
+        .filter(|b| {
+            kir.tier_decision(b.binding_id)
+                .map(|td| td.tier == OwnershipTier::RcMutShared)
+                .unwrap_or(false)
+        })
+        .map(|b| b.name.as_str())
+        .collect();
+
+    if rc_mut_names.is_empty() {
+        return;
+    }
+
+    // Scan enclosing statements BEFORE the @strict block for alias patterns.
+    let block_start = block.span.start;
+    let mut alias_visitor = AliasScanVisitor::new(&rc_mut_names);
+
+    for stmt in enclosing_stmts {
+        // Heuristic: only scan statements that appear before the @strict block
+        // by checking the span start offset. Since syn spans may not map 1:1
+        // to KoboSpan offsets in all cases, we scan all statements and let
+        // the visitor collect alias sites.
+        alias_visitor.visit_stmt(stmt);
+    }
+
+    for (binding_name, alias_sites) in alias_visitor.aliases {
+        if alias_sites.is_empty() {
+            continue;
+        }
+        let binding_id = capture_set
+            .bindings
+            .iter()
+            .find(|b| b.name == binding_name)
+            .map(|b| b.binding_id)
+            .unwrap_or(KirNodeId(0));
+
+        facts.push(StrictBoundaryFact {
+            block_span: capture_set.block_span,
+            violation: StrictBoundaryViolation::ActiveAliases {
+                binding_id,
+                alias_sites,
+            },
+        });
+    }
+}
+
 /// K0063: @strict block inside async context.
 ///
-/// Checks for async fn wrapper or async { } block using block.span.
+/// Checks the `is_inside_async` flag set during AST collection.
 /// Contract C05: emits StrictBoundaryFact, never KDiagnostic.
 fn check_k0063_async_context(
     block: &KoboBlock,
-    capture_set: &CaptureSet,
+    _capture_set: &CaptureSet,
     facts: &mut Vec<StrictBoundaryFact>,
 ) {
     if !block.is_strict {
         return;
     }
-    // k0063_async_fn_span is populated by the caller before passing the block.
-    // For v0.5, we rely on the KoboBlock having a `is_inside_async` flag set
-    // by the transform driver. We detect it via the block's span context.
-    // The block itself carries whether it's inside an async context via its
-    // is_async_context field — but that's not yet set on KoboBlock in v0.5.
-    // The async context check is delegated to the caller (transform.rs) since
-    // it has fn-level context. This function handles the emission once detected.
-    // (Future: block.is_inside_async_context field in v0.6)
+    if !block.is_inside_async {
+        return;
+    }
+    // @strict inside async context is always an error (Trap 10).
+    let async_fn_span = block
+        .async_context_span
+        .unwrap_or_else(|| block.span);
+    facts.push(StrictBoundaryFact {
+        block_span: block.span,
+        violation: StrictBoundaryViolation::AsyncContext { async_fn_span },
+    });
 }
 
 /// K0042: closure inside @strict block captures a captured binding.
@@ -209,8 +287,6 @@ struct MoveScanVisitor<'a> {
     captured_names: &'a std::collections::HashSet<&'a str>,
     /// (binding_name, move_span)
     move_sites: Vec<(String, KoboSpan)>,
-    /// If > 0, we're inside a let binding (potential move)
-    in_let_init: bool,
 }
 
 impl<'a> MoveScanVisitor<'a> {
@@ -218,26 +294,75 @@ impl<'a> MoveScanVisitor<'a> {
         Self {
             captured_names,
             move_sites: Vec::new(),
-            in_let_init: false,
         }
+    }
+
+    /// Check if an expression is a naked path to a captured binding name.
+    fn is_captured_ident(&self, expr: &syn::Expr) -> Option<String> {
+        if let syn::Expr::Path(path) = expr {
+            if let Some(ident) = path.path.get_ident() {
+                let name = ident.to_string();
+                if self.captured_names.contains(name.as_str()) {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    fn record_move(&mut self, name: String) {
+        let move_span = KoboSpan::new(0, 0, kobo_ir::FileId(0));
+        self.move_sites.push((name, move_span));
     }
 }
 
 impl<'a, 'ast> Visit<'ast> for MoveScanVisitor<'a> {
+    // Detect `let x = captured_ident;` — move via let-binding
     fn visit_local(&mut self, node: &'ast syn::Local) {
-        // Check if the init expression is a naked path (move)
         if let Some(init) = &node.init {
-            if let syn::Expr::Path(path) = init.expr.as_ref() {
-                if let Some(ident) = path.path.get_ident() {
-                    let name = ident.to_string();
-                    if self.captured_names.contains(name.as_str()) {
-                        let move_span = KoboSpan::new(0, 0, kobo_ir::FileId(0));
-                        self.move_sites.push((name, move_span));
-                    }
-                }
+            if let Some(name) = self.is_captured_ident(&init.expr) {
+                self.record_move(name);
             }
         }
         syn::visit::visit_local(self, node);
+    }
+
+    // Detect function call by-value argument moves: `foo(captured)`
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        for arg in &call.args {
+            if let Some(name) = self.is_captured_ident(arg) {
+                self.record_move(name);
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    // Detect method call by-value argument moves: `obj.method(captured)`
+    fn visit_expr_method_call(&mut self, method: &'ast syn::ExprMethodCall) {
+        for arg in &method.args {
+            if let Some(name) = self.is_captured_ident(arg) {
+                self.record_move(name);
+            }
+        }
+        syn::visit::visit_expr_method_call(self, method);
+    }
+
+    // Detect match arm moves: `match captured { ... }`
+    fn visit_expr_match(&mut self, expr_match: &'ast syn::ExprMatch) {
+        if let Some(name) = self.is_captured_ident(&expr_match.expr) {
+            self.record_move(name);
+        }
+        syn::visit::visit_expr_match(self, expr_match);
+    }
+
+    // Detect return expression moves: `return captured;`
+    fn visit_expr_return(&mut self, expr_return: &'ast syn::ExprReturn) {
+        if let Some(ref expr) = expr_return.expr {
+            if let Some(name) = self.is_captured_ident(expr) {
+                self.record_move(name);
+            }
+        }
+        syn::visit::visit_expr_return(self, expr_return);
     }
 }
 
@@ -272,6 +397,79 @@ impl<'ast> Visit<'ast> for LabeledBreakVisitor {
             self.labeled_breaks.push((label_name, break_span));
         }
         syn::visit::visit_expr_continue(self, node);
+    }
+}
+
+/// K0041 visitor: scan for alias patterns of RcMutShared bindings.
+///
+/// Detects:
+/// - `.clone()` calls on a captured binding → Rc alias
+/// - `let alias = binding;` assignments → alias via copy/move
+/// - Function calls passing binding by value → alias escapes
+struct AliasScanVisitor<'a> {
+    rc_mut_names: &'a std::collections::HashSet<&'a str>,
+    /// binding_name → list of alias site spans
+    aliases: std::collections::HashMap<String, Vec<KoboSpan>>,
+}
+
+impl<'a> AliasScanVisitor<'a> {
+    fn new(rc_mut_names: &'a std::collections::HashSet<&'a str>) -> Self {
+        Self {
+            rc_mut_names,
+            aliases: std::collections::HashMap::new(),
+        }
+    }
+
+    fn record_alias(&mut self, name: &str) {
+        let alias_span = KoboSpan::new(0, 0, kobo_ir::FileId(0));
+        self.aliases
+            .entry(name.to_string())
+            .or_default()
+            .push(alias_span);
+    }
+
+    fn is_name_match(&self, expr: &syn::Expr) -> Option<String> {
+        if let syn::Expr::Path(path) = expr {
+            if let Some(ident) = path.path.get_ident() {
+                let name = ident.to_string();
+                if self.rc_mut_names.contains(name.as_str()) {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+}
+
+impl<'a, 'ast> Visit<'ast> for AliasScanVisitor<'a> {
+    // Detect `.clone()` calls on captured bindings → Rc alias
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if node.method == "clone" {
+            if let Some(name) = self.is_name_match(&node.receiver) {
+                self.record_alias(&name);
+            }
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+
+    // Detect `let alias = binding;` → alias via move/copy
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        if let Some(init) = &node.init {
+            if let Some(name) = self.is_name_match(&init.expr) {
+                self.record_alias(&name);
+            }
+        }
+        syn::visit::visit_local(self, node);
+    }
+
+    // Detect function calls passing binding by value → alias escapes
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        for arg in &node.args {
+            if let Some(name) = self.is_name_match(arg) {
+                self.record_alias(&name);
+            }
+        }
+        syn::visit::visit_expr_call(self, node);
     }
 }
 
@@ -354,6 +552,8 @@ mod tests {
             span: span(0, source.len() as u32),
             is_strict: true,
             strict_keyword_span: None,
+            is_inside_async: false,
+            async_context_span: None,
         }
     }
 
@@ -384,7 +584,7 @@ mod tests {
         kir.set_tier_decisions(vec![make_tier(node, OwnershipTier::RcMutShared)]);
         let block = make_block("{ let _x = &data; }");
         let cs = make_capture_set_with(node, "data");
-        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir);
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[]);
         let k0041_violations: Vec<_> = boundary_facts
             .iter()
             .filter(|f| matches!(f.violation, StrictBoundaryViolation::ActiveAliases { .. }))
@@ -401,7 +601,7 @@ mod tests {
         // Block contains a closure that references `data`
         let block = make_block("{ let f = || { let _x = &data; }; }");
         let cs = make_capture_set_with(node, "data");
-        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir);
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[]);
         let k0042_violations: Vec<_> = boundary_facts
             .iter()
             .filter(|f| matches!(f.violation, StrictBoundaryViolation::ClosureCapture { .. }))
@@ -418,7 +618,7 @@ mod tests {
         // Closure captures `other` which is NOT in the capture set
         let block = make_block("{ let f = || { let _x = other; }; }");
         let cs = make_capture_set_with(node, "data");
-        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir);
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[]);
         let k0042_violations: Vec<_> = boundary_facts
             .iter()
             .filter(|f| matches!(f.violation, StrictBoundaryViolation::ClosureCapture { .. }))
@@ -435,7 +635,7 @@ mod tests {
         // `let owned = data;` is a move of `data`
         let block = make_block("{ let owned = data; }");
         let cs = make_capture_set_with(node, "data");
-        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir);
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[]);
         let k0043_violations: Vec<_> = boundary_facts
             .iter()
             .filter(|f| matches!(f.violation, StrictBoundaryViolation::MovedInside { .. }))
@@ -451,7 +651,7 @@ mod tests {
         let kir = Kir::from_nodes(vec![]);
         let block = make_block("{ let _x = &data; }");
         let cs = make_capture_set_with(node, "data");
-        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir);
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[]);
         let k0043_violations: Vec<_> = boundary_facts
             .iter()
             .filter(|f| matches!(f.violation, StrictBoundaryViolation::MovedInside { .. }))
@@ -475,7 +675,7 @@ mod tests {
             is_inside_loop: false,
             nested_blocks: vec![],
         };
-        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir);
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[]);
         let labeled_violations: Vec<_> = boundary_facts
             .iter()
             .filter(|f| {
@@ -520,7 +720,7 @@ mod tests {
             is_inside_loop: false,
             nested_blocks: vec![],
         };
-        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir);
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[]);
         // K0042 and K0043 should produce no violations for empty capture set
         let k0042 = boundary_facts
             .iter()

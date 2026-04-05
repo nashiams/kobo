@@ -346,6 +346,8 @@ mod tests {
             span: span(0, source.len() as u32),
             is_strict: true,
             strict_keyword_span: None,
+            is_inside_async: false,
+            async_context_span: None,
         }
     }
 

@@ -433,6 +433,45 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
     diag
 }
 
+/// Render a labeled break/continue crossing @strict boundary diagnostic.
+///
+/// v0.5: uses K0041 code as placeholder (K0044 reserved for v0.6).
+/// Contract C03: Severity::Error.
+pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
+    use crate::codes::{KErrorCode, Severity};
+
+    let (label, break_span) = match &fact.violation {
+        StrictBoundaryViolation::LabeledCrossBoundary {
+            label,
+            break_or_continue_span,
+            ..
+        } => (label.as_str(), *break_or_continue_span),
+        _ => panic!("render_labeled_cross_boundary called with wrong violation type"),
+    };
+
+    let primary = DiagLabel::primary(
+        break_span,
+        format!("labeled `{label}` crosses @strict boundary"),
+    );
+
+    let explanation = format!(
+        "break or continue to label `{label}` would exit the @strict block without \
+         dropping borrow guards in the correct order; this is not allowed in v0.5"
+    );
+
+    let mut diag = KDiagnostic::new(
+        KErrorCode::K0041,
+        Severity::Error,
+        primary,
+        explanation,
+        "restructure the code to avoid labeled break/continue across @strict boundaries",
+    );
+
+    diag.secondary
+        .push(DiagLabel::secondary(fact.block_span, "@strict block here"));
+    diag
+}
+
 #[cfg(test)]
 mod diag_owner_tests {
     use super::*;

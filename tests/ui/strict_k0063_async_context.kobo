@@ -1,0 +1,6 @@
+async fn handler() {
+    let data = kobo::bind(vec![1, 2, 3]);
+    @strict {
+        data.borrow_mut().push(4);
+    }
+}

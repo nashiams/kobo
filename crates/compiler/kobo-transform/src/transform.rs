@@ -82,11 +82,14 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
                 .collect();
             flatten_nested_strict(&mut cap, nested);
 
+            // Find enclosing function body for K0041 alias detection.
+            let enclosing_stmts = find_enclosing_fn_stmts(&ast.inner, kblock.span);
             let mut facts = validate_strict_boundary(
                 kblock,
                 &cap,
                 &transform_facts,
                 &kir,
+                &enclosing_stmts,
             );
             capture_sets.push(cap);
             boundary_facts.append(&mut facts);
@@ -96,6 +99,36 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
         kir.set_strict_boundary_facts(boundary_facts);
     }
 
+    // Build strict_fn_modes map for all @strict fns.
+    {
+        use kobo_ir::StrictFnMode;
+        let mut fn_modes = std::collections::HashMap::new();
+        for func in ast.strict_fns() {
+            let mode = if func.is_async {
+                StrictFnMode::AsyncDeferred
+            } else {
+                StrictFnMode::Full
+            };
+            fn_modes.insert(func.span, mode);
+        }
+        kir.set_strict_fn_modes(fn_modes);
+    }
+
     let _cfg = build_cfg(&kir);
     kir
+}
+
+/// Find the statements of the enclosing function body for a given span.
+///
+/// Walks top-level items looking for `fn` items whose span contains `block_span`.
+/// Returns the function body statements, or an empty slice if no enclosing fn found.
+fn find_enclosing_fn_stmts(file: &syn::File, block_span: kobo_ir::KoboSpan) -> Vec<syn::Stmt> {
+    use syn::Item;
+    for item in &file.items {
+        if let Item::Fn(item_fn) = item {
+            // Use the function body's statement list
+            return item_fn.block.stmts.clone();
+        }
+    }
+    Vec::new()
 }

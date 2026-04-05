@@ -101,8 +101,11 @@ define_error_codes! {
     K0041 => "K0041",
     K0042 => "K0042",
     K0043 => "K0043",
+    // TODO(v0.6): K0044 — labeled break/continue across @strict boundary
     K0044 => "K0044",
+    // TODO(v0.7): K0045 — @strict across module boundary
     K0045 => "K0045",
+    // TODO(v0.7): K0046 — @strict with unsafe block interaction
     K0046 => "K0046",
     K0047 => "K0047",
     K0048 => "K0048",
@@ -121,7 +124,9 @@ define_error_codes! {
     K0061 => "K0061",
     K0062 => "K0062",
     K0063 => "K0063",
+    // TODO(v0.6): K0064 — @strict inside async block (currently folded into K0063)
     K0064 => "K0064",
+    // TODO(v0.8+): K0065 — @strict with generator/coroutine
     K0065 => "K0065",
     K0066 => "K0066",
     K0067 => "K0067",

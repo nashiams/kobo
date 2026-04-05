@@ -106,3 +106,12 @@ pub struct StrictBoundaryFact {
     pub block_span: KoboSpan,
     pub violation: StrictBoundaryViolation,
 }
+
+/// Mode for @strict function lowering (F-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrictFnMode {
+    /// Full @strict: parameters are not wrapped, body is an implicit @strict block.
+    Full,
+    /// Async function: @strict marker stripped, lowering deferred to v0.7.
+    AsyncDeferred,
+}

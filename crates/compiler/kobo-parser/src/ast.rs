@@ -30,6 +30,10 @@ pub struct KoboBlock {
     pub is_strict: bool,
     /// Original byte offset of the `@strict` keyword, for diagnostic spans.
     pub strict_keyword_span: Option<KoboSpan>,
+    /// True if this block is inside an async fn or async {} block (K0063).
+    pub is_inside_async: bool,
+    /// Span of the enclosing async fn or async block, for K0063 diagnostics.
+    pub async_context_span: Option<KoboSpan>,
 }
 
 /// A Kobo function item that may carry `@strict` annotation.

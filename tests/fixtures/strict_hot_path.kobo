@@ -1,0 +1,12 @@
+// Basic @strict block: single mutable binding in a hot loop.
+// Expected: guard extraction at entry, raw reference in body, guard drop at exit.
+struct State { values: Vec<i32> }
+
+fn main() {
+    let state = State { values: vec![] };
+    @strict {
+        for i in 0..1000 {
+            state.values.push(i);
+        }
+    }
+}

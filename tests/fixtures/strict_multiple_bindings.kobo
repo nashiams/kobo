@@ -1,0 +1,17 @@
+// Multiple captured bindings: mix of Read and Write.
+struct Data { items: Vec<i32> }
+struct Config { threshold: i32 }
+struct Log { entries: Vec<String> }
+
+fn main() {
+    let data = Data { items: vec![1, 2, 3] };
+    let config = Config { threshold: 2 };
+    let log = Log { entries: vec![] };
+    @strict {
+        for item in &data.items {
+            if *item > config.threshold {
+                log.entries.push(format!("above threshold: {}", item));
+            }
+        }
+    }
+}

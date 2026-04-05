@@ -8,7 +8,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use kobo_ir::{CaptureAccessKind, CaptureSet};
+use kobo_ir::{CaptureAccessKind, CaptureSet, StrictFnMode};
 use kobo_parser::KoboItemFn;
 
 use crate::CodegenOptions;
@@ -212,21 +212,22 @@ pub fn lower_strict_block(
 /// Lower an @strict fn declaration.
 ///
 /// Two modes (R-14):
-/// - **AsyncDeferred** (`func.is_async == true`): strip the `#[__kobo_strict]`
-///   marker from the attributes and emit the function unchanged. Full async
-///   @strict support is deferred to v0.7 (K0063 diagnostic already raised in P3).
-/// - **Full** (`func.is_async == false`): guard-extract all bindings in
-///   `capture_set` around the fn body stmts. Equivalent to treating the
-///   fn body as an implicit @strict block.
+/// - **AsyncDeferred**: strip the `#[__kobo_strict]` marker from the
+///   attributes and emit the function unchanged. Full async @strict support
+///   is deferred to v0.7 (K0063 diagnostic already raised in P3).
+/// - **Full**: guard-extract all bindings in `capture_set` around the fn
+///   body stmts. Equivalent to treating the fn body as an implicit @strict block.
 ///
 /// # Arguments
 /// - `func`: the @strict fn item (from KoboFile.strict_fns())
+/// - `mode`: the StrictFnMode for this function (from KIR strict_fn_modes)
 /// - `capture_set`: capture set for this fn body (from KIR), or `None` when P3
 ///   did not produce one (fn body not yet analyzed as a block — future P7 work)
 /// - `counter`: function-scoped guard counter (Contract C08)
 /// - `_options`: codegen options
 pub fn lower_strict_fn(
     func: &KoboItemFn,
+    mode: StrictFnMode,
     capture_set: Option<&CaptureSet>,
     counter: &mut StrictGuardCounter,
     _options: &CodegenOptions,
@@ -240,33 +241,36 @@ pub fn lower_strict_fn(
                 && a.path().segments[0].ident == "__kobo_strict")
     });
 
-    if func.is_async {
-        // AsyncDeferred: keep fn body unchanged, just remove marker (R-14).
-        return quote! { #inner };
-    }
-
-    // Full mode: wrap fn body stmts with guard extraction (if capture_set supplied).
-    if let Some(cs) = capture_set {
-        if !cs.bindings.is_empty() {
-            let wrapped_stmts_ts = lower_strict_block(&inner.block.stmts, cs, counter, _options);
-            // Parse the wrapped block back to a syn::Block for the fn body.
-            // If parsing fails, fall back to the normal fn body.
-            if let Ok(wrapped_block) = syn::parse2::<syn::Block>(wrapped_stmts_ts.clone()) {
-                inner.block = Box::new(wrapped_block);
-            } else {
-                // Fallback: emit an inner block expression wrapping the body
-                // by replacing stmts with a single statement that contains the wrapped block.
-                // This should not happen in practice — lower_strict_block emits valid { stmts }.
-                let body_stmts = &inner.block.stmts;
-                inner.block = syn::parse_quote! { {
-                    #wrapped_stmts_ts
-                    let _ = { #(#body_stmts)* };
-                } };
+    match mode {
+        StrictFnMode::AsyncDeferred => {
+            // Strip marker, emit warning, return function unchanged (R-14).
+            eprintln!(
+                "warning: @strict on async fn `{}` is deferred to v0.7; \
+                 marker stripped, function compiled without @strict optimization",
+                func.inner.sig.ident
+            );
+            quote! { #inner }
+        }
+        StrictFnMode::Full => {
+            // Full mode: wrap fn body stmts with guard extraction (if capture_set supplied).
+            if let Some(cs) = capture_set {
+                if !cs.bindings.is_empty() {
+                    let wrapped_stmts_ts =
+                        lower_strict_block(&inner.block.stmts, cs, counter, _options);
+                    if let Ok(wrapped_block) = syn::parse2::<syn::Block>(wrapped_stmts_ts.clone()) {
+                        inner.block = Box::new(wrapped_block);
+                    } else {
+                        let body_stmts = &inner.block.stmts;
+                        inner.block = syn::parse_quote! { {
+                            #wrapped_stmts_ts
+                            let _ = { #(#body_stmts)* };
+                        } };
+                    }
+                }
             }
+            quote! { #inner }
         }
     }
-
-    quote! { #inner }
 }
 
 // ---------------------------------------------------------------------------

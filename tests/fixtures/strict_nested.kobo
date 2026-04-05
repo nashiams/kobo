@@ -1,0 +1,13 @@
+// Nested @strict blocks: inner captures merge into outer.
+struct Buffer { data: Vec<u8> }
+
+fn main() {
+    let buf = Buffer { data: vec![] };
+    @strict {
+        buf.data.push(1);
+        @strict {
+            buf.data.push(2);
+        }
+        buf.data.push(3);
+    }
+}

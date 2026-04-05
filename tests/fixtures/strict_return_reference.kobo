@@ -1,0 +1,10 @@
+// @strict block returning reference: rustc rejects if lifetime escapes (R-20).
+struct Data { value: i32 }
+
+fn main() {
+    let data = Data { value: 42 };
+    @strict {
+        let val = data.value;
+        println!("{}", val);
+    }
+}

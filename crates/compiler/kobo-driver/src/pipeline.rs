@@ -117,6 +117,7 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
         &facts,
         kir.transform_facts(),
         session.file_set(),
+        kir,
     ));
 
     // Emit errors for malformed #[kobo::known_debt] attributes (C07).

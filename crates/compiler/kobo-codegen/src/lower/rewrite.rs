@@ -62,8 +62,12 @@ impl<'a> Lowerer<'a> {
                     let cap = self.kir.strict_capture_sets().iter()
                         .find(|cs| cs.block_span == fn_body_span)
                         .cloned();
+                    let mode = self.kir.strict_fn_modes().get(&kfn.span)
+                        .copied()
+                        .unwrap_or(kobo_ir::StrictFnMode::Full);
                     let ts = super::strict::lower_strict_fn(
                         &kfn,
+                        mode,
                         cap.as_ref(),
                         &mut self.strict_counter,
                         self.options,

@@ -1,0 +1,10 @@
+// @strict block with code but no RcMutShared bindings (R-19).
+fn side_effect() { println!("effect"); }
+
+fn main() {
+    @strict {
+        side_effect();
+        let local = 42;
+        println!("{}", local);
+    }
+}

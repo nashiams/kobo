@@ -5,7 +5,7 @@ use crate::node_id::{CfgBlockId, KirNodeId, KoboAstNodeId};
 use crate::ownership::{OwnershipTier, TierDecision, TransformFacts};
 use crate::resource::ResourceKind;
 use crate::span::KoboSpan;
-use crate::strict::{CaptureSet, StrictBoundaryFact};
+use crate::strict::{CaptureSet, StrictBoundaryFact, StrictFnMode};
 
 // --- Types first ---
 
@@ -72,6 +72,8 @@ pub struct Kir {
     strict_capture_sets: Vec<CaptureSet>,
     /// Boundary violation facts for all @strict blocks (Contract C09, C05).
     strict_boundary_facts: Vec<StrictBoundaryFact>,
+    /// Mode for each @strict fn (Full or AsyncDeferred), keyed by fn span.
+    strict_fn_modes: HashMap<KoboSpan, StrictFnMode>,
 }
 
 // --- Public read API ---
@@ -93,6 +95,7 @@ impl Kir {
             warn_early_facts: Vec::new(),
             strict_capture_sets: Vec::new(),
             strict_boundary_facts: Vec::new(),
+            strict_fn_modes: HashMap::new(),
         }
     }
 
@@ -172,6 +175,14 @@ impl Kir {
 
     pub fn set_strict_boundary_facts(&mut self, facts: Vec<StrictBoundaryFact>) {
         self.strict_boundary_facts = facts;
+    }
+
+    pub fn strict_fn_modes(&self) -> &HashMap<KoboSpan, StrictFnMode> {
+        &self.strict_fn_modes
+    }
+
+    pub fn set_strict_fn_modes(&mut self, modes: HashMap<KoboSpan, StrictFnMode>) {
+        self.strict_fn_modes = modes;
     }
 
     pub fn len(&self) -> usize {

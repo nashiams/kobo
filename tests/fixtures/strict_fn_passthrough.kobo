@@ -1,0 +1,11 @@
+// @strict fn: parameters are raw types, no Rc<RefCell<>> wrapping.
+struct Data { items: Vec<i32> }
+
+@strict fn process(data: &mut Data) {
+    data.items.push(42);
+}
+
+fn main() {
+    let data = Data { items: vec![] };
+    process(&mut data);
+}

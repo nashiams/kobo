@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/checked_hello_world.rs",
+  "sources": [
+    "tests/fixtures/checked_hello_world.kobo"
+  ],
+  "x_kobo_mappings": []
+}

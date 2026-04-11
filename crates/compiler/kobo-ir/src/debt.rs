@@ -1,3 +1,4 @@
+use crate::kir::MigrateSite;
 use crate::node_id::KirNodeId;
 use crate::ownership::OwnershipTier;
 use crate::span::KoboSpan;
@@ -168,6 +169,8 @@ pub struct DebtReport {
     pub acknowledged: Vec<AcknowledgedDebtRecord>,
     /// Per-site records for each `RcMutShared` node.
     pub sites: Vec<DebtSiteRecord>,
+    /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
+    pub migrate_tagged: Vec<MigrateSite>,
 }
 
 impl DebtReport {
@@ -181,6 +184,7 @@ impl DebtReport {
             warn_early: Vec::new(),
             acknowledged: Vec::new(),
             sites: Vec::new(),
+            migrate_tagged: Vec::new(),
         }
     }
 }

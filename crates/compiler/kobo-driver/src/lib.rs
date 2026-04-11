@@ -14,4 +14,4 @@ pub use pipeline::{
     CodegenArtifacts,
 };
 pub use rustc::binary_path_for;
-pub use session::CompileSession;
+pub use session::{is_inside_relaxed_fn, CompileSession};

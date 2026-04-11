@@ -1,4 +1,5 @@
 use kobo_ir::debt::{DebtReport, WarnEarlyFact, WarnEarlyPattern};
+use kobo_ir::MigrateTarget;
 
 /// Warn-early facts organised by pattern variant.
 ///
@@ -60,7 +61,7 @@ pub fn format_warn_early(report: &DebtReport) -> String {
         + grouped.shared_mutable.len()
         + grouped.self_referential.len();
 
-    if total_active == 0 && grouped.acknowledged.is_empty() {
+    if total_active == 0 && grouped.acknowledged.is_empty() && report.migrate_tagged.is_empty() {
         return String::new();
     }
 
@@ -150,6 +151,25 @@ pub fn format_warn_early(report: &DebtReport) -> String {
                 "  [{code}] `{}` — {reason}\n",
                 fact.struct_name
             ));
+        }
+    }
+
+    if !report.migrate_tagged.is_empty() {
+        out.push_str("Tagged for migration:\n");
+        for site in &report.migrate_tagged {
+            let target_label = match site.target {
+                MigrateTarget::Function => "function",
+                MigrateTarget::LetBinding => "let-binding",
+                MigrateTarget::Parameter => "parameter",
+            };
+            match &site.reason {
+                Some(reason) => {
+                    out.push_str(&format!("  #[kobo::migrate] on {target_label} — {reason}\n"));
+                }
+                None => {
+                    out.push_str(&format!("  #[kobo::migrate] on {target_label}\n"));
+                }
+            }
         }
     }
 
@@ -285,5 +305,35 @@ mod tests {
         assert!(out.contains("parent` ↔ `left"), "first pair missing");
         assert!(out.contains("parent` ↔ `right"), "second pair missing");
         assert!(out.contains("left` ↔ `right"), "third pair missing");
+    }
+
+    // ── BUG-09: migrate-tagged sites must appear in human output ──
+
+    #[test]
+    fn migrate_tagged_sites_appear_in_human_output() {
+        use kobo_ir::{MigrateSite, MigrateTarget};
+        let mut report = DebtReport::new();
+        report.migrate_tagged.push(MigrateSite {
+            span: dummy_span(),
+            target: MigrateTarget::Function,
+            reason: None,
+        });
+        report.migrate_tagged.push(MigrateSite {
+            span: dummy_span(),
+            target: MigrateTarget::LetBinding,
+            reason: Some("needs refactor".to_owned()),
+        });
+        let out = format_warn_early(&report);
+        assert!(out.contains("Tagged for migration"), "migrate section header missing");
+        assert!(out.contains("function"), "function target missing");
+        assert!(out.contains("let-binding"), "let-binding target missing");
+        assert!(out.contains("needs refactor"), "reason missing");
+    }
+
+    #[test]
+    fn migrate_tagged_empty_does_not_add_section() {
+        let report = DebtReport::new();
+        let out = format_warn_early(&report);
+        assert!(!out.contains("Tagged for migration"), "no section when no migrate sites");
     }
 }

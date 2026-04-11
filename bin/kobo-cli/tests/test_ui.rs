@@ -15,7 +15,9 @@ fn check_k0001_fixture_matches_snapshot() {
         .join("K0001_use_after_move.kobo");
     let output = run_kobo_check(&fixture);
 
-    assert!(!output.status.success(), "check should fail");
+    // v0.6 [R6-11]: K0001 is SILENT in script mode — check should succeed.
+    assert!(output.status.success(), "K0001 is silent in script mode — check should succeed");
+    assert!(!output.stderr.contains("error[K0001]"), "K0001 must not appear in script mode");
     insta::with_settings!({
         prepend_module_to_snapshot => false,
         snapshot_path => "../../../tests/snapshots",
@@ -32,7 +34,9 @@ fn check_k0002_fixture_matches_snapshot() {
         .join("K0002_mutable_borrow_conflict.kobo");
     let output = run_kobo_check(&fixture);
 
-    assert!(!output.status.success(), "check should fail");
+    // v0.6 [R6-11]: K0002 is SILENT in script mode — check should succeed.
+    assert!(output.status.success(), "K0002 is silent in script mode — check should succeed");
+    assert!(!output.stderr.contains("error[K0002]"), "K0002 must not appear in script mode");
     insta::with_settings!({
         prepend_module_to_snapshot => false,
         snapshot_path => "../../../tests/snapshots",
@@ -49,11 +53,12 @@ fn check_k0025_fixture_matches_snapshot() {
         .join("K0025_hint_ignored.kobo");
     let output = run_kobo_check(&fixture);
 
+    // v0.6 [R6-03]: K0025 is always Error (constraint conflict, not perf advisory).
     assert!(
-        output.status.success(),
-        "check should succeed for warning-only diagnostics"
+        !output.status.success(),
+        "K0025 is always error — check should fail"
     );
-    assert!(output.stderr.contains("warning[K0025]"));
+    assert!(output.stderr.contains("error[K0025]"), "K0025 must be error, not warning");
     insta::with_settings!({
         prepend_module_to_snapshot => false,
         snapshot_path => "../../../tests/snapshots",
@@ -63,29 +68,32 @@ fn check_k0025_fixture_matches_snapshot() {
 }
 
 #[test]
-fn run_k0001_fixture_stops_at_analysis() {
+fn run_k0001_fixture_silent_in_script_mode() {
+    // v0.6 [R6-11]: K0001 is silent in script mode. The pipeline continues to
+    // codegen + rustc. In this fixture the helper functions are undefined, so
+    // rustc still fails (K0099) — but K0001 itself is never emitted.
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
         .join("K0001_use_after_move.kobo");
     let output = run_kobo_command("run", &fixture);
 
-    assert!(!output.status.success(), "run should fail");
-    assert!(output.stderr.contains("error[K0001]"));
-    assert!(!output.stderr.contains("error[K0099]"));
+    assert!(!output.status.success(), "run should fail (rustc errors proceed)");
+    assert!(!output.stderr.contains("error[K0001]"), "K0001 must be silent in script mode");
 }
 
 #[test]
-fn run_k0002_fixture_stops_at_analysis() {
+fn run_k0002_fixture_silent_in_script_mode() {
+    // v0.6 [R6-11]: K0002 is silent in script mode. The pipeline wraps the
+    // borrow conflict with Rc<RefCell>, which compiles — but may panic at runtime.
+    // The key assertion: K0002 diagnostic is NOT emitted.
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
         .join("K0002_mutable_borrow_conflict.kobo");
     let output = run_kobo_command("run", &fixture);
 
-    assert!(!output.status.success(), "run should fail");
-    assert!(output.stderr.contains("error[K0002]"));
-    assert!(!output.stderr.contains("RefCell already borrowed"));
+    assert!(!output.stderr.contains("error[K0002]"), "K0002 must be silent in script mode");
 }
 
 fn run_kobo_check(fixture_path: &Path) -> KoboOutput {
@@ -341,4 +349,143 @@ fn check_strict_k0063_async_context() {
     }, {
         insta::assert_snapshot!("test_check__strict_k0063_async_context", output.stderr);
     });
+}
+
+// ---------------------------------------------------------------------------
+// v0.6 — Checked mode warning tests [BUG-05]
+// ---------------------------------------------------------------------------
+
+fn run_kobo_raw_args(args: &[&str]) -> KoboOutput {
+    let workspace_root = workspace_root();
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(args)
+        .current_dir(&workspace_root)
+        .output()
+        .expect("kobo command should run");
+
+    KoboOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    }
+}
+
+#[test]
+fn check_checked_mode_k0001_produces_warning() {
+    // v0.6 AC-1: `kobo check --checked` emits warning[K0001], exits 0.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_K0001_warning.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "checked mode must exit 0 — got stderr:\n{}", output.stderr);
+    assert!(
+        output.stderr.contains("warning[K0001]"),
+        "checked mode must emit warning[K0001], got:\n{}",
+        output.stderr
+    );
+    assert!(
+        !output.stderr.contains("error[K0001]"),
+        "K0001 must be warning, not error in checked mode"
+    );
+}
+
+#[test]
+fn check_checked_mode_k0002_produces_warning() {
+    // v0.6 AC-4: `kobo check --checked` emits warning[K0002], exits 0.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_K0002_warning.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "checked mode must exit 0 — got stderr:\n{}", output.stderr);
+    assert!(
+        output.stderr.contains("warning[K0002]"),
+        "checked mode must emit warning[K0002], got:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn check_checked_mode_relax_suppresses_warning() {
+    // v0.6 AC-9: #[kobo::relax] suppresses K0001 inside relaxed fn.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_relax_suppresses.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "checked mode with relax must exit 0");
+    // checked_fn emits K0001, relaxed_fn does not.
+    assert!(
+        output.stderr.contains("warning[K0001]"),
+        "checked_fn should still produce K0001 warning, got:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn check_script_mode_relax_emits_k0026() {
+    // v0.6 AC-10: #[kobo::relax] in script mode emits K0026 advisory.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_relax_in_script.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", relative]);
+
+    assert!(output.status.success(), "script mode with relax advisory must exit 0");
+    assert!(
+        output.stderr.contains("warning[K0026]"),
+        "relax in script mode must emit warning[K0026], got:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn check_checked_mode_hello_world_clean() {
+    // v0.6 AC-15: Clean program in checked mode — zero diagnostics.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("fixtures")
+        .join("checked_hello_world.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "clean program in checked mode must exit 0");
+    assert!(
+        !output.stderr.contains("warning["),
+        "clean program must produce no warnings, got:\n{}",
+        output.stderr
+    );
+    assert!(
+        !output.stderr.contains("error["),
+        "clean program must produce no errors, got:\n{}",
+        output.stderr
+    );
 }

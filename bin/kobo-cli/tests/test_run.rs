@@ -707,3 +707,134 @@ fn workspace_root() -> PathBuf {
         .canonicalize()
         .expect("workspace root should exist")
 }
+
+// ---------------------------------------------------------------------------
+// G2 — CLI mode flag tests [R6-01]
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cli_mode_run_default_script_succeeds() {
+    // kobo run <file> — default Script mode — must compile and run without
+    // diagnostic noise
+    let case = FixtureCase::new("cli-mode-run-default", "hello.kobo");
+    let output = run_kobo(["run"], &case.fixture_path);
+    assert!(
+        output.status.success(),
+        "run without flags should succeed (script mode default)\nstderr:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn test_cli_mode_run_checked_accepted() {
+    // kobo run --checked <file> — must be accepted by clap (not "unexpected argument")
+    // and must compile + run successfully without emitting errors
+    let case = FixtureCase::new("cli-mode-run-checked", "hello.kobo");
+    let output = run_kobo(["run", "--checked"], &case.fixture_path);
+    assert!(
+        !output.stderr.contains("unexpected argument"),
+        "--checked must be accepted as a valid flag, got stderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.status.success(),
+        "run --checked should succeed for a well-formed file\nstderr:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn test_cli_mode_run_strict_rejected_with_message() {
+    // kobo run --strict <file> — must exit non-zero with "not yet implemented"
+    let case = FixtureCase::new("cli-mode-run-strict", "hello.kobo");
+    let output = run_kobo(["run", "--strict"], &case.fixture_path);
+    assert!(
+        !output.status.success(),
+        "run --strict must exit non-zero"
+    );
+    assert!(
+        output.stderr.contains("not yet implemented"),
+        "stderr must mention 'not yet implemented', got:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.stderr.contains("--checked"),
+        "rejection message must suggest --checked, got:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn test_cli_mode_run_checked_and_strict_conflict() {
+    // kobo run --checked --strict <file> — clap must reject the combination
+    let case = FixtureCase::new("cli-mode-run-conflict", "hello.kobo");
+    let output = run_kobo(["run", "--checked", "--strict"], &case.fixture_path);
+    assert!(
+        !output.status.success(),
+        "run --checked --strict must fail due to argument conflict"
+    );
+}
+
+#[test]
+fn test_cli_mode_check_checked_accepted() {
+    // kobo check --checked <file> — must be accepted and run analysis successfully
+    let case = FixtureCase::new("cli-mode-check-checked", "hello.kobo");
+    let output = run_kobo(["check", "--checked"], &case.fixture_path);
+    assert!(
+        !output.stderr.contains("unexpected argument"),
+        "--checked must be accepted on check subcommand, got stderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.status.success(),
+        "check --checked should succeed for a well-formed file\nstderr:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn test_cli_mode_inspect_checked_accepted() {
+    // kobo inspect --checked <file> — must be accepted and output RS source
+    let case = FixtureCase::new("cli-mode-inspect-checked", "hello.kobo");
+    let output = run_kobo(["inspect", "--checked"], &case.fixture_path);
+    assert!(
+        !output.stderr.contains("unexpected argument"),
+        "--checked must be accepted on inspect subcommand, got stderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.status.success(),
+        "inspect --checked should succeed for a well-formed file\nstderr:\n{}",
+        output.stderr
+    );
+    // Output must still be valid RS source
+    assert!(
+        output.stdout.contains("fn main"),
+        "inspect --checked must output RS source containing fn main, got:\n{}",
+        output.stdout
+    );
+}
+
+// ── BUG-10: checked-mode with use-after-move fixture ──
+
+#[test]
+fn test_cli_mode_check_checked_use_after_move() {
+    // kobo check --checked <file> with a use-after-move must emit K0001 warning AND exit 0
+    let case = FixtureCase::new("cli-mode-check-checked-uam", "checked_use_after_move.kobo");
+    let output = run_kobo(["check", "--checked"], &case.fixture_path);
+    assert!(
+        output.status.success(),
+        "check --checked with use-after-move must exit 0\nstderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.stderr.contains("K0001"),
+        "check --checked with use-after-move must emit K0001 warning\nstderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.stderr.contains("warning"),
+        "K0001 must be a warning in checked mode, not an error\nstderr:\n{}",
+        output.stderr
+    );
+}

@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/resource.rs",
+  "sources": [
+    "tests/fixtures/resource.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 21,
+        "column_start": 8,
+        "column_end": 12
+      },
+      "kobo_span": {
+        "start": 40,
+        "end": 44,
+        "file_id": 0
+      },
+      "ownership_tier": "scoped_handle"
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 use std::fmt;
 
+use kobo_ir::KoboMode;
+
 macro_rules! define_error_codes {
     ($( $code:ident => $label:literal, )* ) => {
         #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -207,9 +209,98 @@ impl KErrorCode {
     }
 }
 
+/// Map a compile mode to the severity used for ownership-class K-codes.
+/// Script → None (silent), Checked → Warning, Strict → Error.
+/// Not a method on KoboMode because KoboMode lives in kobo-ir and must not
+/// depend on Severity (kobo-errors). No orphan impl allowed.
+fn ownership_severity(mode: KoboMode) -> Option<Severity> {
+    match mode {
+        KoboMode::Script  => None,
+        KoboMode::Checked => Some(Severity::Warning),
+        KoboMode::Strict  => Some(Severity::Error),
+    }
+}
+
+/// Resolve the severity of a K-code diagnostic based on compile mode.
+///
+/// Single source of truth for severity routing — Contract R08.
+/// Returns `None` for diagnostics that should not be emitted in the given mode [R6-11].
+/// None = do not create or emit the diagnostic at all.
+pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
+    use KErrorCode::*;
+
+    match code {
+        // Ownership basics — mode-dependent.
+        // Script: None (silent — no emission), Checked: Warning, Strict: Error [R6-11].
+        K0001 | K0002 => ownership_severity(mode),
+
+        // Performance advisories — always Warning in all modes.
+        K0020 | K0021 => Some(Severity::Warning),
+
+        // Constraint conflict — always Error (not a perf advisory).
+        K0025 => Some(Severity::Error),
+
+        // Resource handle — always Error.
+        K0030 => Some(Severity::Error),
+
+        // @strict boundary violations — always Error.
+        K0041 | K0042 | K0043 => Some(Severity::Error),
+
+        // Async ownership — always Error.
+        K0060 | K0061 | K0062 | K0063 => Some(Severity::Error),
+
+        // Structural advisory — always Note.
+        K0080 => Some(Severity::Note),
+
+        // Structural advisory precursors — always Note [R6-12].
+        // These are structural advisories from the debt model, NOT mode-dependent
+        // ownership enforcement. Do not route through ownership_severity().
+        K0080P1 | K0080P2 | K0080P3 | K0080P4 => Some(Severity::Note),
+
+        // Solver limits — always Error.
+        K0081 | K0082 => Some(Severity::Error),
+
+        // Cross-crate migration limits — always Error.
+        K0090 => Some(Severity::Error),
+
+        // Macro-generated inference failure — always Error.
+        K0095 => Some(Severity::Error),
+
+        // Rustc remap — always Error.
+        K0099 => Some(Severity::Error),
+
+        // Relax attribute advisory — always Warning [BUG-06].
+        // Structural errors (malformed, non-function) use hardcoded Error
+        // at the emission site (AC-19 exception for always-error validation).
+        K0026 => Some(Severity::Warning),
+
+        // Uncategorized ownership (catch-all for future rustc remapped codes).
+        K0019 => ownership_severity(mode),
+
+        // Stub codes — use mode-dependent ownership default.
+        // When a stub becomes active, move it to its own explicit arm above.
+        K0003 | K0004 | K0005 | K0006 | K0007 | K0008 | K0009 |
+        K0010 | K0011 | K0012 | K0013 | K0014 | K0015 | K0016 |
+        K0017 | K0018 |
+        K0022 | K0023 | K0024 | K0027 | K0028 | K0029 |
+        K0031 | K0032 | K0033 | K0034 | K0035 | K0036 | K0037 |
+        K0038 | K0039 | K0040 | K0044 | K0045 | K0046 | K0047 |
+        K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 |
+        K0055 | K0056 | K0057 | K0058 | K0059 |
+        K0064 | K0065 | K0066 | K0067 | K0068 | K0069 |
+        K0070 | K0071 | K0072 | K0073 | K0074 | K0075 | K0076 |
+        K0077 | K0078 | K0079 | K0083 | K0084 |
+        K0085 | K0086 | K0087 | K0088 | K0089 | K0091 | K0092 |
+        K0093 | K0094 | K0096 | K0097 | K0098
+            => ownership_severity(mode),
+        // NO wildcard `_` arm — new variants cause compile error [R2-02].
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{KErrorCode, Severity};
+    use super::{resolve_severity, KErrorCode, Severity};
+    use kobo_ir::KoboMode;
 
     #[test]
     fn precursor_code_uses_dash_suffix() {
@@ -235,5 +326,122 @@ mod tests {
     #[test]
     fn severity_formats_as_lowercase_label() {
         assert_eq!(Severity::Warning.as_str(), "warning");
+    }
+
+    // --- resolve_severity tests [G1 / Contract R08] ---
+
+    #[test]
+    fn k0001_script_is_silent() {
+        assert_eq!(
+            resolve_severity(KErrorCode::K0001, KoboMode::Script),
+            None,
+            "K0001 must not be emitted in script mode (R6-11)"
+        );
+    }
+
+    #[test]
+    fn k0001_checked_is_warning() {
+        assert_eq!(
+            resolve_severity(KErrorCode::K0001, KoboMode::Checked),
+            Some(Severity::Warning)
+        );
+    }
+
+    #[test]
+    fn k0001_strict_is_error() {
+        assert_eq!(
+            resolve_severity(KErrorCode::K0001, KoboMode::Strict),
+            Some(Severity::Error)
+        );
+    }
+
+    #[test]
+    fn k0002_script_is_silent() {
+        assert_eq!(resolve_severity(KErrorCode::K0002, KoboMode::Script), None);
+    }
+
+    #[test]
+    fn k0002_checked_is_warning() {
+        assert_eq!(
+            resolve_severity(KErrorCode::K0002, KoboMode::Checked),
+            Some(Severity::Warning)
+        );
+    }
+
+    #[test]
+    fn perf_advisory_k0020_always_warning() {
+        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+            assert_eq!(
+                resolve_severity(KErrorCode::K0020, mode),
+                Some(Severity::Warning),
+                "K0020 must be Warning in all modes"
+            );
+        }
+    }
+
+    #[test]
+    fn constraint_conflict_k0025_always_error() {
+        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+            assert_eq!(
+                resolve_severity(KErrorCode::K0025, mode),
+                Some(Severity::Error)
+            );
+        }
+    }
+
+    #[test]
+    fn strict_boundary_k0041_always_error() {
+        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+            assert_eq!(
+                resolve_severity(KErrorCode::K0041, mode),
+                Some(Severity::Error)
+            );
+        }
+    }
+
+    #[test]
+    fn structural_advisory_k0080_always_note() {
+        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+            assert_eq!(
+                resolve_severity(KErrorCode::K0080, mode),
+                Some(Severity::Note)
+            );
+        }
+    }
+
+    #[test]
+    fn structural_advisory_precursors_always_note() {
+        for code in [
+            KErrorCode::K0080P1,
+            KErrorCode::K0080P2,
+            KErrorCode::K0080P3,
+            KErrorCode::K0080P4,
+        ] {
+            for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+                assert_eq!(
+                    resolve_severity(code, mode),
+                    Some(Severity::Note),
+                    "{:?} must be Note in all modes (not mode-dependent) [R6-12]",
+                    code
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rustc_remap_k0099_always_error() {
+        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+            assert_eq!(
+                resolve_severity(KErrorCode::K0099, mode),
+                Some(Severity::Error)
+            );
+        }
+    }
+
+    #[test]
+    fn k0026_is_always_warning() {
+        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Script), Some(Severity::Warning));
+        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Checked), Some(Severity::Warning));
+        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Strict), Some(Severity::Warning));
     }
 }

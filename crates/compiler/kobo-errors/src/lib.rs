@@ -2,7 +2,7 @@ mod codes;
 mod diagnostic;
 mod format;
 
-pub use codes::{KErrorCode, KErrorMetadata, Severity};
+pub use codes::{resolve_severity, KErrorCode, KErrorMetadata, Severity};
 pub use diagnostic::{
     CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLabel, DiagLabelKind, KDiagnostic,
 };

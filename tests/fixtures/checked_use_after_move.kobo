@@ -1,0 +1,14 @@
+// Use-after-move wrapped by Kobo. --checked. Expected: K0001 warning, exit 0.
+fn main() {
+    let config = String::from("hello");
+    process(config);
+    log(config);
+}
+
+fn process(s: String) {
+    println!("process: {}", s);
+}
+
+fn log(s: String) {
+    println!("log: {}", s);
+}

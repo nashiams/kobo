@@ -1,0 +1,17 @@
+#[kobo::relax]
+fn relaxed_fn() {
+    let data = make_data();
+    process(data);
+    log(data);
+}
+
+fn checked_fn() {
+    let data = make_data();
+    process(data);
+    log(data);
+}
+
+fn main() {
+    relaxed_fn();
+    checked_fn();
+}

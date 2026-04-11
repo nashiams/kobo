@@ -7,7 +7,7 @@
   "x_kobo_mappings": [
     {
       "rs_span": {
-        "line": 25,
+        "line": 26,
         "column_start": 8,
         "column_end": 13
       },
@@ -20,7 +20,7 @@
     },
     {
       "rs_span": {
-        "line": 28,
+        "line": 29,
         "column_start": 8,
         "column_end": 14
       },
@@ -33,7 +33,7 @@
     },
     {
       "rs_span": {
-        "line": 32,
+        "line": 33,
         "column_start": 8,
         "column_end": 13
       },

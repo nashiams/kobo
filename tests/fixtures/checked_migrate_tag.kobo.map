@@ -1,32 +1,32 @@
 {
   "version": 3,
-  "file": "tests/fixtures/dead_borrow_move.rs",
+  "file": "tests/fixtures/checked_migrate_tag.rs",
   "sources": [
-    "tests/fixtures/dead_borrow_move.kobo"
+    "tests/fixtures/checked_migrate_tag.kobo"
   ],
   "x_kobo_mappings": [
     {
       "rs_span": {
         "line": 3,
         "column_start": 8,
-        "column_end": 9
+        "column_end": 13
       },
       "kobo_span": {
-        "start": 20,
-        "end": 21,
+        "start": 167,
+        "end": 172,
         "file_id": 0
       },
       "ownership_tier": "plain"
     },
     {
       "rs_span": {
-        "line": 6,
+        "line": 8,
         "column_start": 8,
-        "column_end": 9
+        "column_end": 12
       },
       "kobo_span": {
-        "start": 71,
-        "end": 72,
+        "start": 239,
+        "end": 243,
         "file_id": 0
       },
       "ownership_tier": "plain"

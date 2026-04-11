@@ -7,7 +7,7 @@ use kobo_driver::run_kir_phase;
 use super::session::build_session;
 
 pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
-    let mut session = build_session(file)?;
+    let mut session = build_session(file, None)?;
     let (_, kir) = run_kir_phase(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
 

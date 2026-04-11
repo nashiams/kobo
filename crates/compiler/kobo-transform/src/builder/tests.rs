@@ -826,3 +826,195 @@ fn second<U>(mut value: U) {
         tier_for_binding(source, "value", 1),
     );
 }
+
+// ---------------------------------------------------------------------------
+// G5: #[kobo::relax] attribute parsing tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_relax_attr_parsing_valid_bare_records_fn_range() {
+    // Valid #[kobo::relax] on a function → one entry in relaxed_fn_ranges.
+    let source = r#"
+#[kobo::relax]
+fn relaxed() {
+    let x = String::from("hello");
+}
+"#;
+    let output = raw_builder_output_for(source);
+    assert_eq!(output.relaxed_fn_ranges.len(), 1,
+        "one relaxed fn range expected");
+    assert!(output.relax_attr_errors.is_empty(),
+        "no attr errors expected for valid bare attr");
+}
+
+#[test]
+fn test_relax_attr_parsing_no_attr_records_nothing() {
+    // No #[kobo::relax] → relaxed_fn_ranges is empty.
+    let source = r#"
+fn normal() {
+    let x = String::from("hello");
+}
+"#;
+    let output = raw_builder_output_for(source);
+    assert!(output.relaxed_fn_ranges.is_empty(),
+        "no relaxed ranges expected when attr absent");
+    assert!(output.relax_attr_errors.is_empty());
+}
+
+#[test]
+fn test_relax_attr_parsing_with_value_argument_produces_warning() {
+    // #[kobo::relax = "reason"] → warning "takes no arguments".
+    let source = r#"
+#[kobo::relax = "testing"]
+fn foo() {}
+"#;
+    let output = raw_builder_output_for(source);
+    assert!(output.relaxed_fn_ranges.is_empty(),
+        "malformed attr must not record a relaxed range");
+    assert_eq!(output.relax_attr_errors.len(), 1);
+    assert!(!output.relax_attr_errors[0].is_error,
+        "malformed attr should be a warning, not an error");
+    assert!(output.relax_attr_errors[0].message.contains("takes no arguments"),
+        "message should mention takes no arguments");
+}
+
+#[test]
+fn test_relax_attr_parsing_with_list_argument_produces_warning() {
+    // #[kobo::relax("something")] → warning "takes no arguments".
+    let source = r#"
+#[kobo::relax("something")]
+fn foo() {}
+"#;
+    let output = raw_builder_output_for(source);
+    assert!(output.relaxed_fn_ranges.is_empty(),
+        "malformed attr must not record a relaxed range");
+    assert_eq!(output.relax_attr_errors.len(), 1);
+    assert!(!output.relax_attr_errors[0].is_error,
+        "malformed attr should be a warning, not an error");
+}
+
+#[test]
+fn test_relax_attr_parsing_on_struct_produces_error() {
+    // #[kobo::relax] on a struct → error "can only be applied to functions".
+    let source = r#"
+#[kobo::relax]
+struct Foo {
+    x: i32,
+}
+"#;
+    let output = raw_builder_output_for(source);
+    assert!(output.relaxed_fn_ranges.is_empty());
+    assert_eq!(output.relax_attr_errors.len(), 1);
+    assert!(output.relax_attr_errors[0].is_error,
+        "non-fn attachment should be an error");
+    assert!(output.relax_attr_errors[0].message.contains("can only be applied to functions"));
+}
+
+#[test]
+fn test_relax_attr_parsing_duplicate_on_same_fn_produces_lint_warning() {
+    // Two #[kobo::relax] on the same function → second is a lint warning.
+    let source = r#"
+#[kobo::relax]
+#[kobo::relax]
+fn foo() {}
+"#;
+    let output = raw_builder_output_for(source);
+    // First attr records the range; second is a duplicate warning.
+    assert_eq!(output.relaxed_fn_ranges.len(), 1,
+        "only one range recorded (first occurrence)");
+    assert_eq!(output.relax_attr_errors.len(), 1,
+        "one duplicate lint expected");
+    assert!(!output.relax_attr_errors[0].is_error,
+        "duplicate is a warning, not an error");
+    assert!(output.relax_attr_errors[0].message.contains("duplicate"));
+}
+
+#[test]
+fn test_relax_attr_parsing_multiple_relaxed_fns_in_same_file() {
+    // Two functions each with #[kobo::relax] → two ranges.
+    let source = r#"
+#[kobo::relax]
+fn first() {}
+
+#[kobo::relax]
+fn second() {}
+"#;
+    let output = raw_builder_output_for(source);
+    assert_eq!(output.relaxed_fn_ranges.len(), 2,
+        "two relaxed fn ranges expected");
+    assert!(output.relax_attr_errors.is_empty());
+}
+
+#[test]
+fn test_relax_attr_fn_range_covers_function_body() {
+    // The recorded range covers the full function span (start < end, covers body).
+    let source = r#"
+#[kobo::relax]
+fn relaxed() {
+    let _x = 42;
+}
+"#;
+    let output = raw_builder_output_for(source);
+    assert_eq!(output.relaxed_fn_ranges.len(), 1);
+    let range = output.relaxed_fn_ranges[0];
+    assert!(range.start < range.end, "fn span must be non-empty");
+}
+
+#[test]
+fn test_relax_attr_parsing_unrelaxed_fn_in_same_file_not_recorded() {
+    // Only the relaxed fn is in relaxed_fn_ranges; plain fns are absent.
+    let source = r#"
+#[kobo::relax]
+fn relaxed() {}
+
+fn plain() {}
+"#;
+    let output = raw_builder_output_for(source);
+    assert_eq!(output.relaxed_fn_ranges.len(), 1,
+        "only one range — the relaxed fn");
+}
+
+// ── BUG-11: duplicate #[kobo::migrate] on parameters ──
+
+#[test]
+fn test_migrate_duplicate_on_parameter_produces_lint_warning() {
+    let source = r#"
+fn foo(#[kobo::migrate] #[kobo::migrate] x: String) {}
+"#;
+    let output = raw_builder_output_for(source);
+    // Only first attr should be recorded as a migrate site.
+    assert_eq!(output.migrate_sites.len(), 1,
+        "only one migrate site recorded (first occurrence)");
+    // Second attr produces a duplicate lint warning.
+    let dup_errors: Vec<_> = output.relax_attr_errors.iter()
+        .filter(|e| e.message.contains("duplicate") && e.message.contains("migrate"))
+        .collect();
+    assert_eq!(dup_errors.len(), 1, "one duplicate migrate lint expected on param");
+    assert!(!dup_errors[0].is_error, "duplicate is a warning, not an error");
+}
+
+// ── BUG-11: duplicate #[kobo::migrate] on let-bindings ──
+
+#[test]
+fn test_migrate_duplicate_on_let_binding_produces_lint_warning() {
+    let source = r#"
+fn main() {
+    #[kobo::migrate]
+    #[kobo::migrate]
+    let x = String::from("hello");
+}
+"#;
+    let output = raw_builder_output_for(source);
+    // Only first attr should be recorded as a migrate site.
+    let let_sites: Vec<_> = output.migrate_sites.iter()
+        .filter(|s| s.target == kobo_ir::MigrateTarget::LetBinding)
+        .collect();
+    assert_eq!(let_sites.len(), 1,
+        "only one migrate site recorded for let-binding (first occurrence)");
+    // Second attr produces a duplicate lint warning.
+    let dup_errors: Vec<_> = output.relax_attr_errors.iter()
+        .filter(|e| e.message.contains("duplicate") && e.message.contains("migrate"))
+        .collect();
+    assert_eq!(dup_errors.len(), 1, "one duplicate migrate lint expected on let-binding");
+    assert!(!dup_errors[0].is_error, "duplicate is a warning, not an error");
+}

@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use kobo_analysis::{facts_to_diagnostics, run_analysis};
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
-use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
-use kobo_ir::{FileId, Kir, SolutionMap, WarnEarlyPattern};
+use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
+use kobo_ir::{FileId, Kir, RelaxAttrError, SolutionMap, WarnEarlyPattern};
 use kobo_migrate::{solve, ConstraintGraph, SolveResult, SolverBudget};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
@@ -14,7 +14,7 @@ use kobo_transform::{build_kir, TransformOptions};
 use crate::filesystem::{
     map_path_for, output_path_for, read_kobo_file, write_map_file, write_rs_file,
 };
-use crate::rustc::compile_and_remap;
+use crate::rustc::{compile_and_remap, extract_kobo_regions, filter_wrapper_noise, remap_warnings_to_diagnostics};
 use crate::session::CompileSession;
 
 pub struct CodegenArtifacts {
@@ -67,6 +67,10 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
             small_struct_clone_threshold_bytes: session.config.small_struct_clone_threshold_bytes,
         },
     );
+
+    // G5: copy relaxed fn ranges into session so the rendering path can filter warnings.
+    session.relaxed_fn_ranges = kir.relaxed_fn_ranges().to_vec();
+
     Ok((kobo_file, kir))
 }
 
@@ -119,12 +123,28 @@ pub fn run_codegen_pipeline(
 
 pub fn run_and_compile(session: &mut CompileSession, input: &Path) -> Result<PathBuf, ()> {
     let artifacts = run_codegen_pipeline(session, input)?;
-    compile_and_remap(
+    let compile_output = compile_and_remap(
         session,
         &artifacts.rs_path,
         &artifacts.source_map,
         artifacts.file_id,
-    )
+    )?;
+
+    // v0.6 G4 §4.4: In checked mode, filter wrapper noise and remap surviving
+    // warnings to .kobo spans, then push into session.diagnostics [R6-02].
+    // ORDER IS CRITICAL: filter(§4.2) must use .rs spans → remap(§4.3) → merge.
+    if session.mode().is_checked() && !compile_output.rustc_warnings.is_empty() {
+        let kobo_regions = extract_kobo_regions(&artifacts.rs_source);
+        let surviving = filter_wrapper_noise(&compile_output.rustc_warnings, &kobo_regions);
+        remap_warnings_to_diagnostics(
+            surviving,
+            &artifacts.source_map,
+            artifacts.file_id,
+            session,
+        );
+    }
+
+    Ok(compile_output.output_path)
 }
 
 pub fn run_pipeline(session: &mut CompileSession, input: &Path) -> Result<String, ()> {
@@ -138,17 +158,54 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
         kir.transform_facts(),
         session.file_set(),
         kir,
+        session.mode(),
     ));
 
     // Emit errors for malformed #[kobo::known_debt] attributes (C07).
+    // K0025 malformed attribute is always Error — structural constraint [R6-03].
     for def in kir.struct_defs() {
         if let Some(error_msg) = &def.known_debt_parse_error {
             let span = def.known_debt_span.unwrap_or(def.span);
+            let severity = resolve_severity(KErrorCode::K0025, session.mode())
+                .unwrap_or(Severity::Error);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0025,
-                Severity::Error,
+                severity,
                 DiagLabel::primary(span, error_msg.clone()),
                 error_msg.clone(),
+                DiagDecision(String::new()),
+            ));
+        }
+    }
+
+    // Emit diagnostics for #[kobo::relax] attribute validation errors/warnings [G5].
+    // K0026 error path: structural validation errors use hardcoded Error (AC-19 exception).
+    // K0026 warning path: use resolve_severity for consistency [BUG-06].
+    for RelaxAttrError { span, message, is_error } in kir.relax_attr_errors() {
+        let severity = if *is_error {
+            Severity::Error
+        } else {
+            resolve_severity(KErrorCode::K0026, session.mode()).unwrap_or(Severity::Warning)
+        };
+        session.diagnostics.push(KDiagnostic::new(
+            KErrorCode::K0026,
+            severity,
+            DiagLabel::primary(*span, message.clone()),
+            message.clone(),
+            DiagDecision(String::new()),
+        ));
+    }
+    // Warn when #[kobo::relax] is used in script mode (has no effect).
+    if session.mode().is_script() && !session.relaxed_fn_ranges.is_empty() {
+        // Emit per-relaxed-fn advisory using the fn span itself.
+        let severity = resolve_severity(KErrorCode::K0026, session.mode())
+            .unwrap_or(Severity::Warning);
+        for &fn_span in &session.relaxed_fn_ranges.clone() {
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0026,
+                severity,
+                DiagLabel::primary(fn_span, "`#[kobo::relax]` has no effect in script mode"),
+                "`#[kobo::relax]` has no effect in script mode".to_owned(),
                 DiagDecision(String::new()),
             ));
         }
@@ -204,9 +261,11 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
             ),
         };
 
+        // K0080P1-P4 structural advisories are always Note — not mode-dependent [R6-12].
+        let advisory_severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Note);
         session.diagnostics.push(KDiagnostic::new(
             code,
-            Severity::Note,
+            advisory_severity,
             DiagLabel::primary(fact.span, label_text),
             explanation,
             DiagDecision("advisory only — no automatic fix; see `kobo debt` for migration guidance".to_owned()),

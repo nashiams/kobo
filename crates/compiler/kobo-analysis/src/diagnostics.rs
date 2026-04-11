@@ -1,7 +1,7 @@
-use kobo_errors::{CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLabel, KDiagnostic};
+use kobo_errors::{resolve_severity, CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLabel, KDiagnostic};
 use kobo_errors::{KErrorCode, Severity};
 use kobo_errors::{render_k0041, render_k0042, render_k0043, render_k0063, render_labeled_cross_boundary};
-use kobo_ir::{FileSet, Kir, OwnershipTier, StrictBoundaryViolation, TransformFacts};
+use kobo_ir::{FileSet, Kir, KoboMode, OwnershipTier, StrictBoundaryViolation, TransformFacts};
 
 use crate::ownership_facts::{BorrowFact, BorrowKind, HintConflictFact, MoveFact};
 use crate::runner::AnalysisFacts;
@@ -11,6 +11,7 @@ pub fn facts_to_diagnostics(
     transform_facts: &TransformFacts,
     file_set: &FileSet,
     kir: &Kir,
+    mode: KoboMode,
 ) -> Vec<KDiagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -18,20 +19,30 @@ pub fn facts_to_diagnostics(
         if move_fact_is_rewritten_as_plain_clone(move_fact, transform_facts) {
             continue;
         }
-        diagnostics.push(move_fact_diagnostic(move_fact, file_set));
+        // v0.6: Script mode is silent for K0001 (resolve_severity returns None) [R6-11].
+        if let Some(severity) = resolve_severity(KErrorCode::K0001, mode) {
+            diagnostics.push(move_fact_diagnostic(move_fact, file_set, severity));
+        }
     }
 
     for borrow_fact in &facts.borrows {
-        diagnostics.push(borrow_fact_diagnostic(borrow_fact, file_set));
+        // v0.6: Script mode is silent for K0002 [R6-11].
+        if let Some(severity) = resolve_severity(KErrorCode::K0002, mode) {
+            diagnostics.push(borrow_fact_diagnostic(borrow_fact, file_set, severity));
+        }
     }
 
     for hint_conflict in &transform_facts.hint_conflicts {
         if let Some(binding) = transform_facts.binding(hint_conflict.node) {
-            diagnostics.push(hint_conflict_diagnostic(hint_conflict, binding, file_set));
+            // K0025 is always Error (constraint conflict, not perf advisory).
+            let severity = resolve_severity(KErrorCode::K0025, mode)
+                .unwrap_or(Severity::Error);
+            diagnostics.push(hint_conflict_diagnostic(hint_conflict, binding, file_set, severity));
         }
     }
 
     // v0.5: Convert strict boundary facts → diagnostics (BUG-02 fix).
+    // @strict violations are always Error — mode-independent [Contract R10].
     if !kir.strict_boundary_facts().is_empty() {
         for fact in kir.strict_boundary_facts() {
             let diag = match &fact.violation {
@@ -50,10 +61,10 @@ pub fn facts_to_diagnostics(
     diagnostics
 }
 
-fn move_fact_diagnostic(move_fact: &MoveFact, file_set: &FileSet) -> KDiagnostic {
+fn move_fact_diagnostic(move_fact: &MoveFact, file_set: &FileSet, severity: Severity) -> KDiagnostic {
     KDiagnostic::new(
         KErrorCode::K0001,
-        Severity::Error,
+        severity,
         DiagLabel::primary(move_fact.later_use, "value used after move"),
         move_explanation(move_fact, file_set),
         DiagDecision("flagged before lowering; no automatic rewrite applied".to_owned()),
@@ -80,10 +91,10 @@ fn move_fact_is_rewritten_as_plain_clone(
     })
 }
 
-fn borrow_fact_diagnostic(borrow_fact: &BorrowFact, file_set: &FileSet) -> KDiagnostic {
+fn borrow_fact_diagnostic(borrow_fact: &BorrowFact, file_set: &FileSet, severity: Severity) -> KDiagnostic {
     KDiagnostic::new(
         KErrorCode::K0002,
-        Severity::Error,
+        severity,
         DiagLabel::primary(borrow_fact.conflict_site, "mutable borrow occurs here"),
         borrow_explanation(borrow_fact, file_set),
         DiagDecision("flagged as conflict; simultaneous borrows would panic at runtime".to_owned()),
@@ -102,10 +113,11 @@ fn hint_conflict_diagnostic(
     hint_conflict: &HintConflictFact,
     binding: &kobo_ir::TransformBindingFacts,
     file_set: &FileSet,
+    severity: Severity,
 ) -> KDiagnostic {
     KDiagnostic::new(
         KErrorCode::K0025,
-        Severity::Warning,
+        severity,
         DiagLabel::primary(
             hint_conflict.hint_span,
             format!(

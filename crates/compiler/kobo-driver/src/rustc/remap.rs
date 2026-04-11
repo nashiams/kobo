@@ -1,3 +1,7 @@
+// TODO(v0.7): Trap 7 — remap secondary spans ("note: defined here") from rustc.
+// Currently only the primary span is remapped to .kobo coordinates.
+// Secondary spans are dropped. This is a known limitation for v0.6.
+
 use kobo_codegen::{KoboSourceMap, RsSpan};
 use kobo_errors::{
     CliSuggestion, DiagDecision, DiagExplanation, DiagLabel, DiagLabelKind, KDiagnostic,
@@ -5,14 +9,14 @@ use kobo_errors::{
 };
 use kobo_ir::{FileId, KoboSpan};
 
-use super::json::{parse_rustc_errors, RustcJsonError, RustcSpan};
+use super::json::{parse_rustc_diagnostics, RustcJsonError, RustcSpan};
 
 pub(crate) fn remap_rustc_output(
     raw_output: &str,
     source_map: &KoboSourceMap,
     kobo_file_id: FileId,
 ) -> Vec<KDiagnostic> {
-    let parsed_output = parse_rustc_errors(raw_output);
+    let parsed_output = parse_rustc_diagnostics(raw_output);
     if parsed_output.parsed_any {
         return parsed_output
             .errors
@@ -54,20 +58,54 @@ fn remap_error(
     source_map: &KoboSourceMap,
     kobo_file_id: FileId,
 ) -> KDiagnostic {
-    let remapped = remap_labels(&error, source_map, kobo_file_id);
+    remap_diagnostic(error, source_map, kobo_file_id, Severity::Error, KErrorCode::K0099)
+}
+
+/// Re-map a surviving rustc warning to a .kobo-span diagnostic.
+/// Uses K0019 (uncategorized ownership) with Warning severity so that
+/// `has_errors()` remains false and exit code stays 0 [R5-02 Option B].
+pub(crate) fn remap_warning_diagnostic(
+    warning: RustcJsonError,
+    source_map: &KoboSourceMap,
+    kobo_file_id: FileId,
+) -> KDiagnostic {
+    remap_diagnostic(warning, source_map, kobo_file_id, Severity::Warning, KErrorCode::K0019)
+}
+
+/// Core diagnostic re-mapper — shared by error and warning paths.
+/// `severity` and `code` determine how the output diagnostic is classified.
+fn remap_diagnostic(
+    diag: RustcJsonError,
+    source_map: &KoboSourceMap,
+    kobo_file_id: FileId,
+    severity: Severity,
+    code: KErrorCode,
+) -> KDiagnostic {
+    let remapped = remap_labels(&diag, source_map, kobo_file_id);
     if remapped.mapped_label_count == 0 {
-        return tier_three_diagnostic(&error, source_map, kobo_file_id, remapped.help.as_deref());
+        // Unmappable: surface as tier-3 envelope but preserve severity/code.
+        return tier_three_diagnostic_with_severity(
+            &diag,
+            source_map,
+            kobo_file_id,
+            remapped.help.as_deref(),
+            severity,
+            code,
+        );
     }
 
+    let decision_text = if severity == Severity::Error {
+        "rustc rejected generated output; Kobo remapped the spans back to .kobo source"
+    } else {
+        "rustc warning in generated output; Kobo remapped the spans back to .kobo source"
+    };
+
     let mut diagnostic = KDiagnostic::new(
-        KErrorCode::K0099,
-        Severity::Error,
+        code,
+        severity,
         remapped.primary,
-        remap_explanation(&error, remapped.remapping_unavailable),
-        DiagDecision(
-            "rustc rejected generated output; Kobo remapped the spans back to .kobo source"
-                .to_owned(),
-        ),
+        remap_explanation(&diag, remapped.remapping_unavailable),
+        DiagDecision(decision_text.to_owned()),
     );
 
     for label in remapped.secondary {
@@ -211,8 +249,12 @@ fn remap_span(
     let label_text = span_label_text(span);
 
     let Some(kobo_span) = source_map.lookup_kobo_span(rs_span) else {
+        let fallback_text = format!(
+            "{label_text} (generated line {}, col {})",
+            span.line_start, span.column_start
+        );
         return (
-            DiagLabel::new(KoboSpan::new(0, 0, kobo_file_id), label_kind, label_text),
+            DiagLabel::new(KoboSpan::new(0, 0, kobo_file_id), label_kind, fallback_text),
             true,
         );
     };
@@ -260,19 +302,27 @@ fn remap_explanation(error: &RustcJsonError, remapping_unavailable: bool) -> Dia
     ))
 }
 
-fn tier_three_diagnostic(
+fn tier_three_diagnostic_with_severity(
     error: &RustcJsonError,
     source_map: &KoboSourceMap,
     file_id: FileId,
     help: Option<&str>,
+    severity: Severity,
+    code: KErrorCode,
 ) -> KDiagnostic {
+    let primary_text = if let Some(span) = error.spans.first() {
+        format!(
+            "compiler output could not be remapped (generated line {}, col {})",
+            span.line_start, span.column_start
+        )
+    } else {
+        "compiler output could not be remapped".to_owned()
+    };
+
     let mut diagnostic = KDiagnostic::new(
-        KErrorCode::K0099,
-        Severity::Error,
-        DiagLabel::primary(
-            KoboSpan::new(0, 0, file_id),
-            "compiler output could not be remapped",
-        ),
+        code,
+        severity,
+        DiagLabel::primary(KoboSpan::new(0, 0, file_id), primary_text),
         remap_explanation(error, true),
         DiagDecision(
             "rustc output did not map back to Kobo spans; surfaced a Tier-3 envelope".to_owned(),
@@ -358,9 +408,13 @@ mod tests {
             .0
             .starts_with("[remapping unavailable]"));
         assert_eq!(diagnostics[0].primary.span, KoboSpan::new(0, 0, FileId(0)));
-        assert_eq!(
-            diagnostics[0].primary.text,
-            "compiler output could not be remapped"
+        assert!(
+            diagnostics[0].primary.text.contains("compiler output could not be remapped"),
+            "fallback label should mention remapping failure"
+        );
+        assert!(
+            diagnostics[0].primary.text.contains("line 40"),
+            "fallback label should include generated line info"
         );
     }
 
@@ -406,5 +460,36 @@ mod tests {
         let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
 
         assert!(!diagnostics[0].primary.text.contains(".rs"));
+    }
+
+    // ── BUG-12: unmappable diagnostics should preserve generated-code location ──
+
+    #[test]
+    fn remapper_fallback_includes_generated_line_info() {
+        // When all spans are unmappable, the tier-3 envelope should include
+        // the generated .rs line/column in the primary label for debugging.
+        let raw = r#"{"message":"type mismatch","code":null,"level":"error","spans":[{"file_name":"src/main.rs","line_start":40,"column_start":3,"line_end":40,"column_end":15,"is_primary":true,"label":"expected type"}],"children":[]}"#;
+        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
+
+        // The primary label should mention the generated-code location.
+        assert!(
+            diagnostics[0].primary.text.contains("line 40"),
+            "fallback should mention generated line, got: {}",
+            diagnostics[0].primary.text
+        );
+    }
+
+    #[test]
+    fn remapper_individual_span_fallback_preserves_location() {
+        // Even individual span fallbacks should include the generated location.
+        let raw = r#"{"message":"cannot borrow","code":{"code":"E0502"},"level":"error","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":false,"label":"immutable borrow occurs here"},{"file_name":"src/main.rs","line_start":50,"column_start":8,"line_end":50,"column_end":20,"is_primary":true,"label":"mutable borrow occurs here"}],"children":[]}"#;
+        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
+
+        // The unmappable primary (line 50) should have location context.
+        assert!(
+            diagnostics[0].primary.text.contains("line 50"),
+            "unmappable span should include generated line in label, got: {}",
+            diagnostics[0].primary.text
+        );
     }
 }

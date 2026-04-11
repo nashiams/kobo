@@ -3,14 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Compilation mode selected for the current Kobo session.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum KoboMode {
-    Script,
-    Checked,
-    Strict,
-}
+pub use kobo_ir::KoboMode;
 
 /// Workspace and crate-local configuration after all layers have been merged.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,12 +81,6 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
-}
-
-impl Default for KoboMode {
-    fn default() -> Self {
-        Self::Script
-    }
 }
 
 impl Default for KoboConfig {

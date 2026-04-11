@@ -8,8 +8,8 @@
     {
       "rs_span": {
         "line": 3,
-        "column_start": 0,
-        "column_end": 37
+        "column_start": 8,
+        "column_end": 13
       },
       "kobo_span": {
         "start": 20,
@@ -21,8 +21,8 @@
     {
       "rs_span": {
         "line": 7,
-        "column_start": 0,
-        "column_end": 32
+        "column_start": 8,
+        "column_end": 16
       },
       "kobo_span": {
         "start": 106,
@@ -34,8 +34,8 @@
     {
       "rs_span": {
         "line": 11,
-        "column_start": 0,
-        "column_end": 38
+        "column_start": 9,
+        "column_end": 14
       },
       "kobo_span": {
         "start": 173,

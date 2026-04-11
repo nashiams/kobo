@@ -8,8 +8,8 @@
     {
       "rs_span": {
         "line": 5,
-        "column_start": 0,
-        "column_end": 52
+        "column_start": 8,
+        "column_end": 12
       },
       "kobo_span": {
         "start": 20,
@@ -20,9 +20,9 @@
     },
     {
       "rs_span": {
-        "line": 9,
-        "column_start": 0,
-        "column_end": 23
+        "line": 10,
+        "column_start": 8,
+        "column_end": 12
       },
       "kobo_span": {
         "start": 87,

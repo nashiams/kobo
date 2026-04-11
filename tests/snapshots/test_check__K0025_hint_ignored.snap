@@ -2,7 +2,7 @@
 source: bin/kobo-cli/tests/test_ui.rs
 expression: output.stderr
 ---
-warning[K0025]: soft hint ignored - constraint conflict
+error[K0025]: soft hint ignored - constraint conflict
   --> tests\ui\K0025_hint_ignored.kobo:4:30
   |
 4 |     #[kobo::hint(ownership = "move")]
@@ -14,3 +14,4 @@ warning[K0025]: soft hint ignored - constraint conflict
    = kobo decision: assigned rc_refcell (greedy priority 5) after the hinted candidate failed
 help: drop the later alias, or change the hint to match the actual usage pattern
 run: kobo check tests\ui\K0025_hint_ignored.kobo:4
+Error: analysis failed

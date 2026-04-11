@@ -3,6 +3,7 @@ mod commands;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use kobo_ir::KoboMode;
 
 #[derive(Parser, Debug)]
 #[command(name = "kobo", about = "The Kobo compiler")]
@@ -17,6 +18,12 @@ pub(crate) enum KoboCommand {
     Check {
         #[arg(value_name = "FILE")]
         file: PathBuf,
+        #[arg(long, conflicts_with = "strict",
+              help = "Check in checked mode — ownership advisory warnings")]
+        checked: bool,
+        #[arg(long, conflicts_with = "checked",
+              help = "Check in strict mode (v0.9 — not yet implemented)")]
+        strict: bool,
     },
     /// Reformat a .kobo file when the source map proves the edit is lossless.
     Fmt {
@@ -27,11 +34,23 @@ pub(crate) enum KoboCommand {
     Run {
         #[arg(value_name = "FILE")]
         file: PathBuf,
+        #[arg(long, conflicts_with = "strict",
+              help = "Run in checked mode — ownership advisory warnings")]
+        checked: bool,
+        #[arg(long, conflicts_with = "checked",
+              help = "Run in strict mode (v0.9 — not yet implemented)")]
+        strict: bool,
     },
     /// Compile and print the generated .rs to stdout without invoking rustc.
     Inspect {
         #[arg(value_name = "FILE")]
         file: PathBuf,
+        #[arg(long, conflicts_with = "strict",
+              help = "Inspect in checked mode — ownership advisory warnings")]
+        checked: bool,
+        #[arg(long, conflicts_with = "checked",
+              help = "Inspect in strict mode (v0.9 — not yet implemented)")]
+        strict: bool,
     },
     /// Run the pipeline through the KIR phase only and print KIR nodes.
     Dump {
@@ -64,6 +83,19 @@ pub(crate) enum KoboCommand {
         #[arg(long, hide = true)]
         watch: bool,
     },
+}
+
+/// Resolve CLI mode flags to a KoboMode override.
+/// Returns None when no CLI flag is present — the config file (Kobo.toml) or
+/// default (Script) is used instead [Contract R06: CLI overrides per-crate mode].
+pub(crate) fn resolve_cli_mode(checked: bool, strict: bool) -> Option<KoboMode> {
+    if strict {
+        Some(KoboMode::Strict)
+    } else if checked {
+        Some(KoboMode::Checked)
+    } else {
+        None
+    }
 }
 
 fn main() -> anyhow::Result<()> {

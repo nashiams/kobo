@@ -9,11 +9,13 @@ use kobo_driver::{run_codegen_pipeline, CodegenArtifacts};
 use super::session::{build_session, render_diagnostics};
 
 pub(super) fn cmd_fmt(file: &Path) -> anyhow::Result<()> {
-    let mut session = build_session(file)?;
+    let mut session = build_session(file, None)?;
     let artifacts = run_codegen_pipeline(&mut session, file).map_err(|()| {
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
+    // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
+    render_diagnostics(&session);
     run_rustfmt_file(&artifacts.rs_path)?;
 
     let formatted_source = rewrite_lossless_kobo_source(file, &artifacts)?;

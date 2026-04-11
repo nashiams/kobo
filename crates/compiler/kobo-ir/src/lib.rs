@@ -1,5 +1,6 @@
 pub mod debt;
 mod kir;
+mod mode;
 mod node_id;
 mod ownership;
 mod resource;
@@ -15,7 +16,7 @@ pub use debt::{
     WrapperInventory,
 };
 pub use kir::{BorrowKind, NodeKind, UseKind};
-pub use kir::{Kir, KirNode};
+pub use kir::{Kir, KirNode, RelaxAttrError};
 pub use node_id::{
     CfgBlockId, FileEntry, FileId, FileSet, FileSetBuilder, KirNodeId, KoboAstNodeId, NodeIdGen,
 };
@@ -28,6 +29,7 @@ pub use ownership::{
 pub use resource::ResourceKind;
 pub use solution_map::SolutionMap;
 pub use span::KoboSpan;
+pub use mode::KoboMode;
 pub use strict::{
     CaptureAccessKind, CaptureSet, CapturedBinding, ClosureCaptureDetail, ClosureCaptureMode,
     NestedStrictBlock, StrictBoundaryFact, StrictBoundaryViolation, StrictFnMode,

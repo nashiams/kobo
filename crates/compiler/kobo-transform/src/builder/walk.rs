@@ -1,7 +1,7 @@
 use syn::spanned::Spanned;
 
 use crate::hint::parse_hint;
-use kobo_ir::{EscapeKind, FieldTypeShape, KirStructDef, KirStructFieldDef, UseKind};
+use kobo_ir::{EscapeKind, FieldTypeShape, KirStructDef, KirStructFieldDef, RelaxAttrError, UseKind};
 
 use super::helpers::{assignment_escape_kind, borrow_kind, is_mutating_method};
 use super::{FunctionCtx, PendingHint, TransformFactsBuilder};
@@ -10,14 +10,49 @@ impl TransformFactsBuilder<'_> {
     pub(super) fn walk_item(&mut self, item: &syn::Item) {
         match item {
             syn::Item::Fn(function) => self.walk_function(function),
-            syn::Item::Struct(item_struct) => self.collect_struct_def(item_struct),
+            syn::Item::Struct(item_struct) => {
+                self.check_relax_on_non_fn_item(&item_struct.attrs, item_struct.span());
+                self.collect_struct_def(item_struct);
+            }
             syn::Item::Const(item_const) => {
+                self.check_relax_on_non_fn_item(&item_const.attrs, item_const.span());
                 self.emit_declared_binding(&item_const.ident, Some(&item_const.expr), None);
             }
             syn::Item::Static(item_static) => {
+                self.check_relax_on_non_fn_item(&item_static.attrs, item_static.span());
                 self.emit_declared_binding(&item_static.ident, Some(&item_static.expr), None);
             }
-            _ => {}
+            item => {
+                // Catch #[kobo::relax] on enum, impl, mod, trait, etc.
+                let attrs = match item {
+                    syn::Item::Enum(i) => Some(i.attrs.as_slice()),
+                    syn::Item::Impl(i) => Some(i.attrs.as_slice()),
+                    syn::Item::Mod(i) => Some(i.attrs.as_slice()),
+                    syn::Item::Trait(i) => Some(i.attrs.as_slice()),
+                    _ => None,
+                };
+                if let Some(attrs) = attrs {
+                    self.check_relax_on_non_fn_item(attrs, item.span());
+                }
+            }
+        }
+    }
+
+    /// Emit a `RelaxAttrError` for each `#[kobo::relax]` found on a non-function item.
+    fn check_relax_on_non_fn_item(&mut self, attrs: &[syn::Attribute], item_span: proc_macro2::Span) {
+        for attr in attrs {
+            match parse_relax_attr(attr) {
+                RelaxAttrResult::Valid(attr_span) | RelaxAttrResult::HasArguments(attr_span) => {
+                    let span = self.ast.span_from_syn(attr_span);
+                    let _ = item_span; // keep span tight to the attribute
+                    self.relax_attr_errors.push(RelaxAttrError {
+                        span,
+                        message: "`#[kobo::relax]` can only be applied to functions".to_owned(),
+                        is_error: true,
+                    });
+                }
+                RelaxAttrResult::NotRelax => {}
+            }
         }
     }
 
@@ -98,6 +133,39 @@ impl TransformFactsBuilder<'_> {
             hint,
             span: self.ast.span_from_syn(span),
         });
+
+        // --- G5: detect #[kobo::relax] attributes on this function ---
+        let mut relax_attr_count = 0usize;
+        for attr in &function.attrs {
+            match parse_relax_attr(attr) {
+                RelaxAttrResult::Valid(attr_span) => {
+                    relax_attr_count += 1;
+                    if relax_attr_count == 1 {
+                        // Record the entire function span as a relaxed region [G5].
+                        let fn_span = self.ast.span_from_syn(function.span());
+                        self.relaxed_fn_ranges.push(fn_span);
+                    } else {
+                        // Duplicate #[kobo::relax] → lint warning.
+                        let span = self.ast.span_from_syn(attr_span);
+                        self.relax_attr_errors.push(RelaxAttrError {
+                            span,
+                            message: "duplicate `#[kobo::relax]` attribute".to_owned(),
+                            is_error: false,
+                        });
+                    }
+                }
+                RelaxAttrResult::HasArguments(attr_span) => {
+                    // Malformed form: #[kobo::relax = "..."] or #[kobo::relax(...)]
+                    let span = self.ast.span_from_syn(attr_span);
+                    self.relax_attr_errors.push(RelaxAttrError {
+                        span,
+                        message: "`#[kobo::relax]` takes no arguments".to_owned(),
+                        is_error: false,
+                    });
+                }
+                RelaxAttrResult::NotRelax => {}
+            }
+        }
         self.function_stack.push(FunctionCtx {
             generic_params,
             is_async: function.sig.asyncness.is_some(),
@@ -504,4 +572,48 @@ fn extract_rc_refcell_inner(arg: &syn::GenericArgument, struct_name: &str) -> Op
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Free helpers for #[kobo::relax] attribute parsing [G5]
+// ---------------------------------------------------------------------------
+
+/// Result of parsing a `#[kobo::relax]` attribute from an `syn::Attribute`.
+pub(super) enum RelaxAttrResult {
+    /// Attribute is not a `kobo::relax` attribute.
+    NotRelax,
+    /// Valid bare `#[kobo::relax]`.
+    Valid(proc_macro2::Span),
+    /// Malformed `#[kobo::relax = "..."]` or `#[kobo::relax(...)]` — takes no arguments.
+    HasArguments(proc_macro2::Span),
+}
+
+/// Parse `#[kobo::relax]` from a single attribute.
+///
+/// Returns `Valid` for bare `#[kobo::relax]`, `HasArguments` for any form
+/// that carries a value or argument list, and `NotRelax` for all other attrs.
+pub(super) fn parse_relax_attr(attr: &syn::Attribute) -> RelaxAttrResult {
+    match &attr.meta {
+        syn::Meta::Path(path) => {
+            let segs: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "relax" {
+                return RelaxAttrResult::Valid(attr.span());
+            }
+            RelaxAttrResult::NotRelax
+        }
+        syn::Meta::NameValue(nv) => {
+            let segs: Vec<_> = nv.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "relax" {
+                return RelaxAttrResult::HasArguments(attr.span());
+            }
+            RelaxAttrResult::NotRelax
+        }
+        syn::Meta::List(list) => {
+            let segs: Vec<_> = list.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "relax" {
+                return RelaxAttrResult::HasArguments(attr.span());
+            }
+            RelaxAttrResult::NotRelax
+        }
+    }
 }

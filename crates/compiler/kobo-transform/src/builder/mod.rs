@@ -8,7 +8,7 @@ use crate::options::TransformOptions;
 use crate::small_clone::{collect_small_clone_profiles, SmallCloneProfile};
 use kobo_ir::{
     BoxReason, CloneElisionCandidate, ElisionSkipReason, HintConflictFact, KirNode, KirStructDef,
-    NodeIdGen, TransformFacts,
+    KoboSpan, NodeIdGen, RelaxAttrError, TransformFacts,
 };
 use kobo_parser::{KoboBinding, KoboFile};
 
@@ -34,6 +34,10 @@ pub(crate) struct BuilderOutput {
     pub(crate) move_aliases: Vec<MoveAlias>,
     pub(crate) clone_elision_candidates: Vec<CloneElisionCandidate>,
     pub(crate) struct_defs: Vec<KirStructDef>,
+    /// Byte-offset spans of functions annotated with `#[kobo::relax]` [G5].
+    pub(crate) relaxed_fn_ranges: Vec<KoboSpan>,
+    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
+    pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
 }
 
 pub(crate) struct TransformFactsBuilder<'a> {
@@ -53,6 +57,10 @@ pub(crate) struct TransformFactsBuilder<'a> {
     function_names: HashSet<String>,
     pending_elision_candidates: HashMap<kobo_ir::KoboAstNodeId, AstCloneElisionCandidate>,
     struct_defs: Vec<KirStructDef>,
+    /// Byte-offset spans of functions annotated with `#[kobo::relax]` [G5].
+    pub(crate) relaxed_fn_ranges: Vec<KoboSpan>,
+    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
+    pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
 }
 
 mod emit;
@@ -110,6 +118,8 @@ impl<'a> TransformFactsBuilder<'a> {
                 .map(|candidate| (candidate.alias_ast_id, candidate))
                 .collect(),
             struct_defs: Vec::new(),
+            relaxed_fn_ranges: Vec::new(),
+            relax_attr_errors: Vec::new(),
         }
     }
 
@@ -122,6 +132,8 @@ impl<'a> TransformFactsBuilder<'a> {
             clone_elision_candidates,
             hint_conflicts,
             struct_defs,
+            relaxed_fn_ranges,
+            relax_attr_errors,
             ..
         } = self;
 
@@ -149,6 +161,8 @@ impl<'a> TransformFactsBuilder<'a> {
             move_aliases,
             clone_elision_candidates,
             struct_defs,
+            relaxed_fn_ranges,
+            relax_attr_errors,
         }
     }
 

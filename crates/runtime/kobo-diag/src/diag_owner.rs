@@ -252,11 +252,15 @@ impl<T> DerefMut for DiagOwner<T> {
 #[cfg(feature = "diag")]
 impl<T> Drop for DiagOwner<T> {
     fn drop(&mut self) {
-        // Runtime gate: only emit if KOBO_DIAG=1 and this is the last DiagOwner
-        // clone (Rc::strong_count == 1 for the counters).
-        // We check KOBO_DIAG here, not at compile time — env var is a runtime gate.
-        // Trap 3: K0020-style check fires at Drop, not at each borrow() call.
-        if std::env::var("KOBO_DIAG").as_deref() != Ok("1") {
+        // Runtime gate: emit when either of these is true:
+        //   (a) KOBO_DIAG=1   — explicit opt-in in script mode
+        //   (b) KOBO_CHECKED_MODE=1 — set by the driver when running a checked-mode binary
+        //                              checked mode always emits DiagOwner output [G1-§1.4]
+        // We do NOT check the feature gate here — feature="diag" controls counter existence;
+        // this gate controls whether the output is suppressed at runtime.
+        let explicit_opt_in = std::env::var("KOBO_DIAG").as_deref() == Ok("1");
+        let checked_mode = std::env::var("KOBO_CHECKED_MODE").as_deref() == Ok("1");
+        if !explicit_opt_in && !checked_mode {
             return;
         }
 

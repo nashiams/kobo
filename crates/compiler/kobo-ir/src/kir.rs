@@ -54,6 +54,17 @@ pub struct KirNode {
     pub decl_id: Option<KirNodeId>,
 }
 
+/// A parse-time error or warning from a `#[kobo::relax]` attribute.
+///
+/// Produced by `kobo-transform`, consumed by `kobo-driver` to emit diagnostics.
+/// `is_error = true` → `Severity::Error`; `false` → `Severity::Warning`.
+#[derive(Debug, Clone)]
+pub struct RelaxAttrError {
+    pub span: KoboSpan,
+    pub message: String,
+    pub is_error: bool,
+}
+
 /// The Kobo Intermediate Representation for a single source file.
 ///
 /// Frozen after `kobo-transform` completes.
@@ -74,6 +85,11 @@ pub struct Kir {
     strict_boundary_facts: Vec<StrictBoundaryFact>,
     /// Mode for each @strict fn (Full or AsyncDeferred), keyed by fn span.
     strict_fn_modes: HashMap<KoboSpan, StrictFnMode>,
+    /// Byte-offset spans of functions annotated with `#[kobo::relax]`.
+    /// Used by the driver to suppress warnings from diagnostics inside these ranges [G5].
+    relaxed_fn_ranges: Vec<KoboSpan>,
+    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
+    relax_attr_errors: Vec<RelaxAttrError>,
 }
 
 // --- Public read API ---
@@ -96,6 +112,8 @@ impl Kir {
             strict_capture_sets: Vec::new(),
             strict_boundary_facts: Vec::new(),
             strict_fn_modes: HashMap::new(),
+            relaxed_fn_ranges: Vec::new(),
+            relax_attr_errors: Vec::new(),
         }
     }
 
@@ -183,6 +201,22 @@ impl Kir {
 
     pub fn set_strict_fn_modes(&mut self, modes: HashMap<KoboSpan, StrictFnMode>) {
         self.strict_fn_modes = modes;
+    }
+
+    pub fn relaxed_fn_ranges(&self) -> &[KoboSpan] {
+        &self.relaxed_fn_ranges
+    }
+
+    pub fn set_relaxed_fn_ranges(&mut self, ranges: Vec<KoboSpan>) {
+        self.relaxed_fn_ranges = ranges;
+    }
+
+    pub fn relax_attr_errors(&self) -> &[RelaxAttrError] {
+        &self.relax_attr_errors
+    }
+
+    pub fn set_relax_attr_errors(&mut self, errors: Vec<RelaxAttrError>) {
+        self.relax_attr_errors = errors;
     }
 
     pub fn len(&self) -> usize {

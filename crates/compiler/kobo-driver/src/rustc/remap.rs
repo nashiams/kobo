@@ -5,14 +5,14 @@ use kobo_errors::{
 };
 use kobo_ir::{FileId, KoboSpan};
 
-use super::json::{parse_rustc_errors, RustcJsonError, RustcSpan};
+use super::json::{parse_rustc_diagnostics, RustcJsonError, RustcSpan};
 
 pub(crate) fn remap_rustc_output(
     raw_output: &str,
     source_map: &KoboSourceMap,
     kobo_file_id: FileId,
 ) -> Vec<KDiagnostic> {
-    let parsed_output = parse_rustc_errors(raw_output);
+    let parsed_output = parse_rustc_diagnostics(raw_output);
     if parsed_output.parsed_any {
         return parsed_output
             .errors
@@ -54,20 +54,54 @@ fn remap_error(
     source_map: &KoboSourceMap,
     kobo_file_id: FileId,
 ) -> KDiagnostic {
-    let remapped = remap_labels(&error, source_map, kobo_file_id);
+    remap_diagnostic(error, source_map, kobo_file_id, Severity::Error, KErrorCode::K0099)
+}
+
+/// Re-map a surviving rustc warning to a .kobo-span diagnostic.
+/// Uses K0019 (uncategorized ownership) with Warning severity so that
+/// `has_errors()` remains false and exit code stays 0 [R5-02 Option B].
+pub(crate) fn remap_warning_diagnostic(
+    warning: RustcJsonError,
+    source_map: &KoboSourceMap,
+    kobo_file_id: FileId,
+) -> KDiagnostic {
+    remap_diagnostic(warning, source_map, kobo_file_id, Severity::Warning, KErrorCode::K0019)
+}
+
+/// Core diagnostic re-mapper — shared by error and warning paths.
+/// `severity` and `code` determine how the output diagnostic is classified.
+fn remap_diagnostic(
+    diag: RustcJsonError,
+    source_map: &KoboSourceMap,
+    kobo_file_id: FileId,
+    severity: Severity,
+    code: KErrorCode,
+) -> KDiagnostic {
+    let remapped = remap_labels(&diag, source_map, kobo_file_id);
     if remapped.mapped_label_count == 0 {
-        return tier_three_diagnostic(&error, source_map, kobo_file_id, remapped.help.as_deref());
+        // Unmappable: surface as tier-3 envelope but preserve severity/code.
+        return tier_three_diagnostic_with_severity(
+            &diag,
+            source_map,
+            kobo_file_id,
+            remapped.help.as_deref(),
+            severity,
+            code,
+        );
     }
 
+    let decision_text = if severity == Severity::Error {
+        "rustc rejected generated output; Kobo remapped the spans back to .kobo source"
+    } else {
+        "rustc warning in generated output; Kobo remapped the spans back to .kobo source"
+    };
+
     let mut diagnostic = KDiagnostic::new(
-        KErrorCode::K0099,
-        Severity::Error,
+        code,
+        severity,
         remapped.primary,
-        remap_explanation(&error, remapped.remapping_unavailable),
-        DiagDecision(
-            "rustc rejected generated output; Kobo remapped the spans back to .kobo source"
-                .to_owned(),
-        ),
+        remap_explanation(&diag, remapped.remapping_unavailable),
+        DiagDecision(decision_text.to_owned()),
     );
 
     for label in remapped.secondary {
@@ -260,15 +294,17 @@ fn remap_explanation(error: &RustcJsonError, remapping_unavailable: bool) -> Dia
     ))
 }
 
-fn tier_three_diagnostic(
+fn tier_three_diagnostic_with_severity(
     error: &RustcJsonError,
     source_map: &KoboSourceMap,
     file_id: FileId,
     help: Option<&str>,
+    severity: Severity,
+    code: KErrorCode,
 ) -> KDiagnostic {
     let mut diagnostic = KDiagnostic::new(
-        KErrorCode::K0099,
-        Severity::Error,
+        code,
+        severity,
         DiagLabel::primary(
             KoboSpan::new(0, 0, file_id),
             "compiler output could not be remapped",

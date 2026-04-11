@@ -8,7 +8,7 @@ use crate::options::TransformOptions;
 use crate::small_clone::{collect_small_clone_profiles, SmallCloneProfile};
 use kobo_ir::{
     BoxReason, CloneElisionCandidate, ElisionSkipReason, HintConflictFact, KirNode, KirStructDef,
-    KoboSpan, NodeIdGen, RelaxAttrError, TransformFacts,
+    KoboSpan, MigrateSite, NodeIdGen, RelaxAttrError, TransformFacts,
 };
 use kobo_parser::{KoboBinding, KoboFile};
 
@@ -38,6 +38,8 @@ pub(crate) struct BuilderOutput {
     pub(crate) relaxed_fn_ranges: Vec<KoboSpan>,
     /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
+    /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
+    pub(crate) migrate_sites: Vec<MigrateSite>,
 }
 
 pub(crate) struct TransformFactsBuilder<'a> {
@@ -61,6 +63,8 @@ pub(crate) struct TransformFactsBuilder<'a> {
     pub(crate) relaxed_fn_ranges: Vec<KoboSpan>,
     /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
+    /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
+    pub(crate) migrate_sites: Vec<MigrateSite>,
 }
 
 mod emit;
@@ -120,6 +124,7 @@ impl<'a> TransformFactsBuilder<'a> {
             struct_defs: Vec::new(),
             relaxed_fn_ranges: Vec::new(),
             relax_attr_errors: Vec::new(),
+            migrate_sites: Vec::new(),
         }
     }
 
@@ -134,6 +139,7 @@ impl<'a> TransformFactsBuilder<'a> {
             struct_defs,
             relaxed_fn_ranges,
             relax_attr_errors,
+            migrate_sites,
             ..
         } = self;
 
@@ -163,6 +169,7 @@ impl<'a> TransformFactsBuilder<'a> {
             struct_defs,
             relaxed_fn_ranges,
             relax_attr_errors,
+            migrate_sites,
         }
     }
 

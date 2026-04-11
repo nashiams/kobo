@@ -1,0 +1,6 @@
+// Use-after-move wrapped by Kobo. --checked. Expected: K0001 warning, exit 0.
+fn main() {
+    let config = make_config();
+    process(config);
+    log(config);
+}

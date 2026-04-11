@@ -111,6 +111,8 @@ impl<'a> Lowerer<'a> {
             let syn::FnArg::Typed(argument) = input else {
                 continue;
             };
+            // Strip #[kobo::...] attributes from parameters [BUG-03 / Trap 17].
+            util::strip_kobo_attrs(&mut argument.attrs);
             let Some(binding) = binding_for_pat(self.ast, &argument.pat) else {
                 continue;
             };

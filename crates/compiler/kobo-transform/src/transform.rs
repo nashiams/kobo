@@ -54,6 +54,9 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     kir.set_relaxed_fn_ranges(built.relaxed_fn_ranges);
     kir.set_relax_attr_errors(built.relax_attr_errors);
 
+    // G6: store migrate sites — metadata-only, zero codegen effect [R05].
+    kir.set_migrate_sites(built.migrate_sites);
+
     // v0.5: @strict analysis, AFTER finalized TierDecisions (R-02).
     // Pipeline sequence:
     // 3a. For each @strict block: analyze_strict_capture_set()

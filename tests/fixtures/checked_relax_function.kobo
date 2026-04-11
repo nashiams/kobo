@@ -1,0 +1,19 @@
+// One relaxed fn + one checked fn. Both have use-after-move issues.
+// Relaxed: no warnings. Checked: K0001 warning. Both compile fine.
+#[kobo::relax]
+fn relaxed_fn() {
+    let data = make_data();
+    process(data);
+    log(data);
+}
+
+fn checked_fn() {
+    let data = make_data();
+    process(data);
+    log(data);
+}
+
+fn main() {
+    relaxed_fn();
+    checked_fn();
+}

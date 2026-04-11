@@ -16,7 +16,7 @@ pub use debt::{
     WrapperInventory,
 };
 pub use kir::{BorrowKind, NodeKind, UseKind};
-pub use kir::{Kir, KirNode, RelaxAttrError};
+pub use kir::{Kir, KirNode, MigrateSite, MigrateTarget, RelaxAttrError};
 pub use node_id::{
     CfgBlockId, FileEntry, FileId, FileSet, FileSetBuilder, KirNodeId, KoboAstNodeId, NodeIdGen,
 };

@@ -179,9 +179,14 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     }
 
     // Emit diagnostics for #[kobo::relax] attribute validation errors/warnings [G5].
-    // "in script mode" advisory: relax has no effect in script mode.
+    // K0026 error path: structural validation errors use hardcoded Error (AC-19 exception).
+    // K0026 warning path: use resolve_severity for consistency [BUG-06].
     for RelaxAttrError { span, message, is_error } in kir.relax_attr_errors() {
-        let severity = if *is_error { Severity::Error } else { Severity::Warning };
+        let severity = if *is_error {
+            Severity::Error
+        } else {
+            resolve_severity(KErrorCode::K0026, session.mode()).unwrap_or(Severity::Warning)
+        };
         session.diagnostics.push(KDiagnostic::new(
             KErrorCode::K0026,
             severity,
@@ -193,10 +198,12 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     // Warn when #[kobo::relax] is used in script mode (has no effect).
     if session.mode().is_script() && !session.relaxed_fn_ranges.is_empty() {
         // Emit per-relaxed-fn advisory using the fn span itself.
+        let severity = resolve_severity(KErrorCode::K0026, session.mode())
+            .unwrap_or(Severity::Warning);
         for &fn_span in &session.relaxed_fn_ranges.clone() {
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0026,
-                Severity::Warning,
+                severity,
                 DiagLabel::primary(fn_span, "`#[kobo::relax]` has no effect in script mode"),
                 "`#[kobo::relax]` has no effect in script mode".to_owned(),
                 DiagDecision(String::new()),

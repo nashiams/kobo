@@ -350,3 +350,142 @@ fn check_strict_k0063_async_context() {
         insta::assert_snapshot!("test_check__strict_k0063_async_context", output.stderr);
     });
 }
+
+// ---------------------------------------------------------------------------
+// v0.6 — Checked mode warning tests [BUG-05]
+// ---------------------------------------------------------------------------
+
+fn run_kobo_raw_args(args: &[&str]) -> KoboOutput {
+    let workspace_root = workspace_root();
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(args)
+        .current_dir(&workspace_root)
+        .output()
+        .expect("kobo command should run");
+
+    KoboOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    }
+}
+
+#[test]
+fn check_checked_mode_k0001_produces_warning() {
+    // v0.6 AC-1: `kobo check --checked` emits warning[K0001], exits 0.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_K0001_warning.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "checked mode must exit 0 — got stderr:\n{}", output.stderr);
+    assert!(
+        output.stderr.contains("warning[K0001]"),
+        "checked mode must emit warning[K0001], got:\n{}",
+        output.stderr
+    );
+    assert!(
+        !output.stderr.contains("error[K0001]"),
+        "K0001 must be warning, not error in checked mode"
+    );
+}
+
+#[test]
+fn check_checked_mode_k0002_produces_warning() {
+    // v0.6 AC-4: `kobo check --checked` emits warning[K0002], exits 0.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_K0002_warning.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "checked mode must exit 0 — got stderr:\n{}", output.stderr);
+    assert!(
+        output.stderr.contains("warning[K0002]"),
+        "checked mode must emit warning[K0002], got:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn check_checked_mode_relax_suppresses_warning() {
+    // v0.6 AC-9: #[kobo::relax] suppresses K0001 inside relaxed fn.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_relax_suppresses.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "checked mode with relax must exit 0");
+    // checked_fn emits K0001, relaxed_fn does not.
+    assert!(
+        output.stderr.contains("warning[K0001]"),
+        "checked_fn should still produce K0001 warning, got:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn check_script_mode_relax_emits_k0026() {
+    // v0.6 AC-10: #[kobo::relax] in script mode emits K0026 advisory.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("ui")
+        .join("checked_mode_relax_in_script.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", relative]);
+
+    assert!(output.status.success(), "script mode with relax advisory must exit 0");
+    assert!(
+        output.stderr.contains("warning[K0026]"),
+        "relax in script mode must emit warning[K0026], got:\n{}",
+        output.stderr
+    );
+}
+
+#[test]
+fn check_checked_mode_hello_world_clean() {
+    // v0.6 AC-15: Clean program in checked mode — zero diagnostics.
+    let fixture = workspace_root()
+        .join("tests")
+        .join("fixtures")
+        .join("checked_hello_world.kobo");
+    let relative = fixture
+        .strip_prefix(&workspace_root())
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let output = run_kobo_raw_args(&["check", "--checked", relative]);
+
+    assert!(output.status.success(), "clean program in checked mode must exit 0");
+    assert!(
+        !output.stderr.contains("warning["),
+        "clean program must produce no warnings, got:\n{}",
+        output.stderr
+    );
+    assert!(
+        !output.stderr.contains("error["),
+        "clean program must produce no errors, got:\n{}",
+        output.stderr
+    );
+}

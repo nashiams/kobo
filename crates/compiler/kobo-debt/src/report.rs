@@ -113,6 +113,9 @@ pub fn build_debt_report(kir: &Kir, file_count: usize, line_count: usize) -> Deb
         }
     }
 
+    // G6: populate migrate-tagged sites from KIR [R05].
+    report.migrate_tagged = kir.migrate_sites().to_vec();
+
     report
 }
 

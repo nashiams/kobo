@@ -269,6 +269,11 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
         // Rustc remap — always Error.
         K0099 => Some(Severity::Error),
 
+        // Relax attribute advisory — always Warning [BUG-06].
+        // Structural errors (malformed, non-function) use hardcoded Error
+        // at the emission site (AC-19 exception for always-error validation).
+        K0026 => Some(Severity::Warning),
+
         // Uncategorized ownership (catch-all for future rustc remapped codes).
         K0019 => ownership_severity(mode),
 
@@ -277,7 +282,7 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
         K0003 | K0004 | K0005 | K0006 | K0007 | K0008 | K0009 |
         K0010 | K0011 | K0012 | K0013 | K0014 | K0015 | K0016 |
         K0017 | K0018 |
-        K0022 | K0023 | K0024 | K0026 | K0027 | K0028 | K0029 |
+        K0022 | K0023 | K0024 | K0027 | K0028 | K0029 |
         K0031 | K0032 | K0033 | K0034 | K0035 | K0036 | K0037 |
         K0038 | K0039 | K0040 | K0044 | K0045 | K0046 | K0047 |
         K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 |
@@ -431,5 +436,12 @@ mod tests {
                 Some(Severity::Error)
             );
         }
+    }
+
+    #[test]
+    fn k0026_is_always_warning() {
+        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Script), Some(Severity::Warning));
+        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Checked), Some(Severity::Warning));
+        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Strict), Some(Severity::Warning));
     }
 }

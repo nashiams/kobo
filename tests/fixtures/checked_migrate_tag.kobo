@@ -1,0 +1,17 @@
+// Migration tag on function and let-binding. Metadata-only — no codegen effect.
+#[kobo::migrate = "planned for v1.0"]
+fn tagged_fn() {
+    #[kobo::migrate]
+    let state = make_state();
+    process(state);
+}
+
+fn untagged_fn() {
+    let data = make_data();
+    process(data);
+}
+
+fn main() {
+    tagged_fn();
+    untagged_fn();
+}

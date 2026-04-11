@@ -65,6 +65,27 @@ pub struct RelaxAttrError {
     pub is_error: bool,
 }
 
+/// The target element tagged by `#[kobo::migrate]` [G6 / R05].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MigrateTarget {
+    /// `#[kobo::migrate] fn f() { ... }`
+    Function,
+    /// `#[kobo::migrate] let x = ...;`
+    LetBinding,
+    /// `#[kobo::migrate] param: T`
+    Parameter,
+}
+
+/// Metadata-only site tagged for future migration [R05].
+/// Populated during transform walk, consumed by `kobo debt`.
+/// Has ZERO effect on codegen or runtime [Contract R05 / Trap 4].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MigrateSite {
+    pub span: KoboSpan,
+    pub target: MigrateTarget,
+    pub reason: Option<String>,
+}
+
 /// The Kobo Intermediate Representation for a single source file.
 ///
 /// Frozen after `kobo-transform` completes.
@@ -90,6 +111,8 @@ pub struct Kir {
     relaxed_fn_ranges: Vec<KoboSpan>,
     /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
     relax_attr_errors: Vec<RelaxAttrError>,
+    /// Sites tagged with `#[kobo::migrate]` — metadata-only, zero codegen effect [G6 / R05].
+    migrate_sites: Vec<MigrateSite>,
 }
 
 // --- Public read API ---
@@ -114,6 +137,7 @@ impl Kir {
             strict_fn_modes: HashMap::new(),
             relaxed_fn_ranges: Vec::new(),
             relax_attr_errors: Vec::new(),
+            migrate_sites: Vec::new(),
         }
     }
 
@@ -217,6 +241,14 @@ impl Kir {
 
     pub fn set_relax_attr_errors(&mut self, errors: Vec<RelaxAttrError>) {
         self.relax_attr_errors = errors;
+    }
+
+    pub fn migrate_sites(&self) -> &[MigrateSite] {
+        &self.migrate_sites
+    }
+
+    pub fn set_migrate_sites(&mut self, sites: Vec<MigrateSite>) {
+        self.migrate_sites = sites;
     }
 
     pub fn len(&self) -> usize {

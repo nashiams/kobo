@@ -1,0 +1,4 @@
+// Clean program. --checked. Expected: zero diagnostics, exit 0.
+fn main() {
+    println!("hello from checked mode");
+}

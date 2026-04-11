@@ -1,0 +1,9 @@
+// No migrate attributes. Confirms codegen is identical to untagged code.
+fn plain_fn() {
+    let state = make_state();
+    process(state);
+}
+
+fn main() {
+    plain_fn();
+}

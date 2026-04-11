@@ -1,0 +1,5 @@
+fn main() {
+    let config = make_config();
+    process(config);
+    log(config);
+}

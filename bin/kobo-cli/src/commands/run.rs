@@ -19,6 +19,8 @@ pub(super) fn cmd_run(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Result
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
+    // v0.6 §3.3b: Render K-code warnings on success path [BUG-01 / R02].
+    render_diagnostics(&session);
     if !binary_path.is_file() {
         anyhow::bail!("compiled binary missing at {}", binary_path.display());
     }

@@ -69,6 +69,8 @@ pub(crate) struct TransformFactsBuilder<'a> {
 
 mod emit;
 mod helpers;
+mod attrs;
+mod struct_collect;
 #[cfg(test)]
 mod tests;
 mod walk;

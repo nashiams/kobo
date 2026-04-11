@@ -814,3 +814,27 @@ fn test_cli_mode_inspect_checked_accepted() {
         output.stdout
     );
 }
+
+// ── BUG-10: checked-mode with use-after-move fixture ──
+
+#[test]
+fn test_cli_mode_check_checked_use_after_move() {
+    // kobo check --checked <file> with a use-after-move must emit K0001 warning AND exit 0
+    let case = FixtureCase::new("cli-mode-check-checked-uam", "checked_use_after_move.kobo");
+    let output = run_kobo(["check", "--checked"], &case.fixture_path);
+    assert!(
+        output.status.success(),
+        "check --checked with use-after-move must exit 0\nstderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.stderr.contains("K0001"),
+        "check --checked with use-after-move must emit K0001 warning\nstderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.stderr.contains("warning"),
+        "K0001 must be a warning in checked mode, not an error\nstderr:\n{}",
+        output.stderr
+    );
+}

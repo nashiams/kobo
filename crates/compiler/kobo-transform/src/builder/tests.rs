@@ -973,3 +973,48 @@ fn plain() {}
     assert_eq!(output.relaxed_fn_ranges.len(), 1,
         "only one range — the relaxed fn");
 }
+
+// ── BUG-11: duplicate #[kobo::migrate] on parameters ──
+
+#[test]
+fn test_migrate_duplicate_on_parameter_produces_lint_warning() {
+    let source = r#"
+fn foo(#[kobo::migrate] #[kobo::migrate] x: String) {}
+"#;
+    let output = raw_builder_output_for(source);
+    // Only first attr should be recorded as a migrate site.
+    assert_eq!(output.migrate_sites.len(), 1,
+        "only one migrate site recorded (first occurrence)");
+    // Second attr produces a duplicate lint warning.
+    let dup_errors: Vec<_> = output.relax_attr_errors.iter()
+        .filter(|e| e.message.contains("duplicate") && e.message.contains("migrate"))
+        .collect();
+    assert_eq!(dup_errors.len(), 1, "one duplicate migrate lint expected on param");
+    assert!(!dup_errors[0].is_error, "duplicate is a warning, not an error");
+}
+
+// ── BUG-11: duplicate #[kobo::migrate] on let-bindings ──
+
+#[test]
+fn test_migrate_duplicate_on_let_binding_produces_lint_warning() {
+    let source = r#"
+fn main() {
+    #[kobo::migrate]
+    #[kobo::migrate]
+    let x = String::from("hello");
+}
+"#;
+    let output = raw_builder_output_for(source);
+    // Only first attr should be recorded as a migrate site.
+    let let_sites: Vec<_> = output.migrate_sites.iter()
+        .filter(|s| s.target == kobo_ir::MigrateTarget::LetBinding)
+        .collect();
+    assert_eq!(let_sites.len(), 1,
+        "only one migrate site recorded for let-binding (first occurrence)");
+    // Second attr produces a duplicate lint warning.
+    let dup_errors: Vec<_> = output.relax_attr_errors.iter()
+        .filter(|e| e.message.contains("duplicate") && e.message.contains("migrate"))
+        .collect();
+    assert_eq!(dup_errors.len(), 1, "one duplicate migrate lint expected on let-binding");
+    assert!(!dup_errors[0].is_error, "duplicate is a warning, not an error");
+}

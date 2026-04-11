@@ -231,19 +231,30 @@ impl TransformFactsBuilder<'_> {
         for input in &function.sig.inputs {
             if let syn::FnArg::Typed(argument) = input {
                 // --- G6: detect #[kobo::migrate] on parameters ---
+                let mut param_migrate_count = 0usize;
                 for attr in &argument.attrs {
                     match parse_migrate_attr(attr) {
                         MigrateAttrResult::Valid(attr_span) | MigrateAttrResult::ValidWithReason(_, attr_span) => {
-                            let reason = match parse_migrate_attr(attr) {
-                                MigrateAttrResult::ValidWithReason(r, _) => Some(r),
-                                _ => None,
-                            };
-                            let span = self.ast.span_from_syn(attr_span);
-                            self.migrate_sites.push(MigrateSite {
-                                span,
-                                target: MigrateTarget::Parameter,
-                                reason,
-                            });
+                            param_migrate_count += 1;
+                            if param_migrate_count == 1 {
+                                let reason = match parse_migrate_attr(attr) {
+                                    MigrateAttrResult::ValidWithReason(r, _) => Some(r),
+                                    _ => None,
+                                };
+                                let span = self.ast.span_from_syn(attr_span);
+                                self.migrate_sites.push(MigrateSite {
+                                    span,
+                                    target: MigrateTarget::Parameter,
+                                    reason,
+                                });
+                            } else {
+                                let span = self.ast.span_from_syn(attr_span);
+                                self.relax_attr_errors.push(RelaxAttrError {
+                                    span,
+                                    message: "duplicate `#[kobo::migrate]` attribute".to_owned(),
+                                    is_error: false,
+                                });
+                            }
                         }
                         MigrateAttrResult::HasArguments(attr_span) => {
                             let span = self.ast.span_from_syn(attr_span);
@@ -306,19 +317,30 @@ impl TransformFactsBuilder<'_> {
         });
 
         // --- G6: detect #[kobo::migrate] attributes on let-bindings ---
+        let mut local_migrate_count = 0usize;
         for attr in &local.attrs {
             match parse_migrate_attr(attr) {
                 MigrateAttrResult::Valid(attr_span) | MigrateAttrResult::ValidWithReason(_, attr_span) => {
-                    let reason = match parse_migrate_attr(attr) {
-                        MigrateAttrResult::ValidWithReason(r, _) => Some(r),
-                        _ => None,
-                    };
-                    let span = self.ast.span_from_syn(attr_span);
-                    self.migrate_sites.push(MigrateSite {
-                        span,
-                        target: MigrateTarget::LetBinding,
-                        reason,
-                    });
+                    local_migrate_count += 1;
+                    if local_migrate_count == 1 {
+                        let reason = match parse_migrate_attr(attr) {
+                            MigrateAttrResult::ValidWithReason(r, _) => Some(r),
+                            _ => None,
+                        };
+                        let span = self.ast.span_from_syn(attr_span);
+                        self.migrate_sites.push(MigrateSite {
+                            span,
+                            target: MigrateTarget::LetBinding,
+                            reason,
+                        });
+                    } else {
+                        let span = self.ast.span_from_syn(attr_span);
+                        self.relax_attr_errors.push(RelaxAttrError {
+                            span,
+                            message: "duplicate `#[kobo::migrate]` attribute".to_owned(),
+                            is_error: false,
+                        });
+                    }
                 }
                 MigrateAttrResult::HasArguments(attr_span) => {
                     let span = self.ast.span_from_syn(attr_span);

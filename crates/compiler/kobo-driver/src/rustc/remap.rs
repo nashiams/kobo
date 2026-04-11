@@ -249,8 +249,12 @@ fn remap_span(
     let label_text = span_label_text(span);
 
     let Some(kobo_span) = source_map.lookup_kobo_span(rs_span) else {
+        let fallback_text = format!(
+            "{label_text} (generated line {}, col {})",
+            span.line_start, span.column_start
+        );
         return (
-            DiagLabel::new(KoboSpan::new(0, 0, kobo_file_id), label_kind, label_text),
+            DiagLabel::new(KoboSpan::new(0, 0, kobo_file_id), label_kind, fallback_text),
             true,
         );
     };
@@ -306,13 +310,19 @@ fn tier_three_diagnostic_with_severity(
     severity: Severity,
     code: KErrorCode,
 ) -> KDiagnostic {
+    let primary_text = if let Some(span) = error.spans.first() {
+        format!(
+            "compiler output could not be remapped (generated line {}, col {})",
+            span.line_start, span.column_start
+        )
+    } else {
+        "compiler output could not be remapped".to_owned()
+    };
+
     let mut diagnostic = KDiagnostic::new(
         code,
         severity,
-        DiagLabel::primary(
-            KoboSpan::new(0, 0, file_id),
-            "compiler output could not be remapped",
-        ),
+        DiagLabel::primary(KoboSpan::new(0, 0, file_id), primary_text),
         remap_explanation(error, true),
         DiagDecision(
             "rustc output did not map back to Kobo spans; surfaced a Tier-3 envelope".to_owned(),
@@ -398,9 +408,13 @@ mod tests {
             .0
             .starts_with("[remapping unavailable]"));
         assert_eq!(diagnostics[0].primary.span, KoboSpan::new(0, 0, FileId(0)));
-        assert_eq!(
-            diagnostics[0].primary.text,
-            "compiler output could not be remapped"
+        assert!(
+            diagnostics[0].primary.text.contains("compiler output could not be remapped"),
+            "fallback label should mention remapping failure"
+        );
+        assert!(
+            diagnostics[0].primary.text.contains("line 40"),
+            "fallback label should include generated line info"
         );
     }
 
@@ -446,5 +460,36 @@ mod tests {
         let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
 
         assert!(!diagnostics[0].primary.text.contains(".rs"));
+    }
+
+    // ── BUG-12: unmappable diagnostics should preserve generated-code location ──
+
+    #[test]
+    fn remapper_fallback_includes_generated_line_info() {
+        // When all spans are unmappable, the tier-3 envelope should include
+        // the generated .rs line/column in the primary label for debugging.
+        let raw = r#"{"message":"type mismatch","code":null,"level":"error","spans":[{"file_name":"src/main.rs","line_start":40,"column_start":3,"line_end":40,"column_end":15,"is_primary":true,"label":"expected type"}],"children":[]}"#;
+        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
+
+        // The primary label should mention the generated-code location.
+        assert!(
+            diagnostics[0].primary.text.contains("line 40"),
+            "fallback should mention generated line, got: {}",
+            diagnostics[0].primary.text
+        );
+    }
+
+    #[test]
+    fn remapper_individual_span_fallback_preserves_location() {
+        // Even individual span fallbacks should include the generated location.
+        let raw = r#"{"message":"cannot borrow","code":{"code":"E0502"},"level":"error","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":false,"label":"immutable borrow occurs here"},{"file_name":"src/main.rs","line_start":50,"column_start":8,"line_end":50,"column_end":20,"is_primary":true,"label":"mutable borrow occurs here"}],"children":[]}"#;
+        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
+
+        // The unmappable primary (line 50) should have location context.
+        assert!(
+            diagnostics[0].primary.text.contains("line 50"),
+            "unmappable span should include generated line in label, got: {}",
+            diagnostics[0].primary.text
+        );
     }
 }

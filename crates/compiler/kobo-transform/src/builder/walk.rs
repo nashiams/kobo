@@ -1,8 +1,11 @@
 use syn::spanned::Spanned;
 
 use crate::hint::parse_hint;
-use kobo_ir::{EscapeKind, FieldTypeShape, KirStructDef, KirStructFieldDef, MigrateSite, MigrateTarget, RelaxAttrError, UseKind};
+use kobo_ir::{EscapeKind, KoboSpan, MigrateSite, MigrateTarget, RelaxAttrError, UseKind};
 
+use super::attrs::{
+    parse_migrate_attr, parse_relax_attr, MigrateAttrResult, RelaxAttrResult,
+};
 use super::helpers::{assignment_escape_kind, borrow_kind, is_mutating_method};
 use super::{FunctionCtx, PendingHint, TransformFactsBuilder};
 
@@ -56,68 +59,6 @@ impl TransformFactsBuilder<'_> {
         }
     }
 
-    /// Collect a struct definition for K0080-P pattern detection.
-    ///
-    /// Parses `#[kobo::known_debt = "reason"]` attributes and extracts
-    /// simplified field type shapes. Only shapes relevant to P1–P4 are kept;
-    /// everything else becomes `FieldTypeShape::Other`.
-    fn collect_struct_def(&mut self, item: &syn::ItemStruct) {
-        let struct_name = item.ident.to_string();
-        let span = self.ast.span_from_syn(item.span());
-
-        // Parse #[kobo::known_debt = "reason"] if present.
-        let mut known_debt_reason = None;
-        let mut known_debt_span = None;
-        let mut known_debt_parse_error = None;
-        for attr in &item.attrs {
-            match parse_known_debt_attr(attr) {
-                KnownDebtResult::Valid(reason, attr_span) => {
-                    known_debt_reason = Some(reason);
-                    known_debt_span = Some(self.ast.span_from_syn(attr_span));
-                }
-                KnownDebtResult::MissingReason(attr_span) => {
-                    known_debt_span = Some(self.ast.span_from_syn(attr_span));
-                    known_debt_parse_error = Some(
-                        "`#[kobo::known_debt]` requires a reason string".to_owned(),
-                    );
-                }
-                KnownDebtResult::EmptyReason(attr_span) => {
-                    known_debt_span = Some(self.ast.span_from_syn(attr_span));
-                    known_debt_parse_error = Some(
-                        "`#[kobo::known_debt]` reason string must not be empty".to_owned(),
-                    );
-                }
-                KnownDebtResult::NotKnownDebt => {}
-            }
-        }
-
-        let fields: Vec<KirStructFieldDef> = match &item.fields {
-            syn::Fields::Named(named) => named
-                .named
-                .iter()
-                .map(|field| {
-                    let name = field
-                        .ident
-                        .as_ref()
-                        .map(|i| i.to_string())
-                        .unwrap_or_default();
-                    let shape = field_type_shape(&field.ty, &struct_name);
-                    KirStructFieldDef { name, shape }
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-
-        self.struct_defs.push(KirStructDef {
-            name: struct_name,
-            span,
-            fields,
-            known_debt_reason,
-            known_debt_span,
-            known_debt_parse_error,
-        });
-    }
-
     fn walk_function(&mut self, function: &syn::ItemFn) {
         let generic_params = function
             .sig
@@ -134,90 +75,11 @@ impl TransformFactsBuilder<'_> {
             span: self.ast.span_from_syn(span),
         });
 
-        // --- G5: detect #[kobo::relax] attributes on this function ---
-        let mut relax_attr_count = 0usize;
-        for attr in &function.attrs {
-            match parse_relax_attr(attr) {
-                RelaxAttrResult::Valid(attr_span) => {
-                    relax_attr_count += 1;
-                    if relax_attr_count == 1 {
-                        // Record the entire function span as a relaxed region [G5].
-                        let fn_span = self.ast.span_from_syn(function.span());
-                        self.relaxed_fn_ranges.push(fn_span);
-                    } else {
-                        // Duplicate #[kobo::relax] → lint warning.
-                        let span = self.ast.span_from_syn(attr_span);
-                        self.relax_attr_errors.push(RelaxAttrError {
-                            span,
-                            message: "duplicate `#[kobo::relax]` attribute".to_owned(),
-                            is_error: false,
-                        });
-                    }
-                }
-                RelaxAttrResult::HasArguments(attr_span) => {
-                    // Malformed form: #[kobo::relax = "..."] or #[kobo::relax(...)]
-                    let span = self.ast.span_from_syn(attr_span);
-                    self.relax_attr_errors.push(RelaxAttrError {
-                        span,
-                        message: "`#[kobo::relax]` takes no arguments".to_owned(),
-                        is_error: false,
-                    });
-                }
-                RelaxAttrResult::NotRelax => {}
-            }
-        }
-        // Trap 12: #[kobo::relax] on @strict function — relax has no effect [BUG-07].
-        if relax_attr_count > 0 {
-            let fn_span = self.ast.span_from_syn(function.span());
-            let is_strict = self.ast.strict_fns().iter().any(|sf| sf.span == fn_span);
-            if is_strict {
-                // @strict wins — remove the relax range we just pushed.
-                self.relaxed_fn_ranges.retain(|s| *s != fn_span);
-                self.relax_attr_errors.push(RelaxAttrError {
-                    span: fn_span,
-                    message: "`#[kobo::relax]` has no effect on `@strict` functions".to_owned(),
-                    is_error: false,
-                });
-            }
-        }
-        // --- G6: detect #[kobo::migrate] attributes on this function ---
-        let mut migrate_attr_count = 0usize;
-        for attr in &function.attrs {
-            match parse_migrate_attr(attr) {
-                MigrateAttrResult::Valid(attr_span) | MigrateAttrResult::ValidWithReason(_, attr_span) => {
-                    migrate_attr_count += 1;
-                    if migrate_attr_count == 1 {
-                        let reason = match parse_migrate_attr(attr) {
-                            MigrateAttrResult::ValidWithReason(r, _) => Some(r),
-                            _ => None,
-                        };
-                        let span = self.ast.span_from_syn(attr_span);
-                        self.migrate_sites.push(MigrateSite {
-                            span,
-                            target: MigrateTarget::Function,
-                            reason,
-                        });
-                    } else {
-                        // Duplicate #[kobo::migrate] → lint warning [Trap 11].
-                        let span = self.ast.span_from_syn(attr_span);
-                        self.relax_attr_errors.push(RelaxAttrError {
-                            span,
-                            message: "duplicate `#[kobo::migrate]` attribute".to_owned(),
-                            is_error: false,
-                        });
-                    }
-                }
-                MigrateAttrResult::HasArguments(attr_span) => {
-                    let span = self.ast.span_from_syn(attr_span);
-                    self.relax_attr_errors.push(RelaxAttrError {
-                        span,
-                        message: "`#[kobo::migrate]` does not accept parenthesized arguments".to_owned(),
-                        is_error: true,
-                    });
-                }
-                MigrateAttrResult::NotMigrate => {}
-            }
-        }
+        let fn_span = self.ast.span_from_syn(function.span());
+        let relax_count = self.collect_relax_attrs_on_fn(&function.attrs, fn_span);
+        self.check_relax_strict_conflict(relax_count, fn_span);
+        self.collect_migrate_attrs(&function.attrs, MigrateTarget::Function);
+
         self.function_stack.push(FunctionCtx {
             generic_params,
             is_async: function.sig.asyncness.is_some(),
@@ -225,48 +87,12 @@ impl TransformFactsBuilder<'_> {
             hint_consumed: false,
         });
 
-        self.enter_scope(self.ast.span_from_syn(function.span()));
+        self.enter_scope(fn_span);
         self.ctx.push_scope();
 
         for input in &function.sig.inputs {
             if let syn::FnArg::Typed(argument) = input {
-                // --- G6: detect #[kobo::migrate] on parameters ---
-                let mut param_migrate_count = 0usize;
-                for attr in &argument.attrs {
-                    match parse_migrate_attr(attr) {
-                        MigrateAttrResult::Valid(attr_span) | MigrateAttrResult::ValidWithReason(_, attr_span) => {
-                            param_migrate_count += 1;
-                            if param_migrate_count == 1 {
-                                let reason = match parse_migrate_attr(attr) {
-                                    MigrateAttrResult::ValidWithReason(r, _) => Some(r),
-                                    _ => None,
-                                };
-                                let span = self.ast.span_from_syn(attr_span);
-                                self.migrate_sites.push(MigrateSite {
-                                    span,
-                                    target: MigrateTarget::Parameter,
-                                    reason,
-                                });
-                            } else {
-                                let span = self.ast.span_from_syn(attr_span);
-                                self.relax_attr_errors.push(RelaxAttrError {
-                                    span,
-                                    message: "duplicate `#[kobo::migrate]` attribute".to_owned(),
-                                    is_error: false,
-                                });
-                            }
-                        }
-                        MigrateAttrResult::HasArguments(attr_span) => {
-                            let span = self.ast.span_from_syn(attr_span);
-                            self.relax_attr_errors.push(RelaxAttrError {
-                                span,
-                                message: "`#[kobo::migrate]` does not accept parenthesized arguments".to_owned(),
-                                is_error: true,
-                            });
-                        }
-                        MigrateAttrResult::NotMigrate => {}
-                    }
-                }
+                self.collect_migrate_attrs(&argument.attrs, MigrateTarget::Parameter);
                 let param_hint = self.take_function_hint();
                 self.emit_pat_binding(&argument.pat, None, param_hint);
             }
@@ -275,7 +101,7 @@ impl TransformFactsBuilder<'_> {
         self.walk_block_statements(&function.block.stmts);
 
         self.ctx.pop_scope();
-        self.exit_scope(self.ast.span_from_syn(function.span()));
+        self.exit_scope(fn_span);
         self.function_stack.pop();
     }
 
@@ -316,43 +142,7 @@ impl TransformFactsBuilder<'_> {
             span: self.ast.span_from_syn(span),
         });
 
-        // --- G6: detect #[kobo::migrate] attributes on let-bindings ---
-        let mut local_migrate_count = 0usize;
-        for attr in &local.attrs {
-            match parse_migrate_attr(attr) {
-                MigrateAttrResult::Valid(attr_span) | MigrateAttrResult::ValidWithReason(_, attr_span) => {
-                    local_migrate_count += 1;
-                    if local_migrate_count == 1 {
-                        let reason = match parse_migrate_attr(attr) {
-                            MigrateAttrResult::ValidWithReason(r, _) => Some(r),
-                            _ => None,
-                        };
-                        let span = self.ast.span_from_syn(attr_span);
-                        self.migrate_sites.push(MigrateSite {
-                            span,
-                            target: MigrateTarget::LetBinding,
-                            reason,
-                        });
-                    } else {
-                        let span = self.ast.span_from_syn(attr_span);
-                        self.relax_attr_errors.push(RelaxAttrError {
-                            span,
-                            message: "duplicate `#[kobo::migrate]` attribute".to_owned(),
-                            is_error: false,
-                        });
-                    }
-                }
-                MigrateAttrResult::HasArguments(attr_span) => {
-                    let span = self.ast.span_from_syn(attr_span);
-                    self.relax_attr_errors.push(RelaxAttrError {
-                        span,
-                        message: "`#[kobo::migrate]` does not accept parenthesized arguments".to_owned(),
-                        is_error: true,
-                    });
-                }
-                MigrateAttrResult::NotMigrate => {}
-            }
-        }
+        self.collect_migrate_attrs(&local.attrs, MigrateTarget::LetBinding);
 
         let binding_state = self.emit_binding(&binding, init, local_hint);
         if let Some(init_expr) = init {
@@ -544,253 +334,106 @@ impl TransformFactsBuilder<'_> {
 
         self.walk_expr(reference.expr.as_ref());
     }
-}
 
-// ---------------------------------------------------------------------------
-// Free helpers for struct-def collection
-// ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Attribute collection helpers (G5, G6, Trap 12)
+    // -----------------------------------------------------------------------
 
-/// Result of parsing a `#[kobo::known_debt]` attribute.
-enum KnownDebtResult {
-    /// Attribute is not a `kobo::known_debt` attribute.
-    NotKnownDebt,
-    /// Valid `#[kobo::known_debt = "reason"]`.
-    Valid(String, proc_macro2::Span),
-    /// `#[kobo::known_debt]` without a reason string.
-    MissingReason(proc_macro2::Span),
-    /// `#[kobo::known_debt = ""]` with an empty reason string.
-    EmptyReason(proc_macro2::Span),
-}
-
-/// Parse `#[kobo::known_debt = "reason"]` from a single attribute.
-///
-/// Returns `Valid` when the attribute matches with a non-empty reason,
-/// `MissingReason` for bare `#[kobo::known_debt]`, `EmptyReason` for
-/// `#[kobo::known_debt = ""]`, and `NotKnownDebt` otherwise.
-fn parse_known_debt_attr(attr: &syn::Attribute) -> KnownDebtResult {
-    match &attr.meta {
-        syn::Meta::NameValue(nv) => {
-            let segs: Vec<_> = nv.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "known_debt" {
-                if let syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit_str),
-                    ..
-                }) = &nv.value
-                {
-                    let reason = lit_str.value();
-                    if reason.is_empty() {
-                        return KnownDebtResult::EmptyReason(attr.span());
+    /// Collect `#[kobo::relax]` attributes on a function, pushing ranges and errors [G5].
+    /// Returns the count of relax attributes found.
+    fn collect_relax_attrs_on_fn(
+        &mut self,
+        attrs: &[syn::Attribute],
+        fn_span: KoboSpan,
+    ) -> usize {
+        let mut count = 0usize;
+        for attr in attrs {
+            match parse_relax_attr(attr) {
+                RelaxAttrResult::Valid(attr_span) => {
+                    count += 1;
+                    if count == 1 {
+                        self.relaxed_fn_ranges.push(fn_span);
+                    } else {
+                        let span = self.ast.span_from_syn(attr_span);
+                        self.relax_attr_errors.push(RelaxAttrError {
+                            span,
+                            message: "duplicate `#[kobo::relax]` attribute".to_owned(),
+                            is_error: false,
+                        });
                     }
-                    return KnownDebtResult::Valid(reason, attr.span());
                 }
-            }
-            KnownDebtResult::NotKnownDebt
-        }
-        syn::Meta::Path(path) => {
-            let segs: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "known_debt" {
-                return KnownDebtResult::MissingReason(attr.span());
-            }
-            KnownDebtResult::NotKnownDebt
-        }
-        _ => KnownDebtResult::NotKnownDebt,
-    }
-}
-
-/// Map a `syn::Type` to the simplified `FieldTypeShape` used for K0080-P detection.
-///
-/// `struct_name` is passed so `Self` references can be canonicalized to the
-/// containing struct name.
-fn field_type_shape(ty: &syn::Type, struct_name: &str) -> FieldTypeShape {
-    match ty {
-        syn::Type::Path(type_path) => {
-            let segs: Vec<String> = type_path
-                .path
-                .segments
-                .iter()
-                .map(|s| s.ident.to_string())
-                .collect();
-
-            match segs.as_slice() {
-                // Rc<...>
-                [rc] if rc == "Rc" => {
-                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
-                        if let Some(inner_name) = extract_rc_refcell_inner(inner, struct_name) {
-                            return FieldTypeShape::RcRefCellOf(inner_name);
-                        }
-                    }
-                    FieldTypeShape::Other
+                RelaxAttrResult::HasArguments(attr_span) => {
+                    let span = self.ast.span_from_syn(attr_span);
+                    self.relax_attr_errors.push(RelaxAttrError {
+                        span,
+                        message: "`#[kobo::relax]` takes no arguments".to_owned(),
+                        is_error: false,
+                    });
                 }
-                // Option<...>
-                [opt] if opt == "Option" => {
-                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
-                        if let syn::GenericArgument::Type(inner_ty) = inner {
-                            if let FieldTypeShape::RcRefCellOf(name) =
-                                field_type_shape(inner_ty, struct_name)
-                            {
-                                return FieldTypeShape::OptionRcRefCellOf(name);
-                            }
-                        }
-                    }
-                    FieldTypeShape::Other
-                }
-                // Vec<...>
-                [vec] if vec == "Vec" => {
-                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
-                        if let syn::GenericArgument::Type(inner_ty) = inner {
-                            match field_type_shape(inner_ty, struct_name) {
-                                FieldTypeShape::RcRefCellOf(name) => {
-                                    return FieldTypeShape::VecRcRefCellOf(name)
-                                }
-                                FieldTypeShape::DirectNamed(name) => {
-                                    return FieldTypeShape::VecDirectNamed(name)
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    FieldTypeShape::Other
-                }
-                // Self
-                [s] if s == "Self" => FieldTypeShape::DirectNamed(struct_name.to_owned()),
-                // Any other single-segment name
-                [name] => FieldTypeShape::DirectNamed(name.clone()),
-                _ => FieldTypeShape::Other,
+                RelaxAttrResult::NotRelax => {}
             }
         }
-        _ => FieldTypeShape::Other,
+        count
     }
-}
 
-/// Extract the first generic argument from a path segment.
-fn first_generic_arg(seg: &syn::PathSegment) -> Option<&syn::GenericArgument> {
-    match &seg.arguments {
-        syn::PathArguments::AngleBracketed(args) => args.args.first(),
-        _ => None,
+    /// Trap 12: if relax was found on an @strict function, discard relax and warn [BUG-07].
+    fn check_relax_strict_conflict(&mut self, relax_count: usize, fn_span: KoboSpan) {
+        if relax_count == 0 {
+            return;
+        }
+        let is_strict = self.ast.strict_fns().iter().any(|sf| sf.span == fn_span);
+        if is_strict {
+            self.relaxed_fn_ranges.retain(|s| *s != fn_span);
+            self.relax_attr_errors.push(RelaxAttrError {
+                span: fn_span,
+                message: "`#[kobo::relax]` has no effect on `@strict` functions".to_owned(),
+                is_error: false,
+            });
+        }
     }
-}
 
-/// If `ty` is `RefCell<X>`, return the canonical name of `X` (with "Self"
-/// replaced by `struct_name`).
-fn extract_rc_refcell_inner(arg: &syn::GenericArgument, struct_name: &str) -> Option<String> {
-    if let syn::GenericArgument::Type(inner_ty) = arg {
-        if let syn::Type::Path(tp) = inner_ty {
-            let segs: Vec<_> = tp.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.first().map(String::as_str) == Some("RefCell") {
-                if let Some(inner_arg) = first_generic_arg(tp.path.segments.first()?) {
-                    if let syn::GenericArgument::Type(value_ty) = inner_arg {
-                        if let syn::Type::Path(vp) = value_ty {
-                            let name = vp
-                                .path
-                                .segments
-                                .last()
-                                .map(|s| s.ident.to_string())
-                                .unwrap_or_default();
-                            let canonical = if name == "Self" {
-                                struct_name.to_owned()
-                            } else {
-                                name
-                            };
-                            return Some(canonical);
-                        }
-                    }
+    /// Collect `#[kobo::migrate]` attributes on an item, pushing sites and errors [G6].
+    fn collect_migrate_attrs(&mut self, attrs: &[syn::Attribute], target: MigrateTarget) {
+        let mut count = 0usize;
+        for attr in attrs {
+            match parse_migrate_attr(attr) {
+                MigrateAttrResult::Valid(attr_span) => {
+                    self.record_migrate_site(&mut count, attr_span, target, None);
                 }
+                MigrateAttrResult::ValidWithReason(reason, attr_span) => {
+                    self.record_migrate_site(&mut count, attr_span, target, Some(reason));
+                }
+                MigrateAttrResult::HasArguments(attr_span) => {
+                    let span = self.ast.span_from_syn(attr_span);
+                    self.relax_attr_errors.push(RelaxAttrError {
+                        span,
+                        message: "`#[kobo::migrate]` does not accept parenthesized arguments"
+                            .to_owned(),
+                        is_error: true,
+                    });
+                }
+                MigrateAttrResult::NotMigrate => {}
             }
         }
     }
-    None
-}
 
-// ---------------------------------------------------------------------------
-// Free helpers for #[kobo::relax] attribute parsing [G5]
-// ---------------------------------------------------------------------------
-
-/// Result of parsing a `#[kobo::relax]` attribute from an `syn::Attribute`.
-pub(super) enum RelaxAttrResult {
-    /// Attribute is not a `kobo::relax` attribute.
-    NotRelax,
-    /// Valid bare `#[kobo::relax]`.
-    Valid(proc_macro2::Span),
-    /// Malformed `#[kobo::relax = "..."]` or `#[kobo::relax(...)]` — takes no arguments.
-    HasArguments(proc_macro2::Span),
-}
-
-/// Parse `#[kobo::relax]` from a single attribute.
-///
-/// Returns `Valid` for bare `#[kobo::relax]`, `HasArguments` for any form
-/// that carries a value or argument list, and `NotRelax` for all other attrs.
-pub(super) fn parse_relax_attr(attr: &syn::Attribute) -> RelaxAttrResult {
-    match &attr.meta {
-        syn::Meta::Path(path) => {
-            let segs: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "relax" {
-                return RelaxAttrResult::Valid(attr.span());
-            }
-            RelaxAttrResult::NotRelax
-        }
-        syn::Meta::NameValue(nv) => {
-            let segs: Vec<_> = nv.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "relax" {
-                return RelaxAttrResult::HasArguments(attr.span());
-            }
-            RelaxAttrResult::NotRelax
-        }
-        syn::Meta::List(list) => {
-            let segs: Vec<_> = list.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "relax" {
-                return RelaxAttrResult::HasArguments(attr.span());
-            }
-            RelaxAttrResult::NotRelax
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Free helpers for #[kobo::migrate] attribute parsing [G6]
-// ---------------------------------------------------------------------------
-
-/// Result of parsing a `#[kobo::migrate]` attribute.
-enum MigrateAttrResult {
-    /// Attribute is not a `kobo::migrate` attribute.
-    NotMigrate,
-    /// Valid bare `#[kobo::migrate]` (no reason).
-    Valid(proc_macro2::Span),
-    /// Valid `#[kobo::migrate = "reason"]` with a reason string.
-    ValidWithReason(String, proc_macro2::Span),
-    /// Malformed `#[kobo::migrate(...)]` — arguments not allowed in list form.
-    HasArguments(proc_macro2::Span),
-}
-
-/// Parse `#[kobo::migrate]` or `#[kobo::migrate = "reason"]` from a single attribute.
-fn parse_migrate_attr(attr: &syn::Attribute) -> MigrateAttrResult {
-    match &attr.meta {
-        syn::Meta::Path(path) => {
-            let segs: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "migrate" {
-                return MigrateAttrResult::Valid(attr.span());
-            }
-            MigrateAttrResult::NotMigrate
-        }
-        syn::Meta::NameValue(nv) => {
-            let segs: Vec<_> = nv.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "migrate" {
-                if let syn::Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Str(lit_str),
-                    ..
-                }) = &nv.value
-                {
-                    return MigrateAttrResult::ValidWithReason(lit_str.value(), attr.span());
-                }
-                return MigrateAttrResult::HasArguments(attr.span());
-            }
-            MigrateAttrResult::NotMigrate
-        }
-        syn::Meta::List(list) => {
-            let segs: Vec<_> = list.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.len() == 2 && segs[0] == "kobo" && segs[1] == "migrate" {
-                return MigrateAttrResult::HasArguments(attr.span());
-            }
-            MigrateAttrResult::NotMigrate
+    fn record_migrate_site(
+        &mut self,
+        count: &mut usize,
+        attr_span: proc_macro2::Span,
+        target: MigrateTarget,
+        reason: Option<String>,
+    ) {
+        *count += 1;
+        let span = self.ast.span_from_syn(attr_span);
+        if *count == 1 {
+            self.migrate_sites.push(MigrateSite { span, target, reason });
+        } else {
+            self.relax_attr_errors.push(RelaxAttrError {
+                span,
+                message: "duplicate `#[kobo::migrate]` attribute".to_owned(),
+                is_error: false,
+            });
         }
     }
 }

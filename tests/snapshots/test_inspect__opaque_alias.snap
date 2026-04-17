@@ -1,6 +1,5 @@
 ---
 source: bin/kobo-cli/tests/test_run.rs
-assertion_line: 339
 expression: output.stdout
 ---
 use std::rc::Rc;

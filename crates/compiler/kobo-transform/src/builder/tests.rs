@@ -1,6 +1,6 @@
 use kobo_ir::{
     BindingUsage, BorrowKind, EscapeKind, FileId, HintConflictFact, HintConflictReason, KoboSpan,
-    OwnershipHint, OwnershipTier, TransformFacts, UseEvent,
+    OwnershipHint, OwnershipTier, TierDecision, TierReason, TransformFacts, UseEvent,
 };
 use kobo_parser::parse_file;
 
@@ -1017,4 +1017,312 @@ fn main() {
         .collect();
     assert_eq!(dup_errors.len(), 1, "one duplicate migrate lint expected on let-binding");
     assert!(!dup_errors[0].is_error, "duplicate is a warning, not an error");
+}
+
+#[test]
+fn test_build_kir_handles_impl_block() {
+    let source = r#"
+struct Counter { val: i32 }
+impl Counter {
+    fn increment(&mut self) {
+        let step = 1;
+        self.val += step;
+    }
+    fn value(&self) -> i32 {
+        self.val
+    }
+}
+"#;
+    let facts = raw_facts_for(source);
+    // The `step` local inside `increment` must be discovered.
+    let step_binding = facts
+        .iter_bindings()
+        .find(|b| b.binding_name == "step");
+    assert!(step_binding.is_some(), "local `step` inside impl method must be walked");
+}
+
+#[test]
+fn test_qualified_path_no_collision() {
+    let source = r#"
+struct Foo { data: Vec<i32> }
+struct Bar { data: Vec<i32> }
+impl Foo {
+    fn process(&self) { let x = self.data.clone(); }
+}
+impl Bar {
+    fn process(&self) { let x = self.data.clone(); }
+}
+"#;
+    let facts = raw_facts_for(source);
+    let x_bindings: Vec<_> = facts
+        .iter_bindings()
+        .filter(|b| b.binding_name == "x")
+        .collect();
+    assert_eq!(x_bindings.len(), 2, "two independent x bindings from different impl blocks");
+}
+
+fn tier_decision_for_binding(source: &str, name: &str, occurrence: usize) -> TierDecision {
+    let mut id_gen = kobo_ir::NodeIdGen::new();
+    let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+    let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
+    let binding = kir
+        .transform_facts()
+        .iter_bindings()
+        .filter(|binding| binding.binding_name == name)
+        .nth(occurrence)
+        .expect("binding should exist");
+    kir.tier_decision(binding.node)
+        .expect("decision should exist")
+        .clone()
+}
+
+fn tier_decision_for_binding_with_options(
+    source: &str,
+    name: &str,
+    occurrence: usize,
+    options: TransformOptions,
+) -> TierDecision {
+    let mut id_gen = kobo_ir::NodeIdGen::new();
+    let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+    let kir = build_kir(&ast, &mut id_gen, options);
+    let binding = kir
+        .transform_facts()
+        .iter_bindings()
+        .filter(|binding| binding.binding_name == name)
+        .nth(occurrence)
+        .expect("binding should exist");
+    kir.tier_decision(binding.node)
+        .expect("decision should exist")
+        .clone()
+}
+
+#[test]
+fn test_derive_copy_detected() {
+    let source = r#"
+#[derive(Clone, Copy)]
+struct Vec3 { x: f32, y: f32, z: f32 }
+
+fn main() {
+    let pos = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+    let pos2 = pos;
+    println!("{}", pos.x);
+}
+"#;
+    let decision = tier_decision_for_binding(source, "pos", 0);
+    assert_eq!(decision.tier, OwnershipTier::PlainOwned);
+    assert!(matches!(decision.reason, TierReason::CopyType));
+}
+
+#[test]
+fn test_copy_type_from_config() {
+    let source = r#"
+use glam::Vec3;
+fn main() {
+    let pos: Vec3 = Vec3::new(1.0, 2.0, 3.0);
+    let pos2 = pos;
+    println!("{:?}", pos);
+}
+"#;
+    let mut options = TransformOptions::default();
+    options.copy_types = vec!["glam::Vec3".to_string(), "glam::Quat".to_string()];
+    let decision = tier_decision_for_binding_with_options(source, "pos", 0, options);
+    assert_eq!(decision.tier, OwnershipTier::PlainOwned);
+    assert!(matches!(decision.reason, TierReason::CopyType));
+}
+
+#[test]
+fn test_transitive_copy() {
+    let source = r#"
+#[derive(Clone, Copy)]
+struct Point { x: f32, y: f32 }
+
+#[derive(Clone, Copy)]
+struct Rect { top_left: Point, bottom_right: Point }
+
+fn main() {
+    let r = Rect { top_left: Point { x: 0.0, y: 0.0 }, bottom_right: Point { x: 1.0, y: 1.0 } };
+    let r2 = r;
+    println!("{}", r.top_left.x);
+}
+"#;
+    let decision = tier_decision_for_binding(source, "r", 0);
+    assert_eq!(decision.tier, OwnershipTier::PlainOwned);
+}
+
+#[test]
+fn test_non_copy_field_blocks_copy() {
+    let source = r#"
+#[derive(Clone, Copy)]
+struct Id(u32);
+
+struct Named { id: Id, name: String }
+
+fn main() {
+    let n = Named { id: Id(1), name: "test".to_string() };
+    let n2 = n;
+    n.id;
+    let _ = n2;
+}
+"#;
+    // Named does NOT have #[derive(Copy)] → n must NOT be PlainOwned.
+    // Move alias (n → n2) plus later use of n forces sharing.
+    let decision = tier_decision_for_binding(source, "n", 0);
+    assert_ne!(decision.tier, OwnershipTier::PlainOwned);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Mutable method detection via MethodRegistry
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_mut_self_receiver_detected() {
+    // `add_item` is NOT in the hardcoded list — only MethodRegistry should detect it.
+    let source = r#"
+struct Stack { items: Vec<i32> }
+impl Stack {
+    fn add_item(&mut self, val: i32) { self.items.push(val); }
+    fn peek(&self) -> Option<&i32> { self.items.last() }
+}
+fn main() {
+    let s = Stack { items: vec![] };
+    s.add_item(42);
+    let _top = s.peek();
+}
+"#;
+    let s = finalized_binding_for(source, "s", 0);
+    assert!(
+        s.shared_facts.mutation_required,
+        "add_item(&mut self) should be detected as mutating via MethodRegistry"
+    );
+}
+
+#[test]
+fn test_immutable_self_receiver_not_mutating() {
+    let source = r#"
+struct Counter { n: u32 }
+impl Counter {
+    fn value(&self) -> u32 { self.n }
+}
+fn main() {
+    let c = Counter { n: 0 };
+    let _v = c.value();
+}
+"#;
+    let c = finalized_binding_for(source, "c", 0);
+    assert!(
+        !c.shared_facts.mutation_required,
+        "value(&self) should not be detected as mutating"
+    );
+}
+
+#[test]
+fn test_method_registry_overrides_hardcoded_list() {
+    // `push` IS in the hardcoded list, but `add_item` is NOT.
+    // Both should be detected as mutating when MethodRegistry is used.
+    let source = r#"
+struct Queue { items: Vec<i32> }
+impl Queue {
+    fn enqueue(&mut self, val: i32) { self.items.push(val); }
+    fn size(&self) -> usize { self.items.len() }
+}
+fn main() {
+    let q = Queue { items: vec![] };
+    q.enqueue(10);
+    let _s = q.size();
+}
+"#;
+    let q = finalized_binding_for(source, "q", 0);
+    assert!(
+        q.shared_facts.mutation_required,
+        "enqueue(&mut self) should be detected via MethodRegistry"
+    );
+}
+
+#[test]
+fn test_mutating_methods_config_override() {
+    // `process` takes `&self`, but config says it's mutating.
+    // Config override should mark it as mutating anyway.
+    let source = r#"
+struct Worker { data: Vec<i32> }
+impl Worker {
+    fn process(&self) -> usize { self.data.len() }
+}
+fn main() {
+    let w = Worker { data: vec![] };
+    let _n = w.process();
+}
+"#;
+    let mut id_gen = kobo_ir::NodeIdGen::new();
+    let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+    let mut options = TransformOptions::default();
+    options.mutating_methods = vec!["Worker::process".to_string()];
+    let kir = build_kir(&ast, &mut id_gen, options);
+    // The method_mutability map should have "process" = true from config override
+    assert_eq!(
+        kir.method_mutability().get("process"),
+        Some(&true),
+        "config override should mark process as mutating"
+    );
+}
+
+#[test]
+fn test_rc_elision_local_only() {
+    // Local binding with no sharing, no escape → PlainOwned.
+    let source = r#"
+fn main() {
+    let buffer = vec![0u8; 1024];
+    buffer.push(42);
+    println!("len = {}", buffer.len());
+}
+"#;
+    let mut id_gen = kobo_ir::NodeIdGen::new();
+    let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+    let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
+    // Find the tier decision for `buffer`.
+    let buffer_binding = kir
+        .transform_facts()
+        .bindings
+        .iter()
+        .find(|b| b.binding_name == "buffer")
+        .expect("should have buffer binding");
+    let buffer_decision = kir
+        .tier_decision(buffer_binding.node)
+        .expect("should have a tier decision for buffer");
+    assert_eq!(
+        buffer_decision.tier,
+        OwnershipTier::PlainOwned,
+        "local-only binding should be PlainOwned, got {:?}",
+        buffer_decision
+    );
+}
+
+#[test]
+fn test_rc_elision_shared_still_wraps() {
+    // Binding passed to two different function calls → needs sharing → not PlainOwned.
+    let source = r#"
+fn main() {
+    let data = vec![1, 2, 3];
+    let a = data.len();
+    let b = data.len();
+    let c = data.is_empty();
+}
+"#;
+    let mut id_gen = kobo_ir::NodeIdGen::new();
+    let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+    let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
+    let data_binding = kir
+        .transform_facts()
+        .bindings
+        .iter()
+        .find(|b| b.binding_name == "data")
+        .expect("should have data binding");
+    let data_decision = kir
+        .tier_decision(data_binding.node)
+        .expect("should have a tier decision for data");
+    // data has multiple read sites → needs sharing → should NOT be PlainOwned.
+    assert!(
+        data_decision.tier != OwnershipTier::PlainOwned,
+        "shared binding should not be PlainOwned, got {:?}",
+        data_decision
+    );
 }

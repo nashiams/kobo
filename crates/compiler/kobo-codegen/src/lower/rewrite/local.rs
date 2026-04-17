@@ -16,7 +16,8 @@ impl super::Lowerer<'_> {
         self.record_binding_anchor(binding, LoweringAnchorKind::Local);
         let already_wrapped = self.lower_local_initializer(local, binding, tier, scopes);
         let diag_loc = self.plan.diag_source_loc_for(binding);
-        apply_tier_to_local(local, tier, already_wrapped, diag_loc);
+        let mutation_required = self.plan.mutation_required(binding);
+        apply_tier_to_local(local, tier, already_wrapped, diag_loc, mutation_required);
         scopes.insert(&binding.ident, tier);
     }
 

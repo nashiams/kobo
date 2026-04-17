@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use kobo_ir::OwnershipTier;
 use syn::parse_quote;
 
@@ -16,8 +18,19 @@ pub(super) fn strip_kobo_attrs(attrs: &mut Vec<syn::Attribute>) {
 
 /// Build a `borrow()` or `borrow_mut()` receiver expression based on whether
 /// the method being called is a mutating method.
-pub(super) fn lowered_receiver_expr(ident: syn::Ident, method: &syn::Ident) -> syn::Expr {
-    if is_mutating_method(method) {
+///
+/// Checks the KIR-level `method_mutability` map first (from impl-block scanning
+/// + config overrides), then falls back to the hardcoded list.
+pub(super) fn lowered_receiver_expr(
+    ident: syn::Ident,
+    method: &syn::Ident,
+    method_mutability: &HashMap<String, bool>,
+) -> syn::Expr {
+    let is_mut = method_mutability
+        .get(&method.to_string())
+        .copied()
+        .unwrap_or_else(|| is_mutating_method(method));
+    if is_mut {
         parse_quote!(#ident.borrow_mut())
     } else {
         parse_quote!(#ident.borrow())

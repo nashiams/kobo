@@ -32,6 +32,8 @@ pub(crate) struct LoweringPlan {
     /// Precomputed source-location strings (`"file.kobo:line"`) for each
     /// `RcMutShared` AST binding that will be wrapped in `DiagOwner`.
     diag_source_locs: HashMap<KoboAstNodeId, String>,
+    /// S-1: AST bindings that need `let mut` (local-only mutation).
+    mutation_required_bindings: HashSet<KoboAstNodeId>,
     support_item_count: usize,
 }
 
@@ -123,6 +125,19 @@ impl LoweringPlan {
             }
         }
 
+        // S-1: collect bindings that need `let mut` (local-only mutation at PlainOwned).
+        let mutation_required_bindings: HashSet<KoboAstNodeId> = nodes_by_ast
+            .iter()
+            .filter_map(|(&ast_id, &kir_id)| {
+                let tf = kir.transform_facts().bindings.iter().find(|b| b.node == kir_id)?;
+                if tf.shared_facts.mutation_required {
+                    Some(ast_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         Self {
             nodes_by_ast,
             lowering_tiers_by_ast,
@@ -137,6 +152,7 @@ impl LoweringPlan {
             needs_diag_owner,
             diag_mode: options.diag_mode,
             diag_source_locs,
+            mutation_required_bindings,
             support_item_count,
         }
     }
@@ -155,6 +171,10 @@ impl LoweringPlan {
             .lowering_tiers_by_ast
             .get(&binding.id)
             .unwrap_or(&OwnershipTier::PlainOwned)
+    }
+
+    pub(crate) fn mutation_required(&self, binding: &KoboBinding) -> bool {
+        self.mutation_required_bindings.contains(&binding.id)
     }
 
     pub(crate) fn called_function_param_tiers(&self, expr: &syn::Expr) -> Option<&[OwnershipTier]> {

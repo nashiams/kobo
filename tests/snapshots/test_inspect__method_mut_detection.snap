@@ -1,0 +1,23 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+struct Logger {
+    entries: Vec<String>,
+}
+impl Logger {
+// kobo: msg @ line 6 -> plain (local-only non-Copy binding)
+    fn log(&mut self, msg: String) {
+        self.entries.push(msg);
+    }
+    fn count(&self) -> usize {
+        self.entries.len()
+    }
+}
+fn main() {
+// kobo: logger @ line 15 -> plain (local-only non-Copy binding)
+    let mut logger = Logger { entries: vec![] };
+    logger.log("hello".to_string());
+    logger.log("world".to_string());
+    println!("entries: {}", logger.count());
+}

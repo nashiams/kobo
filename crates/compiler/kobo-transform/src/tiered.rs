@@ -63,6 +63,26 @@ fn choose_tier_for_binding(binding: &TransformBindingFacts) -> TierDecision {
         };
     }
 
+    // S-1: Local-only bindings skip Rc/RefCell wrapping.
+    // Mutation on a non-shared, non-escaping local is just `let mut`.
+    // Exception: async + box_reason needs special handling (Box is deferred in async).
+    if !binding.shared_facts.needs_sharing
+        && !binding.shared_facts.has_escape
+        && !(binding.is_async && binding.shared_facts.box_reason.is_some())
+    {
+        let tier = if binding.shared_facts.box_reason.is_some() {
+            OwnershipTier::BoxOwned
+        } else {
+            OwnershipTier::PlainOwned
+        };
+        return TierDecision {
+            node: binding.node,
+            tier,
+            reason: TierReason::LocalOnly,
+            annotate: true,
+        };
+    }
+
     let mut order = candidate_order(binding.hint);
     if order.is_empty() {
         order.extend(LADDER);
@@ -460,6 +480,7 @@ mod tests {
     fn send_required_sharing_chooses_arc_shared() {
         let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
             needs_send: true,
+            needs_sharing: true,
             ..Default::default()
         }));
 
@@ -471,6 +492,7 @@ mod tests {
         let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
             mutation_required: true,
             needs_mutable_wrapper: true,
+            needs_sharing: true,
             ..Default::default()
         }));
 
@@ -482,6 +504,7 @@ mod tests {
         let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
             mutation_required: true,
             needs_mutable_wrapper: true,
+            needs_sharing: true,
             borrow_sites: vec![KoboSpan::new(0, 1, FileId(0))],
             ..Default::default()
         }));

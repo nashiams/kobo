@@ -25,11 +25,14 @@ impl TransformFactsBuilder<'_> {
                 self.check_relax_on_non_fn_item(&item_static.attrs, item_static.span());
                 self.emit_declared_binding(&item_static.ident, Some(&item_static.expr), None);
             }
+            syn::Item::Impl(item_impl) => {
+                self.check_relax_on_non_fn_item(&item_impl.attrs, item_impl.span());
+                self.walk_impl_block(item_impl);
+            }
             item => {
-                // Catch #[kobo::relax] on enum, impl, mod, trait, etc.
+                // Catch #[kobo::relax] on enum, mod, trait, etc.
                 let attrs = match item {
                     syn::Item::Enum(i) => Some(i.attrs.as_slice()),
-                    syn::Item::Impl(i) => Some(i.attrs.as_slice()),
                     syn::Item::Mod(i) => Some(i.attrs.as_slice()),
                     syn::Item::Trait(i) => Some(i.attrs.as_slice()),
                     _ => None,
@@ -99,6 +102,65 @@ impl TransformFactsBuilder<'_> {
         }
 
         self.walk_block_statements(&function.block.stmts);
+
+        self.ctx.pop_scope();
+        self.exit_scope(fn_span);
+        self.function_stack.pop();
+    }
+
+    fn walk_impl_block(&mut self, item_impl: &syn::ItemImpl) {
+        for impl_item in &item_impl.items {
+            if let syn::ImplItem::Fn(method) = impl_item {
+                self.walk_impl_method(method);
+            }
+        }
+    }
+
+    fn walk_impl_method(&mut self, method: &syn::ImplItemFn) {
+        let generic_params = method
+            .sig
+            .generics
+            .params
+            .iter()
+            .filter_map(|param| match param {
+                syn::GenericParam::Type(ty) => Some(ty.ident.to_string()),
+                _ => None,
+            })
+            .collect();
+        let function_hint = parse_hint(&method.attrs).map(|(hint, span)| PendingHint {
+            hint,
+            span: self.ast.span_from_syn(span),
+        });
+
+        let fn_span = self.ast.span_from_syn(method.span());
+        let relax_count = self.collect_relax_attrs_on_fn(&method.attrs, fn_span);
+        self.check_relax_strict_conflict(relax_count, fn_span);
+        self.collect_migrate_attrs(&method.attrs, MigrateTarget::Function);
+
+        self.function_stack.push(FunctionCtx {
+            generic_params,
+            is_async: method.sig.asyncness.is_some(),
+            hint: function_hint,
+            hint_consumed: false,
+        });
+
+        self.enter_scope(fn_span);
+        self.ctx.push_scope();
+
+        for input in &method.sig.inputs {
+            match input {
+                syn::FnArg::Receiver(_) => {
+                    // &self / &mut self — no ownership tracking needed.
+                }
+                syn::FnArg::Typed(argument) => {
+                    self.collect_migrate_attrs(&argument.attrs, MigrateTarget::Parameter);
+                    let param_hint = self.take_function_hint();
+                    self.emit_pat_binding(&argument.pat, None, param_hint);
+                }
+            }
+        }
+
+        self.walk_block_statements(&method.block.stmts);
 
         self.ctx.pop_scope();
         self.exit_scope(fn_span);
@@ -310,7 +372,12 @@ impl TransformFactsBuilder<'_> {
     }
 
     fn walk_method_receiver(&mut self, receiver: &syn::Expr, method: &syn::Ident) {
-        let use_kind = if is_mutating_method(method) {
+        let method_name = method.to_string();
+        let is_mut = self
+            .method_registry
+            .is_mutating_by_name(&method_name)
+            .unwrap_or_else(|| is_mutating_method(method));
+        let use_kind = if is_mut {
             UseKind::Write
         } else {
             UseKind::Read

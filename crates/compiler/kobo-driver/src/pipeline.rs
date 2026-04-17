@@ -65,6 +65,8 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         &mut session.id_gen,
         TransformOptions {
             small_struct_clone_threshold_bytes: session.config.small_struct_clone_threshold_bytes,
+            copy_types: session.config.copy_types.clone(),
+            mutating_methods: session.config.mutating_methods.clone(),
         },
     );
 

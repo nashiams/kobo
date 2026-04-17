@@ -134,6 +134,8 @@ impl TransformFactsBuilder<'_> {
                 (
                     EscapeKind::ReturnedFromFunction,
                     kobo_parser::KoboBindingKind::Parameter
+                        | kobo_parser::KoboBindingKind::SelfParam
+                        | kobo_parser::KoboBindingKind::MutSelfParam
                 )
             )
         }) {

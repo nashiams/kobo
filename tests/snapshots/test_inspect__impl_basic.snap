@@ -1,0 +1,29 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::rc::Rc;
+struct Counter {
+    value: i32,
+    name: String,
+}
+impl Counter {
+// kobo: name @ line 7 -> rc (read-only shared across 2 call sites)
+    fn new(name: Rc<String>) -> Self {
+        Counter { value: 0, name }
+    }
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+    fn increment(&mut self) {
+        self.value += 1;
+    }
+    fn value(&self) -> i32 {
+        self.value
+    }
+}
+fn main() {
+// kobo: c @ line 25 -> plain (local-only non-Copy binding)
+    let c = Counter::new("test".to_string());
+    println!("{}: {}", c.get_name(), c.value());
+}

@@ -1,0 +1,19 @@
+struct Logger {
+    entries: Vec<String>,
+}
+
+impl Logger {
+    fn log(&mut self, msg: String) {
+        self.entries.push(msg);
+    }
+    fn count(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+fn main() {
+    let logger = Logger { entries: vec![] };
+    logger.log("hello".to_string());
+    logger.log("world".to_string());
+    println!("entries: {}", logger.count());
+}

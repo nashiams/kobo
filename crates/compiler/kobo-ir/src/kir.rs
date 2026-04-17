@@ -113,6 +113,8 @@ pub struct Kir {
     relax_attr_errors: Vec<RelaxAttrError>,
     /// Sites tagged with `#[kobo::migrate]` — metadata-only, zero codegen effect [G6 / R05].
     migrate_sites: Vec<MigrateSite>,
+    /// Method name → `true` if `&mut self`, scanned from impl blocks + config.
+    method_mutability: HashMap<String, bool>,
 }
 
 // --- Public read API ---
@@ -138,6 +140,7 @@ impl Kir {
             relaxed_fn_ranges: Vec::new(),
             relax_attr_errors: Vec::new(),
             migrate_sites: Vec::new(),
+            method_mutability: HashMap::new(),
         }
     }
 
@@ -249,6 +252,14 @@ impl Kir {
 
     pub fn set_migrate_sites(&mut self, sites: Vec<MigrateSite>) {
         self.migrate_sites = sites;
+    }
+
+    pub fn method_mutability(&self) -> &HashMap<String, bool> {
+        &self.method_mutability
+    }
+
+    pub fn set_method_mutability(&mut self, map: HashMap<String, bool>) {
+        self.method_mutability = map;
     }
 
     pub fn len(&self) -> usize {

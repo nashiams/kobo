@@ -125,7 +125,7 @@ fn inspect_box_large_fixture_uses_box_owned() {
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
     assert!(output
         .stdout
-        .contains("-> box (single owner, heap required (size heuristic))"));
+        .contains("-> box (local-only non-Copy binding)"));
     assert!(output
         .stdout
         .contains("let plan: Box<LargePlan> = Box::new"));
@@ -200,7 +200,7 @@ fn inspect_dead_and_live_borrow_move_fixtures_split_correctly() {
     );
     assert!(dead_output
         .stdout
-        .contains("-> plain (dead original after assignment)"));
+        .contains("-> plain (local-only non-Copy binding)"));
     assert!(dead_output.stdout.contains("let z = x;"));
     insta::with_settings!({
         prepend_module_to_snapshot => false,
@@ -229,16 +229,46 @@ fn inspect_dead_and_live_borrow_move_fixtures_split_correctly() {
 }
 
 #[test]
+fn inspect_rc_elision_basic_fixture_splits_plain_and_wrapped() {
+    let case = FixtureCase::new("inspect-rc-elision-basic", "rc_elision_basic.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    // local_only: S-1 elision → PlainOwned (no Rc wrapping)
+    assert!(
+        output.stdout.contains("local_only @ line 2 -> plain"),
+        "local_only should be plain; got:\n{}",
+        output.stdout
+    );
+    assert!(!output.stdout.contains("Rc::new(vec![1, 2, 3])"));
+    // shared: has 3 read sites → needs_sharing → Rc wrapping
+    assert!(
+        output.stdout.contains("shared @ line 6 -> rc"),
+        "shared should be rc; got:\n{}",
+        output.stdout
+    );
+    assert!(output.stdout.contains("Rc::new(vec![10, 20])"));
+
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__rc_elision_basic", output.stdout);
+    });
+}
+
+#[test]
 fn inspect_conditional_mutation_fixture_uses_rc_refcell() {
     let case = FixtureCase::new("inspect-conditional-mutation", "conditional_mutation.kobo");
     let output = run_kobo(["inspect"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    // S-1: local-only mutable binding is now PlainOwned (let mut) instead of Rc<RefCell>
     assert!(output
         .stdout
-        .contains("-> rc_refcell (mutable shared, last resort)"));
-    assert!(output.stdout.contains("conditional mutation path"));
-    assert!(output.stdout.contains("mutate(&mut *x.borrow_mut());"));
+        .contains("-> plain (local-only non-Copy binding)"));
+    assert!(output.stdout.contains("let mut x = String::from"));
+    assert!(output.stdout.contains("mutate(&mut x);"));
 
     insta::with_settings!({
         prepend_module_to_snapshot => false,
@@ -254,9 +284,10 @@ fn inspect_clone_elision_fixture_matches_snapshot() {
     let output = run_kobo(["inspect"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    // S-1: local-only binding is PlainOwned
     assert!(output
         .stdout
-        .contains("-> plain (dead original after assignment)"));
+        .contains("-> plain (local-only non-Copy binding)"));
     assert!(output.stdout.contains("let result = builder;"));
 
     insta::with_settings!({
@@ -309,8 +340,8 @@ fn inspect_large_copy_alias_fixture_keeps_wrapper_path_for_large_values() {
     let output = run_kobo(["inspect"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
-    assert!(output.stdout.contains("let x = Rc::new(LargeCopy"));
-    assert!(output.stdout.contains("let y = x.clone();"));
+    // LargeCopy has #[derive(Copy)] → detected as Copy → PlainOwned, no Rc wrapping.
+    assert!(!output.stdout.contains("Rc::new(LargeCopy"));
 
     insta::with_settings!({
         prepend_module_to_snapshot => false,
@@ -346,8 +377,9 @@ fn inspect_borrow_scope_simple_fixture_shrinks_borrow_scope() {
     let output = run_kobo(["inspect"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
-    assert!(output.stdout.contains("x.borrow_mut().push(2);"));
-    assert!(!output.stdout.contains("let r = &mut *x.borrow_mut();"));
+    // S-1: local-only mutable binding uses let mut, no borrow_mut
+    assert!(output.stdout.contains("let mut x = vec![1];"));
+    assert!(!output.stdout.contains("borrow_mut"));
 
     insta::with_settings!({
         prepend_module_to_snapshot => false,
@@ -366,8 +398,9 @@ fn inspect_borrow_scope_conservative_fixture_emits_annotation() {
     let output = run_kobo(["inspect"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
-    assert!(output.stdout.contains("borrow-scope-conservative"));
-    assert!(output.stdout.contains("let r = &mut *x.borrow_mut();"));
+    // S-1: local-only mutable binding uses let mut, direct &mut reference
+    assert!(output.stdout.contains("let mut x = vec![1];"));
+    assert!(output.stdout.contains("let r = &mut x;"));
 
     insta::with_settings!({
         prepend_module_to_snapshot => false,
@@ -407,13 +440,13 @@ fn inspect_shadowed_binding_fixture_keeps_shadowed_x_sites_distinct() {
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
     assert_eq!(output.stdout.matches("// kobo: x @ line").count(), 2);
     assert!(output.stdout.contains("x @ line 2 -> plain"));
-    assert!(output.stdout.contains("x @ line 7 -> rc_refcell"));
+    // S-1: second x is now local-only PlainOwned (no sharing/escape)
+    assert!(output.stdout.contains("x @ line 7 -> plain"));
 
     let source_map =
         fs::read_to_string(case.fixture_path.with_extension("kobo.map")).expect("map should exist");
     assert_eq!(source_map.matches("\"ownership_tier\"").count(), 2);
     assert!(source_map.contains("\"ownership_tier\": \"plain\""));
-    assert!(source_map.contains("\"ownership_tier\": \"rc_refcell\""));
     let rs_lines = source_map
         .lines()
         .filter_map(|line| {
@@ -708,6 +741,205 @@ fn workspace_root() -> PathBuf {
         .expect("workspace root should exist")
 }
 
+// ── Phase 1 / Step 1.2: kobo init ──────────────────────────────────────
+
+#[test]
+fn test_init_creates_project_skeleton() {
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("init-skeleton-{}", std::process::id()));
+    let project_dir = root.join("my_project");
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(["init", project_dir.to_str().unwrap()])
+        .output()
+        .expect("kobo init should run");
+
+    assert!(
+        output.status.success(),
+        "kobo init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(project_dir.join("Kobo.toml").exists(), "Kobo.toml should exist");
+    assert!(project_dir.join("src").is_dir(), "src/ should be a directory");
+    assert!(
+        project_dir.join("src/main.kobo").exists(),
+        "src/main.kobo should exist"
+    );
+    // Verify Kobo.toml content
+    let config = fs::read_to_string(project_dir.join("Kobo.toml")).unwrap();
+    assert!(config.contains("[package]"), "Kobo.toml should have [package]");
+    assert!(
+        config.contains("name = \"my_project\""),
+        "Kobo.toml should have project name"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+// ── Phase 1 / Step 1.3: kobo build ─────────────────────────────────────
+
+fn setup_multi_file_fixture(name: &str) -> PathBuf {
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("{name}-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(root.join("src")).unwrap();
+
+    fs::write(
+        root.join("Kobo.toml"),
+        r#"[package]
+name = "test_project"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+"#,
+    )
+    .unwrap();
+
+    root
+}
+
+#[test]
+fn test_build_multi_file_project() {
+    let dir = setup_multi_file_fixture("build-multi");
+    fs::write(
+        dir.join("src/main.kobo"),
+        r#"mod helper;
+fn main() {
+    println!("hello");
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/helper.kobo"),
+        r#"pub fn greet() {
+    println!("hi");
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(["build"])
+        .current_dir(&dir)
+        .output()
+        .expect("kobo build should run");
+
+    assert!(
+        output.status.success(),
+        "kobo build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Verify all .rs files generated
+    assert!(
+        dir.join("target/kobo-gen/src/main.rs").exists(),
+        "main.rs should be generated"
+    );
+    assert!(
+        dir.join("target/kobo-gen/src/helper.rs").exists(),
+        "helper.rs should be generated"
+    );
+    // Verify Cargo.toml generated
+    assert!(
+        dir.join("target/kobo-gen/Cargo.toml").exists(),
+        "Cargo.toml should be generated"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_build_passes_dependencies_to_cargo() {
+    let dir = setup_multi_file_fixture("build-deps");
+    // Override Kobo.toml to include dependencies
+    fs::write(
+        dir.join("Kobo.toml"),
+        r#"[package]
+name = "test_deps"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+
+[dependencies]
+log = "0.4"
+"#,
+    )
+    .unwrap();
+    fs::write(dir.join("src/main.kobo"), "fn main() { }\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(["build"])
+        .current_dir(&dir)
+        .output()
+        .expect("kobo build should run");
+
+    assert!(
+        output.status.success(),
+        "kobo build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cargo_toml = fs::read_to_string(dir.join("target/kobo-gen/Cargo.toml")).unwrap();
+    assert!(cargo_toml.contains("log"), "Cargo.toml should contain dependency 'log'");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_build_mod_use_passthrough() {
+    let dir = setup_multi_file_fixture("build-mod-use");
+    fs::write(
+        dir.join("src/main.kobo"),
+        r#"mod helper;
+use helper::greet;
+fn main() {
+    greet();
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src/helper.kobo"),
+        r#"pub fn greet() {
+    println!("hello from helper");
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(["build"])
+        .current_dir(&dir)
+        .output()
+        .expect("kobo build should run");
+
+    assert!(
+        output.status.success(),
+        "kobo build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let main_rs = fs::read_to_string(dir.join("target/kobo-gen/src/main.rs")).unwrap();
+    assert!(
+        main_rs.contains("mod helper;"),
+        "mod statement should pass through"
+    );
+    assert!(
+        main_rs.contains("use helper::greet;"),
+        "use statement should pass through"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // G2 — CLI mode flag tests [R6-01]
 // ---------------------------------------------------------------------------
@@ -836,5 +1068,75 @@ fn test_cli_mode_check_checked_use_after_move() {
         output.stderr.contains("warning"),
         "K0001 must be a warning in checked mode, not an error\nstderr:\n{}",
         output.stderr
+    );
+}
+
+#[test]
+fn test_inspect_impl_basic() {
+    let case = FixtureCase::new("inspect-impl-basic", "impl_basic.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(
+        output.status.success(),
+        "inspect impl_basic must succeed\nstderr:\n{}",
+        output.stderr
+    );
+    // The impl block must be preserved in the output.
+    assert!(
+        output.stdout.contains("impl Counter"),
+        "output must contain `impl Counter`\nstdout:\n{}",
+        output.stdout
+    );
+    // Methods must be present.
+    assert!(
+        output.stdout.contains("fn new("),
+        "output must contain `fn new(`\nstdout:\n{}",
+        output.stdout
+    );
+    // &self receivers must pass through unchanged.
+    assert!(
+        output.stdout.contains("&self"),
+        "output must contain `&self`\nstdout:\n{}",
+        output.stdout
+    );
+    // Snapshot test.
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__impl_basic", output.stdout);
+    });
+}
+
+#[test]
+fn inspect_method_mut_detection_fixture_emits_borrow_mut_for_mutating_methods() {
+    let case = FixtureCase::new("inspect-method-mut-detection", "method_mut_detection.kobo");
+    let output = run_kobo(["inspect"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    // `log(&mut self)` should trigger borrow_mut on the wrapper
+    // `count(&self)` should trigger borrow
+    insta::with_settings!({
+        prepend_module_to_snapshot => false,
+        snapshot_path => "../../../tests/snapshots",
+    }, {
+        insta::assert_snapshot!("test_inspect__method_mut_detection", output.stdout);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// v0.7 Phase 7 — kobo debt --borrows
+// ---------------------------------------------------------------------------
+
+#[test]
+fn debt_borrows_flag_runs_successfully() {
+    let case = FixtureCase::new("debt-borrows", "live_borrow_at_move.kobo");
+    let output = run_kobo(["debt", "--borrows"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        output.stdout.contains("borrow") || output.stdout.contains("Borrow"),
+        "debt --borrows should mention borrows in output, got:\n{}",
+        output.stdout,
     );
 }

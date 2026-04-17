@@ -87,7 +87,50 @@ impl<'a> Lowerer<'a> {
             syn::Item::Static(item_static) => {
                 self.record_item_anchor(&item_static.ident, LoweringAnchorKind::Static)
             }
+            syn::Item::Impl(item_impl) => self.lower_impl_block(item_impl),
             _ => {}
+        }
+    }
+
+    fn lower_impl_block(&mut self, item_impl: &mut syn::ItemImpl) {
+        for impl_item in &mut item_impl.items {
+            if let syn::ImplItem::Fn(method) = impl_item {
+                self.lower_impl_method(method);
+            }
+        }
+    }
+
+    fn lower_impl_method(&mut self, method: &mut syn::ImplItemFn) {
+        util::strip_kobo_attrs(&mut method.attrs);
+        self.strict_counter = StrictGuardCounter::new();
+        let mut scopes = ScopeStack::new();
+        scopes.push();
+        self.lower_method_params(&mut method.sig.inputs, &mut scopes);
+        self.lower_block_statements(&mut method.block, &mut scopes);
+        scopes.pop();
+    }
+
+    fn lower_method_params(
+        &mut self,
+        inputs: &mut syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+        scopes: &mut ScopeStack,
+    ) {
+        for input in inputs {
+            match input {
+                syn::FnArg::Receiver(_) => {
+                    // &self / &mut self — pass through unchanged.
+                }
+                syn::FnArg::Typed(argument) => {
+                    util::strip_kobo_attrs(&mut argument.attrs);
+                    let Some(binding) = binding_for_pat(self.ast, &argument.pat) else {
+                        continue;
+                    };
+                    let tier = self.plan.tier_for_binding(binding);
+                    self.record_binding_anchor(binding, LoweringAnchorKind::Parameter);
+                    apply_tier_to_fn_arg_type(argument, tier);
+                    scopes.insert(&binding.ident, tier);
+                }
+            }
         }
     }
 

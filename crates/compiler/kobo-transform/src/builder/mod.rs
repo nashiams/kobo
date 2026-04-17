@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use crate::box_reason::{collect_box_reasons, type_box_reason};
 use crate::classify::{binding_metadata, BindingMetadata, BindingState, TransformCtx};
 use crate::clone_elision::{collect_elision_candidate_sites, AstCloneElisionCandidate};
+use crate::copy_scan::{build_copy_registry, scan_derive_copy};
 use crate::escape::{BorrowAlias, MoveAlias};
+use crate::method_analysis::MethodRegistry;
 use crate::options::TransformOptions;
 use crate::small_clone::{collect_small_clone_profiles, SmallCloneProfile};
 use kobo_ir::{
@@ -40,6 +42,8 @@ pub(crate) struct BuilderOutput {
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
     /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
     pub(crate) migrate_sites: Vec<MigrateSite>,
+    /// Method name → is_mut_self, from impl block scanning + config.
+    pub(crate) method_mutability: std::collections::HashMap<String, bool>,
 }
 
 pub(crate) struct TransformFactsBuilder<'a> {
@@ -56,6 +60,8 @@ pub(crate) struct TransformFactsBuilder<'a> {
     function_stack: Vec<FunctionCtx>,
     box_reasons: HashMap<String, BoxReason>,
     small_clone_profiles: HashMap<String, SmallCloneProfile>,
+    copy_registry: HashSet<String>,
+    method_registry: MethodRegistry,
     function_names: HashSet<String>,
     pending_elision_candidates: HashMap<kobo_ir::KoboAstNodeId, AstCloneElisionCandidate>,
     struct_defs: Vec<KirStructDef>,
@@ -110,13 +116,32 @@ impl<'a> TransformFactsBuilder<'a> {
                 ast,
                 options.small_struct_clone_threshold_bytes,
             ),
+            copy_registry: build_copy_registry(
+                scan_derive_copy(&ast.inner),
+                &options.copy_types,
+            ),
+            method_registry: MethodRegistry::from_impl_blocks(&ast.inner)
+                .with_config_overrides(&options.mutating_methods),
             function_names: ast
                 .inner
                 .items
                 .iter()
-                .filter_map(|item| match item {
-                    syn::Item::Fn(function) => Some(function.sig.ident.to_string()),
-                    _ => None,
+                .flat_map(|item| match item {
+                    syn::Item::Fn(function) => {
+                        vec![function.sig.ident.to_string()]
+                    }
+                    syn::Item::Impl(item_impl) => item_impl
+                        .items
+                        .iter()
+                        .filter_map(|impl_item| {
+                            if let syn::ImplItem::Fn(method) = impl_item {
+                                Some(method.sig.ident.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    _ => vec![],
                 })
                 .collect(),
             pending_elision_candidates: collect_elision_candidate_sites(ast)
@@ -142,6 +167,7 @@ impl<'a> TransformFactsBuilder<'a> {
             relaxed_fn_ranges,
             relax_attr_errors,
             migrate_sites,
+            method_registry,
             ..
         } = self;
 
@@ -172,6 +198,7 @@ impl<'a> TransformFactsBuilder<'a> {
             relaxed_fn_ranges,
             relax_attr_errors,
             migrate_sites,
+            method_mutability: method_registry.into_map(),
         }
     }
 
@@ -189,6 +216,13 @@ impl<'a> TransformFactsBuilder<'a> {
             &generic_params,
             &self.small_clone_profiles,
         );
+        if !metadata.is_copy_known {
+            metadata.is_copy_known = binding
+                .ty
+                .as_ref()
+                .is_some_and(|ty| is_copy_in_registry(ty, &self.copy_registry))
+                || init.is_some_and(|expr| is_copy_init_in_registry(expr, &self.copy_registry));
+        }
         metadata.small_clone_profile = metadata
             .small_clone_profile
             .or_else(|| init.and_then(|expr| self.small_clone_profile_for_expr(expr)));
@@ -336,5 +370,42 @@ impl<'a> TransformFactsBuilder<'a> {
                 ElisionSkipReason::FieldTypeUnknownMayAllocate,
             );
         }
+    }
+}
+
+/// Returns `true` if a type is present in the user-defined / derive-scanned Copy registry.
+fn is_copy_in_registry(ty: &syn::Type, registry: &HashSet<String>) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    registry.contains(&segment.ident.to_string())
+}
+
+/// Returns `true` if an init expression constructs a type in the Copy registry.
+fn is_copy_init_in_registry(expr: &syn::Expr, registry: &HashSet<String>) -> bool {
+    match expr {
+        syn::Expr::Struct(expr_struct) => {
+            let Some(segment) = expr_struct.path.segments.last() else {
+                return false;
+            };
+            registry.contains(&segment.ident.to_string())
+        }
+        syn::Expr::Call(call) => {
+            // e.g. Vec3(1.0, 2.0, 3.0) — tuple-struct constructor
+            if let syn::Expr::Path(path) = call.func.as_ref() {
+                for segment in &path.path.segments {
+                    if registry.contains(&segment.ident.to_string()) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        syn::Expr::Paren(paren) => is_copy_init_in_registry(&paren.expr, registry),
+        syn::Expr::Group(group) => is_copy_init_in_registry(&group.expr, registry),
+        _ => false,
     }
 }

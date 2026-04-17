@@ -1,9 +1,7 @@
 ---
 source: bin/kobo-cli/tests/test_run.rs
-assertion_line: 319
 expression: output.stdout
 ---
-use std::rc::Rc;
 #[derive(Clone, Copy)]
 struct LargeCopy {
     a0: u64,
@@ -25,8 +23,7 @@ struct LargeCopy {
     a16: u64,
 }
 fn main() {
-// kobo: x @ line 23 -> rc (sequential read-only; &T likely at migration (2 call sites))
-    let x = Rc::new(LargeCopy {
+    let x = LargeCopy {
         a0: 1,
         a1: 2,
         a2: 3,
@@ -44,9 +41,8 @@ fn main() {
         a14: 15,
         a15: 16,
         a16: 17,
-    });
-// kobo: y @ line 42 -> plain (local-only non-Copy binding)
-    let y = x.clone();
+    };
+    let y = x;
 // kobo: sum @ line 43 -> plain (local-only non-Copy binding)
     let sum = x.a0 + y.a16;
     println!("{}", sum);

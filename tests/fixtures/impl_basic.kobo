@@ -1,0 +1,27 @@
+struct Counter {
+    value: i32,
+    name: String,
+}
+
+impl Counter {
+    fn new(name: String) -> Self {
+        Counter { value: 0, name }
+    }
+
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    fn increment(&mut self) {
+        self.value += 1;
+    }
+
+    fn value(&self) -> i32 {
+        self.value
+    }
+}
+
+fn main() {
+    let c = Counter::new("test".to_string());
+    println!("{}: {}", c.get_name(), c.value());
+}

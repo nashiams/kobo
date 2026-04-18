@@ -607,6 +607,7 @@ mod tests {
             is_copy_known: false,
             is_generic: false,
             is_async: false,
+            async_shared: false,
             usage: BindingUsage::new(dummy_span()),
             shared_facts: SharedBindingFacts {
                 node_id: KirNodeId(1),

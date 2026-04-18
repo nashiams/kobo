@@ -95,6 +95,8 @@ pub enum TierReason {
     AsyncBoxDeferred,
     ResourceWrapper,
     ValidationEscalation(SatisfactionCheck),
+    /// `#[kobo::async_shared]` opt-in attribute forced an Arc tier [BUG 7].
+    AsyncSharedAttribute,
 }
 
 /// Chosen ownership tier and explanation for one KIR declaration node.
@@ -273,6 +275,9 @@ impl TierReason {
             TierReason::GenericWrapperFloor => "generic T: Copy unknown".to_owned(),
             TierReason::AsyncBoxDeferred => "Box<T> deferred: async fn (v0.7)".to_owned(),
             TierReason::ResourceWrapper => "resource wrapper".to_owned(),
+            TierReason::AsyncSharedAttribute => {
+                "#[kobo::async_shared] opt-in: Arc tier".to_owned()
+            }
             TierReason::ValidationEscalation(SatisfactionCheck::ReturnEscapeBoxDeferred) => {
                 "return escape: Box<T> requires signature rewrite (v0.4)".to_owned()
             }

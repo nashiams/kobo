@@ -2,6 +2,7 @@ use kobo_ir::OwnershipTier;
 use syn::parse_quote;
 
 use super::super::binding::{apply_tier_to_local, binding_for_pat, binding_tier_from_expr};
+use super::super::scope::type_name_from_syn;
 use super::{LoweringAnchorKind, ScopeStack};
 
 impl super::Lowerer<'_> {
@@ -19,6 +20,11 @@ impl super::Lowerer<'_> {
         let mutation_required = self.plan.mutation_required(binding);
         apply_tier_to_local(local, tier, already_wrapped, diag_loc, mutation_required);
         scopes.insert(&binding.ident, tier);
+        if let Some(ty) = &binding.ty {
+            if let Some(name) = type_name_from_syn(ty) {
+                scopes.insert_type_name(&binding.ident, name);
+            }
+        }
     }
 
     fn lower_local_without_binding(

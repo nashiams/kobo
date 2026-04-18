@@ -125,3 +125,33 @@ pub(super) fn parse_known_debt_attr(attr: &syn::Attribute) -> KnownDebtResult {
         _ => KnownDebtResult::NotKnownDebt,
     }
 }
+
+// ---------------------------------------------------------------------------
+// #[kobo::async_shared] parsing [BUG 7]
+// ---------------------------------------------------------------------------
+
+/// Result of parsing a `#[kobo::async_shared]` attribute.
+pub(super) enum AsyncSharedAttrResult {
+    /// Attribute is not a `kobo::async_shared` attribute.
+    NotAsyncShared,
+    /// Valid bare `#[kobo::async_shared]`.
+    Valid(proc_macro2::Span),
+    /// Malformed `#[kobo::async_shared = ...]` or `#[kobo::async_shared(...)]` — takes no args.
+    HasArguments(proc_macro2::Span),
+}
+
+/// Parse `#[kobo::async_shared]` from a single attribute.
+pub(super) fn parse_async_shared_attr(attr: &syn::Attribute) -> AsyncSharedAttrResult {
+    match &attr.meta {
+        syn::Meta::Path(path) if is_kobo_path(path, "async_shared") => {
+            AsyncSharedAttrResult::Valid(attr.span())
+        }
+        syn::Meta::NameValue(nv) if is_kobo_path(&nv.path, "async_shared") => {
+            AsyncSharedAttrResult::HasArguments(attr.span())
+        }
+        syn::Meta::List(list) if is_kobo_path(&list.path, "async_shared") => {
+            AsyncSharedAttrResult::HasArguments(attr.span())
+        }
+        _ => AsyncSharedAttrResult::NotAsyncShared,
+    }
+}

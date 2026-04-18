@@ -21,14 +21,24 @@ pub(super) fn strip_kobo_attrs(attrs: &mut Vec<syn::Attribute>) {
 ///
 /// Checks the KIR-level `method_mutability` map first (from impl-block scanning
 /// + config overrides), then falls back to the hardcoded list.
+///
+/// When `receiver_type` is provided, a qualified lookup (`"Type::method"`) is
+/// attempted before the bare-name fallback, so that same-named methods on
+/// different types (e.g. `Reader::touch` vs `Writer::touch`) are resolved
+/// correctly (BUG 3/27).
 pub(super) fn lowered_receiver_expr(
     ident: syn::Ident,
     method: &syn::Ident,
     method_mutability: &HashMap<String, bool>,
+    receiver_type: Option<&str>,
 ) -> syn::Expr {
-    let is_mut = method_mutability
-        .get(&method.to_string())
-        .copied()
+    let method_name = method.to_string();
+    let is_mut = receiver_type
+        .and_then(|ty| {
+            let qkey = format!("{ty}::{method_name}");
+            method_mutability.get(&qkey).copied()
+        })
+        .or_else(|| method_mutability.get(&method_name).copied())
         .unwrap_or_else(|| is_mutating_method(method));
     if is_mut {
         parse_quote!(#ident.borrow_mut())
@@ -99,7 +109,7 @@ mod tests {
         method_mutability.insert("flush".to_owned(), true);
 
         let method: syn::Ident = parse_quote!(flush);
-        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability, None);
 
         assert_eq!(render_expr(&expr), "logger . borrow_mut ()");
     }
@@ -108,7 +118,7 @@ mod tests {
     fn standard_immutable_method_uses_borrow() {
         let method_mutability = HashMap::new();
         let method: syn::Ident = parse_quote!(len);
-        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability, None);
 
         assert_eq!(render_expr(&expr), "logger . borrow ()");
     }
@@ -117,8 +127,32 @@ mod tests {
     fn unknown_methods_default_to_borrow_mut_per_contract() {
         let method_mutability = HashMap::new();
         let method: syn::Ident = parse_quote!(flush_cache);
-        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability, None);
 
         assert_eq!(render_expr(&expr), "logger . borrow_mut ()");
+    }
+
+    #[test]
+    fn qualified_lookup_overrides_bare_conservative() {
+        let mut method_mutability = HashMap::new();
+        // bare "touch" is conservative (true) because Writer::touch is &mut self
+        method_mutability.insert("touch".to_owned(), true);
+        // but Reader::touch is specifically &self
+        method_mutability.insert("Reader::touch".to_owned(), false);
+
+        let method: syn::Ident = parse_quote!(touch);
+
+        // With receiver type "Reader", should use the qualified immutable answer
+        let expr = lowered_receiver_expr(
+            parse_quote!(r),
+            &method,
+            &method_mutability,
+            Some("Reader"),
+        );
+        assert_eq!(render_expr(&expr), "r . borrow ()");
+
+        // Without receiver type, falls back to bare conservative (mutating)
+        let expr2 = lowered_receiver_expr(parse_quote!(r), &method, &method_mutability, None);
+        assert_eq!(render_expr(&expr2), "r . borrow_mut ()");
     }
 }

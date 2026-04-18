@@ -120,6 +120,7 @@ mod tests {
             is_copy_known: false,
             is_generic: false,
             is_async: false,
+            async_shared: false,
             usage: BindingUsage::new(span(0, 4)),
             shared_facts: SharedBindingFacts { node_id: node, ..Default::default() },
             clone_elision: None,

@@ -166,6 +166,8 @@ fn overlap_report_tags_read_write_conflict_kind() {
 fn borrow_report_has_schema_version() {
     let report = BorrowReport {
         schema_version: 1,
+        total_bindings_analyzed: 0,
+        bindings_with_overlaps: 0,
         overlapping_sites: vec![],
     };
     assert_eq!(report.schema_version, 1);

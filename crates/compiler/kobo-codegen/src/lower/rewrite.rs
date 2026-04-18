@@ -8,7 +8,7 @@ use syn::parse_quote;
 use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
 use super::plan::{AnnotationNote, LoweringPlan};
-use super::scope::ScopeStack;
+use super::scope::{ScopeStack, type_name_from_syn};
 use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
 use crate::CodegenOptions;
@@ -129,6 +129,11 @@ impl<'a> Lowerer<'a> {
                     self.record_binding_anchor(binding, LoweringAnchorKind::Parameter);
                     apply_tier_to_fn_arg_type(argument, tier);
                     scopes.insert(&binding.ident, tier);
+                    if let Some(ty) = &binding.ty {
+                        if let Some(name) = type_name_from_syn(ty) {
+                            scopes.insert_type_name(&binding.ident, name);
+                        }
+                    }
                 }
             }
         }
@@ -164,6 +169,11 @@ impl<'a> Lowerer<'a> {
             self.record_binding_anchor(binding, LoweringAnchorKind::Parameter);
             apply_tier_to_fn_arg_type(argument, tier);
             scopes.insert(&binding.ident, tier);
+            if let Some(ty) = &binding.ty {
+                if let Some(name) = type_name_from_syn(ty) {
+                    scopes.insert_type_name(&binding.ident, name);
+                }
+            }
         }
     }
 

@@ -1587,10 +1587,10 @@ fn main() {
         .expect("kobo build should run");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Build should succeed (or at least reach cargo build stage).
+    // Build should succeed.
     assert!(
-        output.status.success() || stderr.contains("cargo") || stderr.contains("Compiling"),
-        "UC-1: CLI tool project should build, stderr:\n{}",
+        output.status.success(),
+        "UC-1: CLI tool project should build successfully, stderr:\n{}",
         stderr
     );
 
@@ -1630,8 +1630,8 @@ fn main() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success() || stderr.contains("cargo") || stderr.contains("Compiling"),
-        "UC-2: Data pipeline project should build, stderr:\n{}",
+        output.status.success(),
+        "UC-2: Data pipeline project should build successfully, stderr:\n{}",
         stderr
     );
 
@@ -1683,8 +1683,8 @@ fn main() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success() || stderr.contains("cargo") || stderr.contains("Compiling"),
-        "UC-3: Game simulation project should build, stderr:\n{}",
+        output.status.success(),
+        "UC-3: Game simulation project should build successfully, stderr:\n{}",
         stderr
     );
 

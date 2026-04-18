@@ -76,6 +76,8 @@ pub struct TransformBindingFacts {
     pub is_copy_known: bool,
     pub is_generic: bool,
     pub is_async: bool,
+    /// `#[kobo::async_shared]` opt-in — forces Arc tier (BUG 7).
+    pub async_shared: bool,
     pub usage: BindingUsage,
     pub shared_facts: SharedBindingFacts,
     pub clone_elision: Option<CloneElisionDecision>,

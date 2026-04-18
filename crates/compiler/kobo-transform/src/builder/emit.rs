@@ -89,6 +89,7 @@ impl TransformFactsBuilder<'_> {
                 .function_stack
                 .last()
                 .is_some_and(|frame| frame.is_async),
+            async_shared: std::mem::take(&mut self.pending_async_shared),
             usage: BindingUsage::new(binding.span),
             shared_facts,
             clone_elision: None,

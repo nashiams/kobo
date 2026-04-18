@@ -223,8 +223,9 @@ impl super::Lowerer<'_> {
         };
 
         if tier == OwnershipTier::RcMutShared {
+            let receiver_type = scopes.lookup_type_name(&ident);
             method_call.receiver =
-                Box::new(util::lowered_receiver_expr(ident, &method_call.method, self.kir.method_mutability()));
+                Box::new(util::lowered_receiver_expr(ident, &method_call.method, self.kir.method_mutability(), receiver_type));
             return;
         }
 

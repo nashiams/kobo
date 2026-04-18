@@ -150,6 +150,7 @@ mod tests {
             is_copy_known: false,
             is_generic: false,
             is_async: false,
+            async_shared: false,
             usage: BindingUsage::new(KoboSpan::new(0, 5, FileId(0))),
             shared_facts,
             clone_elision: None,

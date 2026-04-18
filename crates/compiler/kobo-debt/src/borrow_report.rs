@@ -35,10 +35,12 @@ pub struct BorrowOverlap {
     pub fix_pattern: Option<BorrowFixPattern>,
 }
 
-/// Report of all detected borrow overlaps for one binding.
+/// Report of all detected borrow overlaps for one or more bindings.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BorrowReport {
     pub schema_version: u32,
+    pub total_bindings_analyzed: usize,
+    pub bindings_with_overlaps: usize,
     pub overlapping_sites: Vec<BorrowOverlap>,
 }
 
@@ -120,7 +122,7 @@ pub fn build_borrow_report(
         }
     }
 
-    BorrowReport { schema_version: 1, overlapping_sites }
+    BorrowReport { schema_version: 1, total_bindings_analyzed: 1, bindings_with_overlaps: if overlapping_sites.is_empty() { 0 } else { 1 }, overlapping_sites }
 }
 
 fn spans_overlap(a: KoboSpan, b: KoboSpan) -> bool {

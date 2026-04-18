@@ -105,6 +105,7 @@ pub fn run_codegen_pipeline(
     let solution = resolve_solution();
     let rs_path = output_path_for(input, &session.config);
     let map_path = map_path_for(input, &session.config);
+    let executor_choice = kobo_codegen::executor::select_executor(&session.config.dependencies);
     let CodegenOutput {
         rs_source,
         source_map,
@@ -114,7 +115,10 @@ pub fn run_codegen_pipeline(
         &solution,
         input,
         &rs_path,
-        &CodegenOptions { diag_mode: session.diag_enabled },
+        &CodegenOptions {
+            diag_mode: session.diag_enabled,
+            executor_choice,
+        },
     );
     let map_json = source_map.to_json_string().map_err(|error| {
         eprintln!("kobo: failed to serialize source map: {error}");

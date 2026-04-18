@@ -221,6 +221,15 @@ fn ownership_severity(mode: KoboMode) -> Option<Severity> {
     }
 }
 
+/// Async-specific severity: Script/Checked → Warning, Strict → Error.
+fn async_severity(mode: KoboMode) -> Option<Severity> {
+    match mode {
+        KoboMode::Script  => Some(Severity::Warning),
+        KoboMode::Checked => Some(Severity::Warning),
+        KoboMode::Strict  => Some(Severity::Error),
+    }
+}
+
 /// Resolve the severity of a K-code diagnostic based on compile mode.
 ///
 /// Single source of truth for severity routing — Contract R08.
@@ -246,8 +255,9 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
         // @strict boundary violations — always Error.
         K0041 | K0042 | K0043 => Some(Severity::Error),
 
-        // Async ownership — always Error.
-        K0060 | K0061 | K0062 | K0063 => Some(Severity::Error),
+        // Async ownership — mode-dependent.
+        // Script/Checked: Warning, Strict: Error.
+        K0060 | K0061 | K0062 | K0063 => async_severity(mode),
 
         // Structural advisory — always Note.
         K0080 => Some(Severity::Note),
@@ -395,6 +405,32 @@ mod tests {
             assert_eq!(
                 resolve_severity(KErrorCode::K0041, mode),
                 Some(Severity::Error)
+            );
+        }
+    }
+
+    #[test]
+    fn async_k006x_script_and_checked_are_warnings_strict_is_error() {
+        for code in [
+            KErrorCode::K0060,
+            KErrorCode::K0061,
+            KErrorCode::K0062,
+            KErrorCode::K0063,
+        ] {
+            assert_eq!(
+                resolve_severity(code, KoboMode::Script),
+                Some(Severity::Warning),
+                "{code:?} must be a warning in script mode"
+            );
+            assert_eq!(
+                resolve_severity(code, KoboMode::Checked),
+                Some(Severity::Warning),
+                "{code:?} must be a warning in checked mode"
+            );
+            assert_eq!(
+                resolve_severity(code, KoboMode::Strict),
+                Some(Severity::Error),
+                "{code:?} must be an error in strict mode"
             );
         }
     }

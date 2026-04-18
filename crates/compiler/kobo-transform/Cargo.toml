@@ -8,3 +8,7 @@ kobo-ir     = { path = "../kobo-ir" }
 kobo-parser = { path = "../kobo-parser" }
 proc-macro2 = { workspace = true }
 syn         = { workspace = true }
+
+[dev-dependencies]
+kobo-codegen = { path = "../kobo-codegen" }
+toml = { workspace = true }

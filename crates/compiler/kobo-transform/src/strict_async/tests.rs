@@ -1,4 +1,9 @@
-use kobo_ir::{AsyncViolationKind, FileId, KoboMode, NodeIdGen};
+use std::collections::HashMap;
+use std::path::Path;
+
+use kobo_codegen::executor::select_executor;
+use kobo_codegen::{codegen_file, CodegenOptions};
+use kobo_ir::{AsyncViolationKind, FileId, KoboMode, NodeIdGen, SolutionMap};
 use kobo_parser::parse_file;
 
 use crate::options::TransformOptions;
@@ -10,6 +15,24 @@ fn build_test_kir(source: &str) -> kobo_ir::Kir {
     let mut id_gen = NodeIdGen::new();
     let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
     build_kir(&ast, &mut id_gen, TransformOptions::default())
+}
+
+fn build_codegen_output(source: &str, deps: HashMap<String, toml::Value>) -> String {
+    let mut id_gen = NodeIdGen::new();
+    let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+    let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
+    let output = codegen_file(
+        &kir,
+        &ast,
+        &SolutionMap::default(),
+        Path::new("test.kobo"),
+        Path::new("test.rs"),
+        &CodegenOptions {
+            diag_mode: false,
+            executor_choice: select_executor(&deps),
+        },
+    );
+    output.rs_source
 }
 
 // --- K0060: Non-Send binding in async context ---
@@ -434,23 +457,44 @@ async fn process() {
 
 /// Executor selection #5: Tokio detected → #[tokio::main].
 #[test]
-#[ignore = "feature not yet implemented: executor detection and attribute injection"]
 fn async_executor_tokio_detected() {
     // When tokio is in deps, async main should get #[tokio::main].
+    let output = build_codegen_output(
+        "async fn main() {}",
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        output.contains("#[tokio::main]"),
+        "#5: tokio async main should receive #[tokio::main], got:\n{output}",
+    );
 }
 
 /// Executor selection #6: async-std detected → #[async_std::main].
 #[test]
-#[ignore = "feature not yet implemented: executor detection and attribute injection"]
 fn async_executor_async_std_detected() {
     // When async-std is in deps, async main should get #[async_std::main].
+    let output = build_codegen_output(
+        "async fn main() {}",
+        HashMap::from([("async-std".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        output.contains("#[async_std::main]"),
+        "#6: async-std async main should receive #[async_std::main], got:\n{output}",
+    );
 }
 
 /// Executor selection #7: Non-main async fn → no attribute.
 #[test]
-#[ignore = "feature not yet implemented: executor detection and attribute injection"]
 fn async_non_main_fn_no_executor_attribute() {
     // Non-main async fn should not get executor attribute.
+    let output = build_codegen_output(
+        "async fn worker() {}",
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        !output.contains("#[tokio::main]") && !output.contains("#[async_std::main]"),
+        "#7: non-main async fn must not receive an executor attribute, got:\n{output}",
+    );
 }
 
 /// Tier selection #8: Send required → Arc.
@@ -476,44 +520,148 @@ fn async_end_to_end_build() {
 
 /// Hard rule #11: No std::sync::Mutex in async output.
 #[test]
-#[ignore = "feature not yet implemented: async codegen output validation"]
 fn async_no_std_sync_mutex_in_output() {
     // Generated async code must never use std::sync::Mutex.
+    let output = build_codegen_output(
+        r#"
+async fn main() {
+    #[kobo::async_shared]
+    let mut data = String::from("hello");
+    let alias = &mut data;
+    data.push('!');
+    let _ = alias;
+}
+"#,
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        !output.contains("std::sync::Mutex"),
+        "#11: async output must not use std::sync::Mutex, got:\n{output}",
+    );
 }
 
 /// Hard rule #12: No Mutex even with mutation + Send.
 #[test]
-#[ignore = "feature not yet implemented: async codegen with mutation and Send"]
 fn async_no_mutex_even_with_mutation_and_send() {
     // Even when mutation + Send is needed, use RwLock not Mutex.
+    let output = build_codegen_output(
+        r#"
+async fn main() {
+    #[kobo::async_shared]
+    let mut data = String::from("hello");
+    let alias = &mut data;
+    data.push('!');
+    let _ = alias;
+}
+"#,
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        output.contains("tokio::sync::RwLock"),
+        "#12: mutable async output should use tokio::sync::RwLock, got:\n{output}",
+    );
+    assert!(
+        output.contains("data.write().await.push('!')")
+            || output.contains("data . write () . await . push ('!')"),
+        "#12: mutable async receiver should be lowered through write().await, got:\n{output}",
+    );
+    assert!(
+        !output.contains("Mutex"),
+        "#12: mutable async output must not use any Mutex wrapper, got:\n{output}",
+    );
 }
 
 /// @strict async #15: Plain Rust output, no wrappers.
 #[test]
-#[ignore = "feature not yet implemented: @strict async fn codegen"]
 fn strict_async_fn_plain_rust_output() {
     // @strict async fn should produce plain Rust with no Rc/Arc wrappers.
+    let output = build_codegen_output(
+        r#"
+#[__kobo_strict]
+async fn process() {
+    let data = String::from("hello");
+    let _ = data.len();
+}
+fn main() {}
+"#,
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        !output.contains("Rc::new(") && !output.contains("Arc::new("),
+        "#15: @strict async fn should not wrap with Rc/Arc, got:\n{output}",
+    );
 }
 
 /// @strict async #16: Executor attribute still generated.
 #[test]
-#[ignore = "feature not yet implemented: @strict async fn executor attribute"]
 fn strict_async_fn_executor_attribute_still_generated() {
-    // Even in @strict, executor attribute should be injected.
+    // Even in @strict, async main should get an executor attribute.
+    let output = build_codegen_output(
+        r#"
+#[__kobo_strict]
+async fn main() {}
+"#,
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        output.contains("#[tokio::main]"),
+        "#16: @strict async main should still get #[tokio::main], got:\n{output}",
+    );
 }
 
 /// @strict async #17: Local mutation → just `let mut`.
 #[test]
-#[ignore = "feature not yet implemented: @strict async local mutation"]
 fn strict_async_fn_local_mutation_just_let_mut() {
-    // @strict async fn with local mutation should use plain `let mut`.
+    // @strict async fn with local mutation should use plain `let mut`, no RefCell.
+    let output = build_codegen_output(
+        r#"
+#[__kobo_strict]
+async fn process() {
+    let mut data = vec![1, 2, 3];
+    data.push(4);
+}
+fn main() {}
+"#,
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        !output.contains("RefCell") && !output.contains("RwLock"),
+        "#17: @strict async local mutation should not use RefCell/RwLock, got:\n{output}",
+    );
 }
 
 /// @strict async #18: Island of strictness in script file.
 #[test]
-#[ignore = "feature not yet implemented: @strict islands in non-strict files"]
 fn strict_async_fn_island_in_script_file() {
-    // A single @strict async fn in a script mode file should work.
+    // A single @strict async fn in a script mode file should compile.
+    // The rest of the file uses script semantics (with wrappers).
+    let output = build_codegen_output(
+        r#"
+#[__kobo_strict]
+async fn strict_helper() {
+    let data = String::from("strict");
+    let _ = data;
+}
+
+fn main() {
+    let x = String::from("hello");
+    let y = x;
+    x.len();
+    let _ = y;
+}
+"#,
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    // strict_helper should not wrap
+    assert!(
+        !output.contains("Rc::new(String::from(\"strict\"))"),
+        "#18: @strict fn in script file should NOT wrap strict bindings, got:\n{output}",
+    );
+    // main (script mode) SHOULD have wrapping for the shared binding
+    assert!(
+        output.contains("Rc::new(") || output.contains("clone()"),
+        "#18: script-mode fn should still have ownership wrappers, got:\n{output}",
+    );
 }
 
 /// #[kobo::async_shared] #20: Forces Arc wrapping.
@@ -548,16 +696,59 @@ fn main() {
 
 /// #[kobo::async_shared] #21: On struct field.
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] on struct fields"]
 fn kobo_async_shared_on_struct_field() {
-    // #[kobo::async_shared] on a struct field should force Arc tier.
+    // Field-scoped async_shared must be accepted and stripped from generated Rust.
+    let output = build_codegen_output(
+        r#"
+struct App {
+    #[kobo::async_shared]
+    data: String,
+}
+
+async fn main() {
+    let app = App {
+        data: String::from("hello"),
+    };
+    let _ = app.data;
+}
+"#,
+        HashMap::from([("tokio".to_owned(), toml::Value::String("1".into()))]),
+    );
+    assert!(
+        !output.contains("kobo::async_shared"),
+        "#21: struct-field async_shared attribute must be stripped from output, got:\n{output}",
+    );
 }
 
 /// #[kobo::async_shared] #22: Suppresses K0060/K0061.
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] suppression"]
 fn kobo_async_shared_suppresses_k0060_k0061() {
     // Explicit #[kobo::async_shared] should suppress K0060 and K0061.
+    let source = r#"
+async fn process() {
+    #[kobo::async_shared]
+    let mut data = String::from("hello");
+    let alias = &mut data;
+    data.push('!');
+    let _ = alias;
+}
+"#;
+    let kir = build_test_kir(source);
+    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    assert!(
+        !violations
+            .iter()
+            .any(|v| matches!(&v.kind, AsyncViolationKind::NonSendCapture { .. })),
+        "#22: async_shared should suppress K0060, got {:?}",
+        violations,
+    );
+    assert!(
+        !violations
+            .iter()
+            .any(|v| matches!(&v.kind, AsyncViolationKind::NonSyncShared { .. })),
+        "#22: async_shared should suppress K0061, got {:?}",
+        violations,
+    );
 }
 
 /// #[kobo::async_shared] #23: Read-only → Arc (not ArcMut).

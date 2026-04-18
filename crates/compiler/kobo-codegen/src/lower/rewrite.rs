@@ -12,12 +12,14 @@ use super::scope::{ScopeStack, type_name_from_syn};
 use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
 use crate::CodegenOptions;
+use crate::executor::executor_attribute;
 
 pub(crate) struct Lowerer<'a> {
     pub(super) ast: &'a KoboFile,
     pub(super) plan: &'a LoweringPlan,
     pub(super) kir: &'a kobo_ir::Kir,
     pub(super) options: &'a CodegenOptions,
+    pub(super) in_async_context: bool,
     pub(super) strict_counter: StrictGuardCounter,
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
@@ -35,6 +37,7 @@ impl<'a> Lowerer<'a> {
             plan,
             kir,
             options,
+            in_async_context: false,
             strict_counter: StrictGuardCounter::new(),
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
@@ -54,6 +57,7 @@ impl<'a> Lowerer<'a> {
     fn lower_item(&mut self, item: &mut syn::Item) {
         match item {
             syn::Item::Fn(function) => {
+                self.apply_executor_attribute(function);
                 // P5: check if this is an @strict fn (by span matching against ast.strict_fns()).
                 use syn::spanned::Spanned;
                 let fn_span = self.ast.span_from_syn(function.span());
@@ -87,12 +91,36 @@ impl<'a> Lowerer<'a> {
             syn::Item::Static(item_static) => {
                 self.record_item_anchor(&item_static.ident, LoweringAnchorKind::Static)
             }
+            syn::Item::Struct(item_struct) => {
+                util::strip_kobo_attrs(&mut item_struct.attrs);
+                for field in &mut item_struct.fields {
+                    util::strip_kobo_attrs(&mut field.attrs);
+                }
+            }
             syn::Item::Impl(item_impl) => self.lower_impl_block(item_impl),
+            syn::Item::Type(item_type) => {
+                util::strip_kobo_attrs(&mut item_type.attrs);
+            }
+            syn::Item::Enum(item_enum) => {
+                util::strip_kobo_attrs(&mut item_enum.attrs);
+            }
             _ => {}
         }
     }
 
+    fn apply_executor_attribute(&self, function: &mut syn::ItemFn) {
+        let is_main = function.sig.asyncness.is_some() && function.sig.ident == "main";
+        let Some(attr) = executor_main_attr(self.options.executor_choice, is_main) else {
+            return;
+        };
+        if function.attrs.iter().any(is_executor_main_attr) {
+            return;
+        }
+        function.attrs.insert(0, attr);
+    }
+
     fn lower_impl_block(&mut self, item_impl: &mut syn::ItemImpl) {
+        util::strip_kobo_attrs(&mut item_impl.attrs);
         for impl_item in &mut item_impl.items {
             if let syn::ImplItem::Fn(method) = impl_item {
                 self.lower_impl_method(method);
@@ -103,11 +131,14 @@ impl<'a> Lowerer<'a> {
     fn lower_impl_method(&mut self, method: &mut syn::ImplItemFn) {
         util::strip_kobo_attrs(&mut method.attrs);
         self.strict_counter = StrictGuardCounter::new();
+        let prior_async_context = self.in_async_context;
+        self.in_async_context = method.sig.asyncness.is_some();
         let mut scopes = ScopeStack::new();
         scopes.push();
         self.lower_method_params(&mut method.sig.inputs, &mut scopes);
         self.lower_block_statements(&mut method.block, &mut scopes);
         scopes.pop();
+        self.in_async_context = prior_async_context;
     }
 
     fn lower_method_params(
@@ -143,11 +174,14 @@ impl<'a> Lowerer<'a> {
         util::strip_kobo_attrs(&mut function.attrs);
         // Reset guard counter per function (Contract C08 / Trap 16).
         self.strict_counter = StrictGuardCounter::new();
+        let prior_async_context = self.in_async_context;
+        self.in_async_context = function.sig.asyncness.is_some();
         let mut scopes = ScopeStack::new();
         scopes.push();
         self.lower_function_params(&mut function.sig.inputs, &mut scopes);
         self.lower_block_statements(&mut function.block, &mut scopes);
         scopes.pop();
+        self.in_async_context = prior_async_context;
     }
 
     fn lower_function_params(
@@ -301,5 +335,58 @@ impl<'a> Lowerer<'a> {
             return;
         };
         self.record_binding_anchor(binding, kind);
+    }
+}
+
+fn executor_main_attr(
+    choice: crate::executor::ExecutorChoice,
+    is_main: bool,
+) -> Option<syn::Attribute> {
+    match executor_attribute(choice, is_main) {
+        Some("#[tokio::main]") => Some(parse_quote!(#[tokio::main])),
+        Some("#[async_std::main]") => Some(parse_quote!(#[async_std::main])),
+        Some(other) => panic!("unsupported executor attribute: {other}"),
+        None => None,
+    }
+}
+
+fn is_executor_main_attr(attr: &syn::Attribute) -> bool {
+    let segments: Vec<_> = attr
+        .path()
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    matches!(segments.as_slice(), [executor, main] if main == "main" && (executor == "tokio" || executor == "async_std"))
+}
+
+#[cfg(test)]
+mod tests {
+    use quote::ToTokens;
+    use syn::parse_quote;
+
+    use super::{executor_main_attr, is_executor_main_attr};
+    use crate::executor::ExecutorChoice;
+
+    fn parsed_executor_attr(choice: ExecutorChoice) -> syn::Attribute {
+        executor_main_attr(choice, true).expect("executor attribute should exist")
+    }
+
+    #[test]
+    fn executor_attr_detector_matches_supported_executors() {
+        assert!(is_executor_main_attr(&parsed_executor_attr(ExecutorChoice::Tokio)));
+        assert!(is_executor_main_attr(&parsed_executor_attr(ExecutorChoice::AsyncStd)));
+    }
+
+    #[test]
+    fn executor_attr_detector_ignores_other_attributes() {
+        let attr: syn::Attribute = parse_quote!(#[allow(dead_code)]);
+        assert!(!is_executor_main_attr(&attr));
+    }
+
+    #[test]
+    fn executor_attr_renders_expected_tokens() {
+        let attr = parsed_executor_attr(ExecutorChoice::Tokio);
+        assert_eq!(attr.to_token_stream().to_string(), "# [tokio :: main]");
     }
 }

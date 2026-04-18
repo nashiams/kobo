@@ -25,11 +25,16 @@ pub struct CodegenOptions {
     /// instead of bare `Rc::new(RefCell::new(…))`.  Requires the generated
     /// crate to depend on `kobo-diag` with `features = ["diag"]`.
     pub diag_mode: bool,
+    /// Async executor selected from direct dependencies for `async fn main()`.
+    pub executor_choice: executor::ExecutorChoice,
 }
 
 impl Default for CodegenOptions {
     fn default() -> Self {
-        Self { diag_mode: false }
+        Self {
+            diag_mode: false,
+            executor_choice: executor::ExecutorChoice::None,
+        }
     }
 }
 

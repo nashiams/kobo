@@ -32,19 +32,43 @@ pub(super) fn lowered_receiver_expr(
     method_mutability: &HashMap<String, bool>,
     receiver_type: Option<&str>,
 ) -> syn::Expr {
-    let method_name = method.to_string();
-    let is_mut = receiver_type
-        .and_then(|ty| {
-            let qkey = format!("{ty}::{method_name}");
-            method_mutability.get(&qkey).copied()
-        })
-        .or_else(|| method_mutability.get(&method_name).copied())
-        .unwrap_or_else(|| is_mutating_method(method));
+    let is_mut = receiver_is_mutating(method, method_mutability, receiver_type);
     if is_mut {
         parse_quote!(#ident.borrow_mut())
     } else {
         parse_quote!(#ident.borrow())
     }
+}
+
+pub(super) fn lowered_async_receiver_expr(
+    ident: syn::Ident,
+    method: &syn::Ident,
+    method_mutability: &HashMap<String, bool>,
+    receiver_type: Option<&str>,
+    in_async_context: bool,
+) -> syn::Expr {
+    let is_mut = receiver_is_mutating(method, method_mutability, receiver_type);
+    match (is_mut, in_async_context) {
+        (true, true) => parse_quote!(#ident.write().await),
+        (false, true) => parse_quote!(#ident.read().await),
+        (true, false) => parse_quote!(#ident.blocking_write()),
+        (false, false) => parse_quote!(#ident.blocking_read()),
+    }
+}
+
+fn receiver_is_mutating(
+    method: &syn::Ident,
+    method_mutability: &HashMap<String, bool>,
+    receiver_type: Option<&str>,
+) -> bool {
+    let method_name = method.to_string();
+    receiver_type
+        .and_then(|ty| {
+            let qkey = format!("{ty}::{method_name}");
+            method_mutability.get(&qkey).copied()
+        })
+        .or_else(|| method_mutability.get(&method_name).copied())
+        .unwrap_or_else(|| is_mutating_method(method))
 }
 
 /// Return true if passing an argument of the given tier requires wrapping it
@@ -97,7 +121,7 @@ mod tests {
     use quote::ToTokens;
     use syn::parse_quote;
 
-    use super::lowered_receiver_expr;
+    use super::{lowered_async_receiver_expr, lowered_receiver_expr};
 
     fn render_expr(expr: &syn::Expr) -> String {
         expr.to_token_stream().to_string()
@@ -154,5 +178,39 @@ mod tests {
         // Without receiver type, falls back to bare conservative (mutating)
         let expr2 = lowered_receiver_expr(parse_quote!(r), &method, &method_mutability, None);
         assert_eq!(render_expr(&expr2), "r . borrow_mut ()");
+    }
+
+    #[test]
+    fn async_rwlock_receiver_uses_write_await_for_mutating_methods() {
+        let mut method_mutability = HashMap::new();
+        method_mutability.insert("Writer::push".to_owned(), true);
+
+        let method: syn::Ident = parse_quote!(push);
+        let expr = lowered_async_receiver_expr(
+            parse_quote!(data),
+            &method,
+            &method_mutability,
+            Some("Writer"),
+            true,
+        );
+
+        assert_eq!(render_expr(&expr), "data . write () . await");
+    }
+
+    #[test]
+    fn sync_rwlock_receiver_uses_blocking_read_for_immutable_methods() {
+        let mut method_mutability = HashMap::new();
+        method_mutability.insert("Reader::len".to_owned(), false);
+
+        let method: syn::Ident = parse_quote!(len);
+        let expr = lowered_async_receiver_expr(
+            parse_quote!(data),
+            &method,
+            &method_mutability,
+            Some("Reader"),
+            false,
+        );
+
+        assert_eq!(render_expr(&expr), "data . blocking_read ()");
     }
 }

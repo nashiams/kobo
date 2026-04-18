@@ -71,3 +71,72 @@ pub(crate) fn type_name_from_syn(ty: &syn::Type) -> Option<String> {
         _ => None,
     }
 }
+
+/// Infer the outer type name from common initializer expression shapes.
+pub(crate) fn type_name_from_expr(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::Call(call) => type_name_from_callable(call.func.as_ref()),
+        syn::Expr::Struct(expr_struct) => expr_struct
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string()),
+        syn::Expr::Macro(expr_macro) => expr_macro
+            .mac
+            .path
+            .is_ident("vec")
+            .then(|| "Vec".to_owned()),
+        syn::Expr::Reference(reference) => type_name_from_expr(reference.expr.as_ref()),
+        syn::Expr::Paren(paren) => type_name_from_expr(paren.expr.as_ref()),
+        syn::Expr::Group(group) => type_name_from_expr(group.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn type_name_from_callable(func: &syn::Expr) -> Option<String> {
+    match func {
+        syn::Expr::Path(path) => type_name_from_constructor_path(&path.path),
+        syn::Expr::Paren(paren) => type_name_from_callable(paren.expr.as_ref()),
+        syn::Expr::Group(group) => type_name_from_callable(group.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn type_name_from_constructor_path(path: &syn::Path) -> Option<String> {
+    if path.segments.len() >= 2 {
+        return path
+            .segments
+            .iter()
+            .nth(path.segments.len() - 2)
+            .map(|segment| segment.ident.to_string());
+    }
+
+    let segment = path.segments.last()?;
+    matches!(segment.arguments, syn::PathArguments::AngleBracketed(_))
+        .then(|| segment.ident.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use syn::parse_quote;
+
+    use super::{type_name_from_expr, type_name_from_syn};
+
+    #[test]
+    fn type_name_from_syn_extracts_outer_type() {
+        let ty: syn::Type = parse_quote!(&std::collections::HashMap<String, usize>);
+        assert_eq!(type_name_from_syn(&ty).as_deref(), Some("HashMap"));
+    }
+
+    #[test]
+    fn type_name_from_expr_handles_associated_constructor_calls() {
+        let expr: syn::Expr = parse_quote!(Reader::new());
+        assert_eq!(type_name_from_expr(&expr).as_deref(), Some("Reader"));
+    }
+
+    #[test]
+    fn type_name_from_expr_handles_vec_macro() {
+        let expr: syn::Expr = parse_quote!(vec![1, 2, 3]);
+        assert_eq!(type_name_from_expr(&expr).as_deref(), Some("Vec"));
+    }
+}

@@ -2,7 +2,7 @@ use kobo_ir::OwnershipTier;
 use syn::parse_quote;
 
 use super::super::binding::{apply_tier_to_local, binding_for_pat, binding_tier_from_expr};
-use super::super::scope::type_name_from_syn;
+use super::super::scope::{type_name_from_expr, type_name_from_syn};
 use super::{LoweringAnchorKind, ScopeStack};
 
 impl super::Lowerer<'_> {
@@ -14,16 +14,24 @@ impl super::Lowerer<'_> {
         };
 
         let tier = self.plan.tier_for_binding(binding);
+        let inferred_type_name = binding
+            .ty
+            .as_ref()
+            .and_then(type_name_from_syn)
+            .or_else(|| {
+                local
+                    .init
+                    .as_ref()
+                    .and_then(|init| type_name_from_expr(init.expr.as_ref()))
+            });
         self.record_binding_anchor(binding, LoweringAnchorKind::Local);
         let already_wrapped = self.lower_local_initializer(local, binding, tier, scopes);
         let diag_loc = self.plan.diag_source_loc_for(binding);
         let mutation_required = self.plan.mutation_required(binding);
         apply_tier_to_local(local, tier, already_wrapped, diag_loc, mutation_required);
         scopes.insert(&binding.ident, tier);
-        if let Some(ty) = &binding.ty {
-            if let Some(name) = type_name_from_syn(ty) {
-                scopes.insert_type_name(&binding.ident, name);
-            }
+        if let Some(name) = inferred_type_name {
+            scopes.insert_type_name(&binding.ident, name);
         }
     }
 

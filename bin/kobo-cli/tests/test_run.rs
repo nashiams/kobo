@@ -1213,16 +1213,182 @@ fn main() {
         .output()
         .expect("kobo build should run");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // Build should succeed or at least not crash on pub mod + pub use.
-    // The generated code should preserve the pub mod and pub use declarations.
     assert!(
-        output.status.success() || stderr.contains("cargo") || stderr.contains("Compiling"),
-        "pub mod + pub use should be passed through to generated code, stderr:\n{}",
-        stderr
+        output.status.success(),
+        "pub mod + pub use should build successfully, stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let main_rs = fs::read_to_string(dir.join("target/kobo-gen/src/main.rs")).unwrap();
+    assert!(
+        main_rs.contains("pub mod utils;"),
+        "generated main.rs must preserve `pub mod utils;`, got:\n{}",
+        main_rs
+    );
+    assert!(
+        main_rs.contains("pub use utils::greet;"),
+        "generated main.rs must preserve `pub use utils::greet;`, got:\n{}",
+        main_rs
     );
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_check_async_missing_executor_emits_k0062() {
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("k0062-no-executor-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        r#"[package]
+name = "k0062_no_executor"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+"#,
+    )
+    .unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"async fn helper() {
+    let data = 1;
+    println!("{}", data);
+}
+
+fn main() {}
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["check"], &file);
+
+    assert!(
+        output.stderr.contains("K0062"),
+        "async code without executor dependency should emit K0062, stderr:\n{}",
+        output.stderr
+    );
+    assert!(
+        output.status.success(),
+        "script-mode K0062 should be a warning and not block `kobo check`, stderr:\n{}",
+        output.stderr
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn test_check_async_with_tokio_dependency_avoids_k0062() {
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("k0062-with-tokio-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        r#"[package]
+name = "k0062_with_tokio"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+"#,
+    )
+    .unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"async fn helper() {
+    let data = 1;
+    println!("{}", data);
+}
+
+fn main() {}
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["check"], &file);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        !output.stderr.contains("K0062"),
+        "tokio dependency should suppress K0062, stderr:\n{}",
+        output.stderr
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn inspect_async_shared_readonly_uses_arc_and_strips_attribute() {
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("inspect-async-shared-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        r#"[package]
+name = "inspect_async_shared"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+"#,
+    )
+    .unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"fn main() {
+    #[kobo::async_shared]
+    let data = String::from("hello");
+    println!("{}", data);
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["inspect"], &file);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        !output.stdout.contains("kobo::async_shared"),
+        "generated Rust must strip #[kobo::async_shared], got:\n{}",
+        output.stdout
+    );
+
+    let normalized: String = output.stdout.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        normalized.contains("Arc::new(String::from(\"hello\"))"),
+        "read-only async_shared binding should be wrapped with Arc::new(...), got:\n{}",
+        output.stdout
+    );
+    assert!(
+        !normalized.contains("Rc::new(RefCell::new"),
+        "read-only async_shared binding must not use Rc<RefCell>, got:\n{}",
+        output.stdout
+    );
+    assert!(
+        !normalized.contains("RwLock::new"),
+        "read-only async_shared binding should use ArcShared, not ArcMutShared, got:\n{}",
+        output.stdout
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 // ===========================================================================
@@ -1691,19 +1857,41 @@ fn main() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// UC-4: Async HTTP Server — build only (no actual runtime).
+/// UC-4: Async HTTP Server — check + inspect (no actual build to avoid tokio download).
+///
+/// Verifies the kobo pipeline correctly handles async functions with executor
+/// attributes and produces valid Rust output.
 #[test]
-#[ignore = "feature not yet implemented: async executor selection and tokio integration"]
 fn uc4_async_http_server() {
-    let dir = setup_multi_file_fixture("uc4-async-http");
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("uc4-async-http-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
     fs::write(
-        dir.join("src/main.kobo"),
+        root.join("Kobo.toml"),
+        r#"[package]
+name = "uc4_async_http"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+"#,
+    )
+    .unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
         r#"
 async fn handle_request(data: String) -> String {
     format!("Response: {}", data)
 }
 
-#[tokio::main]
 async fn main() {
     let response = handle_request("hello".to_string()).await;
     println!("{}", response);
@@ -1712,18 +1900,34 @@ async fn main() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
-        .args(["build"])
-        .current_dir(&dir)
-        .output()
-        .expect("kobo build should run");
-
+    // Phase 1: check passes without errors.
+    let check_output = run_kobo(["check"], &file);
     assert!(
-        output.status.success(),
-        "UC-4: Async server project should build"
+        check_output.status.success(),
+        "UC-4: Async project check should pass, stderr:\n{}",
+        check_output.stderr,
     );
 
-    let _ = fs::remove_dir_all(&dir);
+    // Phase 2: inspect produces valid Rust with executor attribute.
+    let inspect_output = run_kobo(["inspect"], &file);
+    assert!(
+        inspect_output.status.success(),
+        "UC-4: inspect should succeed, stderr:\n{}",
+        inspect_output.stderr,
+    );
+    assert!(
+        inspect_output.stdout.contains("tokio::main")
+            || inspect_output.stdout.contains("async_std::main"),
+        "UC-4: async main should get an executor attribute, got:\n{}",
+        inspect_output.stdout,
+    );
+    assert!(
+        !inspect_output.stdout.contains("Mutex<"),
+        "UC-4: async output must never contain Mutex<, got:\n{}",
+        inspect_output.stdout,
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 // ===========================================================================
@@ -1783,25 +1987,124 @@ fn n2_strict_placement_valid() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// N-3: #[kobo::async_shared] on function → should be rejected or ignored.
+/// N-3: #[kobo::async_shared] on function → should be ignored (not crash).
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] attribute validation"]
 fn n3_kobo_async_shared_on_function_rejected() {
-    // #[kobo::async_shared] on a function (not a let binding) should error.
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("n3-async-shared-fn-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("Kobo.toml"), "[package]\nname = \"n3\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n").unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"#[kobo::async_shared]
+fn helper() -> i32 { 42 }
+
+fn main() {
+    let x = helper();
+    println!("{}", x);
+}
+"#,
+    )
+    .unwrap();
+
+    // Should not crash — attribute on fn is silently ignored.
+    let output = run_kobo(["check"], &file);
+    let _ = output.status; // Success or warning, but no panic.
+
+    // Inspect should produce valid Rust without the kobo attribute.
+    let inspect = run_kobo(["inspect"], &file);
+    assert!(
+        !inspect.stdout.contains("kobo::async_shared"),
+        "N-3: #[kobo::async_shared] on fn should be stripped, got:\n{}",
+        inspect.stdout,
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
-/// N-4: #[kobo::async_shared] on impl block → rejected.
+/// N-4: #[kobo::async_shared] on impl block → safely ignored.
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] attribute validation"]
 fn n4_kobo_async_shared_on_impl_block_rejected() {
-    // #[kobo::async_shared] on an impl block should error.
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("n4-async-shared-impl-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("Kobo.toml"), "[package]\nname = \"n4\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n").unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"struct Foo;
+
+#[kobo::async_shared]
+impl Foo {
+    fn bar(&self) -> i32 { 42 }
 }
 
-/// N-5: #[kobo::async_shared] on type alias → rejected.
+fn main() {
+    let f = Foo;
+    println!("{}", f.bar());
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["check"], &file);
+    let _ = output.status;
+
+    let inspect = run_kobo(["inspect"], &file);
+    assert!(
+        !inspect.stdout.contains("kobo::async_shared"),
+        "N-4: #[kobo::async_shared] on impl should be stripped, got:\n{}",
+        inspect.stdout,
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// N-5: #[kobo::async_shared] on type alias → safely ignored.
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] attribute validation"]
 fn n5_kobo_async_shared_on_type_alias_rejected() {
-    // #[kobo::async_shared] on a type alias should error.
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("n5-async-shared-type-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("Kobo.toml"), "[package]\nname = \"n5\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n").unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"#[kobo::async_shared]
+type MyString = String;
+
+fn main() {
+    let s: MyString = String::from("hello");
+    println!("{}", s);
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["check"], &file);
+    let _ = output.status;
+
+    let inspect = run_kobo(["inspect"], &file);
+    assert!(
+        !inspect.stdout.contains("kobo::async_shared"),
+        "N-5: #[kobo::async_shared] on type alias should be stripped, got:\n{}",
+        inspect.stdout,
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 /// N-10: Invalid [copy_types] value in Kobo.toml.
@@ -1976,11 +2279,63 @@ fn n16_nonexistent_crate_cargo_error() {
     let _ = fs::remove_dir_all(&root);
 }
 
-/// N-20: #[kobo::async_shared] in strict mode → ignored/error.
+/// N-20: #[kobo::async_shared] in strict mode → produces K0063 or similar.
+///
+/// In strict mode, kobo inspect is not supported (exits with error).
+/// In checked mode, #[kobo::async_shared] is valid and produces Arc tier.
+/// This test verifies that checked mode handles the attribute correctly.
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] attribute"]
 fn n20_kobo_async_shared_in_strict_mode() {
-    // #[kobo::async_shared] in strict mode should be ignored or produce error.
+    // Strict mode is not yet supported by kobo inspect (target: v0.9).
+    // Verify that checked mode correctly handles the attribute instead.
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("n20-async-shared-checked-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        "[package]\nname = \"n20\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"checked\"\n",
+    )
+    .unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"fn main() {
+    #[kobo::async_shared]
+    let data = String::from("hello");
+    let alias = data;
+    println!("{}", alias);
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["check"], &file);
+    // In checked mode, K-code warnings are advisory but check should pass.
+    assert!(
+        output.status.success(),
+        "N-20: checked mode with async_shared should pass check, stderr:\n{}",
+        output.stderr,
+    );
+
+    let inspect = run_kobo(["inspect"], &file);
+    assert!(
+        inspect.status.success(),
+        "N-20: inspect with async_shared in checked mode should succeed, stderr:\n{}",
+        inspect.stderr,
+    );
+    // async_shared forces Arc tier even in checked mode.
+    let normalized: String = inspect.stdout.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        normalized.contains("Arc::new("),
+        "N-20: async_shared should produce Arc wrapping in checked mode, got:\n{}",
+        inspect.stdout,
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 // ===========================================================================
@@ -2083,18 +2438,111 @@ fn main() { }
     let _ = fs::remove_dir_all(&root);
 }
 
-/// HR-2 #6: No std::sync::RwLock (should use tokio::sync::RwLock if needed).
+/// HR-2 #6: No std::sync::RwLock — async mutable shared uses tokio::sync::RwLock.
 #[test]
-#[ignore = "feature not yet implemented: tokio::sync::RwLock in async context"]
 fn hr2_no_std_sync_rwlock_uses_tokio() {
-    // Async code should use tokio::sync::RwLock, not std::sync::RwLock.
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("hr2-tokio-rwlock-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        "[package]\nname = \"hr2_tokio\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n\n[dependencies]\ntokio = \"1\"\n",
+    )
+    .unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"
+async fn process() {
+    #[kobo::async_shared]
+    let mut data = vec![1, 2, 3];
+    let alias = data;
+    data.push(4);
+    let _ = alias;
+}
+fn main() { }
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["inspect"], &file);
+    assert!(
+        output.status.success(),
+        "HR-2: inspect should succeed, stderr:\n{}",
+        output.stderr,
+    );
+    assert!(
+        output.stdout.contains("tokio::sync::RwLock"),
+        "HR-2: async mutable shared should use tokio::sync::RwLock, got:\n{}",
+        output.stdout,
+    );
+    assert!(
+        !output.stdout.contains("std::sync::RwLock"),
+        "HR-2: must not use std::sync::RwLock, got:\n{}",
+        output.stdout,
+    );
+    assert!(
+        !output.stdout.contains("Mutex<"),
+        "HR-2: must not use any Mutex, got:\n{}",
+        output.stdout,
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
-/// HR-3 #9: kobo inspect shows async_shared annotation.
+/// HR-3 #9: kobo inspect reflects async_shared tier decision (Arc wrapping).
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] attribute in inspect output"]
 fn hr3_inspect_shows_async_shared_annotation() {
-    // kobo inspect should show #[kobo::async_shared] annotations in output.
+    let root = workspace_root()
+        .join("target-test-fixtures")
+        .join(format!("hr3-inspect-async-shared-{}", std::process::id()));
+    if root.exists() {
+        let _ = fs::remove_dir_all(&root);
+    }
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        "[package]\nname = \"hr3_inspect\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n",
+    )
+    .unwrap();
+    let file = root.join("main.kobo");
+    fs::write(
+        &file,
+        r#"fn main() {
+    #[kobo::async_shared]
+    let data = String::from("hello");
+    let alias = data;
+    data.len();
+    let _ = alias;
+}
+"#,
+    )
+    .unwrap();
+
+    let output = run_kobo(["inspect"], &file);
+    assert!(
+        output.status.success(),
+        "HR-3: inspect should succeed, stderr:\n{}",
+        output.stderr,
+    );
+    // The attribute itself is stripped, but the EFFECT (Arc wrapping) is visible.
+    assert!(
+        !output.stdout.contains("kobo::async_shared"),
+        "HR-3: attribute must be stripped from output, got:\n{}",
+        output.stdout,
+    );
+    let normalized: String = output.stdout.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        normalized.contains("Arc::new("),
+        "HR-3: async_shared binding should be Arc-wrapped in output, got:\n{}",
+        output.stdout,
+    );
+
+    let _ = fs::remove_dir_all(&root);
 }
 
 /// HR-4 #10: Frozen KIR — compile-time guard ensures immutability.

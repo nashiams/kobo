@@ -349,9 +349,17 @@ pub fn compute_binding_liveness(cfg: &CfgGraph, kir: &Kir) -> BindingLiveness {
     let mut live_in: Vec<HashSet<KirNodeId>> = vec![HashSet::new(); n];
     let mut live_out: Vec<HashSet<KirNodeId>> = vec![HashSet::new(); n];
 
-    // Backward fixed-point iteration.
+    // Backward fixed-point iteration with defensive iteration cap.
+    // Monotone dataflow converges in at most n × |bindings| iterations,
+    // but we cap at n * 100 + 1 as a safety bound against non-termination.
+    let max_iterations = n.saturating_mul(100).saturating_add(1);
     let mut changed = true;
+    let mut iteration = 0usize;
     while changed {
+        if iteration >= max_iterations {
+            break;
+        }
+        iteration += 1;
         changed = false;
         for block_id in (0..n).rev() {
             // live_out[b] = ∪ live_in[s] for all successors s

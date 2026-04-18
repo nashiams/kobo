@@ -1746,6 +1746,7 @@ fn n1_strict_on_non_async_fn_accepted() {
 #[test]
 fn n2_strict_placement_valid() {
     // Write a file with @strict in a valid position and verify it parses.
+    // Provide a Kobo.toml with tokio so K0062 (missing executor) doesn't fire.
     let root = workspace_root()
         .join("target-test-fixtures")
         .join(format!("n2-strict-placement-{}", std::process::id()));
@@ -1757,6 +1758,12 @@ fn n2_strict_placement_valid() {
     fs::write(
         &file,
         "@strict\nasync fn process() {\n    let x = 42;\n}\nfn main() {}\n",
+    )
+    .unwrap();
+    // Provide Kobo.toml with tokio so executor detection passes (BUG-5 fix).
+    fs::write(
+        root.join("Kobo.toml"),
+        "[dependencies]\ntokio = \"1\"\n",
     )
     .unwrap();
 

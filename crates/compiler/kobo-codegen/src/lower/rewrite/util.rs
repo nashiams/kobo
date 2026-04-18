@@ -114,7 +114,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "review: v0.7 contract gap - unknown wrapped methods still default to borrow()"]
     fn unknown_methods_default_to_borrow_mut_per_contract() {
         let method_mutability = HashMap::new();
         let method: syn::Ident = parse_quote!(flush_cache);

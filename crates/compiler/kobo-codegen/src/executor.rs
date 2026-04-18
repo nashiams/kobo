@@ -19,7 +19,12 @@ pub enum ExecutorChoice {
 /// If all captured bindings are Send → TokioSpawn.
 /// If any captured binding is !Send → LocalSet + spawn_local.
 /// If undecidable → FallbackLocal + K0060 warning.
+///
+/// NOTE (v0.7): This enum is declared but not yet dispatched. `select_executor()`
+/// handles executor *detection*; `SpawnStrategy` handles per-block *dispatch*
+/// which requires Send analysis per spawn site. Reserved for v0.8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum SpawnStrategy {
     /// All bindings are Send — use tokio::spawn.
     TokioSpawn,

@@ -10,6 +10,10 @@ pub(crate) fn scan_derive_copy(file: &syn::File) -> HashSet<String> {
 }
 
 /// Merges derive-scanned Copy types with `Kobo.toml` `[copy_types]` overrides.
+///
+/// NOTE: Transitive inference (inferring Copy from all-Copy fields) is intentionally
+/// omitted. In Rust, a struct is NOT Copy unless `#[derive(Copy)]` is explicit.
+/// The conservative default (non-Copy) is safe — it may over-wrap but never under-wraps.
 pub(crate) fn build_copy_registry(
     derived: HashSet<String>,
     config_types: &[String],

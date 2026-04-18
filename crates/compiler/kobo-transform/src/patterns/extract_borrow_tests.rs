@@ -26,6 +26,7 @@ fn make_binding(
         is_copy_known: false,
         is_generic: false,
         is_async: false,
+        async_shared: false,
         usage: BindingUsage {
             declaration: decl_span,
             uses,

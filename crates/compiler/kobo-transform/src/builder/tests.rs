@@ -1878,9 +1878,29 @@ fn test_send_propagation_nested_spawn() {
 
 /// P2: async_shared overrides Send → ArcShared (not regular Arc).
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] tier override"]
 fn test_priority_async_shared_overrides_send() {
     // #[kobo::async_shared] should force Arc tier regardless of Send analysis.
+    let source = r#"
+fn main() {
+    #[kobo::async_shared]
+    let data = String::from("hello");
+    let _ = data;
+}
+"#;
+    let decision = tier_decision_for_binding(source, "data", 0);
+    assert!(
+        matches!(
+            decision.tier,
+            OwnershipTier::ArcShared | OwnershipTier::ArcMutShared
+        ),
+        "P2: async_shared should force Arc tier, got {:?}",
+        decision.tier,
+    );
+    assert!(
+        matches!(decision.reason, TierReason::AsyncSharedAttribute),
+        "P2: reason should be AsyncSharedAttribute, got {:?}",
+        decision.reason,
+    );
 }
 
 /// P3: Strict overrides sharing → PlainOwned + K0063.
@@ -1967,14 +1987,51 @@ fn test_async_send_required_readonly_arc_shared() {
 
 /// A7: async_shared annotation, mutable → ArcMutShared.
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] tier override"]
 fn test_async_shared_annotation_mutable_arc_mut_shared() {
     // #[kobo::async_shared] on a mutable binding should use ArcMutShared.
+    let source = r#"
+fn main() {
+    #[kobo::async_shared]
+    let data = Vec::<i32>::new();
+    data.push(1);
+    let _ = data;
+}
+"#;
+    let decision = tier_decision_for_binding(source, "data", 0);
+    assert_eq!(
+        decision.tier,
+        OwnershipTier::ArcMutShared,
+        "A7: mutable + async_shared should be ArcMutShared, got {:?}",
+        decision.tier,
+    );
+    assert!(
+        matches!(decision.reason, TierReason::AsyncSharedAttribute),
+        "A7: reason should be AsyncSharedAttribute, got {:?}",
+        decision.reason,
+    );
 }
 
 /// A8: async_shared annotation, read-only → ArcShared.
 #[test]
-#[ignore = "feature not yet implemented: #[kobo::async_shared] tier override"]
 fn test_async_shared_annotation_readonly_arc_shared() {
     // #[kobo::async_shared] on a read-only binding should use ArcShared.
+    let source = r#"
+fn main() {
+    #[kobo::async_shared]
+    let data = String::from("hello");
+    println!("{}", data);
+}
+"#;
+    let decision = tier_decision_for_binding(source, "data", 0);
+    assert_eq!(
+        decision.tier,
+        OwnershipTier::ArcShared,
+        "A8: read-only + async_shared should be ArcShared, got {:?}",
+        decision.tier,
+    );
+    assert!(
+        matches!(decision.reason, TierReason::AsyncSharedAttribute),
+        "A8: reason should be AsyncSharedAttribute, got {:?}",
+        decision.reason,
+    );
 }

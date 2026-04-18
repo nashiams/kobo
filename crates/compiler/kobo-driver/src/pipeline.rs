@@ -105,6 +105,7 @@ pub fn run_codegen_pipeline(
     let solution = resolve_solution();
     let rs_path = output_path_for(input, &session.config);
     let map_path = map_path_for(input, &session.config);
+    let executor_choice = kobo_codegen::executor::select_executor(&session.config.dependencies);
     let CodegenOutput {
         rs_source,
         source_map,
@@ -114,7 +115,10 @@ pub fn run_codegen_pipeline(
         &solution,
         input,
         &rs_path,
-        &CodegenOptions { diag_mode: session.diag_enabled },
+        &CodegenOptions {
+            diag_mode: session.diag_enabled,
+            executor_choice,
+        },
     );
     let map_json = source_map.to_json_string().map_err(|error| {
         eprintln!("kobo: failed to serialize source map: {error}");
@@ -290,8 +294,10 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     }
 
     // Phase 11: Emit K006x diagnostics for async ownership violations.
-    // has_executor defaults to true for now — executor detection is not yet implemented.
-    let async_violations = check_strict_async(kir, session.mode(), true);
+    // BUG-5 fix: detect executor from config dependencies instead of hardcoding true.
+    let has_executor = kobo_codegen::executor::select_executor(&session.config.dependencies)
+        != kobo_codegen::executor::ExecutorChoice::None;
+    let async_violations = check_strict_async(kir, session.mode(), has_executor);
     for violation in &async_violations {
         let (code, label_text, explanation) = match &violation.kind {
             AsyncViolationKind::NonSendCapture { binding_name, .. } => (

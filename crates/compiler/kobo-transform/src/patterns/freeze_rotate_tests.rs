@@ -26,6 +26,7 @@ fn make_binding(
         is_copy_known: false,
         is_generic: false,
         is_async: false,
+        async_shared: false,
         usage: BindingUsage {
             declaration: decl_span,
             uses,
@@ -240,6 +241,7 @@ fn move_rebind_reason_when_sharing_needed() {
         is_copy_known: false,
         is_generic: false,
         is_async: false,
+        async_shared: false,
         usage: BindingUsage {
             declaration: span(0, 5),
             uses: vec![
@@ -293,6 +295,7 @@ fn no_move_rebind_when_used_after_move() {
         is_copy_known: false,
         is_generic: false,
         is_async: false,
+        async_shared: false,
         usage: BindingUsage {
             declaration: span(0, 5),
             uses: vec![

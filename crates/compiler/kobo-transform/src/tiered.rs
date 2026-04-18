@@ -63,6 +63,21 @@ fn choose_tier_for_binding(
         };
     }
 
+    // BUG 7: #[kobo::async_shared] opt-in forces Arc tier.
+    if binding.async_shared {
+        let tier = if binding.shared_facts.mutation_required {
+            OwnershipTier::ArcMutShared
+        } else {
+            OwnershipTier::ArcShared
+        };
+        return TierDecision {
+            node: binding.node,
+            tier,
+            reason: TierReason::AsyncSharedAttribute,
+            annotate: true,
+        };
+    }
+
     if binding.is_generic && floor != OwnershipTier::PlainOwned {
         return TierDecision {
             node: binding.node,
@@ -373,6 +388,7 @@ mod tests {
             is_copy_known: false,
             is_generic: false,
             is_async: false,
+            async_shared: false,
             usage: BindingUsage::new(KoboSpan::new(0, 5, FileId(0))),
             shared_facts,
             clone_elision: None,
@@ -742,5 +758,63 @@ mod tests {
         // Copy types bypass everything
         assert_eq!(decision.tier, OwnershipTier::PlainOwned);
         assert_eq!(decision.reason, TierReason::CopyType);
+    }
+
+    // --- BUG 7: #[kobo::async_shared] tier override tests ---
+
+    #[test]
+    fn async_shared_readonly_forces_arc_shared() {
+        let mut b = binding(SharedBindingFacts::default());
+        b.async_shared = true;
+
+        let decision = choose_tier_for_binding(&b, &empty_set(), &empty_send_reqs());
+
+        assert_eq!(decision.tier, OwnershipTier::ArcShared);
+        assert_eq!(decision.reason, TierReason::AsyncSharedAttribute);
+        assert!(decision.annotate);
+    }
+
+    #[test]
+    fn async_shared_mutable_forces_arc_mut_shared() {
+        let mut b = binding(SharedBindingFacts {
+            mutation_required: true,
+            ..Default::default()
+        });
+        b.async_shared = true;
+
+        let decision = choose_tier_for_binding(&b, &empty_set(), &empty_send_reqs());
+
+        assert_eq!(decision.tier, OwnershipTier::ArcMutShared);
+        assert_eq!(decision.reason, TierReason::AsyncSharedAttribute);
+        assert!(decision.annotate);
+    }
+
+    #[test]
+    fn async_shared_copy_type_stays_plain_owned() {
+        // Copy types always win, even over async_shared.
+        let mut b = binding(SharedBindingFacts::default());
+        b.async_shared = true;
+        b.is_copy_known = true;
+
+        let decision = choose_tier_for_binding(&b, &empty_set(), &empty_send_reqs());
+
+        assert_eq!(decision.tier, OwnershipTier::PlainOwned);
+        assert_eq!(decision.reason, TierReason::CopyType);
+    }
+
+    #[test]
+    fn async_shared_overrides_local_only() {
+        // Even a local-only binding gets Arc if async_shared is set.
+        let mut b = binding(SharedBindingFacts {
+            needs_sharing: false,
+            has_escape: false,
+            ..Default::default()
+        });
+        b.async_shared = true;
+
+        let decision = choose_tier_for_binding(&b, &empty_set(), &empty_send_reqs());
+
+        assert_eq!(decision.tier, OwnershipTier::ArcShared);
+        assert_eq!(decision.reason, TierReason::AsyncSharedAttribute);
     }
 }

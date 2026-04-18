@@ -345,10 +345,12 @@ dependencies = [
 name = "kobo-transform"
 version = "0.1.0"
 dependencies = [
+ "kobo-codegen",
  "kobo-ir",
  "kobo-parser",
  "proc-macro2",
  "syn",
+ "toml",
 ]
 
 [[package]]

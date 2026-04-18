@@ -121,9 +121,18 @@ impl MethodRegistry {
         self.bare.get(method_name).copied()
     }
 
-    /// Consume the registry and return the raw bare map for storage in KIR.
+    /// Consume the registry and return a merged map for storage in KIR.
+    ///
+    /// The merged map contains both qualified keys (`"Vec::push" → true`) and
+    /// bare keys (`"push" → true`). Qualified keys are inserted first so that
+    /// downstream code that knows the receiver type can do a qualified lookup
+    /// before falling back to the bare name.
     pub fn into_map(self) -> HashMap<String, bool> {
-        self.bare
+        let mut merged = self.bare;
+        for (qkey, is_mut) in self.qualified {
+            merged.insert(qkey, is_mut);
+        }
+        merged
     }
 }
 

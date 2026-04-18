@@ -67,16 +67,23 @@ pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
 
     let tf = kir.transform_facts();
     let mut all_overlaps = Vec::new();
+    let total_bindings = tf.bindings.len();
+    let mut bindings_with_overlaps = 0usize;
 
     for (i, binding) in tf.bindings.iter().enumerate() {
         let usage = &tf.usages[i];
         let shared = &tf.shared_facts[i];
         let report = build_borrow_report(&binding.binding_name, usage, shared);
+        if !report.overlapping_sites.is_empty() {
+            bindings_with_overlaps += 1;
+        }
         all_overlaps.extend(report.overlapping_sites);
     }
 
     let combined = BorrowReport {
         schema_version: 1,
+        total_bindings_analyzed: total_bindings,
+        bindings_with_overlaps,
         overlapping_sites: all_overlaps,
     };
 

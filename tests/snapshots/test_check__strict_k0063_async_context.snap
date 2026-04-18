@@ -1,5 +1,6 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
+assertion_line: 350
 expression: output.stderr
 ---
 error[K0063]: @strict block inside async fn without @strict async fn
@@ -12,4 +13,13 @@ error[K0063]: @strict block inside async fn without @strict async fn
    | [bytes 0..129] async fn defined here
    = @strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped before any .await point; placing an @strict block directly inside an async fn makes this invariant unenforceable at compile time
    = kobo decision: annotate the fn as `@strict async fn` to opt in to the async-aware guard protocol, or refactor to avoid @strict inside async context
+warning[K0062]: Mutex guard would live across .await
+  --> tests\ui\strict_k0063_async_context.kobo:2:9
+  |
+2 |     let data = kobo::bind(vec![1, 2, 3]);
+  |         ^^^^ no async executor configured
+  |
+   = async code detected but no executor (tokio/async-std) found in dependencies
+   = add tokio or async-std to [dependencies] in Cargo.toml
+   = kobo decision: 
 Error: analysis failed

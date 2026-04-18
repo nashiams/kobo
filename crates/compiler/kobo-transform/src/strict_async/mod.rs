@@ -33,7 +33,7 @@ pub fn check_strict_async(
         // K0060: non-Send binding in async context that needs Send
         // Conservative: any async binding that needs_send but has sharing
         // (Rc-wrapped bindings are not Send)
-        if needs_send && shared.needs_sharing && !binding.is_copy_known {
+        if !binding.async_shared && needs_send && shared.needs_sharing && !binding.is_copy_known {
             violations.push(AsyncViolationFact {
                 span: binding.span,
                 kind: AsyncViolationKind::NonSendCapture {
@@ -46,7 +46,11 @@ pub fn check_strict_async(
         // K0061: non-Sync mutable shared binding in async context
         // RefCell is not Sync — if the binding needs mutable sharing in async,
         // the standard Rc<RefCell<T>> wrapper is not safe for cross-task access.
-        if needs_send && shared.needs_sharing && shared.needs_mutable_wrapper {
+        if !binding.async_shared
+            && needs_send
+            && shared.needs_sharing
+            && shared.needs_mutable_wrapper
+        {
             violations.push(AsyncViolationFact {
                 span: binding.span,
                 kind: AsyncViolationKind::NonSyncShared {

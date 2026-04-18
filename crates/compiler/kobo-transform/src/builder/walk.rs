@@ -4,7 +4,8 @@ use crate::hint::parse_hint;
 use kobo_ir::{EscapeKind, KoboSpan, MigrateSite, MigrateTarget, RelaxAttrError, UseKind};
 
 use super::attrs::{
-    parse_migrate_attr, parse_relax_attr, MigrateAttrResult, RelaxAttrResult,
+    parse_async_shared_attr, parse_migrate_attr, parse_relax_attr, AsyncSharedAttrResult,
+    MigrateAttrResult, RelaxAttrResult,
 };
 use super::helpers::{assignment_escape_kind, borrow_kind, is_mutating_method};
 use super::{FunctionCtx, PendingHint, TransformFactsBuilder};
@@ -205,6 +206,15 @@ impl TransformFactsBuilder<'_> {
         });
 
         self.collect_migrate_attrs(&local.attrs, MigrateTarget::LetBinding);
+
+        // BUG 7: detect #[kobo::async_shared] on let bindings.
+        for attr in &local.attrs {
+            if let AsyncSharedAttrResult::Valid(_) | AsyncSharedAttrResult::HasArguments(_) =
+                parse_async_shared_attr(attr)
+            {
+                self.pending_async_shared = true;
+            }
+        }
 
         let binding_state = self.emit_binding(&binding, init, local_hint);
         if let Some(init_expr) = init {

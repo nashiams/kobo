@@ -30,6 +30,12 @@ pub fn validate_tier(
     tier: OwnershipTier,
     is_strict: bool,
 ) -> Result<(), HardRuleViolation> {
+    // HR-1: ArcMutShared must map to Arc<tokio::sync::RwLock<T>>, never Arc<Mutex<T>>.
+    // This is structurally guaranteed because OwnershipTier has no ArcMutex variant —
+    // ArcMutShared always maps to RwLock in codegen (see lower/binding.rs).
+    // The ForbiddenArcMutex variant exists as a safety net for future tiers.
+    // Currently unreachable: no tier maps to std::sync::Mutex.
+
     // HR-4: Strict mode forbids ALL wrapper tiers.
     if is_strict {
         match tier {

@@ -73,6 +73,8 @@ pub(crate) struct TransformFactsBuilder<'a> {
     pub(crate) migrate_sites: Vec<MigrateSite>,
     /// Current nesting depth for scope tracking (0 = function body).
     scope_depth: usize,
+    /// Pending `#[kobo::async_shared]` flag for the next binding [BUG 7].
+    pending_async_shared: bool,
 }
 
 mod emit;
@@ -155,6 +157,7 @@ impl<'a> TransformFactsBuilder<'a> {
             relax_attr_errors: Vec::new(),
             migrate_sites: Vec::new(),
             scope_depth: 0,
+            pending_async_shared: false,
         }
     }
 

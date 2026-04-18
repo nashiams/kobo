@@ -133,6 +133,13 @@ impl super::Lowerer<'_> {
         let right = (*assign.right).clone();
         match tier {
             OwnershipTier::RcMutShared => Some(parse_quote!(*#ident.borrow_mut() = #right)),
+            OwnershipTier::ArcMutShared => {
+                if self.in_async_context {
+                    Some(parse_quote!(*#ident.write().await = #right))
+                } else {
+                    Some(parse_quote!(*#ident.blocking_write() = #right))
+                }
+            }
             _ => None,
         }
     }
@@ -222,10 +229,28 @@ impl super::Lowerer<'_> {
             return;
         };
 
-        if tier == OwnershipTier::RcMutShared {
-            method_call.receiver =
-                Box::new(util::lowered_receiver_expr(ident, &method_call.method, self.kir.method_mutability()));
-            return;
+        let receiver_type = scopes.lookup_type_name(&ident);
+        match tier {
+            OwnershipTier::RcMutShared => {
+                method_call.receiver = Box::new(util::lowered_receiver_expr(
+                    ident,
+                    &method_call.method,
+                    self.kir.method_mutability(),
+                    receiver_type,
+                ));
+                return;
+            }
+            OwnershipTier::ArcMutShared => {
+                method_call.receiver = Box::new(util::lowered_async_receiver_expr(
+                    ident,
+                    &method_call.method,
+                    self.kir.method_mutability(),
+                    receiver_type,
+                    self.in_async_context,
+                ));
+                return;
+            }
+            _ => {}
         }
 
         self.lower_expr(method_call.receiver.as_mut(), scopes);
@@ -242,7 +267,14 @@ impl super::Lowerer<'_> {
             return None;
         };
 
-        (tier == OwnershipTier::RcMutShared).then(|| parse_quote!(#ident.borrow()))
+        match tier {
+            OwnershipTier::RcMutShared => Some(parse_quote!(#ident.borrow())),
+            OwnershipTier::ArcMutShared if self.in_async_context => {
+                Some(parse_quote!(#ident.read().await))
+            }
+            OwnershipTier::ArcMutShared => Some(parse_quote!(#ident.blocking_read())),
+            _ => None,
+        }
     }
 
     fn lower_reference_expr(

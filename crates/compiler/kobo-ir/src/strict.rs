@@ -115,3 +115,38 @@ pub enum StrictFnMode {
     /// Async function: @strict marker stripped, lowering deferred to v0.7.
     AsyncDeferred,
 }
+
+// --- Async violation facts (Phase 11) ---
+
+/// Describes a specific async ownership violation detected during analysis.
+/// Transform emits these facts; the driver converts them to KDiagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AsyncViolationKind {
+    /// K0060: A non-Send binding (e.g. Rc<T>) is captured by an async block
+    /// that may be spawned across threads.
+    NonSendCapture {
+        binding_name: String,
+        binding_id: KirNodeId,
+    },
+    /// K0061: A non-Sync binding is shared across async task boundaries
+    /// without proper synchronization.
+    NonSyncShared {
+        binding_name: String,
+        binding_id: KirNodeId,
+    },
+    /// K0062: No async executor dependency found in project.
+    MissingExecutor,
+    /// K0063: @strict block inside async fn without @strict async fn marker.
+    StrictAsyncViolation {
+        binding_name: String,
+        binding_id: KirNodeId,
+        async_fn_span: KoboSpan,
+    },
+}
+
+/// A single async violation fact emitted by the transform.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AsyncViolationFact {
+    pub span: KoboSpan,
+    pub kind: AsyncViolationKind,
+}

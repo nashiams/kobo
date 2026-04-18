@@ -71,3 +71,49 @@ fn has_mut_self_receiver(sig: &syn::Signature) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MethodRegistry;
+
+    #[test]
+    fn owned_mut_self_receiver_is_recorded_as_mutating() {
+        let file: syn::File = syn::parse_str(
+            r#"
+struct Counter;
+impl Counter {
+    fn advance(mut self) -> Self { self }
+}
+"#,
+        )
+        .expect("test source should parse");
+
+        let map = MethodRegistry::from_impl_blocks(&file).into_map();
+
+        assert_eq!(map.get("advance"), Some(&true));
+    }
+
+    #[test]
+    #[ignore = "review: v0.7 contract gap - registry keys are still unqualified"]
+    fn registry_keeps_type_qualified_entries_separate() {
+        let file: syn::File = syn::parse_str(
+            r#"
+struct Reader;
+impl Reader {
+    fn touch(&self) {}
+}
+
+struct Writer;
+impl Writer {
+    fn touch(&mut self) {}
+}
+"#,
+        )
+        .expect("test source should parse");
+
+        let map = MethodRegistry::from_impl_blocks(&file).into_map();
+
+        assert_eq!(map.get("Reader::touch"), Some(&false));
+        assert_eq!(map.get("Writer::touch"), Some(&true));
+    }
+}

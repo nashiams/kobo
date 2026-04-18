@@ -12,8 +12,8 @@ pub use filesystem::{
 };
 pub use multi_file::run_build_pipeline;
 pub use pipeline::{
-    run_and_compile, run_check_pipeline, run_codegen_pipeline, run_kir_phase, run_pipeline,
-    CodegenArtifacts,
+    effective_mode, run_and_compile, run_check_pipeline, run_codegen_pipeline, run_kir_phase,
+    run_pipeline, CodegenArtifacts,
 };
 pub use rustc::binary_path_for;
 pub use session::{is_inside_relaxed_fn, CompileSession};

@@ -45,6 +45,12 @@ pub(crate) fn apply_tier_to_local(
             let expr = (*init.expr).clone();
             init.expr = Box::new(parse_quote!(Arc::new(#expr)));
         }
+        OwnershipTier::ArcMutShared if !already_wrapped => {
+            // Phase 11: Arc<tokio::sync::RwLock<T>> for async mutable sharing.
+            // HARD RULE: never Arc<std::sync::Mutex<T>> — use tokio::sync::RwLock.
+            let expr = (*init.expr).clone();
+            init.expr = Box::new(parse_quote!(Arc::new(tokio::sync::RwLock::new(#expr))));
+        }
         OwnershipTier::RcMutShared if !already_wrapped => {
             let expr = (*init.expr).clone();
             if let Some(loc) = diag_source_location {
@@ -142,6 +148,7 @@ fn wrap_owned_type(original_ty: syn::Type, tier: OwnershipTier) -> syn::Type {
         OwnershipTier::BoxOwned => parse_quote!(Box<#original_ty>),
         OwnershipTier::RcShared => parse_quote!(Rc<#original_ty>),
         OwnershipTier::ArcShared => parse_quote!(Arc<#original_ty>),
+        OwnershipTier::ArcMutShared => parse_quote!(Arc<tokio::sync::RwLock<#original_ty>>),
         OwnershipTier::RcMutShared => parse_quote!(Rc<RefCell<#original_ty>>),
         OwnershipTier::Scoped => parse_quote!(ScopedHandle<#original_ty>),
         _ => original_ty,

@@ -81,6 +81,7 @@ pub struct TierViolation {
 pub enum TierReason {
     CopyType,
     LocalOnly,
+    MoveRebind,
     DeadOriginalAfterAssignment,
     CloneElisionFallback(ElisionFallbackReason),
     HeapStable(BoxReason),
@@ -242,6 +243,7 @@ impl TierReason {
         match self {
             TierReason::CopyType => "copy type".to_owned(),
             TierReason::LocalOnly => "local-only non-Copy binding".to_owned(),
+            TierReason::MoveRebind => "moved then dead (freeze-and-rotate)".to_owned(),
             TierReason::DeadOriginalAfterAssignment => "dead original after assignment".to_owned(),
             TierReason::CloneElisionFallback(ElisionFallbackReason::MoveSafetyCheckFailed) => {
                 "clone-elision fallback: move safety check failed - conservative clone".to_owned()

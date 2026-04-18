@@ -20,6 +20,8 @@ pub struct CompileSession {
     /// Byte-offset spans of functions annotated with `#[kobo::relax]` in the source file.
     /// Used at render time to suppress `Severity::Warning` diagnostics in checked mode [G5].
     pub relaxed_fn_ranges: Vec<KoboSpan>,
+    /// True when the mode was set by a CLI flag. CLI overrides file attribute [S-26].
+    pub cli_mode_override: bool,
 }
 
 impl CompileSession {
@@ -34,6 +36,7 @@ impl CompileSession {
             diagnostics: Vec::new(),
             diag_enabled,
             relaxed_fn_ranges: Vec::new(),
+            cli_mode_override: false,
         }
     }
 

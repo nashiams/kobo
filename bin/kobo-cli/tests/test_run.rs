@@ -940,6 +940,34 @@ fn main() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+#[ignore = "review: v0.7 contract gap - kobo build does not run cargo build"]
+fn test_build_fails_when_generated_project_does_not_compile() {
+    let dir = setup_multi_file_fixture("build-contract-cargo");
+    fs::write(
+        dir.join("src/main.kobo"),
+        r#"mod missing;
+fn main() {
+    println!("hello");
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(["build"])
+        .current_dir(&dir)
+        .output()
+        .expect("kobo build should run");
+
+    assert!(
+        !output.status.success(),
+        "contract says build should fail when Cargo compilation fails\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // G2 — CLI mode flag tests [R6-01]
 // ---------------------------------------------------------------------------
@@ -1139,4 +1167,16 @@ fn debt_borrows_flag_runs_successfully() {
         "debt --borrows should mention borrows in output, got:\n{}",
         output.stdout,
     );
+}
+
+#[test]
+#[ignore = "review: v0.7 contract gap - debt --borrows ignores --json output"]
+fn debt_borrows_json_outputs_machine_readable_report() {
+    let case = FixtureCase::new("debt-borrows-json", "live_borrow_at_move.kobo");
+    let output = run_kobo(["debt", "--borrows", "--json"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    let value: serde_json::Value = serde_json::from_str(&output.stdout)
+        .expect("debt --borrows --json should emit valid JSON");
+    assert!(value.get("overlaps").is_some(), "JSON borrow report must contain overlaps");
 }

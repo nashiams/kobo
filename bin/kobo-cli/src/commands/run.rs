@@ -60,6 +60,8 @@ pub(super) fn cmd_inspect(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Re
     // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
 
+    // S-26: Show effective mode so user can verify per-module mode resolution.
+    eprintln!("// effective mode: {}", session.mode());
     print!("{rs_source}");
     Ok(())
 }

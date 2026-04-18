@@ -389,13 +389,20 @@ pub fn compute_binding_liveness(cfg: &CfgGraph, kir: &Kir) -> BindingLiveness {
 /// await-point tracking in KIR (deferred to v0.8+), we mark ALL bindings
 /// inside async functions as needing Send.
 pub struct SendRequirements {
-    needs_send: HashSet<KirNodeId>,
+    pub(crate) needs_send: HashSet<KirNodeId>,
 }
 
 impl SendRequirements {
     /// Returns true if the binding with the given Decl node ID needs Send.
     pub fn needs_send(&self, decl_id: KirNodeId) -> bool {
         self.needs_send.contains(&decl_id)
+    }
+
+    /// Creates empty SendRequirements (no bindings need Send).
+    pub fn empty() -> Self {
+        Self {
+            needs_send: HashSet::new(),
+        }
     }
 }
 

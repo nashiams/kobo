@@ -79,3 +79,47 @@ pub(super) fn build_borrow_scope_block_stmt(
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use quote::ToTokens;
+    use syn::parse_quote;
+
+    use super::lowered_receiver_expr;
+
+    fn render_expr(expr: &syn::Expr) -> String {
+        expr.to_token_stream().to_string()
+    }
+
+    #[test]
+    fn registry_marked_mutating_method_uses_borrow_mut() {
+        let mut method_mutability = HashMap::new();
+        method_mutability.insert("flush".to_owned(), true);
+
+        let method: syn::Ident = parse_quote!(flush);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+
+        assert_eq!(render_expr(&expr), "logger . borrow_mut ()");
+    }
+
+    #[test]
+    fn standard_immutable_method_uses_borrow() {
+        let method_mutability = HashMap::new();
+        let method: syn::Ident = parse_quote!(len);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+
+        assert_eq!(render_expr(&expr), "logger . borrow ()");
+    }
+
+    #[test]
+    #[ignore = "review: v0.7 contract gap - unknown wrapped methods still default to borrow()"]
+    fn unknown_methods_default_to_borrow_mut_per_contract() {
+        let method_mutability = HashMap::new();
+        let method: syn::Ident = parse_quote!(flush_cache);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+
+        assert_eq!(render_expr(&expr), "logger . borrow_mut ()");
+    }
+}

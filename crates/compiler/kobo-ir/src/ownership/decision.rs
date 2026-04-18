@@ -15,7 +15,7 @@ pub enum OwnershipTier {
     ArcShared,
     /// `Rc<RefCell<T>>` - mutable shared, single-threaded. Script-mode default.
     RcMutShared,
-    /// `Arc<Mutex<T>>` - mutable shared, thread-safe. Requires
+    /// `Arc<RwLock<T>>` - mutable shared, thread-safe. Requires
     /// `#[kobo::async_shared]`.
     ArcMutShared,
     /// `ScopedHandle<T>` - resource kind with enforced single ownership.
@@ -147,7 +147,7 @@ impl OwnershipTier {
             OwnershipTier::RcShared => "rc",
             OwnershipTier::ArcShared => "arc",
             OwnershipTier::RcMutShared => "rc_refcell",
-            OwnershipTier::ArcMutShared => "arc_mutex",
+            OwnershipTier::ArcMutShared => "arc_rwlock",
             OwnershipTier::Scoped => "scoped_handle",
             OwnershipTier::Undecided => "plain",
         }

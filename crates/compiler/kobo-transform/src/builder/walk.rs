@@ -383,7 +383,7 @@ impl TransformFactsBuilder<'_> {
             UseKind::Read
         };
 
-        if self.emit_use(receiver, use_kind) {
+        if self.emit_method_use(receiver, use_kind, &method_name) {
             return;
         }
 

@@ -158,7 +158,7 @@ fn materialize_move_alias_event(event: &UseEvent) -> UseEvent {
             span,
         } => UseEvent::Mutated { span: *span },
         UseEvent::ReadOnly { span }
-        | UseEvent::Moved { span }
+        | UseEvent::Moved { span, .. }
         | UseEvent::Escaped { span, .. }
         | UseEvent::Borrowed {
             kind: BorrowKind::Immutable,

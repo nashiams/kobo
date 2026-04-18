@@ -71,6 +71,8 @@ pub(crate) struct TransformFactsBuilder<'a> {
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
     /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
     pub(crate) migrate_sites: Vec<MigrateSite>,
+    /// Current nesting depth for scope tracking (0 = function body).
+    scope_depth: usize,
 }
 
 mod emit;
@@ -152,6 +154,7 @@ impl<'a> TransformFactsBuilder<'a> {
             relaxed_fn_ranges: Vec::new(),
             relax_attr_errors: Vec::new(),
             migrate_sites: Vec::new(),
+            scope_depth: 0,
         }
     }
 

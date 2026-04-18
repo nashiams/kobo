@@ -19,6 +19,8 @@ pub(crate) mod warn_early;
 pub(crate) mod strict;
 #[cfg(test)]
 mod strict_integration_tests;
+#[cfg(test)]
+mod classify_edge_tests;
 
 pub use cfg::CfgGraph;
 pub use options::TransformOptions;

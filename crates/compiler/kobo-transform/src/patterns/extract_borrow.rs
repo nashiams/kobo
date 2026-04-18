@@ -39,7 +39,11 @@ pub fn find_extract_before_borrow(facts: &kobo_ir::TransformFacts) -> Vec<Extrac
         for event in uses {
             match event {
                 kobo_ir::UseEvent::ReadOnly { span } => {
-                    read_spans.push(*span);
+                    // BUG-12: Skip reads from reference-returning methods (e.g. .iter(), .as_ref())
+                    // Extracting a reference return would move a borrow — unsound.
+                    if !binding.ref_returning_read_spans.contains(span) {
+                        read_spans.push(*span);
+                    }
                 }
                 kobo_ir::UseEvent::Mutated { span } => {
                     mutation_spans.push(*span);

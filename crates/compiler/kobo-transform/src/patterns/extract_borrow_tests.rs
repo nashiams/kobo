@@ -37,6 +37,8 @@ fn make_binding(
         plain_clone_source: None,
         plain_clone_move_span: None,
         elision_skip_reason: None,
+        decl_scope_depth: 0,
+        ref_returning_read_spans: Vec::new(),
     }
 }
 
@@ -219,4 +221,85 @@ fn main() {
         sites.is_empty(),
         "should not detect extraction when there is no borrow conflict"
     );
+}
+
+/// BUG-12 Contract Test: Reference-returning read before mutation does NOT trigger extraction.
+/// `.iter()` returns a reference, so extracting it would move a borrow — unsound.
+#[test]
+fn ref_returning_read_does_not_trigger_extraction() {
+    let read_span = span(10, 15);
+    let mut binding = make_binding(
+        1,
+        "data",
+        span(0, 5),
+        vec![
+            UseEvent::ReadOnly { span: read_span },
+            UseEvent::Mutated { span: span(20, 30) },
+        ],
+    );
+    // Mark the read as a ref-returning method call (e.g., .iter())
+    binding.ref_returning_read_spans.push(read_span);
+
+    let facts = make_facts(vec![binding]);
+    let sites = find_extract_before_borrow(&facts);
+
+    assert!(
+        sites.is_empty(),
+        "ref-returning read (e.g. .iter()) before mutation should NOT trigger extraction"
+    );
+}
+
+/// BUG-12 Contract Test: Owned-value read before mutation DOES trigger extraction.
+/// `.clone()` returns an owned value, so extracting it is safe.
+#[test]
+fn owned_value_read_does_trigger_extraction() {
+    let read_span = span(10, 15);
+    let binding = make_binding(
+        1,
+        "data",
+        span(0, 5),
+        vec![
+            UseEvent::ReadOnly { span: read_span },
+            UseEvent::Mutated { span: span(20, 30) },
+        ],
+    );
+    // ref_returning_read_spans is empty → this is an owned-value read
+
+    let facts = make_facts(vec![binding]);
+    let sites = find_extract_before_borrow(&facts);
+
+    assert_eq!(
+        sites.len(),
+        1,
+        "owned-value read (e.g. .clone()) before mutation SHOULD trigger extraction"
+    );
+}
+
+/// BUG-12 Contract Test: Mixed reads — only non-ref reads are eligible
+#[test]
+fn mixed_ref_and_owned_reads_only_owned_triggers() {
+    let ref_read = span(10, 15);
+    let owned_read = span(16, 19);
+    let mut binding = make_binding(
+        1,
+        "data",
+        span(0, 5),
+        vec![
+            UseEvent::ReadOnly { span: ref_read },
+            UseEvent::ReadOnly { span: owned_read },
+            UseEvent::Mutated { span: span(20, 30) },
+        ],
+    );
+    // Only the first read is ref-returning
+    binding.ref_returning_read_spans.push(ref_read);
+
+    let facts = make_facts(vec![binding]);
+    let sites = find_extract_before_borrow(&facts);
+
+    assert_eq!(
+        sites.len(),
+        1,
+        "only the owned-value read should trigger extraction"
+    );
+    assert_eq!(sites[0].borrow_expr_span, owned_read);
 }

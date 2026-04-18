@@ -42,6 +42,8 @@ fn make_binding(
         plain_clone_source: None,
         plain_clone_move_span: None,
         elision_skip_reason: None,
+        decl_scope_depth: 0,
+        ref_returning_read_spans: Vec::new(),
     }
 }
 
@@ -66,7 +68,7 @@ fn move_then_dead_is_eligible() {
         span(0, 5),
         vec![
             UseEvent::Mutated { span: span(10, 15) },
-            UseEvent::Moved { span: span(20, 25) },
+            UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
             // No uses after move → eligible
         ],
     )]);
@@ -89,7 +91,7 @@ fn used_after_move_not_eligible() {
         span(0, 5),
         vec![
             UseEvent::Mutated { span: span(10, 15) },
-            UseEvent::Moved { span: span(20, 25) },
+            UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
             UseEvent::ReadOnly { span: span(30, 35) }, // used after move!
         ],
     )]);
@@ -133,7 +135,7 @@ fn only_dead_moved_binding_eligible() {
             span(0, 5),
             vec![
                 UseEvent::Mutated { span: span(10, 15) },
-                UseEvent::Moved { span: span(20, 25) },
+                UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
             ],
         ),
         make_binding(
@@ -142,7 +144,7 @@ fn only_dead_moved_binding_eligible() {
             span(30, 35),
             vec![
                 UseEvent::Mutated { span: span(40, 45) },
-                UseEvent::Moved { span: span(50, 55) },
+                UseEvent::Moved { span: span(50, 55), scope_depth: 0 },
                 UseEvent::ReadOnly { span: span(60, 65) },
             ],
         ),
@@ -162,7 +164,7 @@ fn borrowed_after_move_not_eligible() {
         "data",
         span(0, 5),
         vec![
-            UseEvent::Moved { span: span(10, 15) },
+            UseEvent::Moved { span: span(10, 15), scope_depth: 0 },
             UseEvent::Borrowed {
                 kind: kobo_ir::BorrowKind::Immutable,
                 span: span(20, 25),
@@ -242,7 +244,7 @@ fn move_rebind_reason_when_sharing_needed() {
             declaration: span(0, 5),
             uses: vec![
                 UseEvent::ReadOnly { span: span(10, 15) },
-                UseEvent::Moved { span: span(20, 25) },
+                UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
                 // No uses after move
             ],
         },
@@ -259,6 +261,8 @@ fn move_rebind_reason_when_sharing_needed() {
         plain_clone_source: None,
         plain_clone_move_span: None,
         elision_skip_reason: None,
+        decl_scope_depth: 0,
+        ref_returning_read_spans: Vec::new(),
     };
 
     let facts = make_facts(vec![binding]);
@@ -293,7 +297,7 @@ fn no_move_rebind_when_used_after_move() {
             declaration: span(0, 5),
             uses: vec![
                 UseEvent::ReadOnly { span: span(10, 15) },
-                UseEvent::Moved { span: span(20, 25) },
+                UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
                 UseEvent::ReadOnly { span: span(30, 35) }, // used after move!
             ],
         },
@@ -310,6 +314,8 @@ fn no_move_rebind_when_used_after_move() {
         plain_clone_source: None,
         plain_clone_move_span: None,
         elision_skip_reason: None,
+        decl_scope_depth: 0,
+        ref_returning_read_spans: Vec::new(),
     };
 
     let facts = make_facts(vec![binding]);
@@ -321,4 +327,75 @@ fn no_move_rebind_when_used_after_move() {
     assert_eq!(decisions.len(), 1);
     // Should NOT be MoveRebind — should escalate to Rc or similar
     assert_ne!(decisions[0].reason, TierReason::MoveRebind);
+}
+
+/// BUG-13 Contract Test: Move in deeper scope (conditional) is NOT eligible.
+/// A move inside an if-branch (scope_depth > decl_scope_depth) means the binding
+/// may still be live in the else branch.
+#[test]
+fn move_in_deeper_scope_not_eligible() {
+    let facts = make_facts(vec![make_binding(
+        1,
+        "data",
+        span(0, 5),
+        vec![
+            UseEvent::Mutated { span: span(10, 15) },
+            // Move at scope_depth 1 (inside if-branch), but decl is at depth 0
+            UseEvent::Moved { span: span(20, 25), scope_depth: 1 },
+        ],
+    )]);
+
+    let eligible = detect_freeze_and_rotate(&facts);
+
+    assert!(
+        !eligible.contains(&KirNodeId(1)),
+        "move at deeper scope than declaration should NOT be eligible (conditional move)"
+    );
+}
+
+/// BUG-14 Contract Test: Move inside a loop is NOT eligible.
+/// Even if the move appears terminal in the loop body, the loop may iterate again.
+#[test]
+fn move_in_loop_scope_not_eligible() {
+    let facts = make_facts(vec![make_binding(
+        1,
+        "data",
+        span(0, 5),
+        vec![
+            UseEvent::Mutated { span: span(10, 15) },
+            // Move at scope_depth 2 (nested loop), but decl is at depth 0
+            UseEvent::Moved { span: span(20, 25), scope_depth: 2 },
+        ],
+    )]);
+
+    let eligible = detect_freeze_and_rotate(&facts);
+
+    assert!(
+        !eligible.contains(&KirNodeId(1)),
+        "move inside loop (deeper scope) should NOT be eligible"
+    );
+}
+
+/// BUG-14 Contract Test: Move at same scope as declaration IS eligible.
+/// This is the normal case — a move at the same level as the declaration
+/// is unconditional.
+#[test]
+fn move_at_declaration_scope_is_eligible() {
+    let facts = make_facts(vec![make_binding(
+        1,
+        "data",
+        span(0, 5),
+        vec![
+            UseEvent::Mutated { span: span(10, 15) },
+            // Move at scope_depth 0, same as decl_scope_depth 0
+            UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
+        ],
+    )]);
+
+    let eligible = detect_freeze_and_rotate(&facts);
+
+    assert!(
+        eligible.contains(&KirNodeId(1)),
+        "move at same scope as declaration SHOULD be eligible"
+    );
 }

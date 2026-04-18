@@ -1,5 +1,6 @@
 ---
 source: bin/kobo-cli/tests/test_run.rs
+assertion_line: 116
 expression: output.stdout
 ---
 use std::cell::RefCell;
@@ -18,9 +19,11 @@ fn render(config: &AppConfig) {
 fn validate(config: &AppConfig) {
     println!("{}", config.name.len());
 }
+// kobo: names @ line 21 -> plain (local-only non-Copy binding)
 fn push_name(names: &mut Vec<String>) {
     names.push(String::from("alice"));
 }
+// kobo: names @ line 25 -> plain (local-only non-Copy binding)
 fn sort_names(names: &mut Vec<String>) {
     names.sort();
 }

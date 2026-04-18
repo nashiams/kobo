@@ -97,10 +97,13 @@ impl TransformFactsBuilder<'_> {
             plain_clone_source: None,
             plain_clone_move_span: None,
             elision_skip_reason: None,
+            decl_scope_depth: self.scope_depth,
+            ref_returning_read_spans: Vec::new(),
         });
     }
 
     pub(super) fn enter_scope(&mut self, span: kobo_ir::KoboSpan) {
+        self.scope_depth += 1;
         self.nodes.push(build_scope_node(
             self.id_gen.next_kir_id(),
             NodeKind::ScopeStart,
@@ -114,6 +117,7 @@ impl TransformFactsBuilder<'_> {
             NodeKind::ScopeEnd,
             span,
         ));
+        self.scope_depth = self.scope_depth.saturating_sub(1);
     }
 
     pub(super) fn emit_move(&mut self, expr: &syn::Expr, escape_kind: Option<EscapeKind>) -> bool {
@@ -127,7 +131,7 @@ impl TransformFactsBuilder<'_> {
             span,
             binding_state.decl_id,
         ));
-        self.record_event(binding_state.decl_id, UseEvent::Moved { span });
+        self.record_event(binding_state.decl_id, UseEvent::Moved { span, scope_depth: self.scope_depth });
         if let Some(kind) = escape_kind.filter(|kind| {
             !matches!(
                 (kind, binding_state.kind),
@@ -160,6 +164,40 @@ impl TransformFactsBuilder<'_> {
             UseKind::Write => UseEvent::Mutated { span },
         };
         self.record_event(binding_state.decl_id, event);
+        true
+    }
+
+    /// Like `emit_use` but also records the method name for ref-returning detection.
+    pub(super) fn emit_method_use(
+        &mut self,
+        expr: &syn::Expr,
+        use_kind: UseKind,
+        method_name: &str,
+    ) -> bool {
+        let Some((binding_state, span)) = self.resolved_binding(expr) else {
+            return false;
+        };
+
+        self.nodes.push(build_binding_event_node(
+            self.id_gen.next_kir_id(),
+            NodeKind::Use(use_kind),
+            span,
+            binding_state.decl_id,
+        ));
+        let event = match use_kind {
+            UseKind::Read => UseEvent::ReadOnly { span },
+            UseKind::Write => UseEvent::Mutated { span },
+        };
+        self.record_event(binding_state.decl_id, event);
+
+        // Track reads from reference-returning methods for BUG-12 extraction filter.
+        if matches!(use_kind, UseKind::Read) && is_ref_returning_method(method_name) {
+            if let Some(&idx) = self.fact_indices.get(&binding_state.decl_id) {
+                self.transform_facts.bindings[idx]
+                    .ref_returning_read_spans
+                    .push(span);
+            }
+        }
         true
     }
 
@@ -266,4 +304,29 @@ impl TransformFactsBuilder<'_> {
         };
         self.transform_facts.bindings[index].elision_skip_reason = Some(reason);
     }
+}
+
+/// Known methods that return references rather than owned values.
+/// Reads via these methods are NOT eligible for extract-before-borrow (BUG-12).
+const KNOWN_REF_RETURNING_METHODS: &[&str] = &[
+    "iter",
+    "iter_mut",
+    "as_ref",
+    "as_mut",
+    "get",
+    "get_mut",
+    "borrow",
+    "borrow_mut",
+    "deref",
+    "deref_mut",
+    "as_slice",
+    "as_str",
+    "as_bytes",
+    "keys",
+    "values",
+    "entries",
+];
+
+fn is_ref_returning_method(name: &str) -> bool {
+    KNOWN_REF_RETURNING_METHODS.contains(&name)
 }

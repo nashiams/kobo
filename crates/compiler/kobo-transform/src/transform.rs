@@ -113,16 +113,13 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     }
 
     // Build strict_fn_modes map for all @strict fns.
+    // BUG-6 fix: async strict fns now use Full mode instead of AsyncDeferred.
+    // K0063 informational emission handles the async constraint communication.
     {
         use kobo_ir::StrictFnMode;
         let mut fn_modes = std::collections::HashMap::new();
         for func in ast.strict_fns() {
-            let mode = if func.is_async {
-                StrictFnMode::AsyncDeferred
-            } else {
-                StrictFnMode::Full
-            };
-            fn_modes.insert(func.span, mode);
+            fn_modes.insert(func.span, StrictFnMode::Full);
         }
         kir.set_strict_fn_modes(fn_modes);
     }

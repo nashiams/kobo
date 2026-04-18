@@ -18,7 +18,14 @@ pub fn detect_freeze_and_rotate(facts: &TransformFacts) -> HashSet<KirNodeId> {
 
         // Look for a Moved event followed by no further usage
         for (i, event) in uses.iter().enumerate() {
-            if matches!(event, UseEvent::Moved { .. }) {
+            if let UseEvent::Moved { scope_depth, .. } = event {
+                // BUG-13/14: Only consider moves at the same scope depth as the declaration.
+                // A move inside an if-branch, match arm, loop, or closure is conditional —
+                // the binding may still be live in other branches or after the loop.
+                if *scope_depth != binding.decl_scope_depth {
+                    continue;
+                }
+
                 // Check that ALL subsequent events are not reads/mutations/moves on this binding
                 let has_later_use = uses[i + 1..].iter().any(|later| {
                     matches!(

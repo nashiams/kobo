@@ -1,7 +1,8 @@
 use kobo_ir::{BindingUsage, BorrowKind, KoboSpan, SharedBindingFacts, UseEvent};
+use serde::{Deserialize, Serialize};
 
 /// How to fix a detected borrow overlap.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum BorrowFixPattern {
     /// Copy the field before borrowing.
     ExtractBeforeBorrow,
@@ -13,18 +14,31 @@ pub enum BorrowFixPattern {
     Clone,
 }
 
+/// Classification of a borrow conflict.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum BorrowConflictKind {
+    /// An immutable borrow overlaps a mutable borrow.
+    ReadWriteOverlap,
+    /// Two or more mutable borrows alias the same binding.
+    MultiMutableAlias,
+    /// A borrow escapes the scope where the referent lives.
+    LifetimeEscape,
+}
+
 /// A single detected overlapping borrow site.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BorrowOverlap {
     pub binding_name: String,
+    pub conflict_kind: BorrowConflictKind,
     pub immutable_spans: Vec<KoboSpan>,
     pub mutable_spans: Vec<KoboSpan>,
     pub fix_pattern: Option<BorrowFixPattern>,
 }
 
 /// Report of all detected borrow overlaps for one binding.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BorrowReport {
+    pub schema_version: u32,
     pub overlapping_sites: Vec<BorrowOverlap>,
 }
 
@@ -49,7 +63,7 @@ pub fn build_borrow_report(
             UseEvent::Borrowed { kind: BorrowKind::Mutable, span } => {
                 mutable_borrows.push(*span);
             }
-            UseEvent::Moved { span } => {
+            UseEvent::Moved { span, .. } => {
                 move_spans.push(*span);
             }
             _ => {}
@@ -78,6 +92,7 @@ pub fn build_borrow_report(
     if has_overlap {
         overlapping_sites.push(BorrowOverlap {
             binding_name: binding_name.to_string(),
+            conflict_kind: BorrowConflictKind::ReadWriteOverlap,
             immutable_spans: overlap_immut,
             mutable_spans: overlap_mut,
             fix_pattern: Some(BorrowFixPattern::ScopeNarrowing),
@@ -95,6 +110,7 @@ pub fn build_borrow_report(
                 if spans_overlap(*borrow_span, *move_span) {
                     overlapping_sites.push(BorrowOverlap {
                         binding_name: binding_name.to_string(),
+                        conflict_kind: BorrowConflictKind::LifetimeEscape,
                         immutable_spans: vec![*borrow_span],
                         mutable_spans: vec![],
                         fix_pattern: Some(BorrowFixPattern::Clone),
@@ -104,7 +120,7 @@ pub fn build_borrow_report(
         }
     }
 
-    BorrowReport { overlapping_sites }
+    BorrowReport { schema_version: 1, overlapping_sites }
 }
 
 fn spans_overlap(a: KoboSpan, b: KoboSpan) -> bool {

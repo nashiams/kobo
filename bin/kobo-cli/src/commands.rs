@@ -31,7 +31,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 return Ok(());
             }
             if borrows {
-                return debt::cmd_debt_borrows(&file);
+                return debt::cmd_debt_borrows(&file, json);
             }
             debt::cmd_debt(&file, json, summary)
         }

@@ -1,13 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::config::KoboConfig;
+use crate::errors::DriverError;
 use crate::session::CompileSession;
 
 /// Output produced by the multi-file build pipeline.
 pub struct BuildOutput {
     pub gen_dir: PathBuf,
     pub rs_files: Vec<PathBuf>,
+    pub cargo_toml_path: PathBuf,
+    pub binary_path: Option<PathBuf>,
+    pub diagnostics: Vec<String>,
 }
 
 /// Discovers all `.kobo` files under `<project_dir>/<src_dir>`.
@@ -52,6 +57,8 @@ pub fn generate_cargo_toml(config: &KoboConfig, gen_dir: &Path) -> std::io::Resu
 name = "{name}"
 version = "{version}"
 edition = "2021"
+
+[workspace]
 "#
     );
 
@@ -74,19 +81,19 @@ edition = "2021"
 }
 
 /// Runs the build pipeline: discovers .kobo files, compiles each to .rs,
-/// generates Cargo.toml, and writes everything under `<project_dir>/target/kobo-gen/`.
-pub fn run_build_pipeline(config: &KoboConfig, project_dir: &Path) -> Result<BuildOutput, String> {
+/// generates Cargo.toml, shells out to `cargo build`, and writes everything
+/// under `<project_dir>/target/kobo-gen/`.
+pub fn run_build_pipeline(config: &KoboConfig, project_dir: &Path) -> Result<BuildOutput, DriverError> {
     let gen_dir = project_dir.join("target").join("kobo-gen");
     let gen_src_dir = gen_dir.join("src");
-    fs::create_dir_all(&gen_src_dir)
-        .map_err(|e| format!("failed to create gen dir: {e}"))?;
+    fs::create_dir_all(&gen_src_dir)?;
 
     let kobo_files = discover_kobo_files(project_dir, config);
     if kobo_files.is_empty() {
-        return Err(format!(
-            "no .kobo files found under {}",
-            project_dir.join(&config.src_dir).display()
-        ));
+        return Err(DriverError::ParseFailed {
+            file: project_dir.join(&config.src_dir),
+            message: "no .kobo files found".to_string(),
+        });
     }
 
     let src_dir = project_dir.join(&config.src_dir);
@@ -95,13 +102,15 @@ pub fn run_build_pipeline(config: &KoboConfig, project_dir: &Path) -> Result<Bui
     for kobo_path in &kobo_files {
         let rel = kobo_path
             .strip_prefix(&src_dir)
-            .map_err(|e| format!("path error: {e}"))?;
+            .map_err(|e| DriverError::TransformFailed {
+                file: kobo_path.clone(),
+                message: format!("path error: {e}"),
+            })?;
         let rs_rel = rel.with_extension("rs");
         let rs_out = gen_src_dir.join(&rs_rel);
 
         if let Some(parent) = rs_out.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create dir: {e}"))?;
+            fs::create_dir_all(parent)?;
         }
 
         let mut build_config = config.clone();
@@ -114,20 +123,71 @@ pub fn run_build_pipeline(config: &KoboConfig, project_dir: &Path) -> Result<Bui
 
         let mut session = CompileSession::new(build_config);
         let rs_source = crate::pipeline::run_pipeline(&mut session, kobo_path)
-            .map_err(|()| format!("compilation failed for {}", kobo_path.display()))?;
+            .map_err(|()| DriverError::TransformFailed {
+                file: kobo_path.clone(),
+                message: "compilation failed".to_string(),
+            })?;
 
-        // Don't double-write — run_pipeline already wrote via run_codegen_pipeline.
-        // But the output_dir placement may differ, so write explicitly.
-        fs::write(&rs_out, &rs_source)
-            .map_err(|e| format!("failed to write {}: {e}", rs_out.display()))?;
-
+        fs::write(&rs_out, &rs_source)?;
         rs_files.push(rs_out);
     }
 
     generate_cargo_toml(config, &gen_dir)
-        .map_err(|e| format!("failed to generate Cargo.toml: {e}"))?;
+        .map_err(|e| DriverError::CargoTomlGenFailed {
+            message: e.to_string(),
+        })?;
 
-    Ok(BuildOutput { gen_dir, rs_files })
+    let cargo_toml_path = gen_dir.join("Cargo.toml");
+
+    // Shell out to `cargo build`.
+    let cargo_output = Command::new("cargo")
+        .args(["build", "--message-format=json"])
+        .current_dir(&gen_dir)
+        .output()
+        .map_err(DriverError::IoError)?;
+
+    let mut diagnostics = Vec::new();
+    let mut binary_path: Option<PathBuf> = None;
+
+    // Parse JSON message stream from cargo.
+    let stdout = String::from_utf8_lossy(&cargo_output.stdout);
+    for line in stdout.lines() {
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(reason) = msg.get("reason").and_then(|r| r.as_str()) {
+                if reason == "compiler-artifact" {
+                    if let Some(exe) = msg.get("executable").and_then(|e| e.as_str()) {
+                        binary_path = Some(PathBuf::from(exe));
+                    }
+                }
+                if reason == "compiler-message" {
+                    if let Some(rendered) = msg
+                        .get("message")
+                        .and_then(|m| m.get("rendered"))
+                        .and_then(|r| r.as_str())
+                    {
+                        diagnostics.push(rendered.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if !cargo_output.status.success() {
+        let stderr = String::from_utf8_lossy(&cargo_output.stderr).to_string();
+        let exit_code = cargo_output.status.code().unwrap_or(1);
+        return Err(DriverError::CargoBuildFailed {
+            stderr,
+            exit_code,
+        });
+    }
+
+    Ok(BuildOutput {
+        gen_dir,
+        rs_files,
+        cargo_toml_path,
+        binary_path,
+        diagnostics,
+    })
 }
 
 #[cfg(test)]

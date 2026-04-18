@@ -104,26 +104,38 @@ pub(crate) fn wrapper_binding_from_expr(
     .then_some((ident, tier))
 }
 
+/// Known non-mutating methods that are safe to call via `.borrow()` on wrapped types.
+const KNOWN_NON_MUTATING_METHODS: &[&str] = &[
+    "as_bytes",
+    "as_ref",
+    "as_slice",
+    "as_str",
+    "capacity",
+    "chars",
+    "clone",
+    "contains",
+    "contains_key",
+    "ends_with",
+    "first",
+    "get",
+    "is_empty",
+    "iter",
+    "keys",
+    "last",
+    "len",
+    "starts_with",
+    "to_string",
+    "trim",
+    "values",
+];
+
+/// Returns `true` if the method is mutating (requires `borrow_mut` on wrapped types).
+///
+/// Conservative: unknown methods default to `true` (mutating) so that
+/// `borrow_mut()` is used — over-restriction is safe, under-restriction is not.
 pub(crate) fn is_mutating_method(method: &syn::Ident) -> bool {
-    matches!(
-        method.to_string().as_str(),
-        "append"
-            | "clear"
-            | "extend"
-            | "insert"
-            | "insert_str"
-            | "pop"
-            | "push"
-            | "push_str"
-            | "remove"
-            | "replace"
-            | "retain"
-            | "reverse"
-            | "sort"
-            | "sort_by"
-            | "swap"
-            | "truncate"
-    )
+    let name = method.to_string();
+    !KNOWN_NON_MUTATING_METHODS.contains(&name.as_str())
 }
 
 fn binding_ident(pat: &syn::Pat) -> Option<&syn::Ident> {
@@ -235,6 +247,34 @@ mod tests {
         assert!(
             output.contains("Rc") && output.contains("RefCell"),
             "must wrap in Rc<RefCell<…>>, got: {output}"
+        );
+    }
+
+    #[test]
+    fn unknown_method_defaults_to_mutating() {
+        let ident: syn::Ident = parse_quote!(frobnicate);
+        assert!(
+            super::is_mutating_method(&ident),
+            "unknown method 'frobnicate' should default to true (conservative/mutating)"
+        );
+    }
+
+    #[test]
+    fn known_non_mutating_method_returns_false() {
+        let ident: syn::Ident = parse_quote!(len);
+        assert!(
+            !super::is_mutating_method(&ident),
+            "known non-mutating method 'len' should return false"
+        );
+    }
+
+    #[test]
+    fn known_mutating_method_returns_true() {
+        // push is not in KNOWN_NON_MUTATING_METHODS → should be true
+        let ident: syn::Ident = parse_quote!(push);
+        assert!(
+            super::is_mutating_method(&ident),
+            "'push' should return true (mutating)"
         );
     }
 }

@@ -29,7 +29,6 @@ fn shared_ref_to_vec_is_copy() {
 // ------------------------------------------------------------------
 
 #[test]
-#[should_panic] // REMOVE when TRAP-03 is fixed
 fn mut_ref_is_not_copy() {
     let ty: syn::Type = parse_quote!(&mut i32);
     assert!(
@@ -39,7 +38,6 @@ fn mut_ref_is_not_copy() {
 }
 
 #[test]
-#[should_panic] // REMOVE when TRAP-03 is fixed
 fn mut_ref_to_vec_is_not_copy() {
     let ty: syn::Type = parse_quote!(&mut Vec<u8>);
     assert!(
@@ -117,4 +115,35 @@ fn option_is_not_copy() {
 fn double_shared_ref_is_copy() {
     let ty: syn::Type = parse_quote!(&&i32);
     assert!(is_copy_type(&ty), "&&i32 should be Copy (outer ref is shared)");
+}
+
+// ------------------------------------------------------------------
+// BUG-22: PRIMITIVE_COPY_TYPES constant coverage
+// ------------------------------------------------------------------
+
+#[test]
+fn primitive_copy_types_contains_all_expected() {
+    use super::classify::PRIMITIVE_COPY_TYPES;
+    let expected = [
+        "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16",
+        "u32", "u64", "u128", "usize",
+    ];
+    for prim in &expected {
+        assert!(
+            PRIMITIVE_COPY_TYPES.contains(prim),
+            "PRIMITIVE_COPY_TYPES should contain {prim}"
+        );
+    }
+    assert_eq!(
+        PRIMITIVE_COPY_TYPES.len(),
+        expected.len(),
+        "PRIMITIVE_COPY_TYPES should have exactly {} entries",
+        expected.len()
+    );
+}
+
+#[test]
+fn non_primitive_non_reference_is_not_copy() {
+    let ty: syn::Type = parse_quote!(HashMap<String, Vec<i32>>);
+    assert!(!is_copy_type(&ty), "HashMap should NOT be Copy");
 }

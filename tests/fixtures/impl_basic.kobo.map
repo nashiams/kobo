@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/impl_basic.rs",
+  "sources": [
+    "tests/fixtures/impl_basic.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 8,
+        "column_start": 11,
+        "column_end": 15
+      },
+      "kobo_span": {
+        "start": 80,
+        "end": 84,
+        "file_id": 0
+      },
+      "ownership_tier": "rc"
+    },
+    {
+      "rs_span": {
+        "line": 23,
+        "column_start": 8,
+        "column_end": 9
+      },
+      "kobo_span": {
+        "start": 344,
+        "end": 345,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    }
+  ]
+}

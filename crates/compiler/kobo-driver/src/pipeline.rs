@@ -3,13 +3,14 @@ use std::path::{Path, PathBuf};
 use kobo_analysis::{facts_to_diagnostics, run_analysis};
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
-use kobo_ir::{FileId, Kir, RelaxAttrError, SolutionMap, WarnEarlyPattern};
+use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
 use kobo_migrate::{solve, ConstraintGraph, SolveResult, SolverBudget};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
-    preprocess_kobo_keywords, preprocess_strict_reject_invalid, v05_keyword_configs, KoboFile,
+    preprocess_kobo_keywords, preprocess_strict_reject_invalid, v05_keyword_configs,
+    mode_parse::parse_file_mode, KoboFile,
 };
-use kobo_transform::{build_kir, TransformOptions};
+use kobo_transform::{build_kir, TransformOptions, strict_async::check_strict_async};
 
 use crate::filesystem::{
     map_path_for, output_path_for, read_kobo_file, write_map_file, write_rs_file,
@@ -34,6 +35,20 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         }
     };
     let file_id = session.register_source_file(input.to_path_buf(), source.clone());
+
+    // S-26: Per-module mode — file attribute overrides Kobo.toml, CLI overrides both.
+    if !session.cli_mode_override {
+        match parse_file_mode(&source) {
+            Ok(Some(file_mode)) => {
+                session.config.mode = file_mode;
+            }
+            Ok(None) => {} // no file-level attribute, keep current mode
+            Err(e) => {
+                eprintln!("kobo: {e}");
+                return Err(());
+            }
+        }
+    }
 
     // v0.5 preprocessing: rewrite @strict → marker attributes before syn parse.
     let configs = v05_keyword_configs();
@@ -65,6 +80,8 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         &mut session.id_gen,
         TransformOptions {
             small_struct_clone_threshold_bytes: session.config.small_struct_clone_threshold_bytes,
+            copy_types: session.config.copy_types.clone(),
+            mutating_methods: session.config.mutating_methods.clone(),
         },
     );
 
@@ -272,6 +289,52 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
         ));
     }
 
+    // Phase 11: Emit K006x diagnostics for async ownership violations.
+    // has_executor defaults to true for now — executor detection is not yet implemented.
+    let async_violations = check_strict_async(kir, session.mode(), true);
+    for violation in &async_violations {
+        let (code, label_text, explanation) = match &violation.kind {
+            AsyncViolationKind::NonSendCapture { binding_name, .. } => (
+                KErrorCode::K0060,
+                format!("binding `{binding_name}` is not Send"),
+                format!(
+                    "binding `{binding_name}` would be wrapped in Rc (not Send) but the async context requires Send\n   \
+                     = kobo decision: refused to generate non-Send wrapper in async context"
+                ),
+            ),
+            AsyncViolationKind::NonSyncShared { binding_name, .. } => (
+                KErrorCode::K0061,
+                format!("binding `{binding_name}` is not Sync for shared access"),
+                format!(
+                    "binding `{binding_name}` requires Sync for cross-task sharing but the current wrapper is not Sync\n   \
+                     = kobo decision: consider restructuring with channels or an actor pattern"
+                ),
+            ),
+            AsyncViolationKind::MissingExecutor => (
+                KErrorCode::K0062,
+                "no async executor configured".to_owned(),
+                "async code detected but no executor (tokio/async-std) found in dependencies\n   \
+                 = add tokio or async-std to [dependencies] in Cargo.toml".to_owned(),
+            ),
+            AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
+                KErrorCode::K0063,
+                format!("strict mode: async wrapping not permitted for `{binding_name}`"),
+                format!(
+                    "in @strict mode, binding `{binding_name}` cannot use ownership wrappers in async context\n   \
+                     = kobo decision: @strict requires zero-cost ownership — no Rc, Arc, or RefCell"
+                ),
+            ),
+        };
+        let severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Error);
+        session.diagnostics.push(KDiagnostic::new(
+            code,
+            severity,
+            DiagLabel::primary(violation.span, label_text),
+            explanation,
+            DiagDecision(String::new()),
+        ));
+    }
+
     if session.has_errors() {
         Err(())
     } else {
@@ -287,5 +350,69 @@ fn resolve_solution() -> SolutionMap {
             map
         }
         SolveResult::Conflict => SolutionMap::new(),
+    }
+}
+
+/// Resolves the effective mode for a file.
+///
+/// Priority: CLI flag > file attribute (`//! kobo:mode = …`) > Kobo.toml [S-26].
+pub fn effective_mode(
+    cli_mode: Option<KoboMode>,
+    file_mode: Option<KoboMode>,
+    config_mode: KoboMode,
+) -> KoboMode {
+    cli_mode.or(file_mode).unwrap_or(config_mode)
+}
+
+#[cfg(test)]
+mod tests {
+    use kobo_ir::KoboMode;
+    use super::effective_mode;
+
+    /// S-26: CLI flag takes highest priority.
+    #[test]
+    fn cli_overrides_file_and_config() {
+        let result = effective_mode(
+            Some(KoboMode::Strict),
+            Some(KoboMode::Checked),
+            KoboMode::Script,
+        );
+        assert_eq!(result, KoboMode::Strict);
+    }
+
+    /// S-26: File attribute overrides Kobo.toml when no CLI flag.
+    #[test]
+    fn file_overrides_config() {
+        let result = effective_mode(
+            None,
+            Some(KoboMode::Checked),
+            KoboMode::Script,
+        );
+        assert_eq!(result, KoboMode::Checked);
+    }
+
+    /// S-26: Config (Kobo.toml) is the fallback.
+    #[test]
+    fn config_is_fallback() {
+        let result = effective_mode(None, None, KoboMode::Checked);
+        assert_eq!(result, KoboMode::Checked);
+    }
+
+    /// S-26: CLI overrides file attribute even when both are set.
+    #[test]
+    fn cli_overrides_file_when_both_set() {
+        let result = effective_mode(
+            Some(KoboMode::Script),
+            Some(KoboMode::Strict),
+            KoboMode::Checked,
+        );
+        assert_eq!(result, KoboMode::Script);
+    }
+
+    /// S-26: No file attribute + no CLI → uses config.
+    #[test]
+    fn no_file_no_cli_uses_config() {
+        let result = effective_mode(None, None, KoboMode::Script);
+        assert_eq!(result, KoboMode::Script);
     }
 }

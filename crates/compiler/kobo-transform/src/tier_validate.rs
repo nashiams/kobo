@@ -31,6 +31,10 @@ fn push_mutation_violation(
     decision: &TierDecision,
     binding: &kobo_ir::TransformBindingFacts,
 ) {
+    // S-1: Local-only mutation (no sharing, no escape) is just `let mut` — no Rc needed.
+    if !binding.shared_facts.needs_sharing && !binding.shared_facts.has_escape {
+        return;
+    }
     if binding.shared_facts.needs_mutable_wrapper && decision.tier != OwnershipTier::RcMutShared {
         violations.push(TierViolation {
             node_id: decision.node,
@@ -154,6 +158,8 @@ mod tests {
             plain_clone_source: None,
             plain_clone_move_span: None,
             elision_skip_reason: None,
+            decl_scope_depth: 0,
+            ref_returning_read_spans: Vec::new(),
         }
     }
 
@@ -185,6 +191,7 @@ mod tests {
     fn mutation_violation_escalates_to_rc_refcell() {
         let facts = facts(SharedBindingFacts {
             needs_mutable_wrapper: true,
+            needs_sharing: true,
             mutable_sites: 1,
             ..Default::default()
         });

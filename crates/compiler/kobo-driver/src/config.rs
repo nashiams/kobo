@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,12 @@ pub struct KoboConfig {
     pub lsp_solver_budget_ms: u64,
     pub small_struct_clone_threshold_bytes: usize,
     pub output_dir: Option<PathBuf>,
+    pub package_name: String,
+    pub package_version: String,
+    pub dependencies: HashMap<String, toml::Value>,
+    pub copy_types: Vec<String>,
+    pub mutating_methods: Vec<String>,
+    pub src_dir: PathBuf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -29,6 +36,14 @@ struct RawKoboConfig {
     transform: RawTransformSection,
     #[serde(default)]
     output: RawOutputSection,
+    #[serde(default)]
+    package: RawPackageSection,
+    #[serde(default)]
+    dependencies: HashMap<String, toml::Value>,
+    #[serde(default)]
+    copy_types: RawCopyTypesSection,
+    #[serde(default)]
+    mutating_methods: RawMutatingMethodsSection,
     mode: Option<KoboMode>,
     hot_borrow_threshold: Option<u64>,
     solver_cluster_limit: Option<usize>,
@@ -66,6 +81,24 @@ struct RawOutputSection {
     output_dir: Option<PathBuf>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RawPackageSection {
+    name: Option<String>,
+    version: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawCopyTypesSection {
+    #[serde(default)]
+    external: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawMutatingMethodsSection {
+    #[serde(default)]
+    methods: Vec<String>,
+}
+
 /// Errors produced while loading or parsing `Kobo.toml`.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -81,6 +114,8 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
+    #[error("failed to parse TOML: {0}")]
+    ParseError(String),
 }
 
 impl Default for KoboConfig {
@@ -93,6 +128,12 @@ impl Default for KoboConfig {
             lsp_solver_budget_ms: 200,
             small_struct_clone_threshold_bytes: 128,
             output_dir: None,
+            package_name: String::new(),
+            package_version: String::new(),
+            dependencies: HashMap::new(),
+            copy_types: Vec::new(),
+            mutating_methods: Vec::new(),
+            src_dir: PathBuf::from("src"),
         }
     }
 }
@@ -186,6 +227,22 @@ impl RawKoboConfig {
         {
             config.output_dir = Some(resolve_output_dir(config_dir, output_dir));
         }
+
+        if let Some(name) = self.package.name {
+            config.package_name = name;
+        }
+        if let Some(version) = self.package.version {
+            config.package_version = version;
+        }
+        if !self.dependencies.is_empty() {
+            config.dependencies = self.dependencies;
+        }
+        if !self.copy_types.external.is_empty() {
+            config.copy_types = self.copy_types.external;
+        }
+        if !self.mutating_methods.methods.is_empty() {
+            config.mutating_methods = self.mutating_methods.methods;
+        }
     }
 }
 
@@ -195,6 +252,19 @@ fn resolve_output_dir(config_dir: &Path, output_dir: PathBuf) -> PathBuf {
     } else {
         config_dir.join(output_dir)
     }
+}
+
+/// Parse a `Kobo.toml` from its raw TOML string, returning a fully-merged `KoboConfig`.
+///
+/// Does **not** resolve output_dir against a filesystem path — the caller should handle that.
+pub fn parse_kobo_config(toml_str: &str) -> Result<KoboConfig, ConfigError> {
+    let raw: RawKoboConfig =
+        toml::from_str(toml_str).map_err(|e| ConfigError::ParseError(e.to_string()))?;
+    let mut config = KoboConfig::default();
+    // Use a dummy config_dir since we can't resolve paths from a raw string.
+    let dummy_dir = Path::new(".");
+    raw.merge_into(&mut config, dummy_dir);
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -297,5 +367,67 @@ output_dir = "generated"
         assert_eq!(config.lsp_solver_budget_ms, 250);
         assert_eq!(config.small_struct_clone_threshold_bytes, 192);
         assert_eq!(config.output_dir, Some(crate_dir.join("generated")));
+    }
+
+    // ── Phase 1 / Step 1.1: parse_kobo_config tests ──────────────────
+
+    use super::parse_kobo_config;
+
+    #[test]
+    fn parse_config_loads_package_name() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "0.2.0"
+"#;
+        let config = parse_kobo_config(toml).unwrap();
+        assert_eq!(config.package_name, "my-app");
+        assert_eq!(config.package_version, "0.2.0");
+    }
+
+    #[test]
+    fn parse_config_loads_dependencies() {
+        let toml = r#"
+[dependencies]
+serde = "1"
+tokio = { version = "1", features = ["full"] }
+"#;
+        let config = parse_kobo_config(toml).unwrap();
+        assert_eq!(config.dependencies.len(), 2);
+        assert!(config.dependencies.contains_key("serde"));
+        assert!(config.dependencies.contains_key("tokio"));
+    }
+
+    #[test]
+    fn parse_config_loads_copy_types() {
+        let toml = r#"
+[copy_types]
+external = ["MyPoint", "Color"]
+"#;
+        let config = parse_kobo_config(toml).unwrap();
+        assert_eq!(config.copy_types, vec!["MyPoint", "Color"]);
+    }
+
+    #[test]
+    fn parse_config_loads_mutating_methods() {
+        let toml = r#"
+[mutating_methods]
+methods = ["push", "insert", "remove"]
+"#;
+        let config = parse_kobo_config(toml).unwrap();
+        assert_eq!(
+            config.mutating_methods,
+            vec!["push", "insert", "remove"]
+        );
+    }
+
+    #[test]
+    fn parse_config_defaults_when_empty() {
+        let config = parse_kobo_config("").unwrap();
+        assert_eq!(config.package_name, "");
+        assert!(config.dependencies.is_empty());
+        assert!(config.copy_types.is_empty());
+        assert!(config.mutating_methods.is_empty());
+        assert_eq!(config.src_dir, PathBuf::from("src"));
     }
 }

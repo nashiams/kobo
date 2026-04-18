@@ -1,6 +1,10 @@
+pub mod borrow_report;
 mod complexity;
 mod report;
 mod warn_early;
+
+#[cfg(test)]
+mod borrow_report_tests;
 
 pub use complexity::classify_site;
 pub use kobo_ir::debt::DebtReport;

@@ -31,6 +31,7 @@ pub use solution_map::SolutionMap;
 pub use span::KoboSpan;
 pub use mode::KoboMode;
 pub use strict::{
+    AsyncViolationFact, AsyncViolationKind,
     CaptureAccessKind, CaptureSet, CapturedBinding, ClosureCaptureDetail, ClosureCaptureMode,
     NestedStrictBlock, StrictBoundaryFact, StrictBoundaryViolation, StrictFnMode,
 };

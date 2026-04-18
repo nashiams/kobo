@@ -18,7 +18,9 @@ pub(super) fn build_session(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::
     if let Some(mode) = cli_mode {
         config.mode = mode;  // CLI overrides Kobo.toml [Trap 5]
     }
-    Ok(CompileSession::new(config))
+    let mut session = CompileSession::new(config);
+    session.cli_mode_override = cli_mode.is_some();
+    Ok(session)
 }
 
 pub(super) fn render_diagnostics(session: &CompileSession) {

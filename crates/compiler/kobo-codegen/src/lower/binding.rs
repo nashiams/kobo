@@ -15,9 +15,15 @@ pub(crate) fn apply_tier_to_local(
     tier: OwnershipTier,
     already_wrapped: bool,
     diag_source_location: Option<&str>,
+    mutation_required: bool,
 ) {
     if matches!(tier, OwnershipTier::RcMutShared | OwnershipTier::Scoped) {
         strip_binding_mutability(&mut local.pat);
+    }
+
+    // S-1: PlainOwned local bindings that are mutated need `let mut`.
+    if tier == OwnershipTier::PlainOwned && mutation_required {
+        add_binding_mutability(&mut local.pat);
     }
 
     apply_tier_to_pat_type(&mut local.pat, tier);
@@ -38,6 +44,12 @@ pub(crate) fn apply_tier_to_local(
         OwnershipTier::ArcShared if !already_wrapped => {
             let expr = (*init.expr).clone();
             init.expr = Box::new(parse_quote!(Arc::new(#expr)));
+        }
+        OwnershipTier::ArcMutShared if !already_wrapped => {
+            // Phase 11: Arc<tokio::sync::RwLock<T>> for async mutable sharing.
+            // HARD RULE: never Arc<std::sync::Mutex<T>> — use tokio::sync::RwLock.
+            let expr = (*init.expr).clone();
+            init.expr = Box::new(parse_quote!(Arc::new(tokio::sync::RwLock::new(#expr))));
         }
         OwnershipTier::RcMutShared if !already_wrapped => {
             let expr = (*init.expr).clone();
@@ -92,26 +104,38 @@ pub(crate) fn wrapper_binding_from_expr(
     .then_some((ident, tier))
 }
 
+/// Known non-mutating methods that are safe to call via `.borrow()` on wrapped types.
+const KNOWN_NON_MUTATING_METHODS: &[&str] = &[
+    "as_bytes",
+    "as_ref",
+    "as_slice",
+    "as_str",
+    "capacity",
+    "chars",
+    "clone",
+    "contains",
+    "contains_key",
+    "ends_with",
+    "first",
+    "get",
+    "is_empty",
+    "iter",
+    "keys",
+    "last",
+    "len",
+    "starts_with",
+    "to_string",
+    "trim",
+    "values",
+];
+
+/// Returns `true` if the method is mutating (requires `borrow_mut` on wrapped types).
+///
+/// Conservative: unknown methods default to `true` (mutating) so that
+/// `borrow_mut()` is used — over-restriction is safe, under-restriction is not.
 pub(crate) fn is_mutating_method(method: &syn::Ident) -> bool {
-    matches!(
-        method.to_string().as_str(),
-        "append"
-            | "clear"
-            | "extend"
-            | "insert"
-            | "insert_str"
-            | "pop"
-            | "push"
-            | "push_str"
-            | "remove"
-            | "replace"
-            | "retain"
-            | "reverse"
-            | "sort"
-            | "sort_by"
-            | "swap"
-            | "truncate"
-    )
+    let name = method.to_string();
+    !KNOWN_NON_MUTATING_METHODS.contains(&name.as_str())
 }
 
 fn binding_ident(pat: &syn::Pat) -> Option<&syn::Ident> {
@@ -136,6 +160,7 @@ fn wrap_owned_type(original_ty: syn::Type, tier: OwnershipTier) -> syn::Type {
         OwnershipTier::BoxOwned => parse_quote!(Box<#original_ty>),
         OwnershipTier::RcShared => parse_quote!(Rc<#original_ty>),
         OwnershipTier::ArcShared => parse_quote!(Arc<#original_ty>),
+        OwnershipTier::ArcMutShared => parse_quote!(Arc<tokio::sync::RwLock<#original_ty>>),
         OwnershipTier::RcMutShared => parse_quote!(Rc<RefCell<#original_ty>>),
         OwnershipTier::Scoped => parse_quote!(ScopedHandle<#original_ty>),
         _ => original_ty,
@@ -146,6 +171,16 @@ fn strip_binding_mutability(pat: &mut syn::Pat) {
     match pat {
         syn::Pat::Ident(ident) => ident.mutability = None,
         syn::Pat::Type(typed) => strip_binding_mutability(&mut typed.pat),
+        _ => {}
+    }
+}
+
+fn add_binding_mutability(pat: &mut syn::Pat) {
+    match pat {
+        syn::Pat::Ident(ident) => {
+            ident.mutability = Some(syn::token::Mut::default());
+        }
+        syn::Pat::Type(typed) => add_binding_mutability(&mut typed.pat),
         _ => {}
     }
 }
@@ -184,7 +219,7 @@ mod tests {
         let init: syn::Expr = parse_quote!(value);
         let mut local = make_local(init);
 
-        apply_tier_to_local(&mut local, OwnershipTier::RcMutShared, false, Some("test.kobo:5"));
+        apply_tier_to_local(&mut local, OwnershipTier::RcMutShared, false, Some("test.kobo:5"), false);
 
         let output = quote::quote!(#local).to_string();
         assert!(
@@ -202,7 +237,7 @@ mod tests {
         let init: syn::Expr = parse_quote!(value);
         let mut local = make_local(init);
 
-        apply_tier_to_local(&mut local, OwnershipTier::RcMutShared, false, None);
+        apply_tier_to_local(&mut local, OwnershipTier::RcMutShared, false, None, false);
 
         let output = quote::quote!(#local).to_string();
         assert!(
@@ -212,6 +247,34 @@ mod tests {
         assert!(
             output.contains("Rc") && output.contains("RefCell"),
             "must wrap in Rc<RefCell<…>>, got: {output}"
+        );
+    }
+
+    #[test]
+    fn unknown_method_defaults_to_mutating() {
+        let ident: syn::Ident = parse_quote!(frobnicate);
+        assert!(
+            super::is_mutating_method(&ident),
+            "unknown method 'frobnicate' should default to true (conservative/mutating)"
+        );
+    }
+
+    #[test]
+    fn known_non_mutating_method_returns_false() {
+        let ident: syn::Ident = parse_quote!(len);
+        assert!(
+            !super::is_mutating_method(&ident),
+            "known non-mutating method 'len' should return false"
+        );
+    }
+
+    #[test]
+    fn known_mutating_method_returns_true() {
+        // push is not in KNOWN_NON_MUTATING_METHODS → should be true
+        let ident: syn::Ident = parse_quote!(push);
+        assert!(
+            super::is_mutating_method(&ident),
+            "'push' should return true (mutating)"
         );
     }
 }

@@ -1,6 +1,5 @@
 ---
 source: bin/kobo-cli/tests/test_run.rs
-assertion_line: 284
 expression: output.stdout
 ---
 #[derive(Clone, Copy)]
@@ -9,9 +8,7 @@ struct SmallCopy {
     b: u64,
 }
 fn main() {
-// kobo: x @ line 8 -> plain (local-only non-Copy binding)
     let x = SmallCopy { a: 1, b: 2 };
-// kobo: y @ line 9 -> plain (local-only non-Copy binding)
     let y = x.clone();
 // kobo: sum @ line 10 -> plain (local-only non-Copy binding)
     let sum = x.a + y.b;

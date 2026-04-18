@@ -3,7 +3,7 @@ source: bin/kobo-cli/tests/test_run.rs
 expression: dead_output.stdout.clone()
 ---
 fn main() {
-// kobo: x @ line 2 -> plain (dead original after assignment)
+// kobo: x @ line 2 -> plain (local-only non-Copy binding)
     let x = String::from("hello");
     let y = &x;
 // kobo: z @ line 4 -> plain (local-only non-Copy binding)

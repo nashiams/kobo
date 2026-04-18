@@ -11,7 +11,7 @@ use super::elision::{CloneElisionDecision, ElisionFallbackReason, ElisionSkipRea
 pub enum UseEvent {
     ReadOnly { span: KoboSpan },
     Mutated { span: KoboSpan },
-    Moved { span: KoboSpan },
+    Moved { span: KoboSpan, scope_depth: usize },
     Escaped { kind: EscapeKind, span: KoboSpan },
     Borrowed { kind: BorrowKind, span: KoboSpan },
 }
@@ -84,6 +84,10 @@ pub struct TransformBindingFacts {
     pub plain_clone_source: Option<KirNodeId>,
     pub plain_clone_move_span: Option<KoboSpan>,
     pub elision_skip_reason: Option<ElisionSkipReason>,
+    /// Scope depth at which this binding was declared (0 = function body).
+    pub decl_scope_depth: usize,
+    /// Read spans from reference-returning methods (not eligible for extraction).
+    pub ref_returning_read_spans: Vec<KoboSpan>,
 }
 
 /// Frozen transform facts consumed by the tier chooser and diagnostics.
@@ -132,7 +136,7 @@ impl UseEvent {
         match self {
             UseEvent::ReadOnly { span }
             | UseEvent::Mutated { span }
-            | UseEvent::Moved { span }
+            | UseEvent::Moved { span, .. }
             | UseEvent::Escaped { span, .. }
             | UseEvent::Borrowed { span, .. } => *span,
         }
@@ -349,7 +353,7 @@ fn has_live_borrow_at_move(
 
 fn first_move_span(usage: &BindingUsage) -> Option<KoboSpan> {
     usage.uses.iter().find_map(|event| match event {
-        UseEvent::Moved { span } => Some(*span),
+        UseEvent::Moved { span, .. } => Some(*span),
         _ => None,
     })
 }

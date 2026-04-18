@@ -224,7 +224,7 @@ impl super::Lowerer<'_> {
 
         if tier == OwnershipTier::RcMutShared {
             method_call.receiver =
-                Box::new(util::lowered_receiver_expr(ident, &method_call.method));
+                Box::new(util::lowered_receiver_expr(ident, &method_call.method, self.kir.method_mutability()));
             return;
         }
 

@@ -1,0 +1,16 @@
+---
+source: bin/kobo-cli/tests/test_run.rs
+expression: output.stdout
+---
+use std::rc::Rc;
+fn main() {
+// kobo: local_only @ line 2 -> plain (local-only non-Copy binding)
+    let mut local_only = vec![1, 2, 3];
+    local_only.push(4);
+    println!("{}", local_only.len());
+// kobo: shared @ line 6 -> rc (sequential read-only; &T likely at migration (3 call sites))
+    let shared = Rc::new(vec![10, 20]);
+    shared.len();
+    shared.len();
+    shared.is_empty();
+}

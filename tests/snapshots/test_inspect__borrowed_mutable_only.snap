@@ -1,10 +1,11 @@
 ---
 source: bin/kobo-cli/tests/test_run.rs
-assertion_line: 148
+assertion_line: 171
 expression: output.stdout
 ---
 use std::cell::RefCell;
 use std::rc::Rc;
+// kobo: _value @ line 1 -> plain (local-only non-Copy binding)
 fn use_mut<T>(_value: &mut T) {}
 // kobo: value @ line 3 -> rc_refcell (generic T: Copy unknown)
 fn touch<T>(mut value: Rc<RefCell<T>>) {

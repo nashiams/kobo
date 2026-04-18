@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use kobo_debt::{build_debt_report, format_warn_early};
+use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
 use kobo_driver::run_kir_phase;
 
 use super::session::build_session;
@@ -57,4 +58,50 @@ fn count_files_and_lines(file_set: &kobo_ir::FileSet) -> (usize, usize) {
         line_count += entry.source.lines().count();
     }
     (file_count, line_count)
+}
+
+pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
+    let mut session = build_session(file, None)?;
+    let (_, kir) = run_kir_phase(&mut session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
+
+    let tf = kir.transform_facts();
+    let mut all_overlaps = Vec::new();
+
+    for (i, binding) in tf.bindings.iter().enumerate() {
+        let usage = &tf.usages[i];
+        let shared = &tf.shared_facts[i];
+        let report = build_borrow_report(&binding.binding_name, usage, shared);
+        all_overlaps.extend(report.overlapping_sites);
+    }
+
+    let combined = BorrowReport {
+        schema_version: 1,
+        overlapping_sites: all_overlaps,
+    };
+
+    if json {
+        let json_str = serde_json::to_string_pretty(&combined)
+            .context("failed to serialize borrow report to JSON")?;
+        println!("{json_str}");
+        return Ok(());
+    }
+
+    // Human-readable output.
+    if combined.overlapping_sites.is_empty() {
+        println!("No borrow overlaps detected.");
+    } else {
+        for overlap in &combined.overlapping_sites {
+            println!(
+                "Borrow overlap in `{}`: {} immutable, {} mutable span(s). Fix: {:?}",
+                overlap.binding_name,
+                overlap.immutable_spans.len(),
+                overlap.mutable_spans.len(),
+                overlap.fix_pattern,
+            );
+        }
+        println!("\n{} borrow overlap(s) found.", combined.overlapping_sites.len());
+    }
+
+    Ok(())
 }

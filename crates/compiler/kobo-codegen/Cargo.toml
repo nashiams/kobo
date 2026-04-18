@@ -12,3 +12,4 @@ quote       = { workspace = true }
 prettyplease = { workspace = true }
 serde        = { workspace = true }
 serde_json   = "1"
+toml         = { workspace = true }

@@ -5,6 +5,13 @@ use kobo_parser::{KoboBinding, KoboBindingKind};
 
 use crate::small_clone::{type_small_clone_profile, SmallCloneProfile};
 
+/// All Rust primitive types that implement `Copy`. Used by `is_copy_type` to
+/// avoid wrapping stack-value types.
+pub(crate) const PRIMITIVE_COPY_TYPES: &[&str] = &[
+    "bool", "char", "f32", "f64", "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32",
+    "u64", "u128", "usize",
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BindingMetadata {
     pub resource_kind: Option<ResourceKind>,
@@ -89,29 +96,12 @@ pub(crate) fn is_copy_type(ty: &syn::Type) -> bool {
                 return false;
             };
 
-            matches!(
-                segment.ident.to_string().as_str(),
-                "i8" | "i16"
-                    | "i32"
-                    | "i64"
-                    | "i128"
-                    | "isize"
-                    | "u8"
-                    | "u16"
-                    | "u32"
-                    | "u64"
-                    | "u128"
-                    | "usize"
-                    | "f32"
-                    | "f64"
-                    | "bool"
-                    | "char"
-            )
+            PRIMITIVE_COPY_TYPES.contains(&segment.ident.to_string().as_str())
         }
         syn::Type::Tuple(tuple) if tuple.elems.is_empty() => true,
         syn::Type::Tuple(tuple) => tuple.elems.iter().all(is_copy_type),
         syn::Type::Array(array) => is_copy_type(&array.elem),
-        syn::Type::Reference(_) => true,
+        syn::Type::Reference(r) => r.mutability.is_none(),
         _ => false,
     }
 }

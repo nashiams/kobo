@@ -128,6 +128,18 @@ impl<'ast> Visit<'ast> for FormattedBindingCollector {
         visit::visit_block(self, &node.block);
     }
 
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        for input in &node.sig.inputs {
+            if let syn::FnArg::Typed(argument) = input {
+                if let Some(ident) = binding_ident(&argument.pat) {
+                    self.push_binding(ident, LoweringAnchorKind::Parameter);
+                }
+            }
+        }
+
+        visit::visit_block(self, &node.block);
+    }
+
     fn visit_local(&mut self, node: &'ast syn::Local) {
         if let Some(ident) = binding_ident(&node.pat) {
             self.push_binding(ident, LoweringAnchorKind::Local);

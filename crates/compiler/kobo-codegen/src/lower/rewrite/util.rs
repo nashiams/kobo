@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use kobo_ir::OwnershipTier;
 use syn::parse_quote;
 
@@ -16,8 +18,19 @@ pub(super) fn strip_kobo_attrs(attrs: &mut Vec<syn::Attribute>) {
 
 /// Build a `borrow()` or `borrow_mut()` receiver expression based on whether
 /// the method being called is a mutating method.
-pub(super) fn lowered_receiver_expr(ident: syn::Ident, method: &syn::Ident) -> syn::Expr {
-    if is_mutating_method(method) {
+///
+/// Checks the KIR-level `method_mutability` map first (from impl-block scanning
+/// + config overrides), then falls back to the hardcoded list.
+pub(super) fn lowered_receiver_expr(
+    ident: syn::Ident,
+    method: &syn::Ident,
+    method_mutability: &HashMap<String, bool>,
+) -> syn::Expr {
+    let is_mut = method_mutability
+        .get(&method.to_string())
+        .copied()
+        .unwrap_or_else(|| is_mutating_method(method));
+    if is_mut {
         parse_quote!(#ident.borrow_mut())
     } else {
         parse_quote!(#ident.borrow())
@@ -64,5 +77,49 @@ pub(super) fn build_borrow_scope_block_stmt(
         parse_quote!({
             #method_expr
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use quote::ToTokens;
+    use syn::parse_quote;
+
+    use super::lowered_receiver_expr;
+
+    fn render_expr(expr: &syn::Expr) -> String {
+        expr.to_token_stream().to_string()
+    }
+
+    #[test]
+    fn registry_marked_mutating_method_uses_borrow_mut() {
+        let mut method_mutability = HashMap::new();
+        method_mutability.insert("flush".to_owned(), true);
+
+        let method: syn::Ident = parse_quote!(flush);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+
+        assert_eq!(render_expr(&expr), "logger . borrow_mut ()");
+    }
+
+    #[test]
+    fn standard_immutable_method_uses_borrow() {
+        let method_mutability = HashMap::new();
+        let method: syn::Ident = parse_quote!(len);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+
+        assert_eq!(render_expr(&expr), "logger . borrow ()");
+    }
+
+    #[test]
+    #[ignore = "review: v0.7 contract gap - unknown wrapped methods still default to borrow()"]
+    fn unknown_methods_default_to_borrow_mut_per_contract() {
+        let method_mutability = HashMap::new();
+        let method: syn::Ident = parse_quote!(flush_cache);
+        let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability);
+
+        assert_eq!(render_expr(&expr), "logger . borrow_mut ()");
     }
 }

@@ -63,6 +63,8 @@ pub enum KoboBindingKind {
     Local,
     Const,
     Static,
+    SelfParam,
+    MutSelfParam,
 }
 
 /// Stable metadata for a concrete binding declaration.

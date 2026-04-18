@@ -79,9 +79,27 @@ pub(crate) enum KoboCommand {
         /// Output a single summary line
         #[arg(long)]
         summary: bool,
+        /// Show borrow overlap analysis
+        #[arg(long)]
+        borrows: bool,
         /// [v0.5] Watch mode — re-run on file changes.
         #[arg(long, hide = true)]
         watch: bool,
+    },
+    /// Create a new Kobo project skeleton.
+    Init {
+        /// Name (and directory) for the new project.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Build all .kobo files in a Kobo project.
+    Build {
+        #[arg(long, conflicts_with = "strict",
+              help = "Build in checked mode")]
+        checked: bool,
+        #[arg(long, conflicts_with = "checked",
+              help = "Build in strict mode")]
+        strict: bool,
     },
 }
 

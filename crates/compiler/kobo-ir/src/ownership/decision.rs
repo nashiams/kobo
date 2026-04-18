@@ -15,7 +15,7 @@ pub enum OwnershipTier {
     ArcShared,
     /// `Rc<RefCell<T>>` - mutable shared, single-threaded. Script-mode default.
     RcMutShared,
-    /// `Arc<Mutex<T>>` - mutable shared, thread-safe. Requires
+    /// `Arc<RwLock<T>>` - mutable shared, thread-safe. Requires
     /// `#[kobo::async_shared]`.
     ArcMutShared,
     /// `ScopedHandle<T>` - resource kind with enforced single ownership.
@@ -81,6 +81,7 @@ pub struct TierViolation {
 pub enum TierReason {
     CopyType,
     LocalOnly,
+    MoveRebind,
     DeadOriginalAfterAssignment,
     CloneElisionFallback(ElisionFallbackReason),
     HeapStable(BoxReason),
@@ -146,7 +147,7 @@ impl OwnershipTier {
             OwnershipTier::RcShared => "rc",
             OwnershipTier::ArcShared => "arc",
             OwnershipTier::RcMutShared => "rc_refcell",
-            OwnershipTier::ArcMutShared => "arc_mutex",
+            OwnershipTier::ArcMutShared => "arc_rwlock",
             OwnershipTier::Scoped => "scoped_handle",
             OwnershipTier::Undecided => "plain",
         }
@@ -242,6 +243,7 @@ impl TierReason {
         match self {
             TierReason::CopyType => "copy type".to_owned(),
             TierReason::LocalOnly => "local-only non-Copy binding".to_owned(),
+            TierReason::MoveRebind => "moved then dead (freeze-and-rotate)".to_owned(),
             TierReason::DeadOriginalAfterAssignment => "dead original after assignment".to_owned(),
             TierReason::CloneElisionFallback(ElisionFallbackReason::MoveSafetyCheckFailed) => {
                 "clone-elision fallback: move safety check failed - conservative clone".to_owned()

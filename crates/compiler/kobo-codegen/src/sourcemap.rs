@@ -127,7 +127,7 @@ fn ownership_tier_label(tier: OwnershipTier) -> &'static str {
         OwnershipTier::RcShared => "rc",
         OwnershipTier::ArcShared => "arc",
         OwnershipTier::RcMutShared => "rc_refcell",
-        OwnershipTier::ArcMutShared => "arc_mutex",
+        OwnershipTier::ArcMutShared => "arc_rwlock",
         OwnershipTier::Scoped => "scoped_handle",
         OwnershipTier::Undecided => "plain",
     }

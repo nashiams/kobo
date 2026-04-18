@@ -1,5 +1,7 @@
 mod annotate;
 mod emit;
+pub mod executor;
+pub mod hard_rules;
 mod lower;
 mod sourcemap;
 

@@ -116,8 +116,28 @@ impl<'ast> Visit<'ast> for BindingCollector<'_> {
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         for input in &node.sig.inputs {
-            if let syn::FnArg::Typed(argument) = input {
-                self.collect_parameter_binding(argument);
+            match input {
+                syn::FnArg::Receiver(receiver) => {
+                    self.collect_self_binding(receiver);
+                }
+                syn::FnArg::Typed(argument) => {
+                    self.collect_parameter_binding(argument);
+                }
+            }
+        }
+
+        syn::visit::visit_block(self, &node.block);
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
+        for input in &node.sig.inputs {
+            match input {
+                syn::FnArg::Receiver(receiver) => {
+                    self.collect_self_binding(receiver);
+                }
+                syn::FnArg::Typed(argument) => {
+                    self.collect_parameter_binding(argument);
+                }
             }
         }
 
@@ -140,6 +160,19 @@ impl BindingCollector<'_> {
             ident.clone(),
             Some((*argument.ty).clone()),
             KoboBindingKind::Parameter,
+        );
+    }
+
+    fn collect_self_binding(&mut self, receiver: &syn::Receiver) {
+        let kind = if receiver.mutability.is_some() {
+            KoboBindingKind::MutSelfParam
+        } else {
+            KoboBindingKind::SelfParam
+        };
+        self.push_binding(
+            syn::Ident::new("self", receiver.self_token.span),
+            None,
+            kind,
         );
     }
 }
@@ -210,6 +243,7 @@ mod tests {
     use kobo_ir::FileId;
 
     use super::parse_file;
+    use crate::KoboBindingKind;
 
     #[test]
     fn parse_assigns_unique_monotonic_ids() {
@@ -231,5 +265,54 @@ fn main() {
         let unique_ids: HashSet<u32> = all_ids.iter().copied().collect();
         assert_eq!(all_ids.len(), unique_ids.len());
         assert!(all_ids.windows(2).all(|window| window[0] < window[1]));
+    }
+
+    #[test]
+    fn test_binding_kind_self_param() {
+        let source = r#"
+struct Foo { val: i32 }
+impl Foo {
+    fn read(&self) -> i32 { self.val }
+    fn write(&mut self, v: i32) { self.val = v; }
+    fn consume(self) -> i32 { self.val }
+    fn with_param(&self, x: i32) -> i32 { self.val + x }
+}
+"#;
+
+        let mut id_gen = kobo_ir::NodeIdGen::new();
+        let kobo_file = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+
+        let bindings: Vec<_> = kobo_file.iter_bindings().collect();
+
+        // read(&self) -> SelfParam
+        let read_self = bindings.iter().find(|b| {
+            b.ident == "self" && b.kind == KoboBindingKind::SelfParam
+        });
+        assert!(read_self.is_some(), "expected SelfParam for &self");
+
+        // write(&mut self) -> MutSelfParam
+        let write_self = bindings.iter().find(|b| {
+            b.ident == "self" && b.kind == KoboBindingKind::MutSelfParam
+        });
+        assert!(write_self.is_some(), "expected MutSelfParam for &mut self");
+
+        // consume(self) -> SelfParam (by-value self is not &mut)
+        let consume_self = bindings.iter().filter(|b| {
+            b.ident == "self" && b.kind == KoboBindingKind::SelfParam
+        }).count();
+        // read(&self), consume(self), and with_param(&self) are all SelfParam
+        assert_eq!(consume_self, 3, "expected 3 SelfParam (read + consume + with_param)");
+
+        // with_param has x: i32 as Parameter
+        let x_param = bindings.iter().find(|b| {
+            b.ident == "x" && b.kind == KoboBindingKind::Parameter
+        });
+        assert!(x_param.is_some(), "expected Parameter for x");
+
+        // v in write is Parameter
+        let v_param = bindings.iter().find(|b| {
+            b.ident == "v" && b.kind == KoboBindingKind::Parameter
+        });
+        assert!(v_param.is_some(), "expected Parameter for v");
     }
 }

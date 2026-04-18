@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/opaque_alias.rs",
+  "sources": [
+    "tests/fixtures/opaque_alias.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 9,
+        "column_start": 8,
+        "column_end": 9
+      },
+      "kobo_span": {
+        "start": 104,
+        "end": 105,
+        "file_id": 0
+      },
+      "ownership_tier": "rc"
+    },
+    {
+      "rs_span": {
+        "line": 14,
+        "column_start": 8,
+        "column_end": 9
+      },
+      "kobo_span": {
+        "start": 179,
+        "end": 180,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    },
+    {
+      "rs_span": {
+        "line": 16,
+        "column_start": 8,
+        "column_end": 13
+      },
+      "kobo_span": {
+        "start": 194,
+        "end": 199,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    }
+  ]
+}

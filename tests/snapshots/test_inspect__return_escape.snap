@@ -1,6 +1,5 @@
 ---
 source: bin/kobo-cli/tests/test_run.rs
-assertion_line: 465
 expression: output.stdout
 ---
 fn build_name() -> String {

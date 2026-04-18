@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/large_copy_alias.rs",
+  "sources": [
+    "tests/fixtures/large_copy_alias.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 43,
+        "column_start": 8,
+        "column_end": 11
+      },
+      "kobo_span": {
+        "start": 609,
+        "end": 612,
+        "file_id": 0
+      },
+      "ownership_tier": "plain"
+    }
+  ]
+}

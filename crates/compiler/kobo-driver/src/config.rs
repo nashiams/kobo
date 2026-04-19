@@ -15,6 +15,7 @@ pub struct KoboConfig {
     pub solver_budget_seconds: f64,
     pub lsp_solver_budget_ms: u64,
     pub small_struct_clone_threshold_bytes: usize,
+    pub channel_buffer_size: usize,
     pub output_dir: Option<PathBuf>,
     pub package_name: String,
     pub package_version: String,
@@ -50,6 +51,7 @@ struct RawKoboConfig {
     solver_budget_seconds: Option<f64>,
     lsp_solver_budget_ms: Option<u64>,
     small_struct_clone_threshold_bytes: Option<usize>,
+    channel_buffer_size: Option<usize>,
     output_dir: Option<PathBuf>,
 }
 
@@ -127,6 +129,7 @@ impl Default for KoboConfig {
             solver_budget_seconds: 5.0,
             lsp_solver_budget_ms: 200,
             small_struct_clone_threshold_bytes: 128,
+            channel_buffer_size: 100,
             output_dir: None,
             package_name: String::new(),
             package_version: String::new(),
@@ -218,6 +221,10 @@ impl RawKoboConfig {
             .or(self.transform.small_struct_clone_threshold_bytes)
         {
             config.small_struct_clone_threshold_bytes = small_struct_clone_threshold_bytes;
+        }
+
+        if let Some(channel_buffer_size) = self.channel_buffer_size {
+            config.channel_buffer_size = channel_buffer_size;
         }
 
         if let Some(output_dir) = self

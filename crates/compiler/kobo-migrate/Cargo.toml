@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 kobo-ir     = { path = "../kobo-ir" }
+kobo-errors = { path = "../kobo-errors" }

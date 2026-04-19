@@ -2035,3 +2035,75 @@ fn main() {
         decision.reason,
     );
 }
+
+// -----------------------------------------------------------------------
+// Spawn-block capture detection [S-8 / S-9]
+// -----------------------------------------------------------------------
+
+#[test]
+fn spawn_block_captures_outer_binding() {
+    let source = r#"
+fn main() {
+    let data = vec![1, 2, 3];
+    __kobo_spawn_block!({
+        let _len = data.len();
+    });
+}
+"#;
+    let output = raw_builder_output_for(source);
+    assert_eq!(
+        output.spawn_sites.len(),
+        1,
+        "expected one spawn site, got {}",
+        output.spawn_sites.len(),
+    );
+    assert!(
+        !output.spawn_sites[0].captured_bindings.is_empty(),
+        "expected captured bindings in spawn site",
+    );
+}
+
+#[test]
+fn spawn_block_marks_captured_binding_needs_send() {
+    let source = r#"
+fn main() {
+    let data = vec![1, 2, 3];
+    __kobo_spawn_block!({
+        let _len = data.len();
+    });
+}
+"#;
+    let output = raw_builder_output_for(source);
+    let data_binding = output
+        .transform_facts
+        .bindings
+        .iter()
+        .find(|b| b.binding_name == "data")
+        .expect("should find 'data' binding");
+    assert!(
+        data_binding.shared_facts.needs_send,
+        "captured binding in spawn block should need Send",
+    );
+}
+
+#[test]
+fn no_spawn_block_no_send_requirement() {
+    let source = r#"
+fn main() {
+    let data = vec![1, 2, 3];
+    println!("{:?}", data);
+}
+"#;
+    let output = raw_builder_output_for(source);
+    assert!(output.spawn_sites.is_empty());
+    let data_binding = output
+        .transform_facts
+        .bindings
+        .iter()
+        .find(|b| b.binding_name == "data")
+        .expect("should find 'data' binding");
+    assert!(
+        !data_binding.shared_facts.needs_send,
+        "non-spawn binding should not need Send",
+    );
+}

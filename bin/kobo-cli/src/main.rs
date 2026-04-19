@@ -51,6 +51,12 @@ pub(crate) enum KoboCommand {
         #[arg(long, conflicts_with = "checked",
               help = "Inspect in strict mode (v0.9 — not yet implemented)")]
         strict: bool,
+        #[arg(long,
+              help = "Strip all Kobo wrappers, output standalone Rust")]
+        clean: bool,
+        #[arg(long, value_name = "DIR",
+              help = "Generate a complete Cargo project to DIR")]
+        cargo: Option<PathBuf>,
     },
     /// Run the pipeline through the KIR phase only and print KIR nodes.
     Dump {
@@ -82,9 +88,32 @@ pub(crate) enum KoboCommand {
         /// Show borrow overlap analysis
         #[arg(long)]
         borrows: bool,
+        /// Show migration patterns (Rc→Arc, clone elimination, etc.)
+        #[arg(long)]
+        patterns: bool,
         /// [v0.5] Watch mode — re-run on file changes.
         #[arg(long, hide = true)]
         watch: bool,
+    },
+    /// Migrate ownership tiers in a .kobo file.
+    Migrate {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Show diff without applying changes (default)
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply migration changes to the source file
+        #[arg(long)]
+        apply: bool,
+        /// Show dependency graph
+        #[arg(long)]
+        graph: bool,
+        /// Restrict migration scope to a specific function
+        #[arg(long, value_name = "FN_NAME")]
+        root: Option<String>,
+        /// Generate actor scaffold at FILE:LINE
+        #[arg(long, value_name = "SPEC")]
+        actor: Option<String>,
     },
     /// Create a new Kobo project skeleton.
     Init {
@@ -100,6 +129,22 @@ pub(crate) enum KoboCommand {
         #[arg(long, conflicts_with = "checked",
               help = "Build in strict mode")]
         strict: bool,
+    },
+    /// Per-function timing report for tick loop functions.
+    Bench {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Report tick budget usage
+        #[arg(long)]
+        tick_budget: bool,
+    },
+    /// File-watcher re-run on save.
+    Watch {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Simple mode: save → compile → run (no state persistence)
+        #[arg(long)]
+        simple: bool,
     },
 }
 

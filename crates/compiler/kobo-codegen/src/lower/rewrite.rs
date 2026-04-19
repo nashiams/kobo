@@ -1,5 +1,11 @@
+pub(crate) mod async_wrapper;
+pub(crate) mod clone_inject;
 mod expr;
 mod local;
+pub(crate) mod lock_order;
+pub(crate) mod spawn;
+pub(crate) mod split_borrow;
+pub(crate) mod tick;
 mod util;
 
 use kobo_parser::KoboFile;
@@ -121,8 +127,22 @@ impl<'a> Lowerer<'a> {
 
     fn lower_impl_block(&mut self, item_impl: &mut syn::ItemImpl) {
         util::strip_kobo_attrs(&mut item_impl.attrs);
+
+        // S-20: Detect split-borrow sites and apply destructuring.
+        let items_snapshot: Vec<syn::Item> =
+            vec![syn::Item::Impl(item_impl.clone())];
+        let split_sites =
+            kobo_analysis::split_borrow::detect_split_borrow_sites(&items_snapshot);
+
         for impl_item in &mut item_impl.items {
             if let syn::ImplItem::Fn(method) = impl_item {
+                // Apply split-borrow rewrite if a site was detected for this method.
+                if let Some(site) = split_sites
+                    .iter()
+                    .find(|s| s.method_name == method.sig.ident.to_string())
+                {
+                    split_borrow::generate_split_borrow(method, site);
+                }
                 self.lower_impl_method(method);
             }
         }
@@ -244,6 +264,12 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Item(item) => self.lower_item(item),
             syn::Stmt::Expr(expr, _) => self.lower_expr(expr, scopes),
             syn::Stmt::Macro(stmt_macro) => {
+                // Check for spawn block marker macro.
+                if let Some(replacement) = spawn::lower_spawn_macro(&stmt_macro.mac) {
+                    let semi = stmt_macro.semi_token;
+                    *stmt = syn::Stmt::Expr(replacement, semi);
+                    return;
+                }
                 self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
             }
         }

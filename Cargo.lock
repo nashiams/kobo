@@ -243,6 +243,8 @@ version = "0.1.0"
 dependencies = [
  "kobo-errors",
  "kobo-ir",
+ "proc-macro2",
+ "syn",
 ]
 
 [[package]]
@@ -252,10 +254,12 @@ dependencies = [
  "anyhow",
  "clap",
  "insta",
+ "kobo-codegen",
  "kobo-debt",
  "kobo-driver",
  "kobo-errors",
  "kobo-ir",
+ "kobo-migrate",
  "serde_json",
 ]
 
@@ -263,6 +267,7 @@ dependencies = [
 name = "kobo-codegen"
 version = "0.1.0"
 dependencies = [
+ "kobo-analysis",
  "kobo-ir",
  "kobo-parser",
  "prettyplease",
@@ -271,6 +276,8 @@ dependencies = [
  "serde",
  "serde_json",
  "syn",
+ "tempfile",
+ "thiserror",
  "toml",
 ]
 
@@ -328,6 +335,7 @@ dependencies = [
 name = "kobo-migrate"
 version = "0.1.0"
 dependencies = [
+ "kobo-errors",
  "kobo-ir",
 ]
 
@@ -349,6 +357,7 @@ dependencies = [
  "kobo-ir",
  "kobo-parser",
  "proc-macro2",
+ "quote",
  "syn",
  "toml",
 ]

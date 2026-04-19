@@ -5,6 +5,7 @@ mod multi_file;
 mod pipeline;
 mod rustc;
 mod session;
+pub mod test_utils;
 
 pub use config::{load_config, load_config_for, parse_kobo_config, ConfigError, KoboConfig, KoboMode};
 pub use errors::DriverError;

@@ -154,6 +154,9 @@ impl TransformFactsBuilder<'_> {
             return false;
         };
 
+        // Track binding as captured if inside a spawn block [S-8 / S-9].
+        self.record_spawn_capture(binding_state.decl_id);
+
         self.nodes.push(build_binding_event_node(
             self.id_gen.next_kir_id(),
             NodeKind::Use(use_kind),
@@ -178,6 +181,8 @@ impl TransformFactsBuilder<'_> {
         let Some((binding_state, span)) = self.resolved_binding(expr) else {
             return false;
         };
+
+        self.record_spawn_capture(binding_state.decl_id);
 
         self.nodes.push(build_binding_event_node(
             self.id_gen.next_kir_id(),
@@ -211,6 +216,8 @@ impl TransformFactsBuilder<'_> {
             return false;
         };
 
+        self.record_spawn_capture(binding_state.decl_id);
+
         self.nodes.push(build_binding_event_node(
             self.id_gen.next_kir_id(),
             NodeKind::Borrow(borrow_kind),
@@ -235,6 +242,8 @@ impl TransformFactsBuilder<'_> {
         let Some((binding_state, span)) = self.resolved_binding(expr) else {
             return false;
         };
+
+        self.record_spawn_capture(binding_state.decl_id);
 
         let use_kind = match borrow_kind {
             kobo_ir::BorrowKind::Immutable => UseKind::Read,

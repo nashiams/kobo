@@ -44,7 +44,12 @@ pub(super) fn cmd_run(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Result
     Ok(())
 }
 
-pub(super) fn cmd_inspect(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Result<()> {
+pub(super) fn cmd_inspect(
+    file: &Path,
+    cli_mode: Option<KoboMode>,
+    clean: bool,
+    cargo_dir: Option<&Path>,
+) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
     if session.mode() == KoboMode::Strict {
         eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
@@ -60,9 +65,32 @@ pub(super) fn cmd_inspect(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Re
     // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
 
+    let output = if clean || cargo_dir.is_some() {
+        kobo_codegen::clean::strip_kobo_wrappers(&rs_source)
+    } else {
+        rs_source
+    };
+
+    if let Some(dir) = cargo_dir {
+        let kobo_toml_path = file.parent().unwrap_or(Path::new(".")).join("Kobo.toml");
+        let config = if kobo_toml_path.exists() {
+            let toml_str = std::fs::read_to_string(&kobo_toml_path)
+                .with_context(|| format!("failed to read {}", kobo_toml_path.display()))?;
+            kobo_codegen::cargo_gen::KoboProjectConfig::from_toml(&toml_str)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        } else {
+            kobo_codegen::cargo_gen::KoboProjectConfig::default()
+        };
+
+        let source_files = vec![(file.to_path_buf(), output.clone())];
+        kobo_codegen::cargo_gen::generate_cargo_project(&config, &source_files, dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        eprintln!("cargo project generated at {}", dir.display());
+    }
+
     // S-26: Show effective mode so user can verify per-module mode resolution.
     eprintln!("// effective mode: {}", session.mode());
-    print!("{rs_source}");
+    print!("{output}");
     Ok(())
 }
 

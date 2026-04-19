@@ -187,7 +187,7 @@ impl TransformFactsBuilder<'_> {
             syn::Stmt::Local(local) => self.walk_local(local),
             syn::Stmt::Item(item) => self.walk_item(item),
             syn::Stmt::Expr(expr, _) => self.walk_expr(expr),
-            syn::Stmt::Macro(_) => {}
+            syn::Stmt::Macro(stmt_macro) => self.walk_macro_stmt(&stmt_macro.mac),
         }
     }
 
@@ -284,7 +284,7 @@ impl TransformFactsBuilder<'_> {
                 self.walk_expr(index.index.as_ref());
             }
             syn::Expr::Loop(expr_loop) => self.walk_block(&expr_loop.body),
-            syn::Expr::Macro(_) => {}
+            syn::Expr::Macro(expr_macro) => self.walk_macro_stmt(&expr_macro.mac),
             syn::Expr::Match(expr_match) => {
                 self.walk_expr(expr_match.expr.as_ref());
                 for arm in &expr_match.arms {
@@ -410,6 +410,56 @@ impl TransformFactsBuilder<'_> {
         }
 
         self.walk_expr(reference.expr.as_ref());
+    }
+
+    // -----------------------------------------------------------------------
+    // Spawn-block handling [S-8 / S-9]
+    // -----------------------------------------------------------------------
+
+    /// Name of the marker macro emitted by the spawn preprocessor.
+    const SPAWN_MACRO_NAME: &'static str = "__kobo_spawn_block";
+
+    /// Walk a macro statement, detecting `__kobo_spawn_block!` for capture analysis.
+    fn walk_macro_stmt(&mut self, mac: &syn::Macro) {
+        let is_spawn = mac
+            .path
+            .get_ident()
+            .map(|id| id == Self::SPAWN_MACRO_NAME)
+            .unwrap_or(false);
+
+        if !is_spawn {
+            return;
+        }
+
+        // Parse the macro body as a Block.
+        let Ok(block) = mac.parse_body::<syn::Block>() else {
+            return;
+        };
+
+        // Enter spawn scope — bindings used inside will be tracked as captured.
+        self.spawn_depth += 1;
+        let prev_captured = std::mem::take(&mut self.spawn_captured);
+
+        self.walk_block(&block);
+
+        // Collect captured bindings and create a spawn site.
+        let captured = std::mem::replace(&mut self.spawn_captured, prev_captured);
+        self.spawn_depth -= 1;
+
+        if !captured.is_empty() {
+            let span = self.ast.span_from_syn(syn::spanned::Spanned::span(mac));
+            self.spawn_sites.push(crate::escape::SpawnSite {
+                span,
+                captured_bindings: captured,
+            });
+        }
+    }
+
+    /// Record a binding use as captured if we are inside a spawn block.
+    pub(super) fn record_spawn_capture(&mut self, decl_id: kobo_ir::KirNodeId) {
+        if self.spawn_depth > 0 && !self.spawn_captured.contains(&decl_id) {
+            self.spawn_captured.push(decl_id);
+        }
     }
 
     // -----------------------------------------------------------------------

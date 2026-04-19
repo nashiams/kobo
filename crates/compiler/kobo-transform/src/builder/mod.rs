@@ -44,6 +44,8 @@ pub(crate) struct BuilderOutput {
     pub(crate) migrate_sites: Vec<MigrateSite>,
     /// Method name → is_mut_self, from impl block scanning + config.
     pub(crate) method_mutability: std::collections::HashMap<String, bool>,
+    /// Spawn sites with captured binding info [S-8 / S-9].
+    pub(crate) spawn_sites: Vec<crate::escape::SpawnSite>,
 }
 
 pub(crate) struct TransformFactsBuilder<'a> {
@@ -75,6 +77,12 @@ pub(crate) struct TransformFactsBuilder<'a> {
     scope_depth: usize,
     /// Pending `#[kobo::async_shared]` flag for the next binding [BUG 7].
     pending_async_shared: bool,
+    /// Spawn sites collected during walk — used for Send propagation [S-8].
+    spawn_sites: Vec<crate::escape::SpawnSite>,
+    /// When > 0, we are inside a spawn block walk and collecting captured bindings.
+    spawn_depth: usize,
+    /// Bindings captured by the current innermost spawn block.
+    spawn_captured: Vec<kobo_ir::KirNodeId>,
 }
 
 mod emit;
@@ -158,6 +166,9 @@ impl<'a> TransformFactsBuilder<'a> {
             migrate_sites: Vec::new(),
             scope_depth: 0,
             pending_async_shared: false,
+            spawn_sites: Vec::new(),
+            spawn_depth: 0,
+            spawn_captured: Vec::new(),
         }
     }
 
@@ -174,8 +185,12 @@ impl<'a> TransformFactsBuilder<'a> {
             relax_attr_errors,
             migrate_sites,
             method_registry,
+            spawn_sites,
             ..
         } = self;
+
+        // Propagate Send requirements from spawn capture sites [S-8].
+        crate::escape::propagate_spawn_send(&mut transform_facts, &spawn_sites);
 
         for binding in &mut transform_facts.bindings {
             binding.usage.sort_uses();
@@ -205,6 +220,7 @@ impl<'a> TransformFactsBuilder<'a> {
             relax_attr_errors,
             migrate_sites,
             method_mutability: method_registry.into_map(),
+            spawn_sites,
         }
     }
 

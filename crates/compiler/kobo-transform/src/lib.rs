@@ -7,6 +7,7 @@ mod copy_scan;
 mod escape;
 mod finalize;
 mod hint;
+pub mod lifetime_erase;
 mod method_analysis;
 mod options;
 pub mod patterns;

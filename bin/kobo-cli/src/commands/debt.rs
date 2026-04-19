@@ -3,7 +3,9 @@ use std::path::Path;
 use anyhow::Context;
 use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
+use kobo_debt::patterns::{detect_migration_patterns, format_patterns};
 use kobo_driver::run_kir_phase;
+use kobo_migrate::{greedy_resolve, GreedyConfig};
 
 use super::session::build_session;
 
@@ -110,5 +112,29 @@ pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
         println!("\n{} borrow overlap(s) found.", combined.overlapping_sites.len());
     }
 
+    Ok(())
+}
+
+pub(super) fn cmd_debt_patterns(file: &Path, json: bool) -> anyhow::Result<()> {
+    let mut session = build_session(file, None)?;
+    let (_, kir) = run_kir_phase(&mut session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
+
+    let config = GreedyConfig {
+        solver_cluster_limit: session.config.solver_cluster_limit,
+        solver_budget_seconds: session.config.solver_budget_seconds,
+    };
+    let result = greedy_resolve(&kir, &config);
+    let patterns = detect_migration_patterns(&kir, &result.resolved);
+
+    if json {
+        let json_str = serde_json::to_string_pretty(&patterns)
+            .context("failed to serialize patterns to JSON")?;
+        println!("{json_str}");
+        return Ok(());
+    }
+
+    let output = format_patterns(&patterns);
+    println!("{output}");
     Ok(())
 }

@@ -61,6 +61,11 @@ impl super::Lowerer<'_> {
             }
             syn::Expr::Loop(expr_loop) => self.lower_nested_block(&mut expr_loop.body, scopes),
             syn::Expr::Macro(expr_macro) => {
+                // Check for spawn block marker macro first.
+                if let Some(replacement) = super::spawn::lower_spawn_macro(&expr_macro.mac) {
+                    *expr = replacement;
+                    return;
+                }
                 self.lower_macro_tokens(&mut expr_macro.mac.tokens, scopes);
             }
             syn::Expr::Match(expr_match) => self.lower_match_expr(expr_match, scopes),

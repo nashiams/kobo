@@ -8,10 +8,12 @@ name = "kobo"
 path = "src/main.rs"
 
 [dependencies]
-kobo-driver = { path = "../../crates/compiler/kobo-driver" }
-kobo-errors = { path = "../../crates/compiler/kobo-errors" }
-kobo-debt   = { path = "../../crates/compiler/kobo-debt" }
-kobo-ir     = { path = "../../crates/compiler/kobo-ir" }
+kobo-driver  = { path = "../../crates/compiler/kobo-driver" }
+kobo-errors  = { path = "../../crates/compiler/kobo-errors" }
+kobo-codegen = { path = "../../crates/compiler/kobo-codegen" }
+kobo-debt    = { path = "../../crates/compiler/kobo-debt" }
+kobo-ir      = { path = "../../crates/compiler/kobo-ir" }
+kobo-migrate = { path = "../../crates/compiler/kobo-migrate" }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
 serde_json  = { workspace = true }

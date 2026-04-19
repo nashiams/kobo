@@ -11,13 +11,23 @@
 /// scanner. Per F-03 in the v0.5 design.
 
 mod collect;
+mod engine;
+mod handler;
 mod postprocess;
 mod rewrite;
+pub(crate) mod spawn;
+pub(crate) mod channel;
+pub(crate) mod select;
 mod validate;
 
 pub use collect::collect_strict_items_from_syn;
+pub use engine::{collect_engine_structs, strip_engine_attributes, EngineInfo};
+pub use handler::validate_handler_attributes;
 pub use postprocess::postprocess_strict_markers;
 pub use rewrite::preprocess_kobo_keywords;
+pub use spawn::{preprocess_spawn_blocks, validate_spawn_context, SpawnBlockInfo, SpawnContextError};
+pub use channel::{preprocess_chan_type, validate_channel_dependencies, ChannelInfo, ChannelWarning};
+pub use select::{preprocess_select_blocks, SelectError, SelectInfo, SelectWarning};
 pub use validate::preprocess_strict_reject_invalid;
 
 /// Allowed positions for a Kobo keyword.

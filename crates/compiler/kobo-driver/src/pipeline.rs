@@ -4,11 +4,11 @@ use kobo_analysis::{facts_to_diagnostics, run_analysis};
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
-use kobo_migrate::{solve, ConstraintGraph, SolveResult, SolverBudget};
+use kobo_migrate::{solve, ConstraintGraph, SolveOutcome, SolverBudget};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
-    preprocess_kobo_keywords, preprocess_strict_reject_invalid, v05_keyword_configs,
-    mode_parse::parse_file_mode, KoboFile,
+    preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
+    v05_keyword_configs, mode_parse::parse_file_mode, KoboFile,
 };
 use kobo_transform::{build_kir, TransformOptions, strict_async::check_strict_async};
 
@@ -58,6 +58,9 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     }
     let (rewritten, markers) = preprocess_kobo_keywords(&source, &configs);
 
+    // v0.8: rewrite spawn { ... } → __kobo_spawn_block!({ ... }) before syn parse.
+    let (rewritten, _spawn_infos) = preprocess_spawn_blocks(&rewritten, file_id);
+
     let mut kobo_file = match parse_file(&rewritten, file_id, &mut session.id_gen) {
         Ok(file) => file,
         Err(error) => {
@@ -65,6 +68,12 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
             return Err(());
         }
     };
+
+    // Validate #[kobo::handler] usage (must be async fn).
+    if let Err(e) = kobo_parser::validate_handler_attributes(kobo_file.syn_file()) {
+        eprintln!("kobo: {e}");
+        return Err(());
+    }
 
     // Collect @strict blocks/fns before stripping marker attributes.
     let (strict_blocks, strict_fns) =
@@ -349,13 +358,18 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
 }
 
 fn resolve_solution() -> SolutionMap {
-    let graph = ConstraintGraph;
+    let graph = ConstraintGraph {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
     let budget = SolverBudget::default();
     match solve(&graph, budget) {
-        SolveResult::Unique(map) | SolveResult::MultiSolution(map) | SolveResult::Timeout(map) => {
-            map
-        }
-        SolveResult::Conflict => SolutionMap::new(),
+        SolveOutcome::Unique(map) => map,
+        SolveOutcome::MultiSolution(_) => SolutionMap::new(), // TODO: implement chooser
+        SolveOutcome::NoSolution(_) => SolutionMap::new(),
+        SolveOutcome::ClusterTooLarge(_) => SolutionMap::new(),
+        SolveOutcome::BudgetExceeded(_) => SolutionMap::new(),
+        SolveOutcome::BoundaryStop(_) => SolutionMap::new(),
     }
 }
 
@@ -420,5 +434,43 @@ mod tests {
     fn no_file_no_cli_uses_config() {
         let result = effective_mode(None, None, KoboMode::Script);
         assert_eq!(result, KoboMode::Script);
+    }
+
+    /// S-8: spawn {} generates tokio::spawn(async move { ... }).
+    #[test]
+    fn spawn_generates_tokio_spawn() {
+        let input = r#"
+async fn main() {
+    let x = 42;
+    spawn {
+        println!("{}", x);
+    };
+}
+"#;
+        let output = crate::test_utils::compile_and_inspect(input);
+        assert!(
+            output.contains("tokio::spawn(async move"),
+            "expected tokio::spawn(async move in output, got:\n{output}"
+        );
+    }
+
+    /// S-8 Step 2.5: async main with tokio dependency gets #[tokio::main].
+    #[test]
+    fn async_main_gets_executor_attribute() {
+        let input = r#"
+async fn main() {
+    println!("hello");
+}
+"#;
+        let mut config = crate::config::KoboConfig::default();
+        config.dependencies.insert(
+            "tokio".to_string(),
+            toml::Value::String("1".into()),
+        );
+        let output = crate::test_utils::compile_and_inspect_with_config(input, config);
+        assert!(
+            output.contains("#[tokio::main]"),
+            "expected #[tokio::main] in output, got:\n{output}"
+        );
     }
 }

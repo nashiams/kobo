@@ -1,4 +1,6 @@
 mod annotate;
+pub mod cargo_gen;
+pub mod clean;
 mod emit;
 pub mod executor;
 pub mod hard_rules;

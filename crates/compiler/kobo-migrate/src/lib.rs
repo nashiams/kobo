@@ -1,4 +1,6 @@
 mod boundary;
+#[cfg(test)]
+mod evidence_contract_tests;
 mod greedy;
 mod solver;
 

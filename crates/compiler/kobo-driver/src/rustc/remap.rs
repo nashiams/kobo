@@ -361,6 +361,9 @@ mod tests {
                     },
                     kobo_span: KoboSpan::new(10, 16, FileId(0)),
                     ownership_tier: "rc_refcell".to_owned(),
+                    solver_outcome: None,
+                    decision_source: None,
+                    solver_node_id: None,
                 },
                 SourceMapEntry {
                     rs_span: RsSpan {
@@ -370,8 +373,12 @@ mod tests {
                     },
                     kobo_span: KoboSpan::new(20, 26, FileId(0)),
                     ownership_tier: "rc_refcell".to_owned(),
+                    solver_outcome: None,
+                    decision_source: None,
+                    solver_node_id: None,
                 },
             ],
+            solver_evidence: None,
         }
     }
 

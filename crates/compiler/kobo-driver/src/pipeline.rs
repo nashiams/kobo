@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use kobo_analysis::{facts_to_diagnostics, run_analysis};
-use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
+use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverEvidenceJson, SolverBudgetJson};
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
-use kobo_migrate::{solve, ConstraintGraph, SolveOutcome, SolverBudget};
+use kobo_migrate::{build_kir_constraint_graph, solve_with_evidence, SolverBudget, SolverEvidence};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
     preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
@@ -111,7 +111,10 @@ pub fn run_codegen_pipeline(
 ) -> Result<CodegenArtifacts, ()> {
     let (kobo_file, kir) = run_kir_phase(session, input)?;
     run_analysis_phase(session, &kir)?;
-    let solution = resolve_solution();
+    let evidence = resolve_solution(&kir);
+    // Use empty solution for codegen — KIR analysis tiers are authoritative.
+    // Solver evidence is injected into the source map for provenance only.
+    let solution = SolutionMap::new();
     let rs_path = output_path_for(input, &session.config);
     let map_path = map_path_for(input, &session.config);
     let executor_choice = kobo_codegen::executor::select_executor(&session.config.dependencies);
@@ -129,7 +132,11 @@ pub fn run_codegen_pipeline(
             executor_choice,
         },
     );
-    let map_json = source_map.to_json_string().map_err(|error| {
+
+    // Inject solver evidence into source map before serialization.
+    let injected_map = inject_solver_evidence(source_map, &evidence);
+
+    let map_json = injected_map.to_json_string().map_err(|error| {
         eprintln!("kobo: failed to serialize source map: {error}");
     })?;
 
@@ -147,7 +154,7 @@ pub fn run_codegen_pipeline(
         rs_source,
         rs_path,
         map_path,
-        source_map,
+        source_map: injected_map,
     })
 }
 
@@ -357,20 +364,32 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     }
 }
 
-fn resolve_solution() -> SolutionMap {
-    let graph = ConstraintGraph {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-    };
+fn resolve_solution(kir: &Kir) -> SolverEvidence {
+    let graph = build_kir_constraint_graph(kir);
     let budget = SolverBudget::default();
-    match solve(&graph, budget) {
-        SolveOutcome::Unique(map) => map,
-        SolveOutcome::MultiSolution(_) => SolutionMap::new(), // TODO: implement chooser
-        SolveOutcome::NoSolution(_) => SolutionMap::new(),
-        SolveOutcome::ClusterTooLarge(_) => SolutionMap::new(),
-        SolveOutcome::BudgetExceeded(_) => SolutionMap::new(),
-        SolveOutcome::BoundaryStop(_) => SolutionMap::new(),
+    solve_with_evidence(&graph, budget)
+}
+
+fn inject_solver_evidence(mut source_map: KoboSourceMap, evidence: &SolverEvidence) -> KoboSourceMap {
+    // Set top-level solver evidence.
+    source_map.solver_evidence = Some(SolverEvidenceJson {
+        outcome: evidence.outcome_name.clone(),
+        graph_fingerprint: evidence.graph_fingerprint.clone(),
+        node_count: evidence.node_count as u64,
+        edge_count: evidence.edge_count as u64,
+        budget: SolverBudgetJson {
+            max_cluster_size: evidence.budget.max_cluster_size as u64,
+            budget_seconds: evidence.budget.budget_seconds,
+        },
+    });
+
+    // Annotate each mapping with solver provenance.
+    for entry in &mut source_map.x_kobo_mappings {
+        entry.solver_outcome = Some(evidence.outcome_name.clone());
+        entry.decision_source = Some("solver".to_owned());
     }
+
+    source_map
 }
 
 /// Resolves the effective mode for a file.

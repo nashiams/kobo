@@ -10,7 +10,7 @@ mod sourcemap;
 use std::path::Path;
 
 pub use emit::emit_file;
-pub use sourcemap::{wrap_source_map, KoboSourceMap, RsSpan, SourceMapEntry};
+pub use sourcemap::{wrap_source_map, KoboSourceMap, RsSpan, SourceMapEntry, SolverEvidenceJson, SolverBudgetJson};
 
 pub struct CodegenOutput {
     pub rs_source: String,

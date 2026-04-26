@@ -1,9 +1,14 @@
 use std::path::Path;
 
+use kobo_driver::run_codegen_pipeline;
+use super::session::{build_session, render_diagnostics};
+
 /// Per-function timing report for tick-loop functions.
 ///
 /// Reads a .kobo file, finds functions annotated with `#[kobo::tick(rate=N)]`,
 /// and reports estimated tick budget usage based on frame timing.
+/// When compilation succeeds, uses the generated Rust body statement count
+/// as a rough complexity proxy.
 pub(super) fn cmd_bench_tick(file: &Path, tick_budget: bool) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)
         .map_err(|e| anyhow::anyhow!("failed to read {}: {}", file.display(), e))?;
@@ -13,7 +18,24 @@ pub(super) fn cmd_bench_tick(file: &Path, tick_budget: bool) -> anyhow::Result<(
         return Ok(());
     }
 
-    let report = generate_tick_budget_report(&source);
+    // Attempt compilation to get generated Rust — used for body complexity.
+    let compiled_source = match build_session(file, None) {
+        Ok(mut session) => {
+            match run_codegen_pipeline(&mut session, file) {
+                Ok(artifacts) => {
+                    render_diagnostics(&session);
+                    Some(artifacts.rs_source)
+                }
+                Err(()) => {
+                    render_diagnostics(&session);
+                    None
+                }
+            }
+        }
+        Err(_) => None,
+    };
+
+    let report = generate_tick_budget_report(&source, compiled_source.as_deref());
     println!("{report}");
     Ok(())
 }
@@ -23,19 +45,32 @@ pub(crate) struct TickBudgetEntry {
     pub fn_name: String,
     pub rate_hz: u32,
     pub budget_ms: f64,
+    /// Body statement count from compiled source (0 if unknown).
+    pub body_stmts: usize,
 }
 
 impl TickBudgetEntry {
     fn status(&self) -> &'static str {
-        // Placeholder: in real usage we'd measure actual time.
-        // For now, always WITHIN BUDGET since we can't time without execution.
-        "WITHIN BUDGET"
+        if self.body_stmts == 0 {
+            "UNKNOWN (no compiled output)"
+        } else {
+            // Heuristic: > 50 statements in a single tick is a red flag.
+            // This is a static proxy; real timing needs runtime instrumentation.
+            if self.body_stmts > 50 {
+                "OVER BUDGET (static estimate)"
+            } else {
+                "WITHIN BUDGET (static estimate)"
+            }
+        }
     }
 }
 
 /// Generate a tick budget report from source code.
-pub(crate) fn generate_tick_budget_report(source: &str) -> String {
-    let entries = extract_tick_functions(source);
+///
+/// If `compiled_source` is provided, count statements in each tick function's
+/// body to give a rough complexity-based budget estimate.
+pub(crate) fn generate_tick_budget_report(source: &str, compiled_source: Option<&str>) -> String {
+    let entries = extract_tick_functions(source, compiled_source);
     if entries.is_empty() {
         return "Tick Budget Report\n══════════════════\nNo #[kobo::tick] functions found.".to_string();
     }
@@ -59,7 +94,7 @@ pub(crate) fn generate_tick_budget_report(source: &str) -> String {
 }
 
 /// Extract tick-annotated function information from source text.
-fn extract_tick_functions(source: &str) -> Vec<TickBudgetEntry> {
+fn extract_tick_functions(source: &str, compiled_source: Option<&str>) -> Vec<TickBudgetEntry> {
     let mut entries = Vec::new();
     let lines: Vec<&str> = source.lines().collect();
 
@@ -71,10 +106,14 @@ fn extract_tick_functions(source: &str) -> Vec<TickBudgetEntry> {
                 let next_trimmed = next_line.trim();
                 if let Some(fn_name) = extract_fn_name(next_trimmed) {
                     let budget_ms = 1000.0 / rate as f64;
+                    let body_stmts = compiled_source
+                        .map(|src| count_fn_body_stmts(src, fn_name))
+                        .unwrap_or(0);
                     entries.push(TickBudgetEntry {
                         fn_name: fn_name.to_string(),
                         rate_hz: rate,
                         budget_ms,
+                        body_stmts,
                     });
                     break;
                 }
@@ -120,6 +159,37 @@ fn extract_fn_name(line: &str) -> Option<&str> {
     Some(rest[..end].trim())
 }
 
+/// Count semicolons in a function body in compiled source (rough statement count proxy).
+fn count_fn_body_stmts(compiled: &str, fn_name: &str) -> usize {
+    // Find the function definition in compiled source.
+    let pattern = format!("fn {fn_name}(");
+    if let Some(pos) = compiled.find(&pattern) {
+        // Find the opening brace.
+        let rest = &compiled[pos..];
+        if let Some(brace_pos) = rest.find('{') {
+            let body_start = &rest[brace_pos + 1..];
+            // Count statements by tracking braces and counting semicolons at depth 1.
+            let mut depth = 1u32;
+            let mut stmts = 0usize;
+            for ch in body_start.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    ';' if depth == 1 => stmts += 1,
+                    _ => {}
+                }
+            }
+            return stmts;
+        }
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +209,7 @@ fn render_loop(ctx: &mut RenderCtx) {
 }
 "#;
 
-        let report = generate_tick_budget_report(source);
+        let report = generate_tick_budget_report(source, None);
         assert!(report.contains("Tick Budget Report"), "report: {report}");
         assert!(report.contains("game_loop"), "report: {report}");
         assert!(report.contains("render_loop"), "report: {report}");
@@ -148,7 +218,7 @@ fn render_loop(ctx: &mut RenderCtx) {
         // budget for 20Hz = 50ms, 60Hz ≈ 16.7ms
         assert!(report.contains("50.0ms"), "report: {report}");
         assert!(
-            report.contains("WITHIN BUDGET") || report.contains("OVER BUDGET"),
+            report.contains("WITHIN BUDGET") || report.contains("OVER BUDGET") || report.contains("UNKNOWN"),
             "report: {report}"
         );
     }
@@ -156,7 +226,7 @@ fn render_loop(ctx: &mut RenderCtx) {
     #[test]
     fn bench_no_tick_functions() {
         let source = "fn main() { println!(\"hello\"); }";
-        let report = generate_tick_budget_report(source);
+        let report = generate_tick_budget_report(source, None);
         assert!(report.contains("Tick Budget Report"), "report: {report}");
         assert!(report.contains("No #[kobo::tick] functions found"), "report: {report}");
     }

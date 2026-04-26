@@ -2,7 +2,7 @@ mod anchor;
 mod binding;
 mod borrow_scope;
 mod plan;
-mod rewrite;
+pub(crate) mod rewrite;
 mod scope;
 pub(crate) mod strict;
 mod support;

@@ -4,7 +4,7 @@ use kobo_analysis::{facts_to_diagnostics, run_analysis};
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverEvidenceJson, SolverBudgetJson};
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
-use kobo_migrate::{build_kir_constraint_graph, solve_with_evidence, SolveOutcome, SolverBudget, SolverEvidence};
+use kobo_migrate::{build_kir_constraint_graph, solve_modular, solve_modular_with_evidence, SolveOutcome, SolverBudget, SolverEvidence, ModularEvidence};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
     preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
@@ -73,6 +73,12 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     if let Err(e) = kobo_parser::validate_handler_attributes(kobo_file.syn_file()) {
         eprintln!("kobo: {e}");
         return Err(());
+    }
+
+    // S-3: Collect #[kobo::engine] structs for downstream constraint ceilings.
+    let engine_structs = kobo_parser::collect_engine_structs(kobo_file.syn_file());
+    if !engine_structs.is_empty() {
+        session.engine_struct_names = engine_structs.iter().map(|e| e.struct_name.clone()).collect();
     }
 
     // Collect @strict blocks/fns before stripping marker attributes.
@@ -371,11 +377,10 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
 }
 
 fn resolve_solution(kir: &Kir) -> (SolverEvidence, SolveOutcome) {
-    let graph = build_kir_constraint_graph(kir);
     let budget = SolverBudget::default();
-    let evidence = solve_with_evidence(&graph, budget.clone());
-    let outcome = kobo_migrate::solve(&graph, budget);
-    (evidence, outcome)
+    let modular = solve_modular_with_evidence(kir, &budget);
+    let outcome = solve_modular(kir, &budget);
+    (modular.solver_evidence, outcome)
 }
 
 /// Project non-Unique solver outcomes to K-code diagnostics (Phase 00/05).

@@ -9,8 +9,8 @@ mod tests;
 pub use ast::{KoboAstNode, KoboBinding, KoboBindingKind, KoboBlock, KoboFile, KoboItemFn};
 pub use parse::{parse_file, ParseError};
 pub use preprocess::{
-    collect_strict_items_from_syn, postprocess_strict_markers, preprocess_kobo_keywords,
-    preprocess_spawn_blocks, preprocess_strict_reject_invalid, v05_keyword_configs,
-    validate_handler_attributes, KeywordMarker, KoboKeywordConfig, PreprocessError,
-    SpawnBlockInfo,
+    collect_engine_structs, collect_strict_items_from_syn, postprocess_strict_markers,
+    preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
+    v05_keyword_configs, validate_handler_attributes, EngineInfo, KeywordMarker,
+    KoboKeywordConfig, PreprocessError, SpawnBlockInfo,
 };

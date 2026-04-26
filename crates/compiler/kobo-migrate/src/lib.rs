@@ -19,6 +19,7 @@ pub mod profile;
 pub mod provenance_comment;
 pub mod query;
 mod solver;
+mod modular_pipeline;
 pub mod summaries;
 
 pub use boundary::{detect_crate_boundaries, BoundaryViolation, ExternalCall};
@@ -32,3 +33,9 @@ pub use solver::{
 
 // Legacy exports for backward compatibility
 pub use solver::SolveResult;
+
+// ─── Modular pipeline (v0.8.1) ───
+// Wires Phases 01-11 into a single `solve_modular` entry point
+// that replaces the monolithic `solve()` for the compiler pipeline.
+
+pub use modular_pipeline::{solve_modular, solve_modular_with_evidence, ModularEvidence};

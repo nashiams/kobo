@@ -1,5 +1,5 @@
 use crate::builder::build_transform_builder;
-use crate::cfg::build_cfg;
+use crate::cfg::stamp_cfg_and_liveness;
 use crate::finalize::{
     apply_validation_escalations, collect_hint_conflicts, finalize_transform,
     rewrite_dead_borrow_aliases,
@@ -124,7 +124,8 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
         kir.set_strict_fn_modes(fn_modes);
     }
 
-    let _cfg = build_cfg(&kir);
+    // Build CFG, stamp cfg_block on each KirNode, and compute binding liveness.
+    let (_cfg, _liveness) = stamp_cfg_and_liveness(&mut kir);
     kir
 }
 

@@ -17,13 +17,13 @@
         "file_id": 0
       },
       "ownership_tier": "plain",
-      "solver_outcome": "MultiSolution",
+      "solver_outcome": "Unique",
       "decision_source": "solver",
       "solver_node_id": 3
     }
   ],
   "solver_evidence": {
-    "outcome": "MultiSolution",
+    "outcome": "Unique",
     "graph_fingerprint": "686727c7753b9c7712e4a7be6430d4d0",
     "node_count": 1,
     "edge_count": 0,

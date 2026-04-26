@@ -16,6 +16,7 @@ mod handler;
 mod postprocess;
 mod rewrite;
 pub(crate) mod bridge;
+pub(crate) mod bridge_blocks;
 pub(crate) mod spawn;
 pub(crate) mod channel;
 pub(crate) mod select;
@@ -29,6 +30,7 @@ pub use rewrite::preprocess_kobo_keywords;
 pub use spawn::{preprocess_spawn_blocks, validate_spawn_context, SpawnBlockInfo, SpawnContextError};
 pub use channel::{preprocess_chan_type, validate_channel_dependencies, ChannelInfo, ChannelWarning};
 pub use select::{preprocess_select_blocks, SelectError, SelectInfo, SelectWarning};
+pub use bridge_blocks::{preprocess_bridge_blocks, BridgeBlockInfo, BridgeKind};
 pub use validate::preprocess_strict_reject_invalid;
 
 /// Allowed positions for a Kobo keyword.

@@ -32,7 +32,7 @@ macro_rules! define_error_codes {
                     Self::K0062 => "Mutex guard would live across .await",
                     Self::K0063 => "@strict block inside async fn without @strict async fn",
                     Self::K0064 => "@strict inside async block — ownership cannot be tracked across yield",
-                    Self::K0065 => "@strict with generator/coroutine — ownership cannot cross yield point",
+                    Self::K0065 => "select branch may not be cancel-safe",
                     Self::K0067 => "spawn_local requires LocalSet executor context",
                     Self::K0080 => "structural ownership conflict - no automatic fix possible",
                     Self::K0080P1 => "ownership pattern will require architectural decision at migration",
@@ -134,7 +134,7 @@ define_error_codes! {
     K0063 => "K0063",
     // TODO(v0.7): K0064 — @strict inside async block (currently folded into K0063)
     K0064 => "K0064",
-    // TODO(v0.8+): K0065 — @strict with generator/coroutine
+    // S-55: K0065 — select branch cancel-safety detection
     K0065 => "K0065",
     K0066 => "K0066",
     K0067 => "K0067",

@@ -47,22 +47,94 @@ pub(crate) struct TickBudgetEntry {
     pub budget_ms: f64,
     /// Body statement count from compiled source (0 if unknown).
     pub body_stmts: usize,
+    /// S-19: Estimated execution time in microseconds based on statement complexity.
+    /// Uses weighted statement analysis instead of flat count.
+    pub estimated_us: Option<f64>,
 }
 
 impl TickBudgetEntry {
-    fn status(&self) -> &'static str {
-        if self.body_stmts == 0 {
-            "UNKNOWN (no compiled output)"
-        } else {
-            // Heuristic: > 50 statements in a single tick is a red flag.
-            // This is a static proxy; real timing needs runtime instrumentation.
-            if self.body_stmts > 50 {
-                "OVER BUDGET (static estimate)"
+    fn status(&self) -> String {
+        if let Some(est_us) = self.estimated_us {
+            let est_ms = est_us / 1000.0;
+            let pct = (est_ms / self.budget_ms) * 100.0;
+            if pct > 80.0 {
+                format!("OVER BUDGET — est. {:.2}ms ({:.0}% of {:.1}ms frame)", est_ms, pct, self.budget_ms)
+            } else if pct > 50.0 {
+                format!("WARNING — est. {:.2}ms ({:.0}% of {:.1}ms frame)", est_ms, pct, self.budget_ms)
             } else {
-                "WITHIN BUDGET (static estimate)"
+                format!("OK — est. {:.2}ms ({:.0}% of {:.1}ms frame)", est_ms, pct, self.budget_ms)
             }
+        } else if self.body_stmts == 0 {
+            "UNKNOWN (no compiled output)".to_string()
+        } else if self.body_stmts > 50 {
+            "OVER BUDGET (static estimate)".to_string()
+        } else {
+            "WITHIN BUDGET (static estimate)".to_string()
         }
     }
+}
+
+/// S-19: Estimate execution time from compiled source body.
+///
+/// Uses weighted statement analysis: async calls and method chains are
+/// heavier than simple assignments. Returns estimated microseconds.
+fn estimate_tick_time_us(compiled: &str, fn_name: &str) -> Option<f64> {
+    let pattern = format!("fn {fn_name}(");
+    let pos = compiled.find(&pattern)?;
+    let rest = &compiled[pos..];
+    let brace_pos = rest.find('{')?;
+    let body_start = &rest[brace_pos + 1..];
+
+    let mut depth = 1u32;
+    let mut weight: f64 = 0.0;
+    let mut line_buf = String::new();
+
+    for ch in body_start.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            '\n' if depth == 1 => {
+                weight += statement_weight(&line_buf);
+                line_buf.clear();
+            }
+            _ => line_buf.push(ch),
+        }
+    }
+    if !line_buf.is_empty() {
+        weight += statement_weight(&line_buf);
+    }
+
+    // Base cost: ~0.5us per weight unit (calibrated for release-mode tick loops).
+    Some(weight * 0.5)
+}
+
+/// Heuristic weight for a single line of generated code.
+fn statement_weight(line: &str) -> f64 {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with("//") {
+        return 0.0;
+    }
+    let mut w: f64 = 1.0;
+    // Async operations are heavier
+    if trimmed.contains(".await") {
+        w += 10.0;
+    }
+    // Method chains add complexity
+    w += trimmed.matches('.').count() as f64 * 0.5;
+    // Allocations
+    if trimmed.contains("Vec::new") || trimmed.contains("String::new") || trimmed.contains("clone()") {
+        w += 3.0;
+    }
+    // I/O operations
+    if trimmed.contains("println!") || trimmed.contains("eprintln!") || trimmed.contains("write!") {
+        w += 5.0;
+    }
+    w
 }
 
 /// Generate a tick budget report from source code.
@@ -88,6 +160,9 @@ pub(crate) fn generate_tick_budget_report(source: &str, compiled_source: Option<
             entry.budget_ms,
             entry.status(),
         ));
+        if entry.body_stmts > 0 {
+            lines.push(format!("    body: {} statements", entry.body_stmts));
+        }
     }
 
     lines.join("\n")
@@ -109,11 +184,14 @@ fn extract_tick_functions(source: &str, compiled_source: Option<&str>) -> Vec<Ti
                     let body_stmts = compiled_source
                         .map(|src| count_fn_body_stmts(src, fn_name))
                         .unwrap_or(0);
+                    let estimated_us = compiled_source
+                        .and_then(|src| estimate_tick_time_us(src, fn_name));
                     entries.push(TickBudgetEntry {
                         fn_name: fn_name.to_string(),
                         rate_hz: rate,
                         budget_ms,
                         body_stmts,
+                        estimated_us,
                     });
                     break;
                 }

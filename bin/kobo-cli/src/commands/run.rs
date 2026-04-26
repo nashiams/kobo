@@ -48,6 +48,7 @@ pub(super) fn cmd_inspect(
     file: &Path,
     cli_mode: Option<KoboMode>,
     clean: bool,
+    erase_lifetimes: bool,
     cargo_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
@@ -64,6 +65,13 @@ pub(super) fn cmd_inspect(
         })?;
     // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
+
+    // S-21: Apply lifetime erasure when requested (script mode only).
+    let rs_source = if erase_lifetimes {
+        kobo_driver::apply_lifetime_erasure(&rs_source, session.mode())
+    } else {
+        rs_source
+    };
 
     let output = if clean || cargo_dir.is_some() {
         kobo_codegen::clean::strip_kobo_wrappers(&rs_source)

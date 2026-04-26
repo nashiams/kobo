@@ -138,3 +138,123 @@ pub(super) fn cmd_debt_patterns(file: &Path, json: bool) -> anyhow::Result<()> {
     println!("{output}");
     Ok(())
 }
+
+/// S-62: Report functions where typed errors would replace boxed/dynamic errors.
+///
+/// Scans generated code for `Box<dyn Error>`, `anyhow::Error`, and `?` usage
+/// in functions that return `Result`. Suggests where typed error enums would help.
+pub(super) fn cmd_debt_errors(file: &Path, json: bool) -> anyhow::Result<()> {
+    let source = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+
+    // Find functions returning Result and count `?` usage
+    let mut entries: Vec<ErrorDebtEntry> = Vec::new();
+    let lines: Vec<&str> = source.lines().collect();
+
+    let mut current_fn: Option<String> = None;
+    let mut is_result_fn = false;
+    let mut question_marks: usize = 0;
+    let mut brace_depth: i32 = 0;
+
+    for line in &lines {
+        let trimmed = line.trim();
+
+        // Detect function start
+        if (trimmed.starts_with("fn ") || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub fn ") || trimmed.starts_with("pub async fn "))
+            && trimmed.contains("->")
+        {
+            let fn_name = extract_fn_name_from_line(trimmed);
+            is_result_fn = trimmed.contains("Result");
+            if is_result_fn {
+                current_fn = Some(fn_name);
+                question_marks = 0;
+                brace_depth = 0;
+            }
+        }
+
+        if current_fn.is_some() {
+            brace_depth += trimmed.matches('{').count() as i32;
+            brace_depth -= trimmed.matches('}').count() as i32;
+            question_marks += trimmed.matches('?').count();
+
+            if brace_depth <= 0 && trimmed.contains('}') {
+                if let Some(fn_name) = current_fn.take() {
+                    if question_marks > 0 {
+                        let uses_boxed = trimmed.contains("Box<dyn")
+                            || source.contains(&format!("fn {fn_name}"))
+                            && source.contains("Box<dyn Error");
+                        entries.push(ErrorDebtEntry {
+                            fn_name,
+                            question_mark_count: question_marks,
+                            uses_boxed_error: uses_boxed,
+                            suggestion: if question_marks > 3 {
+                                "consider a typed error enum".to_string()
+                            } else {
+                                "boxed error is acceptable".to_string()
+                            },
+                        });
+                    }
+                }
+                is_result_fn = false;
+            }
+        }
+    }
+
+    if json {
+        let values: Vec<serde_json::Value> = entries.iter().map(|e| e.to_json_value()).collect();
+        let json_str = serde_json::to_string_pretty(&values)
+            .context("failed to serialize error debt to JSON")?;
+        println!("{json_str}");
+        return Ok(());
+    }
+
+    if entries.is_empty() {
+        println!("No error debt found — no Result-returning functions with `?` usage.");
+    } else {
+        println!("Error Debt Report");
+        println!("═════════════════");
+        for entry in &entries {
+            println!(
+                "  {} — {}x `?` — {}",
+                entry.fn_name, entry.question_mark_count, entry.suggestion,
+            );
+        }
+        println!("\n{} function(s) with error debt.", entries.len());
+    }
+
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ErrorDebtEntry {
+    fn_name: String,
+    question_mark_count: usize,
+    uses_boxed_error: bool,
+    suggestion: String,
+}
+
+impl ErrorDebtEntry {
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "fn_name": self.fn_name,
+            "question_mark_count": self.question_mark_count,
+            "uses_boxed_error": self.uses_boxed_error,
+            "suggestion": self.suggestion,
+        })
+    }
+}
+
+fn extract_fn_name_from_line(line: &str) -> String {
+    let rest = line
+        .strip_prefix("pub async fn ")
+        .or_else(|| line.strip_prefix("async fn "))
+        .or_else(|| line.strip_prefix("pub fn "))
+        .or_else(|| line.strip_prefix("fn "))
+        .unwrap_or(line);
+    rest.split('(')
+        .next()
+        .unwrap_or("unknown")
+        .trim()
+        .to_string()
+}

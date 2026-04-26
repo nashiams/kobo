@@ -57,6 +57,25 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// S-53: Check whether any captured binding has a non-Send ownership tier.
+    /// When true, the spawn block should use `spawn_local` instead of `tokio::spawn`.
+    fn any_captured_non_send(&self, captured: &[clone_inject::CapturedBinding]) -> bool {
+        let tf = self.kir.transform_facts();
+        for cap in captured {
+            if let Some(binding) = tf.bindings.iter().find(|b| b.binding_name == cap.name) {
+                if let Some(node) = self.kir.get_node(binding.node) {
+                    if matches!(
+                        node.ownership,
+                        kobo_ir::OwnershipTier::RcShared | kobo_ir::OwnershipTier::RcMutShared
+                    ) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn into_parts(self) -> (Vec<AnnotationNote>, Vec<LoweringAnchor>) {
         (self.annotation_notes, self.anchors)
     }
@@ -225,9 +244,26 @@ impl<'a> Lowerer<'a> {
                 && segments[1].ident == "handler"
         });
         if is_handler {
-            // Wrap the handler body in catch_unwind for per-request isolation.
-            // The attribute is stripped below by strip_kobo_attrs.
+            // S-56: Per-request isolation — clone Arc params into locals, then wrap in catch_unwind.
             let original_stmts = std::mem::take(&mut function.block.stmts);
+
+            // Generate clone statements for Arc-typed parameters.
+            let mut clone_stmts: Vec<syn::Stmt> = Vec::new();
+            for param in &function.sig.inputs {
+                if let syn::FnArg::Typed(pat_type) = param {
+                    let ty_str = quote::quote!(#pat_type.ty).to_string();
+                    if ty_str.contains("Arc") {
+                        if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                            let ident = &pat_ident.ident;
+                            let clone_stmt: syn::Stmt = parse_quote! {
+                                let #ident = #ident.clone();
+                            };
+                            clone_stmts.push(clone_stmt);
+                        }
+                    }
+                }
+            }
+
             let return_ty_is_result = match &function.sig.output {
                 syn::ReturnType::Type(_, ty) => {
                     let ty_str = quote::quote!(#ty).to_string();
@@ -236,7 +272,6 @@ impl<'a> Lowerer<'a> {
                 _ => false,
             };
             if return_ty_is_result {
-                // Handler returning Result: wrap in AssertUnwindSafe + catch_unwind
                 let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
                     let __kobo_handler_result = std::panic::AssertUnwindSafe(async move {
                         #(#original_stmts)*
@@ -249,16 +284,17 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 };
-                function.block.stmts = wrapped;
+                function.block.stmts = clone_stmts;
+                function.block.stmts.extend(wrapped);
             } else {
-                // Handler not returning Result: wrap body in catch_unwind
                 let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
                     let __kobo_handler_body = async move {
                         #(#original_stmts)*
                     };
                     __kobo_handler_body.await
                 };
-                function.block.stmts = wrapped;
+                function.block.stmts = clone_stmts;
+                function.block.stmts.extend(wrapped);
             }
         }
         util::strip_kobo_attrs(&mut function.attrs);
@@ -335,10 +371,11 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Expr(expr, _) => self.lower_expr(expr, scopes),
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
-                if let Some(spawn_expr) = spawn::lower_spawn_macro(&stmt_macro.mac) {
+                // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
+                let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
+                let use_spawn_local = self.any_captured_non_send(&captured);
+                if let Some(spawn_expr) = spawn::lower_spawn_macro_with_strategy(&stmt_macro.mac, use_spawn_local) {
                     let semi = stmt_macro.semi_token;
-                    // Auto-clone injection: scan spawn body for captured bindings.
-                    let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
                     if captured.is_empty() {
                         *stmt = syn::Stmt::Expr(spawn_expr, semi);
                     } else {

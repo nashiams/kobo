@@ -57,6 +57,9 @@ pub(crate) enum KoboCommand {
         #[arg(long,
               help = "Strip all Kobo wrappers, output standalone Rust")]
         clean: bool,
+        #[arg(long,
+              help = "Erase lifetime parameters in script mode (S-21: auto-own references)")]
+        erase_lifetimes: bool,
         #[arg(long, value_name = "DIR",
               help = "Generate a complete Cargo project to DIR")]
         cargo: Option<PathBuf>,
@@ -94,6 +97,9 @@ pub(crate) enum KoboCommand {
         /// Show migration patterns (Rc→Arc, clone elimination, etc.)
         #[arg(long)]
         patterns: bool,
+        /// Show error-handling debt (boxed/dynamic error → typed enum opportunities)
+        #[arg(long)]
+        errors: bool,
         /// [v0.5] Watch mode — re-run on file changes.
         #[arg(long, hide = true)]
         watch: bool,
@@ -148,6 +154,9 @@ pub(crate) enum KoboCommand {
         /// Simple mode: save → compile → run (no state persistence)
         #[arg(long)]
         simple: bool,
+        /// Build mode: save → codegen → cargo build (full rebuild cycle)
+        #[arg(long)]
+        build: bool,
     },
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::debt::{KirStructDef, WarnEarlyFact};
 use crate::node_id::{CfgBlockId, KirNodeId, KoboAstNodeId};
@@ -115,6 +115,9 @@ pub struct Kir {
     migrate_sites: Vec<MigrateSite>,
     /// Method name → `true` if `&mut self`, scanned from impl blocks + config.
     method_mutability: HashMap<String, bool>,
+    /// S-3: KIR node IDs whose bindings belong to engine struct types.
+    /// These are capped at PlainOwned by the solver/codegen.
+    engine_ceiling_nodes: HashSet<KirNodeId>,
 }
 
 // --- Public read API ---
@@ -141,6 +144,7 @@ impl Kir {
             relax_attr_errors: Vec::new(),
             migrate_sites: Vec::new(),
             method_mutability: HashMap::new(),
+            engine_ceiling_nodes: HashSet::new(),
         }
     }
 
@@ -260,6 +264,16 @@ impl Kir {
 
     pub fn set_method_mutability(&mut self, map: HashMap<String, bool>) {
         self.method_mutability = map;
+    }
+
+    /// S-3: Check if a node is capped to PlainOwned due to engine struct membership.
+    pub fn is_engine_ceiling(&self, id: KirNodeId) -> bool {
+        self.engine_ceiling_nodes.contains(&id)
+    }
+
+    /// S-3: Mark nodes as belonging to engine struct types.
+    pub fn set_engine_ceiling_nodes(&mut self, nodes: HashSet<KirNodeId>) {
+        self.engine_ceiling_nodes = nodes;
     }
 
     pub fn len(&self) -> usize {

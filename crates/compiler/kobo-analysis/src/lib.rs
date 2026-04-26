@@ -1,3 +1,4 @@
+pub mod cancel_safety;
 mod debug;
 mod diagnostics;
 mod liveness;
@@ -8,6 +9,7 @@ mod runner;
 pub mod send_diagnostic;
 pub mod split_borrow;
 
+pub use cancel_safety::{scan_source_cancel_safety, CancelSafetyWarning};
 pub use diagnostics::facts_to_diagnostics;
 pub use ownership_facts::{BorrowFact, BorrowKind, MoveFact};
 pub use pipeline::{check_pipeline_ordering, PipelineIssue, PipelineWarning};

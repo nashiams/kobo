@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use kobo_driver::run_check_pipeline;
+use kobo_driver::{run_check_pipeline, run_pipeline_ordering_check};
 use kobo_ir::KoboMode;
 
 use super::session::{build_session, render_diagnostics};
@@ -22,6 +22,19 @@ pub(super) fn cmd_check(file: &Path, cli_mode: Option<KoboMode>, pipeline: bool)
             render_diagnostics(&session);
 
             if pipeline {
+                // S-14: Run middleware ordering heuristic.
+                let warnings = run_pipeline_ordering_check(&mut session, file);
+                if warnings.is_empty() {
+                    eprintln!("[kobo] pipeline: no ordering issues detected");
+                } else {
+                    for w in &warnings {
+                        eprintln!(
+                            "[kobo] pipeline {}: {}",
+                            w.kind.code(),
+                            w.suggestion,
+                        );
+                    }
+                }
                 eprintln!("[kobo] pipeline: {} diagnostic(s) emitted", session.diagnostics.len());
             }
 

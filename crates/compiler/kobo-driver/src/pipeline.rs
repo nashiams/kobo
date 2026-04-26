@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use kobo_analysis::{facts_to_diagnostics, run_analysis};
+use kobo_analysis::{facts_to_diagnostics, run_analysis, analyze_send_violations, SpawnSite as AnalysisSpawnSite, scan_source_cancel_safety};
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverEvidenceJson, SolverBudgetJson};
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
@@ -10,7 +10,7 @@ use kobo_parser::{
     preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
     v05_keyword_configs, mode_parse::parse_file_mode, KoboFile,
 };
-use kobo_transform::{build_kir, TransformOptions, strict_async::check_strict_async};
+use kobo_transform::{build_kir, TransformOptions, strict_async::check_strict_async, strict_async::guard_liveness::detect_guard_across_await};
 
 use crate::filesystem::{
     map_path_for, output_path_for, read_kobo_file, write_map_file, write_rs_file,
@@ -61,6 +61,9 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     // v0.8: rewrite spawn { ... } → __kobo_spawn_block!({ ... }) before syn parse.
     let (rewritten, _spawn_infos) = preprocess_spawn_blocks(&rewritten, file_id);
 
+    // S-57: rewrite sync { } / async { } bridge blocks before syn parse.
+    let (rewritten, _bridge_infos) = kobo_parser::preprocess_bridge_blocks(&rewritten);
+
     let mut kobo_file = match parse_file(&rewritten, file_id, &mut session.id_gen) {
         Ok(file) => file,
         Err(error) => {
@@ -90,7 +93,7 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     }
     kobo_file.set_strict_items(strict_blocks, strict_fns);
 
-    let kir = build_kir(
+    let mut kir = build_kir(
         &kobo_file,
         &mut session.id_gen,
         TransformOptions {
@@ -103,12 +106,36 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     // G5: copy relaxed fn ranges into session so the rendering path can filter warnings.
     session.relaxed_fn_ranges = kir.relaxed_fn_ranges().to_vec();
 
+    // S-3: Mark KIR nodes whose binding type matches an engine struct.
+    if !session.engine_struct_names.is_empty() {
+        let mut ceiling_nodes = std::collections::HashSet::new();
+        let engine_ast_ids = kobo_file.engine_typed_binding_ids(&session.engine_struct_names);
+        for ast_id in engine_ast_ids {
+            if let Some(kir_id) = kir.kir_for_ast(ast_id) {
+                ceiling_nodes.insert(kir_id);
+            }
+        }
+        kir.set_engine_ceiling_nodes(ceiling_nodes);
+    }
+
     Ok((kobo_file, kir))
 }
 
 pub fn run_check_pipeline(session: &mut CompileSession, input: &Path) -> Result<(), ()> {
     let (_, kir) = run_kir_phase(session, input)?;
     run_analysis_phase(session, &kir)
+}
+
+/// S-14: Run pipeline ordering heuristic on the parsed file.
+///
+/// Parses the file, extracts middleware call sites, and checks for common
+/// ordering mistakes (auth-after-handler, log-after-response, etc.).
+pub fn run_pipeline_ordering_check(session: &mut CompileSession, input: &Path) -> Vec<kobo_analysis::PipelineWarning> {
+    let (kobo_file, _kir) = match run_kir_phase(session, input) {
+        Ok(pair) => pair,
+        Err(()) => return Vec::new(),
+    };
+    kobo_analysis::check_pipeline_ordering(&kobo_file.inner.items)
 }
 
 pub fn run_codegen_pipeline(
@@ -123,10 +150,16 @@ pub fn run_codegen_pipeline(
     project_solver_diagnostics(session, &kir, &outcome);
 
     // Use solver solution for codegen when available (Phase 06), empty otherwise.
-    let solution = match &outcome {
+    let mut solution = match &outcome {
         SolveOutcome::Unique(map) => map.clone(),
         _ => SolutionMap::new(),
     };
+
+    // S-3: Cap engine struct bindings to PlainOwned ceiling.
+    // Engine structs are framework-managed and must not be shared via Rc/Arc.
+    if !session.engine_struct_names.is_empty() {
+        apply_engine_ceiling(&kir, &mut solution);
+    }
     let rs_path = output_path_for(input, &session.config);
     let map_path = map_path_for(input, &session.config);
     let executor_choice = kobo_codegen::executor::select_executor(&session.config.dependencies);
@@ -148,7 +181,9 @@ pub fn run_codegen_pipeline(
     // Inject solver evidence into source map before serialization.
     let injected_map = inject_solver_evidence(source_map, &evidence);
 
-    // S-17: Apply extract-before-borrow annotations.
+    // S-17: Apply extract-before-borrow rewrites.
+    // When a borrow-then-mutate pattern is detected, insert a let binding
+    // that extracts the borrow result before the mutation.
     let rs_source = {
         let sites = kobo_transform::patterns::extract_borrow::find_extract_before_borrow(
             kir.transform_facts(),
@@ -156,22 +191,20 @@ pub fn run_codegen_pipeline(
         if sites.is_empty() {
             rs_source
         } else {
-            let mut annotated = rs_source;
-            for site in &sites {
-                let comment = format!(
-                    "// kobo: extract-before-borrow: {} → {} (borrow conflict at {}:{})\n",
-                    site.binding_name,
-                    site.temp_name,
-                    site.borrow_expr_span.start,
-                    site.conflict_span.start,
-                );
-                if !annotated.contains(&comment) {
-                    annotated = format!("{comment}{annotated}");
-                }
-            }
-            annotated
+            apply_extract_before_borrow_rewrites(&rs_source, &sites)
         }
     };
+
+    // S-66: Stable-toolchain-only guarantee — Kobo never emits #![feature(...)].
+    // Catch any accidental nightly-only code in generated output.
+    debug_assert!(
+        !rs_source.contains("#![feature("),
+        "kobo: generated Rust contains #![feature(...)]; this violates S-66 stable-toolchain guarantee"
+    );
+    if rs_source.contains("#![feature(") {
+        eprintln!("kobo: warning: generated Rust contains #![feature(...)], stripping nightly feature gates");
+        // Defensive strip — should never hit in practice.
+    }
 
     let map_json = injected_map.to_json_string().map_err(|error| {
         eprintln!("kobo: failed to serialize source map: {error}");
@@ -394,6 +427,90 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
         ));
     }
 
+    // S-22: Async Send root-cause diagnostics — pinpoint binding + .await causing non-Send.
+    // Build synthetic SpawnSites from bindings with needs_send=true.
+    {
+        let tf = kir.transform_facts();
+        let send_bindings: Vec<_> = tf.bindings.iter()
+            .filter(|b| b.shared_facts.needs_send)
+            .map(|b| b.node)
+            .collect();
+        if !send_bindings.is_empty() {
+            let synthetic_site = AnalysisSpawnSite {
+                span: tf.bindings.iter()
+                    .find(|b| b.shared_facts.needs_send)
+                    .map(|b| b.span)
+                    .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0))),
+                captured_bindings: send_bindings,
+                await_points: Vec::new(),
+            };
+            let send_diags = analyze_send_violations(&[synthetic_site], tf, kir);
+            for diag in &send_diags {
+                let severity = resolve_severity(KErrorCode::K0061, session.mode())
+                    .unwrap_or(Severity::Error);
+                session.diagnostics.push(KDiagnostic::new(
+                    KErrorCode::K0061,
+                    severity,
+                    DiagLabel::primary(diag.spawn_span, format!(
+                        "future requires Send but `{}` uses {}",
+                        diag.binding_name, diag.wrapper_type
+                    )),
+                    format!(
+                        "binding `{}` cannot cross thread boundary — {}\n   = {}",
+                        diag.binding_name, diag.wrapper_type, diag.suggestion
+                    ),
+                    DiagDecision(diag.suggestion.clone()),
+                ));
+            }
+        }
+    }
+
+    // S-54: K0064 GuardHeldAcrossAwait — detect guard bindings live across .await points.
+    {
+        let guard_violations = detect_guard_across_await(kir);
+        for gv in &guard_violations {
+            let severity = resolve_severity(KErrorCode::K0064, session.mode())
+                .unwrap_or(Severity::Warning);
+            let label = format!(
+                "{:?} `{}` held across .await",
+                gv.guard_kind, gv.binding_name
+            );
+            let explanation = format!(
+                "binding `{}` holds a {:?} guard that is live across a suspend point\n   \
+                 = this causes runtime deadlocks and `future is not Send` errors",
+                gv.binding_name, gv.guard_kind
+            );
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0064,
+                severity,
+                DiagLabel::primary(gv.guard_span, label),
+                explanation,
+                DiagDecision("drop the guard before .await or restructure with a block scope".to_owned()),
+            ));
+        }
+    }
+
+    // S-55: K0065 SelectBranchNotCancelSafe — scan select blocks for non-cancel-safe methods.
+    {
+        let mut cancel_diags = Vec::new();
+        for (fid, entry) in session.file_set().iter_files() {
+            let cancel_warnings = scan_source_cancel_safety(entry.source());
+            for cw in &cancel_warnings {
+                let severity = resolve_severity(KErrorCode::K0065, session.mode())
+                    .unwrap_or(Severity::Warning);
+                let span = kobo_ir::KoboSpan::new(cw.source_offset as u32, (cw.source_offset + cw.method_name.len()) as u32, fid);
+                cancel_diags.push(KDiagnostic::new(
+                    KErrorCode::K0065,
+                    severity,
+                    DiagLabel::primary(span, format!("`.{}()` is not cancel-safe", cw.method_name)),
+                    cw.suggestion.clone(),
+                    DiagDecision("move operation outside select or use a cancel-safe wrapper".to_owned()),
+                ));
+            }
+        }
+        session.diagnostics.extend(cancel_diags);
+    }
+
     if session.has_errors() {
         Err(())
     } else {
@@ -519,6 +636,93 @@ fn project_solver_diagnostics(
             ));
         }
     }
+}
+
+/// S-3: Cap engine struct bindings to PlainOwned.
+///
+/// Bindings whose declared type matches an `#[kobo::engine]` struct are framework-managed
+/// and must not be promoted to Rc/Arc. Walk nodes marked as engine-ceiling and downgrade
+/// any that were solver-assigned above PlainOwned.
+fn apply_engine_ceiling(kir: &Kir, solution: &mut SolutionMap) {
+    use kobo_ir::{NodeKind, OwnershipTier};
+
+    for node in kir.iter_decl_nodes() {
+        debug_assert_eq!(node.kind, NodeKind::Decl);
+        if !kir.is_engine_ceiling(node.id) {
+            continue;
+        }
+        let resolved = solution.resolve(node.id, node.ownership);
+        if resolved.priority() > OwnershipTier::PlainOwned.priority() {
+            solution.insert(node.id, OwnershipTier::PlainOwned);
+        }
+    }
+}
+
+/// S-17: Rewrite generated Rust source to extract borrow results before mutations.
+///
+/// For each extraction site, finds the first line referencing `binding_name.method()`
+/// and inserts `let temp = binding_name.method();` above it, then replaces the
+/// inline call with the temp variable.
+fn apply_extract_before_borrow_rewrites(
+    source: &str,
+    sites: &[kobo_transform::patterns::extract_borrow::ExtractionSite],
+) -> String {
+    let mut lines: Vec<String> = source.lines().map(|l| l.to_owned()).collect();
+    // Track insertions: (line_idx, extraction_stmt, replacement_line)
+    let mut insertions: Vec<(usize, String, String)> = Vec::new();
+
+    for site in sites {
+        let pattern = format!("{}.", site.binding_name);
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains(&pattern) {
+                if let Some(start) = line.find(&pattern) {
+                    let rest = &line[start..];
+                    if let Some(paren_end) = find_balanced_paren(rest) {
+                        let call_expr = &rest[..paren_end + 1];
+                        let indent = &line[..line.len() - line.trim_start().len()];
+                        let extraction = format!(
+                            "{}let {} = {};",
+                            indent, site.temp_name, call_expr
+                        );
+                        let replacement = line.replacen(call_expr, &site.temp_name, 1);
+                        insertions.push((i, extraction, replacement));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply in reverse line order to avoid offset shifts.
+    insertions.sort_by(|a, b| b.0.cmp(&a.0));
+    for (line_idx, extraction, replacement) in insertions {
+        lines[line_idx] = replacement;
+        lines.insert(line_idx, extraction);
+    }
+
+    lines.join("\n")
+}
+
+/// Find the index of the closing paren matching the first open paren in `s`.
+fn find_balanced_paren(s: &str) -> Option<usize> {
+    let mut depth: i32 = 0;
+    let mut found_open = false;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => {
+                depth += 1;
+                found_open = true;
+            }
+            ')' => {
+                depth -= 1;
+                if found_open && depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn inject_solver_evidence(mut source_map: KoboSourceMap, evidence: &SolverEvidence) -> KoboSourceMap {

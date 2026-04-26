@@ -19,10 +19,11 @@ pub struct Disjunction {
     pub label: String,
 }
 
-/// Checkpoint: a snapshot of solver state that can be restored on conflict.
+/// A trail entry recording the previous tier of a node before overwrite.
 #[derive(Clone, Debug)]
-struct Checkpoint {
-    assignments: BTreeMap<KirNodeId, OwnershipTier>,
+struct TrailEntry {
+    node: KirNodeId,
+    previous_tier: OwnershipTier,
 }
 
 /// Backtracking solver state.
@@ -30,7 +31,10 @@ pub struct BacktrackSolver {
     current: BTreeMap<KirNodeId, OwnershipTier>,
     floors: BTreeMap<KirNodeId, OwnershipTier>,
     ceilings: BTreeMap<KirNodeId, Option<OwnershipTier>>,
-    checkpoints: Vec<Checkpoint>,
+    /// Trail of assignment overwrites for O(1) checkpoint/rollback.
+    trail: Vec<TrailEntry>,
+    /// Trail markers: each checkpoint records the trail length at save time.
+    trail_markers: Vec<usize>,
     max_depth: u32,
     nodes_tried: u64,
     node_budget: u64,
@@ -64,7 +68,8 @@ impl BacktrackSolver {
             current,
             floors,
             ceilings,
-            checkpoints: Vec::new(),
+            trail: Vec::new(),
+            trail_markers: Vec::new(),
             max_depth: 64,
             nodes_tried: 0,
             node_budget: 10_000,
@@ -81,17 +86,18 @@ impl BacktrackSolver {
         self.node_budget = budget;
     }
 
-    /// Save a checkpoint.
+    /// Save a checkpoint (trail marker).
     fn checkpoint(&mut self) {
-        self.checkpoints.push(Checkpoint {
-            assignments: self.current.clone(),
-        });
+        self.trail_markers.push(self.trail.len());
     }
 
-    /// Rollback to the last checkpoint.
+    /// Rollback to the last checkpoint by replaying trail entries.
     fn rollback(&mut self) -> bool {
-        if let Some(cp) = self.checkpoints.pop() {
-            self.current = cp.assignments;
+        if let Some(marker) = self.trail_markers.pop() {
+            while self.trail.len() > marker {
+                let entry = self.trail.pop().unwrap();
+                self.current.insert(entry.node, entry.previous_tier);
+            }
             true
         } else {
             false
@@ -117,6 +123,12 @@ impl BacktrackSolver {
             }
         }
 
+        // Record previous tier on the trail before overwriting.
+        let previous = self.current.get(&node).copied().unwrap_or(floor);
+        self.trail.push(TrailEntry {
+            node,
+            previous_tier: previous,
+        });
         self.current.insert(node, tier);
         true
     }
@@ -161,7 +173,7 @@ impl BacktrackSolver {
             }
         }
 
-        if self.checkpoints.len() as u32 >= self.max_depth {
+        if self.trail_markers.len() as u32 >= self.max_depth {
             return BacktrackResult::Exhausted;
         }
 

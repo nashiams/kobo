@@ -112,13 +112,13 @@ pub struct TierDecision {
 
 impl OwnershipTier {
     pub const SOLVED_LATTICE: [OwnershipTier; 7] = [
-        OwnershipTier::Scoped,
         OwnershipTier::PlainOwned,
+        OwnershipTier::BoxOwned,
         OwnershipTier::RcShared,
         OwnershipTier::ArcShared,
-        OwnershipTier::BoxOwned,
         OwnershipTier::RcMutShared,
         OwnershipTier::ArcMutShared,
+        OwnershipTier::Scoped,
     ];
 
     /// Returns whether this tier uses shared ownership semantics.
@@ -189,32 +189,26 @@ impl OwnershipTier {
         }
     }
 
-    /// Relative floor strength used when multiple constraints must be compared.
+    /// Relative floor strength. Canonical ordering shared with `tier_rank()`.
+    ///
+    /// Undecided(0) < PlainOwned(1) < BoxOwned(2) < RcShared(3) < ArcShared(4)
+    /// < RcMutShared(5) < ArcMutShared(6) < Scoped(7)
     pub fn priority(self) -> usize {
         match self {
-            OwnershipTier::PlainOwned => 1,
-            OwnershipTier::RcShared => 2,
-            OwnershipTier::ArcShared => 3,
-            OwnershipTier::BoxOwned => 4,
-            OwnershipTier::RcMutShared => 5,
-            OwnershipTier::ArcMutShared => 6,
-            OwnershipTier::Scoped => 0,
             OwnershipTier::Undecided => 0,
-        }
-    }
-
-    /// Greedy ladder position shown in user-facing diagnostics.
-    pub fn greedy_priority(self) -> usize {
-        match self {
             OwnershipTier::PlainOwned => 1,
             OwnershipTier::BoxOwned => 2,
             OwnershipTier::RcShared => 3,
             OwnershipTier::ArcShared => 4,
             OwnershipTier::RcMutShared => 5,
             OwnershipTier::ArcMutShared => 6,
-            OwnershipTier::Scoped => 0,
-            OwnershipTier::Undecided => 0,
+            OwnershipTier::Scoped => 7,
         }
+    }
+
+    /// Greedy ladder position. Delegates to canonical ordering.
+    pub fn greedy_priority(self) -> usize {
+        self.priority()
     }
 }
 

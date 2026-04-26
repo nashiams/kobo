@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use kobo_ir::{Kir, KirNodeId, OwnershipTier, SolutionMap};
 
-use crate::backtrack::{BacktrackResult, BacktrackSolver};
+use crate::backtrack::{BacktrackResult, BacktrackSolver, Disjunction};
 use crate::chooser::{
     append_candidate_if_distinct, choose_best, enumerate_candidates, MAX_CANDIDATES,
 };
@@ -223,10 +223,11 @@ fn solve_single_cluster(
                 ambiguous_clusters.push(candidates);
             }
         }
-        LatticeOutcome::Conflict { node, .. } => {
-            // Phase 08: Backtracking search for disjunction resolution.
+        LatticeOutcome::Conflict { node, floor, ceiling } => {
+            // Phase 08: Generate disjunctions from the conflict and run backtracking search.
+            let disjunctions = generate_disjunctions_from_conflict(*node, *floor, *ceiling);
             let mut bt = BacktrackSolver::new(cluster);
-            match bt.solve(cluster, &[]) {
+            match bt.solve(cluster, &disjunctions) {
                 BacktrackResult::Solved(bt_map) => {
                     for (id, tier) in bt_map.iter() {
                         solution.insert(id, tier);
@@ -236,6 +237,85 @@ fn solve_single_cluster(
                     conflicts.push(*node);
                 }
                 BacktrackResult::BudgetExceeded { .. } => conflicts.push(*node),
+            }
+        }
+        LatticeOutcome::IterationBudgetExceeded { partial_map, .. } => {
+            // Iteration budget exceeded — treat partial results like a conflict.
+            // Use whatever the partial map computed, but flag all nodes as conflicting.
+            for (id, tier) in partial_map.iter() {
+                solution.insert(id, tier);
+            }
+            for node in &cluster.nodes {
+                conflicts.push(node.id);
+            }
+        }
+    }
+}
+
+/// Like `solve_single_cluster` but also increments lattice/backtrack counters.
+fn solve_single_cluster_counted(
+    cluster: &Cluster,
+    solution: &mut SolutionMap,
+    conflicts: &mut Vec<KirNodeId>,
+    ambiguous_clusters: &mut Vec<Vec<SolutionCandidate>>,
+    lattice_solved: &mut usize,
+    backtrack_solved: &mut usize,
+) {
+    let lattice_outcome = lattice_solve(cluster);
+    match &lattice_outcome {
+        LatticeOutcome::Solved(map) => {
+            *lattice_solved += 1;
+            let ranked = choose_best(cluster, &lattice_outcome, &[]);
+            if let Some(best) = ranked.first() {
+                for (id, tier) in best.solution.iter() {
+                    solution.insert(id, tier);
+                }
+            } else {
+                for (id, tier) in map.iter() {
+                    solution.insert(id, tier);
+                }
+            }
+            let mut candidates = enumerate_candidates(cluster);
+            append_candidate_if_distinct(
+                cluster,
+                &mut candidates,
+                SolutionCandidate {
+                    solution: map.clone(),
+                    explanation: "lattice-minimal".to_owned(),
+                    risk_score: ranked.first().map(|best| best.risk_score).unwrap_or(0.0),
+                },
+            );
+            if candidates.len() >= 2 {
+                candidates.sort_by(|left, right| {
+                    left.risk_score
+                        .total_cmp(&right.risk_score)
+                        .then_with(|| left.explanation.cmp(&right.explanation))
+                });
+                ambiguous_clusters.push(candidates);
+            }
+        }
+        LatticeOutcome::Conflict { node, floor, ceiling } => {
+            let disjunctions = generate_disjunctions_from_conflict(*node, *floor, *ceiling);
+            let mut bt = BacktrackSolver::new(cluster);
+            match bt.solve(cluster, &disjunctions) {
+                BacktrackResult::Solved(bt_map) => {
+                    *backtrack_solved += 1;
+                    for (id, tier) in bt_map.iter() {
+                        solution.insert(id, tier);
+                    }
+                }
+                BacktrackResult::Exhausted => {
+                    conflicts.push(*node);
+                }
+                BacktrackResult::BudgetExceeded { .. } => conflicts.push(*node),
+            }
+        }
+        LatticeOutcome::IterationBudgetExceeded { partial_map, .. } => {
+            for (id, tier) in partial_map.iter() {
+                solution.insert(id, tier);
+            }
+            for node in &cluster.nodes {
+                conflicts.push(node.id);
             }
         }
     }
@@ -296,7 +376,9 @@ fn dedupe_candidates(candidates: Vec<SolutionCandidate>) -> Vec<SolutionCandidat
 /// Returns both the legacy SolverEvidence (for source map injection)
 /// and the richer ModularEvidence.
 pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularEvidence {
-    // Run greedy pass for evidence stats.
+    let start = Instant::now();
+
+    // ── Phase 00: Greedy pass (single execution) ──
     let config = GreedyConfig {
         solver_cluster_limit: budget.max_cluster_size,
         solver_budget_seconds: budget.budget_seconds,
@@ -305,21 +387,133 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
     let greedy_resolved_count = greedy_result.resolved.len();
     let greedy_unresolved_count = greedy_result.unresolved.len();
 
-    // Extract + cluster for stats.
-    let extraction = extract_constraints(kir, &greedy_result);
-    let clusters = extract_clusters(&extraction);
-    let cluster_count = clusters.len();
+    // Build initial solution from greedy-resolved bindings.
+    let mut solution = SolutionMap::new();
+    for decision in &greedy_result.resolved {
+        solution.insert(decision.node, decision.tier);
+    }
 
-    // Build constraint graph for fingerprint (reuse solver.rs graph for compatibility).
+    // ── Phase 01: Extract constraints ──
+    let extraction = extract_constraints(kir, &greedy_result);
+
+    // Build constraint graph for fingerprint.
     let graph = crate::solver::build_kir_constraint_graph(kir);
     let fingerprint = graph_fingerprint(&graph);
     let node_count = graph.nodes.len();
     let edge_count = graph.edges.len();
 
-    // Run the actual modular solve.
-    let outcome = solve_modular(kir, budget);
+    // ── Phase 02: Cluster ──
+    let clusters = extract_clusters(&extraction);
+    let cluster_count = clusters.len();
 
-    let (outcome_name, solution) = match &outcome {
+    // Stats counters.
+    let mut lattice_solved_count: usize = 0;
+    let mut backtrack_solved_count: usize = 0;
+    let mut decomposed_count: usize = 0;
+
+    let outcome = if greedy_result.unresolved.is_empty() {
+        SolveOutcome::Unique(solution.clone())
+    } else if start.elapsed().as_secs_f64() > budget.budget_seconds {
+        SolveOutcome::BudgetExceeded(PartialReport {
+            resolved_count: solution.len(),
+            total_count: solution.len() + greedy_unresolved_count,
+            elapsed_seconds: start.elapsed().as_secs_f64(),
+            budget_seconds: budget.budget_seconds,
+        })
+    } else if clusters.is_empty() {
+        SolveOutcome::Unique(solution.clone())
+    } else {
+        let mut conflicts: Vec<KirNodeId> = Vec::new();
+        let mut ambiguous_clusters: Vec<Vec<SolutionCandidate>> = Vec::new();
+        let mut early_return = None;
+
+        for cluster in clusters {
+            if start.elapsed().as_secs_f64() > budget.budget_seconds {
+                early_return = Some(SolveOutcome::BudgetExceeded(PartialReport {
+                    resolved_count: solution.len(),
+                    total_count: solution.len() + greedy_unresolved_count,
+                    elapsed_seconds: start.elapsed().as_secs_f64(),
+                    budget_seconds: budget.budget_seconds,
+                }));
+                break;
+            }
+
+            match containment_precheck(cluster, budget.max_cluster_size) {
+                ContainmentResult::Proceed(c) => {
+                    if c.size > DECOMPOSE_TARGET_SIZE {
+                        let decomposed = decompose(&c, DECOMPOSE_TARGET_SIZE);
+                        if decomposed.sub_clusters.len() > 1 {
+                            decomposed_count += decomposed.sub_clusters.len();
+                            let results = execute_all(&decomposed.sub_clusters);
+                            let merged = merge_results(&results);
+                            for (id, tier) in merged.iter() {
+                                solution.insert(id, tier);
+                            }
+                            for result in &results {
+                                if let crate::parallel::SolveUnitOutcome::Conflict {
+                                    node_id, ..
+                                } = &result.outcome
+                                {
+                                    conflicts.push(KirNodeId(*node_id));
+                                }
+                            }
+                        } else {
+                            solve_single_cluster_counted(
+                                &c,
+                                &mut solution,
+                                &mut conflicts,
+                                &mut ambiguous_clusters,
+                                &mut lattice_solved_count,
+                                &mut backtrack_solved_count,
+                            );
+                        }
+                    } else {
+                        solve_single_cluster_counted(
+                            &c,
+                            &mut solution,
+                            &mut conflicts,
+                            &mut ambiguous_clusters,
+                            &mut lattice_solved_count,
+                            &mut backtrack_solved_count,
+                        );
+                    }
+                }
+                ContainmentResult::BoundaryStop(o) => {
+                    early_return = Some(o);
+                    break;
+                }
+                ContainmentResult::TooLarge(o) => {
+                    early_return = Some(o);
+                    break;
+                }
+            }
+        }
+
+        if let Some(o) = early_return {
+            o
+        } else if !conflicts.is_empty() {
+            SolveOutcome::NoSolution(ConflictReport {
+                conflicting_nodes: conflicts.clone(),
+                conflict_reason: "lattice + backtrack solver found no valid assignment".to_owned(),
+                provenance: extraction
+                    .edges
+                    .iter()
+                    .map(|edge| edge.provenance.clone())
+                    .collect(),
+            })
+        } else if !ambiguous_clusters.is_empty() {
+            let candidates = combine_ambiguous_candidates(&solution, &ambiguous_clusters);
+            if candidates.len() >= 2 {
+                SolveOutcome::MultiSolution(candidates)
+            } else {
+                SolveOutcome::Unique(solution.clone())
+            }
+        } else {
+            SolveOutcome::Unique(solution.clone())
+        }
+    };
+
+    let (outcome_name, final_solution) = match &outcome {
         SolveOutcome::Unique(map) => ("Unique".to_owned(), map.clone()),
         SolveOutcome::MultiSolution(candidates) => {
             let sol = candidates
@@ -346,7 +540,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
         .iter()
         .map(|d| (d.node, d.tier, format!("{:?}", d.reason)))
         .collect();
-    let solver_classified: Vec<(KirNodeId, OwnershipTier, String)> = solution
+    let solver_classified: Vec<(KirNodeId, OwnershipTier, String)> = final_solution
         .iter()
         .filter(|(id, _)| !greedy_result.resolved.iter().any(|d| d.node == *id))
         .map(|(id, tier)| (id, tier, "lattice/backtrack".to_owned()))
@@ -355,7 +549,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
         SolveOutcome::NoSolution(r) => r.conflicting_nodes.clone(),
         _ => Vec::new(),
     };
-    let budget_nodes: Vec<KirNodeId> = Vec::new(); // budget-capped nodes tracked separately
+    let budget_nodes: Vec<KirNodeId> = Vec::new();
 
     let classified = classify_decisions(
         &greedy_classified,
@@ -371,7 +565,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
         node_count,
         edge_count,
         budget: budget.clone(),
-        solution,
+        solution: final_solution,
     };
 
     ModularEvidence {
@@ -379,18 +573,58 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
         greedy_resolved_count,
         greedy_unresolved_count,
         cluster_count,
-        lattice_solved_count: 0, // filled by solve internals
-        backtrack_solved_count: 0,
+        lattice_solved_count,
+        backtrack_solved_count,
         conflict_count: conflict_nodes.len(),
-        decomposed_count: 0,
+        decomposed_count,
         decision_profile: Some(profile),
     }
+}
+
+/// Generate disjunctions from a lattice conflict.
+///
+/// Enumerates all tiers between `floor` and `ceiling` (inclusive) as
+/// alternatives for the conflicting node. The backtrack solver will try
+/// each alternative and check global consistency.
+fn generate_disjunctions_from_conflict(
+    node: KirNodeId,
+    floor: OwnershipTier,
+    ceiling: OwnershipTier,
+) -> Vec<Disjunction> {
+    use crate::lattice_solve::tier_rank;
+    let all_tiers = [
+        OwnershipTier::PlainOwned,
+        OwnershipTier::BoxOwned,
+        OwnershipTier::RcShared,
+        OwnershipTier::ArcShared,
+        OwnershipTier::RcMutShared,
+        OwnershipTier::ArcMutShared,
+        OwnershipTier::Scoped,
+    ];
+    let floor_rank = tier_rank(floor);
+    let ceil_rank = tier_rank(ceiling);
+    let alternatives: Vec<OwnershipTier> = all_tiers
+        .iter()
+        .copied()
+        .filter(|t| {
+            let r = tier_rank(*t);
+            r >= floor_rank && r <= ceil_rank
+        })
+        .collect();
+    vec![Disjunction {
+        node,
+        alternatives,
+        label: format!(
+            "conflict at {:?}: floor={:?} ceiling={:?}",
+            node, floor, ceiling
+        ),
+    }]
 }
 
 fn partial_solution_from_kir(kir: &Kir) -> SolutionMap {
     let mut map = SolutionMap::new();
     for node in kir.iter_decl_nodes() {
-        map.insert(node.id, OwnershipTier::PlainOwned);
+        map.insert(node.id, OwnershipTier::Undecided);
     }
     map
 }

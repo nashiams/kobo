@@ -153,6 +153,15 @@ pub fn greedy_resolve(kir: &Kir, config: &GreedyConfig) -> GreedyPassResult {
     }
 
     let elapsed = start.elapsed().as_millis() as u64;
+
+    // Post-greedy consistency check: demote bindings whose tiers conflict
+    // with co-scoped resolved bindings under sharing/send constraints.
+    let inconsistent = find_inconsistent_greedy_pairs(&resolved, kir);
+    for node_id in &inconsistent {
+        resolved.retain(|d| d.node != *node_id);
+        unresolved.push(*node_id);
+    }
+
     let resolved_count = resolved.len();
     let unresolved_count = unresolved.len();
     GreedyPassResult {
@@ -232,6 +241,70 @@ fn resolve_single_binding(binding: &TransformBindingFacts) -> SingleResult {
     }
 
     SingleResult::Unresolved
+}
+
+/// Find resolved bindings whose tiers are inconsistent with co-scoped bindings.
+///
+/// If binding A was resolved to RcShared but co-scoped binding B needs Send
+/// (and thus ArcShared), A's RcShared is inconsistent because in the same
+/// scope, sharing propagation would require both to be thread-safe.
+///
+/// Returns node IDs that should be demoted from resolved to unresolved.
+fn find_inconsistent_greedy_pairs(
+    resolved: &[TierDecision],
+    kir: &Kir,
+) -> Vec<KirNodeId> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let facts = kir.transform_facts();
+
+    // Build a map: node_id → (tier, needs_send).
+    let mut info: BTreeMap<KirNodeId, (OwnershipTier, bool)> = BTreeMap::new();
+    for decision in resolved {
+        let needs_send = facts
+            .bindings
+            .iter()
+            .find(|b| b.node == decision.node)
+            .map(|b| b.shared_facts.needs_send)
+            .unwrap_or(false);
+        info.insert(decision.node, (decision.tier, needs_send));
+    }
+
+    // Group resolved bindings by scope depth.
+    let mut scope_groups: BTreeMap<usize, Vec<KirNodeId>> = BTreeMap::new();
+    for binding in &facts.bindings {
+        if info.contains_key(&binding.node) {
+            scope_groups
+                .entry(binding.decl_scope_depth)
+                .or_default()
+                .push(binding.node);
+        }
+    }
+
+    let mut inconsistent = BTreeSet::new();
+
+    for group in scope_groups.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        // If any binding in the group needs Send, all shared bindings should
+        // be thread-safe. If one was resolved as Rc but another needs Send,
+        // the Rc one is inconsistent.
+        let any_needs_send = group.iter().any(|id| {
+            info.get(id).map(|(_, ns)| *ns).unwrap_or(false)
+        });
+        if any_needs_send {
+            for &id in group {
+                if let Some(&(tier, _)) = info.get(&id) {
+                    if tier == OwnershipTier::RcShared || tier == OwnershipTier::RcMutShared {
+                        inconsistent.insert(id);
+                    }
+                }
+            }
+        }
+    }
+
+    inconsistent.into_iter().collect()
 }
 
 #[cfg(test)]

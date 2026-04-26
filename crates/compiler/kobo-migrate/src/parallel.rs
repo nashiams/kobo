@@ -63,6 +63,13 @@ pub fn execute_solve_unit(cluster: &Cluster) -> SolveUnitResult {
                 reason: format!("floor {:?} exceeds ceiling {:?}", floor, ceiling),
             },
         },
+        LatticeOutcome::IterationBudgetExceeded { iterations, .. } => SolveUnitResult {
+            cluster_id: cluster.id.0,
+            outcome: SolveUnitOutcome::Conflict {
+                node_id: 0,
+                reason: format!("iteration budget exceeded after {} iterations", iterations),
+            },
+        },
     }
 }
 

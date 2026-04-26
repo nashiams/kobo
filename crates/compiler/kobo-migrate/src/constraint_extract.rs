@@ -105,9 +105,11 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
         }
 
         // Detect boundary markers.
-        if binding.shared_facts.has_escape && !binding.shared_facts.needs_sharing {
-            // Escape without sharing may indicate external boundary.
-            is_boundary = false; // Conservative — real boundary comes from crate analysis.
+        // A binding that escapes the current scope (passed to opaque call,
+        // stored in struct, etc.) may cross a crate boundary. Mark it so
+        // the pipeline can stop migration at the boundary.
+        if binding.shared_facts.has_escape {
+            is_boundary = true;
         }
 
         nodes.push(ConstraintNode {
@@ -238,6 +240,46 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                             a,
                             b,
                             ConstraintKind::MutuallyExclusive,
+                            provenance.clone(),
+                        ),
+                        provenance,
+                    });
+                }
+            }
+        }
+    }
+
+    // Inter-procedural constraint pass: connect unresolved bindings that
+    // escape their scope (is_boundary=true) and need sharing. Escape markers
+    // signal actual cross-function data flow (return values, &mut params,
+    // struct stores). We only create cross-scope edges for escape-marked
+    // bindings to avoid over-constraining independent same-scope bindings.
+    {
+        let escape_sharing_nodes: Vec<KirNodeId> = nodes
+            .iter()
+            .filter(|n| n.floor.is_shared() && n.is_boundary)
+            .map(|n| n.id)
+            .collect();
+        for i in 0..escape_sharing_nodes.len() {
+            for j in (i + 1)..escape_sharing_nodes.len() {
+                let (a, b) = if escape_sharing_nodes[i] < escape_sharing_nodes[j] {
+                    (escape_sharing_nodes[i], escape_sharing_nodes[j])
+                } else {
+                    (escape_sharing_nodes[j], escape_sharing_nodes[i])
+                };
+                if edge_set.insert((a, b, "sharing")) {
+                    let span = find_binding_span(kir, a);
+                    let provenance = ProvenanceRef::new(
+                        span,
+                        FactKind::NeedsSharing,
+                        "cross-scope-sharing",
+                        None,
+                    );
+                    edges.push(ProvenancedEdge {
+                        edge: ConstraintEdge::new(
+                            a,
+                            b,
+                            ConstraintKind::PropagateSharing,
                             provenance.clone(),
                         ),
                         provenance,

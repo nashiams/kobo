@@ -184,15 +184,19 @@ fn derive_transform_facts_populates_schema_for_all_usage_kinds() {
 }
 
 #[test]
-fn priority_orders_floor_strength_not_candidate_ladder() {
-    assert!(OwnershipTier::PlainOwned.priority() < OwnershipTier::RcShared.priority());
+fn priority_orders_canonical_lattice_ladder() {
+    // Canonical: PlainOwned < BoxOwned < RcShared < ArcShared < RcMutShared < ArcMutShared < Scoped
+    assert!(OwnershipTier::PlainOwned.priority() < OwnershipTier::BoxOwned.priority());
+    assert!(OwnershipTier::BoxOwned.priority() < OwnershipTier::RcShared.priority());
     assert!(OwnershipTier::RcShared.priority() < OwnershipTier::ArcShared.priority());
-    assert!(OwnershipTier::ArcShared.priority() < OwnershipTier::BoxOwned.priority());
-    assert!(OwnershipTier::BoxOwned.priority() < OwnershipTier::RcMutShared.priority());
+    assert!(OwnershipTier::ArcShared.priority() < OwnershipTier::RcMutShared.priority());
+    assert!(OwnershipTier::RcMutShared.priority() < OwnershipTier::ArcMutShared.priority());
+    assert!(OwnershipTier::ArcMutShared.priority() < OwnershipTier::Scoped.priority());
 }
 
 #[test]
 fn greedy_priority_orders_the_user_facing_ladder() {
+    // greedy_priority delegates to priority — same canonical order.
     assert!(
         OwnershipTier::PlainOwned.greedy_priority() < OwnershipTier::BoxOwned.greedy_priority()
     );

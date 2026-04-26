@@ -50,6 +50,11 @@ pub fn query_solve_all(ctxt: &mut MigrateCtxt) -> SolutionMap {
                 // Conflict: fall back to floor.
                 solution.insert(node, floor);
             }
+            LatticeOutcome::IterationBudgetExceeded { partial_map, .. } => {
+                for (id, tier) in partial_map.iter() {
+                    solution.insert(id, tier);
+                }
+            }
         }
     }
 

@@ -43,8 +43,8 @@ pub fn choose_best(
                 rank: 1,
             }]
         }
-        LatticeOutcome::Conflict { .. } => {
-            // Lattice conflict — fall through to solver candidates.
+        LatticeOutcome::Conflict { .. } | LatticeOutcome::IterationBudgetExceeded { .. } => {
+            // Lattice conflict or iteration budget exceeded — fall through to solver candidates.
             rank_solver_candidates(candidates, &cluster.nodes)
         }
     }

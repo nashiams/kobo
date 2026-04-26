@@ -4,7 +4,7 @@ use anyhow::Context;
 use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
 use kobo_debt::patterns::{detect_migration_patterns, format_patterns};
 use kobo_debt::{build_debt_report, format_warn_early};
-use kobo_driver::run_kir_phase;
+use kobo_driver::{lifetime_erasure_debt_report, run_kir_phase};
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 
 use super::session::build_session;
@@ -66,6 +66,9 @@ pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
     let mut session = build_session(file, None)?;
     let (_, kir) = run_kir_phase(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
+    let source = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+    let lifetime_debt = lifetime_erasure_debt_report(&source, session.mode());
 
     let tf = kir.transform_facts();
     let mut all_overlaps = Vec::new();
@@ -113,6 +116,10 @@ pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
             "\n{} borrow overlap(s) found.",
             combined.overlapping_sites.len()
         );
+    }
+
+    if !lifetime_debt.is_empty() {
+        println!("\n{lifetime_debt}");
     }
 
     Ok(())

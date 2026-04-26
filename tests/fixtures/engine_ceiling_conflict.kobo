@@ -1,0 +1,13 @@
+#[kobo::engine]
+struct Physics {
+    bodies: Vec<i32>,
+}
+
+fn observe(left: &Physics, right: &Physics) {
+    println!("{}", left.bodies.len() + right.bodies.len());
+}
+
+fn main() {
+    let physics: Physics = Physics { bodies: vec![1] };
+    observe(&physics, &physics);
+}

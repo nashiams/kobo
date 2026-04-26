@@ -24,6 +24,8 @@ macro_rules! define_error_codes {
                     Self::K0021 => "DiagOwner borrow counter saturated — count understated",
                     Self::K0025 => "soft hint ignored - constraint conflict",
                     Self::K0030 => "resource handle moved - cannot alias file handle",
+                    Self::K0031 => "engine-owned binding capped to PlainOwned",
+                    Self::K0032 => "live borrow at move forces shared ownership",
                     Self::K0041 => "cannot enter @strict block - value has active aliases",
                     Self::K0042 => "closure captures LocalOwned<T> across @strict boundary",
                     Self::K0043 => "value moved inside @strict block - cannot re-wrap on exit",
@@ -282,6 +284,12 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
         // Macro-generated inference failure — always Error.
         K0095 => Some(Severity::Error),
 
+        // Engine resources are framework-managed; ceiling adjustments must be visible.
+        K0031 => Some(Severity::Warning),
+
+        // KIR liveness facts that force shared ownership are visible advisories.
+        K0032 => Some(Severity::Warning),
+
         // Rustc remap — always Error.
         K0099 => Some(Severity::Error),
 
@@ -297,11 +305,11 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
         // When a code becomes active, move it to its own explicit arm above.
         K0003 | K0004 | K0005 | K0006 | K0007 | K0008 | K0009 | K0010 | K0011 | K0012 | K0013
         | K0014 | K0015 | K0016 | K0017 | K0018 | K0022 | K0023 | K0024 | K0027 | K0028 | K0029
-        | K0031 | K0032 | K0033 | K0034 | K0035 | K0036 | K0037 | K0038 | K0039 | K0040 | K0045
-        | K0046 | K0047 | K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 | K0055 | K0056
-        | K0057 | K0058 | K0059 | K0064 | K0065 | K0066 | K0067 | K0068 | K0069 | K0070 | K0071
-        | K0072 | K0073 | K0074 | K0075 | K0076 | K0077 | K0078 | K0079 | K0083 | K0084 | K0085
-        | K0086 | K0087 | K0088 | K0089 | K0091 | K0092 | K0093 | K0094 | K0096 | K0097 | K0098 => {
+        | K0033 | K0034 | K0035 | K0036 | K0037 | K0038 | K0039 | K0040 | K0045 | K0046 | K0047
+        | K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 | K0055 | K0056 | K0057 | K0058
+        | K0059 | K0064 | K0065 | K0066 | K0067 | K0068 | K0069 | K0070 | K0071 | K0072 | K0073
+        | K0074 | K0075 | K0076 | K0077 | K0078 | K0079 | K0083 | K0084 | K0085 | K0086 | K0087
+        | K0088 | K0089 | K0091 | K0092 | K0093 | K0094 | K0096 | K0097 | K0098 => {
             ownership_severity(mode)
         } // NO wildcard `_` arm — new variants cause compile error [R2-02].
     }

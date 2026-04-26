@@ -294,6 +294,58 @@ fn migrate_uc_acceptance_fixtures_are_deterministic_and_visible() {
 }
 
 #[test]
+fn solver_graph_and_migrate_output_are_stable_across_100_runs() {
+    let case = FixtureCase::new("evidence-contract-100-run", "tiered_mix.kobo");
+    let first_graph = run_kobo(["migrate", "--graph"], &case.fixture_path);
+    let first_migrate = run_kobo(
+        ["migrate", "--dry-run", "--class", "--explain"],
+        &case.fixture_path,
+    );
+
+    assert!(
+        first_graph.status.success(),
+        "first graph run failed\nstdout:\n{}\nstderr:\n{}",
+        first_graph.stdout,
+        first_graph.stderr
+    );
+    assert!(
+        first_migrate.status.success(),
+        "first migrate run failed\nstdout:\n{}\nstderr:\n{}",
+        first_migrate.stdout,
+        first_migrate.stderr
+    );
+
+    for run_idx in 1..100 {
+        let graph = run_kobo(["migrate", "--graph"], &case.fixture_path);
+        let migrate = run_kobo(
+            ["migrate", "--dry-run", "--class", "--explain"],
+            &case.fixture_path,
+        );
+
+        assert!(
+            graph.status.success(),
+            "graph run {run_idx} failed\nstdout:\n{}\nstderr:\n{}",
+            graph.stdout,
+            graph.stderr
+        );
+        assert!(
+            migrate.status.success(),
+            "migrate run {run_idx} failed\nstdout:\n{}\nstderr:\n{}",
+            migrate.stdout,
+            migrate.stderr
+        );
+        assert_eq!(
+            first_graph.stdout, graph.stdout,
+            "solver graph output changed at run {run_idx}"
+        );
+        assert_eq!(
+            first_migrate.stdout, migrate.stdout,
+            "migrate dry-run output changed at run {run_idx}"
+        );
+    }
+}
+
+#[test]
 fn bench_tick_budget_reports_measured_pipeline_timing() {
     let case = FixtureCase::new("evidence-contract-tick-budget", "uc4_game_server.kobo");
     let output = run_kobo(["bench", "--tick-budget"], &case.fixture_path);
@@ -343,6 +395,130 @@ fn check_reports_handler_request_state_leaks() {
         "K0067 output must name the leaking request binding\nstdout:\n{}\nstderr:\n{}",
         output.stdout,
         output.stderr
+    );
+}
+
+#[test]
+fn migrate_dry_run_reports_extract_before_borrow_fix() {
+    let case = FixtureCase::new(
+        "evidence-contract-s17-dry-run",
+        "extract_before_borrow.kobo",
+    );
+    let output = run_kobo(["migrate", "--dry-run"], &case.fixture_path);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        output
+            .stdout
+            .contains("S-17 extract-before-borrow fixes: 1 site(s)"),
+        "migrate dry-run must expose S-17 fix count\n{}",
+        output.stdout
+    );
+    assert!(
+        output
+            .stdout
+            .contains("+    let __kobo_extract_0 = data.len();"),
+        "migrate dry-run must show the inserted extraction\n{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("+    let len = __kobo_extract_0;"),
+        "migrate dry-run must show the rewritten read site\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn migrate_apply_writes_extract_before_borrow_fix() {
+    let case = FixtureCase::new("evidence-contract-s17-apply", "extract_before_borrow.kobo");
+    let apply_output = run_kobo(["migrate", "--apply"], &case.fixture_path);
+
+    assert!(
+        apply_output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        apply_output.stdout,
+        apply_output.stderr
+    );
+    assert!(
+        apply_output
+            .stdout
+            .contains("Applied S-17 extract-before-borrow fixes: 1 site(s)"),
+        "migrate --apply must report the S-17 rewrite\n{}",
+        apply_output.stdout
+    );
+
+    let rewritten = fs::read_to_string(&case.fixture_path).expect("rewritten source should read");
+    assert!(
+        rewritten.contains("    let __kobo_extract_0 = data.len();"),
+        "migrate --apply must write the inserted extraction\n{rewritten}"
+    );
+    assert!(
+        rewritten.contains("    let len = __kobo_extract_0;"),
+        "migrate --apply must rewrite the read site\n{rewritten}"
+    );
+
+    let run_output = run_kobo(["run"], &case.fixture_path);
+    assert!(
+        run_output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        run_output.stdout,
+        run_output.stderr
+    );
+    assert_eq!(run_output.stdout.trim(), "3");
+}
+
+#[test]
+fn inspect_reports_engine_ceiling_diagnostic() {
+    let case = FixtureCase::new(
+        "evidence-contract-engine-ceiling",
+        "engine_ceiling_conflict.kobo",
+    );
+    let output = run_kobo(["inspect", "--checked"], &case.fixture_path);
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("K0031"),
+        "engine ceiling downgrade must surface as K0031\n{combined}"
+    );
+    assert!(
+        combined.contains("physics") && combined.contains("PlainOwned"),
+        "engine ceiling diagnostic must name the binding and applied ownership\n{combined}"
+    );
+}
+
+#[test]
+fn check_reports_live_borrow_liveness_diagnostic() {
+    let case = FixtureCase::new(
+        "evidence-contract-live-borrow-liveness",
+        "live_borrow_at_move.kobo",
+    );
+    let output = run_kobo(["check"], &case.fixture_path);
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("K0032"),
+        "live borrow at move must surface as K0032\n{combined}"
+    );
+    assert!(
+        combined.contains("live borrow") && combined.contains("move"),
+        "K0032 must explain the liveness reason\n{combined}"
     );
 }
 
@@ -558,8 +734,8 @@ fn run_kobo<const N: usize>(args: [&str; N], fixture_path: &Path) -> KoboOutput 
 
     KoboOutput {
         status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     }
 }
 

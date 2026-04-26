@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 static CASE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -520,6 +521,53 @@ fn run_tiered_mix_fixture_executes_with_shared_wrappers() {
 }
 
 #[test]
+fn run_erase_lifetimes_compiles_erased_source() {
+    let case = FixtureCase::new("run-lifetime-erasure", "lifetime_erasure.kobo");
+    let output = run_kobo(["run", "--erase-lifetimes"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "lifetime erasure fixture");
+
+    let generated = fs::read_to_string(case.fixture_path.with_extension("rs"))
+        .expect("run should write generated Rust source");
+    assert!(
+        generated.contains("fn borrow_name(name: String) -> String")
+            || generated.contains("fn borrow_name ( name : String ) -> String"),
+        "generated source must erase the public &str parameter:\n{generated}"
+    );
+    assert!(
+        !generated.contains("fn borrow_name(name: &str)"),
+        "generated source must not keep the public &str signature:\n{generated}"
+    );
+}
+
+#[test]
+fn inspect_checked_erase_lifetimes_hides_public_refs() {
+    let case = FixtureCase::new("inspect-checked-lifetime-erasure", "lifetime_erasure.kobo");
+    let output = run_kobo(
+        ["inspect", "--checked", "--erase-lifetimes"],
+        &case.fixture_path,
+    );
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        output
+            .stdout
+            .contains("fn borrow_name(name: String) -> String")
+            || output
+                .stdout
+                .contains("fn borrow_name ( name : String ) -> String"),
+        "checked inspect output must erase the public &str parameter:\n{}",
+        output.stdout
+    );
+    assert!(
+        !output.stdout.contains("fn borrow_name(name: &str)"),
+        "checked inspect output must not keep the public &str signature:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
 fn run_conditional_mutation_fixture_drops_borrow_before_println() {
     let case = FixtureCase::new("run-conditional-mutation", "conditional_mutation.kobo");
     let output = run_kobo(["run"], &case.fixture_path);
@@ -691,6 +739,121 @@ fn run_kobo<const N: usize>(args: [&str; N], fixture_path: &Path) -> KoboOutput 
     }
 }
 
+fn run_watch_once_after_edit<const N: usize>(
+    args: [&str; N],
+    fixture_path: &Path,
+    edited_source: &str,
+) -> KoboOutput {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(args)
+        .arg(fixture_path)
+        .env("KOBO_WATCH_ONCE", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(workspace_root())
+        .spawn()
+        .expect("kobo watch should spawn");
+
+    std::thread::sleep(Duration::from_millis(700));
+    fs::write(fixture_path, edited_source).expect("edited watch source should write");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if child
+            .try_wait()
+            .expect("watch status should poll")
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .expect("watch output should collect");
+            return KoboOutput {
+                status: output.status,
+                stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            };
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .expect("timed out watch output should collect");
+            panic!(
+                "kobo watch did not exit after file change\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn watch_simple_reruns_check_after_file_change() {
+    let case = FixtureCase::new("watch-simple-rerun", "hello.kobo");
+    fs::write(
+        &case.fixture_path,
+        "fn main() {\n    println!(\"watch before\");\n}\n",
+    )
+    .expect("initial watch source should write");
+    let handler_leak =
+        fs::read_to_string(workspace_root().join("tests/fixtures/handler_leak.kobo"))
+            .expect("handler leak fixture should read");
+
+    let output =
+        run_watch_once_after_edit(["watch", "--simple"], &case.fixture_path, &handler_leak);
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("Change detected") && combined.contains("Triggering rebuild"),
+        "watch --simple must react to the file edit\n{combined}"
+    );
+    assert!(
+        combined.contains("K0067"),
+        "watch --simple must rerun the check pipeline and surface new diagnostics\n{combined}"
+    );
+}
+
+#[test]
+fn watch_build_reruns_codegen_after_file_change() {
+    let case = FixtureCase::new("watch-build-rerun", "hello.kobo");
+    fs::write(
+        &case.fixture_path,
+        "fn main() {\n    println!(\"watch before\");\n}\n",
+    )
+    .expect("initial watch source should write");
+    let edited_source = "fn main() {\n    println!(\"watch after\");\n}\n";
+
+    let output = run_watch_once_after_edit(["watch", "--build"], &case.fixture_path, edited_source);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        output.stdout.contains("Change detected") && output.stdout.contains("codegen OK"),
+        "watch --build must run codegen after the file edit\n{}",
+        output.stdout
+    );
+
+    let generated = fs::read_to_string(case.fixture_path.with_extension("rs"))
+        .expect("watch build should write generated Rust");
+    assert!(
+        generated.contains("watch after"),
+        "watch --build must regenerate from the edited source\n{generated}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // v0.4 — kobo debt / kobo perf integration tests (BUG-10)
 // ---------------------------------------------------------------------------
@@ -728,6 +891,24 @@ fn debt_json_has_schema_version() {
         output.stdout.contains("\"schema_version\": 1"),
         "JSON must contain schema_version=1, got:\n{}",
         output.stdout,
+    );
+}
+
+#[test]
+fn debt_borrows_reports_lifetime_erasure_clone_debt() {
+    let case = FixtureCase::new("debt-lifetime-erasure", "lifetime_erasure.kobo");
+    let output = run_kobo(["debt", "--borrows"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        output.stdout.contains("Lifetime Erasure Clones:"),
+        "debt --borrows must include S-21 lifetime erasure clone debt:\n{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("name (2 clones)"),
+        "debt --borrows must count non-last erased-param uses:\n{}",
+        output.stdout
     );
 }
 

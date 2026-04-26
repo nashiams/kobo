@@ -13,10 +13,11 @@
 ///   @@ -10,3 +10,3 @@
 ///   -    let state = Rc::new(RefCell::new(State::new()));
 ///   +    let state = Arc::new(tokio::sync::RwLock::new(State::new()));
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use kobo_driver::run_kir_phase;
+use kobo_driver::{extract_before_borrow_rewrite, run_kir_phase};
 use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 use kobo_migrate::decisions_cache::{DecisionsStore, PersistedDecision};
 use kobo_migrate::{
@@ -61,6 +62,7 @@ pub(super) fn cmd_migrate(
     let mut migrate_ctxt = MigrateCtxt::new(kir, config);
     let modular = solve_modular_with_evidence(migrate_ctxt.kir(), &budget);
     let outcome = query_solve_outcome(&mut migrate_ctxt, &budget);
+    let extract_plan = build_extract_before_borrow_plan(file, migrate_ctxt.kir())?;
     let decisions_path = decisions_path_for(file);
     let mut decisions = DecisionsStore::load(&decisions_path);
     let review_artifact_updates = if review {
@@ -91,6 +93,7 @@ pub(super) fn cmd_migrate(
             &outcome,
             &modular.solver_evidence,
             DryRunDiffOptions {
+                extract_plan: extract_plan.as_ref(),
                 decisions_path: &decisions_path,
                 decisions: &decisions,
                 review_artifact_updates,
@@ -103,7 +106,7 @@ pub(super) fn cmd_migrate(
     }
 
     if apply {
-        return apply_migration(file, &outcome, root);
+        return apply_migration(file, &outcome, root, extract_plan.as_ref());
     }
 
     // Default: dry-run (safe default).
@@ -112,6 +115,7 @@ pub(super) fn cmd_migrate(
         &outcome,
         &modular.solver_evidence,
         DryRunDiffOptions {
+            extract_plan: extract_plan.as_ref(),
             decisions_path: &decisions_path,
             decisions: &decisions,
             review_artifact_updates,
@@ -124,6 +128,7 @@ pub(super) fn cmd_migrate(
 }
 
 struct DryRunDiffOptions<'a> {
+    extract_plan: Option<&'a ExtractBeforeBorrowPlan>,
     decisions_path: &'a Path,
     decisions: &'a DecisionsStore,
     review_artifact_updates: usize,
@@ -131,6 +136,12 @@ struct DryRunDiffOptions<'a> {
     class_view: bool,
     explain: bool,
     _root: Option<&'a str>,
+}
+
+struct ExtractBeforeBorrowPlan {
+    original: String,
+    rewritten: String,
+    applied_sites: usize,
 }
 
 /// Print a unified diff showing proposed migration changes.
@@ -163,7 +174,10 @@ fn print_dry_run_diff(
             options.review_artifact_updates
         );
     }
-    println!("// silent_decisions: 0");
+    println!(
+        "// silent_decisions: {}",
+        count_silent_decisions(outcome, options.decisions)
+    );
 
     if options.class_view {
         println!("// decision class: {}", outcome_class(outcome));
@@ -175,7 +189,16 @@ fn print_dry_run_diff(
     }
     println!();
 
-    if matches!(outcome, SolveOutcome::Unique(_)) && proposed_change_count(outcome) == 0 {
+    let ownership_change_count = proposed_change_count(outcome);
+    let extract_fix_count = options
+        .extract_plan
+        .map(|plan| plan.applied_sites)
+        .unwrap_or_default();
+
+    if matches!(outcome, SolveOutcome::Unique(_))
+        && ownership_change_count == 0
+        && extract_fix_count == 0
+    {
         println!("// kobo-pick: none (no ownership changes proposed)");
         println!("// No migration changes needed.");
         return Ok(());
@@ -249,13 +272,54 @@ fn print_dry_run_diff(
         }
     }
 
+    if let Some(plan) = options.extract_plan {
+        print_extract_before_borrow_diff(file, plan);
+    }
+
     println!();
     println!(
-        "// {} change(s) proposed. Use --apply to write changes.",
-        proposed_change_count(outcome)
+        "// {} ownership change(s), {} S-17 fix(es) proposed. Use --apply to write S-17 fixes.",
+        ownership_change_count, extract_fix_count,
     );
 
     Ok(())
+}
+
+fn build_extract_before_borrow_plan(
+    file: &Path,
+    kir: &kobo_ir::Kir,
+) -> anyhow::Result<Option<ExtractBeforeBorrowPlan>> {
+    let original =
+        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
+    let (rewritten, applied_sites) = extract_before_borrow_rewrite(&original, kir);
+    if applied_sites == 0 || rewritten == original {
+        return Ok(None);
+    }
+
+    Ok(Some(ExtractBeforeBorrowPlan {
+        original,
+        rewritten,
+        applied_sites,
+    }))
+}
+
+fn print_extract_before_borrow_diff(file: &Path, plan: &ExtractBeforeBorrowPlan) {
+    println!();
+    println!(
+        "// S-17 extract-before-borrow fixes: {} site(s)",
+        plan.applied_sites
+    );
+    println!("--- a/{}", file.display());
+    println!("+++ b/{}", file.display());
+    println!("@@ S-17 extract-before-borrow @@");
+    println!("// before");
+    for line in plan.original.lines() {
+        println!("-{line}");
+    }
+    println!("// after");
+    for line in plan.rewritten.lines() {
+        println!("+{line}");
+    }
 }
 
 /// Print a text dependency graph showing migration constraints.
@@ -299,11 +363,28 @@ fn print_dependency_graph(
 
 /// Apply migration changes to the source file.
 fn apply_migration(
-    _file: &Path,
+    file: &Path,
     outcome: &SolveOutcome,
     _root: Option<&str>,
+    extract_plan: Option<&ExtractBeforeBorrowPlan>,
 ) -> anyhow::Result<()> {
     let change_count = proposed_change_count(outcome);
+    if let Some(plan) = extract_plan {
+        fs::write(file, &plan.rewritten)
+            .with_context(|| format!("failed to write {}", file.display()))?;
+        println!(
+            "// Applied S-17 extract-before-borrow fixes: {} site(s)",
+            plan.applied_sites
+        );
+        if change_count > 0 {
+            println!(
+                "// {} ownership migration change(s) remain dry-run only in this build.",
+                change_count
+            );
+        }
+        return Ok(());
+    }
+
     if change_count == 0 {
         println!("// No migration changes to apply.");
         return Ok(());
@@ -417,6 +498,13 @@ fn proposed_change_count(outcome: &SolveOutcome) -> usize {
             .unwrap_or(0),
         _ => 0,
     }
+}
+
+fn count_silent_decisions(outcome: &SolveOutcome, decisions: &DecisionsStore) -> usize {
+    preferred_solution_entries(outcome)
+        .into_iter()
+        .filter(|(node_id, _)| !decisions.is_locked(&decision_key(*node_id)))
+        .count()
 }
 
 fn tier_label(tier: kobo_ir::OwnershipTier) -> &'static str {
@@ -705,6 +793,7 @@ mod tests {
             &outcome,
             &evidence,
             DryRunDiffOptions {
+                extract_plan: None,
                 decisions_path: Path::new(".kobo/decisions.toml"),
                 decisions: &decisions,
                 review_artifact_updates: 0,
@@ -729,6 +818,7 @@ mod tests {
             &outcome,
             &evidence,
             DryRunDiffOptions {
+                extract_plan: None,
                 decisions_path: Path::new(".kobo/decisions.toml"),
                 decisions: &decisions,
                 review_artifact_updates: 0,
@@ -755,7 +845,7 @@ mod tests {
     fn apply_errors_when_rewrite_is_unavailable() {
         let outcome = SolveOutcome::Unique(make_solution(2));
         let file = Path::new("test.kobo");
-        let err = apply_migration(file, &outcome, None).unwrap_err();
+        let err = apply_migration(file, &outcome, None, None).unwrap_err();
         assert!(
             err.to_string()
                 .contains("--apply is not available in this build"),
@@ -781,6 +871,32 @@ mod tests {
     }
 
     #[test]
+    fn count_silent_decisions_respects_locked_entries() {
+        let mut solution = SolutionMap::new();
+        solution.insert(KirNodeId(1), OwnershipTier::PlainOwned);
+        solution.insert(KirNodeId(2), OwnershipTier::RcShared);
+        let outcome = SolveOutcome::Unique(solution);
+
+        let mut decisions = DecisionsStore::new();
+        decisions.set(PersistedDecision {
+            binding_name: "node_1".to_owned(),
+            tier: OwnershipTier::PlainOwned,
+            locked: true,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("approved".to_owned()),
+        });
+        decisions.set(PersistedDecision {
+            binding_name: "node_2".to_owned(),
+            tier: OwnershipTier::RcShared,
+            locked: false,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("provisional".to_owned()),
+        });
+
+        assert_eq!(count_silent_decisions(&outcome, &decisions), 1);
+    }
+
+    #[test]
     fn migrate_with_diagnostics() {
         let outcome = SolveOutcome::NoSolution(kobo_migrate::ConflictReport {
             conflicting_nodes: vec![KirNodeId(1)],
@@ -795,6 +911,7 @@ mod tests {
             &outcome,
             &evidence,
             DryRunDiffOptions {
+                extract_plan: None,
                 decisions_path: Path::new(".kobo/decisions.toml"),
                 decisions: &decisions,
                 review_artifact_updates: 0,

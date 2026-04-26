@@ -1,4 +1,4 @@
-/// Erase lifetime annotations in script mode.
+/// Erase lifetime annotations in script and checked modes.
 ///
 /// Transformation (parameters):
 ///   fn process(data: &'a str) → fn process(data: String)
@@ -6,7 +6,7 @@
 ///   fn process(config: &Config) → fn process(config: Config)
 ///
 /// Rules:
-/// 1. Only applies in Script mode (not Checked, not Strict)
+/// 1. Only applies in Script/Checked mode (not Strict)
 /// 2. &str → String
 /// 3. &[T] → Vec<T>
 /// 4. &T → T (for all other types)
@@ -42,6 +42,21 @@ pub struct ErasedParam {
 pub struct LifetimeErasureResult {
     pub clone_sites: Vec<CloneSite>,
     pub erased_params: Vec<ErasedParam>,
+}
+
+impl LifetimeErasureResult {
+    pub fn is_empty(&self) -> bool {
+        self.clone_sites.is_empty() && self.erased_params.is_empty()
+    }
+
+    pub fn merge(&mut self, other: LifetimeErasureResult) {
+        self.clone_sites.extend(other.clone_sites);
+        self.erased_params.extend(other.erased_params);
+    }
+}
+
+fn lifetime_erasure_enabled(mode: KoboMode) -> bool {
+    mode.is_script() || mode.is_checked()
 }
 
 /// Erase a reference type to its owned equivalent.
@@ -153,12 +168,12 @@ fn count_usages_in_block(block: &syn::Block, name: &str) -> usize {
 
 /// Erase lifetimes on a syn::Item.
 ///
-/// Only applies in Script mode. Returns None if:
-/// - Mode is not Script
+/// Only applies in Script/Checked mode. Returns None if:
+/// - Mode is Strict
 /// - The item is not a function
 /// - No references to erase
 pub fn erase_lifetimes(item: &syn::Item, mode: KoboMode) -> Option<LifetimeErasureResult> {
-    if mode != KoboMode::Script {
+    if !lifetime_erasure_enabled(mode) {
         return None;
     }
 
@@ -197,13 +212,37 @@ pub fn erase_lifetimes(item: &syn::Item, mode: KoboMode) -> Option<LifetimeErasu
     })
 }
 
+/// Analyze all functions in a source file for lifetime erasure clone/debt data.
+pub fn analyze_source(source: &str, mode: KoboMode) -> LifetimeErasureResult {
+    let mut combined = LifetimeErasureResult {
+        clone_sites: Vec::new(),
+        erased_params: Vec::new(),
+    };
+
+    if !lifetime_erasure_enabled(mode) {
+        return combined;
+    }
+
+    let Ok(file) = syn::parse_file(source) else {
+        return combined;
+    };
+
+    for item in &file.items {
+        if let Some(result) = erase_lifetimes(item, mode) {
+            combined.merge(result);
+        }
+    }
+
+    combined
+}
+
 /// Rewrite a function signature string with erased lifetimes.
 ///
 /// This is the source-level transformation: replaces &str with String, etc.
 /// Uses syn parsing to identify reference types, then does source-level text replacement.
 /// Rule 8: Return types borrowing from erased params are also erased.
 pub fn rewrite_fn_signature(source: &str, mode: KoboMode) -> String {
-    if mode != KoboMode::Script {
+    if !lifetime_erasure_enabled(mode) {
         return source.to_owned();
     }
 
@@ -372,7 +411,7 @@ fn sum(items: &[i32]) -> i32 {
     }
 
     #[test]
-    fn no_erasure_in_checked_mode() {
+    fn erasure_applies_in_checked_mode() {
         let input = r#"
 fn greet(name: &str) {
     println!("Hello, {}", name);
@@ -380,8 +419,8 @@ fn greet(name: &str) {
 "#;
         let output = rewrite_fn_signature(input, KoboMode::Checked);
         assert!(
-            output.contains("&str"),
-            "Checked mode should keep &str, got: {output}"
+            output.contains("String") && !output.contains("&str"),
+            "Checked mode should erase public &str, got: {output}"
         );
     }
 

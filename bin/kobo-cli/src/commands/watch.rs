@@ -19,6 +19,7 @@ pub(super) fn cmd_watch(file: &Path, simple: bool, build: bool) -> anyhow::Resul
     }
 
     let mode_label = if build { "build" } else { "simple" };
+    let run_once = std::env::var_os("KOBO_WATCH_ONCE").is_some();
     println!(
         "Watching {} ({mode_label} mode, Ctrl+C to stop)",
         file.display()
@@ -45,8 +46,13 @@ pub(super) fn cmd_watch(file: &Path, simple: bool, build: bool) -> anyhow::Resul
             } else {
                 on_file_changed(file);
             }
+            if run_once {
+                break;
+            }
         }
     }
+
+    Ok(())
 }
 
 /// Get file modification time.

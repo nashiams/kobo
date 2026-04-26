@@ -1,0 +1,6 @@
+fn main() {
+    let data = vec![1, 2, 3];
+    let len = data.len();
+    data.push(4);
+    println!("{}", len);
+}

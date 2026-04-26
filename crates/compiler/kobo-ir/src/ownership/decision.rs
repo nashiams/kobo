@@ -111,6 +111,16 @@ pub struct TierDecision {
 }
 
 impl OwnershipTier {
+    pub const SOLVED_LATTICE: [OwnershipTier; 7] = [
+        OwnershipTier::Scoped,
+        OwnershipTier::PlainOwned,
+        OwnershipTier::RcShared,
+        OwnershipTier::ArcShared,
+        OwnershipTier::BoxOwned,
+        OwnershipTier::RcMutShared,
+        OwnershipTier::ArcMutShared,
+    ];
+
     /// Returns whether this tier uses shared ownership semantics.
     pub fn is_shared(&self) -> bool {
         matches!(
@@ -141,6 +151,28 @@ impl OwnershipTier {
     /// Returns whether migration has already resolved this tier.
     pub fn is_decided(&self) -> bool {
         !matches!(self, OwnershipTier::Undecided)
+    }
+
+    pub fn is_solved_lattice_member(self) -> bool {
+        !matches!(self, OwnershipTier::Undecided)
+    }
+
+    pub fn lattice_join(self, other: OwnershipTier) -> Option<OwnershipTier> {
+        if !self.is_solved_lattice_member() || !other.is_solved_lattice_member() {
+            return None;
+        }
+        if self.priority() >= other.priority() {
+            Some(self)
+        } else {
+            Some(other)
+        }
+    }
+
+    pub fn lattice_leq(self, other: OwnershipTier) -> Option<bool> {
+        if !self.is_solved_lattice_member() || !other.is_solved_lattice_member() {
+            return None;
+        }
+        Some(self.priority() <= other.priority())
     }
 
     /// Stable label used by inspect output and source maps.

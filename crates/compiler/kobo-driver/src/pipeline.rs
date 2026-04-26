@@ -12,7 +12,8 @@ use kobo_codegen::{
 };
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{
-    AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern,
+    AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, UseEvent,
+    WarnEarlyPattern,
 };
 use kobo_migrate::{
     solve_modular, solve_modular_with_evidence, SolveOutcome, SolverBudget, SolverEvidence,
@@ -187,7 +188,8 @@ pub fn run_codegen_pipeline(
     // S-3: Cap engine struct bindings to PlainOwned ceiling.
     // Engine structs are framework-managed and must not be shared via Rc/Arc.
     if !session.engine_struct_names.is_empty() {
-        apply_engine_ceiling(&kir, &mut solution);
+        let adjustments = apply_engine_ceiling(&kir, &mut solution);
+        project_engine_ceiling_diagnostics(session, &adjustments);
     }
     let rs_path = output_path_for(input, &session.config);
     let map_path = map_path_for(input, &session.config);
@@ -220,7 +222,10 @@ pub fn run_codegen_pipeline(
         if sites.is_empty() {
             rs_source
         } else {
-            apply_extract_before_borrow_rewrites(&rs_source, &sites)
+            kobo_transform::patterns::extract_borrow::apply_extract_before_borrow_rewrites(
+                &rs_source, &sites,
+            )
+            .source
         }
     };
 
@@ -259,6 +264,30 @@ pub fn run_codegen_pipeline(
 
 pub fn run_and_compile(session: &mut CompileSession, input: &Path) -> Result<PathBuf, ()> {
     let artifacts = run_codegen_pipeline(session, input)?;
+    compile_codegen_artifacts(session, &artifacts)
+}
+
+pub fn run_and_compile_with_lifetime_erasure(
+    session: &mut CompileSession,
+    input: &Path,
+) -> Result<PathBuf, ()> {
+    let mut artifacts = run_codegen_pipeline(session, input)?;
+    let erased_source = apply_lifetime_erasure(&artifacts.rs_source, session.mode());
+    if erased_source != artifacts.rs_source {
+        if let Err(error) = write_rs_file(&artifacts.rs_path, &erased_source) {
+            eprintln!("kobo: write error: {error}");
+            return Err(());
+        }
+        artifacts.rs_source = erased_source;
+    }
+
+    compile_codegen_artifacts(session, &artifacts)
+}
+
+fn compile_codegen_artifacts(
+    session: &mut CompileSession,
+    artifacts: &CodegenArtifacts,
+) -> Result<PathBuf, ()> {
     let compile_output = compile_and_remap(
         session,
         &artifacts.rs_path,
@@ -598,7 +627,55 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     if session.has_errors() {
         Err(())
     } else {
+        project_live_borrow_liveness_diagnostics(session, kir);
         Ok(())
+    }
+}
+
+fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
+    for binding in kir.transform_facts().iter_bindings() {
+        if !binding.shared_facts.live_borrow_at_move {
+            continue;
+        }
+
+        let move_span = binding
+            .usage
+            .uses
+            .iter()
+            .find_map(|event| match event {
+                UseEvent::Moved { span, .. } => Some(*span),
+                _ => None,
+            })
+            .unwrap_or(binding.span);
+        let borrow_span = binding
+            .shared_facts
+            .borrow_sites
+            .first()
+            .copied()
+            .unwrap_or(binding.span);
+        let severity =
+            resolve_severity(KErrorCode::K0032, session.mode()).unwrap_or(Severity::Warning);
+        session.diagnostics.push(
+            KDiagnostic::new(
+                KErrorCode::K0032,
+                severity,
+                DiagLabel::primary(
+                    move_span,
+                    format!(
+                        "`{}` moves while a borrow remains live",
+                        binding.binding_name
+                    ),
+                ),
+                "KIR liveness found a borrow that is still used after the move; Kobo must preserve the original value through shared ownership or a clone".to_owned(),
+                DiagDecision(
+                    "shorten the borrow scope before the move, or keep the generated shared/clone lowering".to_owned(),
+                ),
+            )
+            .with_secondary_label(DiagLabel::secondary(
+                borrow_span,
+                "borrow starts here and remains live at the move",
+            )),
+        );
     }
 }
 
@@ -754,9 +831,10 @@ fn project_solver_diagnostics(session: &mut CompileSession, kir: &Kir, outcome: 
 /// Bindings whose declared type matches an `#[kobo::engine]` struct are framework-managed
 /// and must not be promoted to Rc/Arc. Walk nodes marked as engine-ceiling and downgrade
 /// any that were solver-assigned above PlainOwned.
-fn apply_engine_ceiling(kir: &Kir, solution: &mut SolutionMap) {
+fn apply_engine_ceiling(kir: &Kir, solution: &mut SolutionMap) -> Vec<EngineCeilingAdjustment> {
     use kobo_ir::{NodeKind, OwnershipTier};
 
+    let mut adjustments = Vec::new();
     for node in kir.iter_decl_nodes() {
         debug_assert_eq!(node.kind, NodeKind::Decl);
         if !kir.is_engine_ceiling(node.id) {
@@ -765,73 +843,57 @@ fn apply_engine_ceiling(kir: &Kir, solution: &mut SolutionMap) {
         let resolved = solution.resolve(node.id, node.ownership);
         if resolved.priority() > OwnershipTier::PlainOwned.priority() {
             solution.insert(node.id, OwnershipTier::PlainOwned);
+            adjustments.push(EngineCeilingAdjustment {
+                span: node.span,
+                binding_name: binding_name_for_node(kir, node.id),
+                requested_tier: resolved,
+            });
         }
     }
+    adjustments
 }
 
-/// S-17: Rewrite generated Rust source to extract borrow results before mutations.
-///
-/// For each extraction site, finds the first line referencing `binding_name.method()`
-/// and inserts `let temp = binding_name.method();` above it, then replaces the
-/// inline call with the temp variable.
-fn apply_extract_before_borrow_rewrites(
-    source: &str,
-    sites: &[kobo_transform::patterns::extract_borrow::ExtractionSite],
-) -> String {
-    let mut lines: Vec<String> = source.lines().map(|l| l.to_owned()).collect();
-    // Track insertions: (line_idx, extraction_stmt, replacement_line)
-    let mut insertions: Vec<(usize, String, String)> = Vec::new();
-
-    for site in sites {
-        let pattern = format!("{}.", site.binding_name);
-        for (i, line) in lines.iter().enumerate() {
-            if line.contains(&pattern) {
-                if let Some(start) = line.find(&pattern) {
-                    let rest = &line[start..];
-                    if let Some(paren_end) = find_balanced_paren(rest) {
-                        let call_expr = &rest[..paren_end + 1];
-                        let indent = &line[..line.len() - line.trim_start().len()];
-                        let extraction =
-                            format!("{}let {} = {};", indent, site.temp_name, call_expr);
-                        let replacement = line.replacen(call_expr, &site.temp_name, 1);
-                        insertions.push((i, extraction, replacement));
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // Apply in reverse line order to avoid offset shifts.
-    insertions.sort_by(|a, b| b.0.cmp(&a.0));
-    for (line_idx, extraction, replacement) in insertions {
-        lines[line_idx] = replacement;
-        lines.insert(line_idx, extraction);
-    }
-
-    lines.join("\n")
+#[derive(Debug, Clone)]
+struct EngineCeilingAdjustment {
+    span: kobo_ir::KoboSpan,
+    binding_name: String,
+    requested_tier: kobo_ir::OwnershipTier,
 }
 
-/// Find the index of the closing paren matching the first open paren in `s`.
-fn find_balanced_paren(s: &str) -> Option<usize> {
-    let mut depth: i32 = 0;
-    let mut found_open = false;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '(' => {
-                depth += 1;
-                found_open = true;
-            }
-            ')' => {
-                depth -= 1;
-                if found_open && depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
+fn binding_name_for_node(kir: &Kir, node_id: kobo_ir::KirNodeId) -> String {
+    kir.transform_facts()
+        .iter_bindings()
+        .find(|binding| binding.node == node_id)
+        .map(|binding| binding.binding_name.clone())
+        .unwrap_or_else(|| format!("node_{}", node_id.0))
+}
+
+fn project_engine_ceiling_diagnostics(
+    session: &mut CompileSession,
+    adjustments: &[EngineCeilingAdjustment],
+) {
+    for adjustment in adjustments {
+        let severity =
+            resolve_severity(KErrorCode::K0031, session.mode()).unwrap_or(Severity::Warning);
+        session.diagnostics.push(KDiagnostic::new(
+            KErrorCode::K0031,
+            severity,
+            DiagLabel::primary(
+                adjustment.span,
+                format!(
+                    "`{}` is #[kobo::engine]-managed and cannot use {:?}",
+                    adjustment.binding_name, adjustment.requested_tier
+                ),
+            ),
+            format!(
+                "solver selected {:?}, but engine structs are framework-managed; Kobo emitted PlainOwned instead of silently downgrading",
+                adjustment.requested_tier
+            ),
+            DiagDecision(
+                "keep engine state owned by the framework or remove #[kobo::engine] if shared ownership is intentional".to_owned(),
+            ),
+        ));
     }
-    None
 }
 
 fn inject_solver_evidence(
@@ -870,7 +932,7 @@ pub fn effective_mode(
     cli_mode.or(file_mode).unwrap_or(config_mode)
 }
 
-/// S-21: Apply lifetime erasure to Rust source in Script mode.
+/// S-21: Apply lifetime erasure to Rust source in Script/Checked mode.
 ///
 /// Rewrites reference parameters (`&T`, `&mut T`, `&str`) to owned types
 /// (`T`, `T`, `String`). Intended for Script-mode prototyping where the
@@ -879,6 +941,25 @@ pub fn effective_mode(
 /// Call this on the codegen output when `--erase-lifetimes` is requested.
 pub fn apply_lifetime_erasure(source: &str, mode: KoboMode) -> String {
     kobo_transform::lifetime_erase::rewrite_fn_signature(source, mode)
+}
+
+/// S-21: Report clone debt introduced by public-signature lifetime erasure.
+pub fn lifetime_erasure_debt_report(source: &str, mode: KoboMode) -> String {
+    let result = kobo_transform::lifetime_erase::analyze_source(source, mode);
+    kobo_transform::lifetime_erase::format_clone_debt(&result.clone_sites)
+}
+
+/// S-17: Apply extract-before-borrow rewrites to source from production KIR facts.
+pub fn extract_before_borrow_rewrite(source: &str, kir: &Kir) -> (String, usize) {
+    let sites =
+        kobo_transform::patterns::extract_borrow::find_extract_before_borrow(kir.transform_facts());
+    if sites.is_empty() {
+        return (source.to_owned(), 0);
+    }
+    let rewrite = kobo_transform::patterns::extract_borrow::apply_extract_before_borrow_rewrites(
+        source, &sites,
+    );
+    (rewrite.source, rewrite.applied_sites)
 }
 
 #[cfg(test)]

@@ -203,6 +203,78 @@ fn greedy_priority_orders_the_user_facing_ladder() {
     );
 }
 
+#[test]
+fn seven_tier_lattice_join_is_total_commutative_and_idempotent() {
+    let tiers = OwnershipTier::SOLVED_LATTICE;
+    assert_eq!(tiers.len(), 7);
+    assert!(!tiers.contains(&OwnershipTier::Undecided));
+
+    for left in tiers {
+        assert_eq!(left.lattice_join(left), Some(left));
+
+        for right in tiers {
+            let left_join_right = left.lattice_join(right);
+            let right_join_left = right.lattice_join(left);
+
+            assert!(
+                left_join_right.is_some(),
+                "join must be total for solved tiers: {left:?} join {right:?}"
+            );
+            assert_eq!(
+                left_join_right, right_join_left,
+                "join must be commutative for {left:?} and {right:?}"
+            );
+            assert!(
+                tiers.contains(&left_join_right.unwrap()),
+                "join result must stay inside the solved lattice"
+            );
+        }
+    }
+}
+
+#[test]
+fn seven_tier_lattice_join_is_monotone() {
+    let tiers = OwnershipTier::SOLVED_LATTICE;
+
+    for lower in tiers {
+        for upper in tiers {
+            if !lower.lattice_leq(upper).unwrap() {
+                continue;
+            }
+
+            for context in tiers {
+                let lower_join_context = lower.lattice_join(context).unwrap();
+                let upper_join_context = upper.lattice_join(context).unwrap();
+                assert!(
+                    lower_join_context
+                        .lattice_leq(upper_join_context)
+                        .unwrap(),
+                    "join must be monotone: {lower:?} <= {upper:?}, context {context:?} produced {lower_join_context:?} !<= {upper_join_context:?}"
+                );
+
+                let context_join_lower = context.lattice_join(lower).unwrap();
+                let context_join_upper = context.lattice_join(upper).unwrap();
+                assert!(
+                    context_join_lower
+                        .lattice_leq(context_join_upper)
+                        .unwrap(),
+                    "join must be monotone in the right operand: {lower:?} <= {upper:?}, context {context:?} produced {context_join_lower:?} !<= {context_join_upper:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn undecided_is_outside_the_solved_lattice() {
+    for tier in OwnershipTier::SOLVED_LATTICE {
+        assert_eq!(OwnershipTier::Undecided.lattice_join(tier), None);
+        assert_eq!(tier.lattice_join(OwnershipTier::Undecided), None);
+        assert_eq!(OwnershipTier::Undecided.lattice_leq(tier), None);
+        assert_eq!(tier.lattice_leq(OwnershipTier::Undecided), None);
+    }
+}
+
 // ── BUG-10: ArcMutShared label must say rwlock, not mutex ──
 
 #[test]

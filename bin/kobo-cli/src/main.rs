@@ -57,6 +57,11 @@ pub(crate) enum KoboCommand {
             help = "Run in strict mode (v0.9 — not yet implemented)"
         )]
         strict: bool,
+        #[arg(
+            long,
+            help = "Erase lifetime parameters before rustc in script/checked mode"
+        )]
+        erase_lifetimes: bool,
     },
     /// Compile and print the generated .rs to stdout without invoking rustc.
     Inspect {
@@ -135,7 +140,7 @@ pub(crate) enum KoboCommand {
         /// Show diff without applying changes (default)
         #[arg(long)]
         dry_run: bool,
-        /// Reserved for in-place rewriting; currently returns an error
+        /// Apply supported safe source rewrites in place
         #[arg(long, hide = true)]
         apply: bool,
         /// Show dependency graph

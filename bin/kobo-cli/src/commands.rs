@@ -25,7 +25,8 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             file,
             checked,
             strict,
-        } => run::cmd_run(&file, resolve_cli_mode(checked, strict)),
+            erase_lifetimes,
+        } => run::cmd_run(&file, resolve_cli_mode(checked, strict), erase_lifetimes),
         KoboCommand::Inspect {
             file,
             checked,

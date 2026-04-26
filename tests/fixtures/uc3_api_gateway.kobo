@@ -1,0 +1,40 @@
+struct Request {
+    path: String,
+}
+
+struct GatewayState {
+    hits: u64,
+}
+
+impl GatewayState {
+    fn new() -> Self {
+        Self { hits: 0 }
+    }
+
+    fn record(&mut self, req: &Request) {
+        self.hits = self.hits + req.path.len() as u64;
+    }
+}
+
+async fn auth(req: &Request) -> bool {
+    req.path.len() > 0
+}
+
+async fn rate_limit(state: &mut GatewayState, req: &Request) {
+    state.record(req);
+}
+
+async fn handle(state: &mut GatewayState, req: Request) {
+    if auth(&req).await {
+        rate_limit(state, &req).await;
+    }
+}
+
+fn main() {
+    let state = GatewayState::new();
+    let req = Request {
+        path: String::from("/health"),
+    };
+    println!("{}", req.path);
+    println!("{}", state.hits);
+}

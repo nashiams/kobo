@@ -1,0 +1,46 @@
+struct Frame {
+    id: u64,
+    pixels: Vec<u8>,
+}
+
+struct Accumulator {
+    frames: Vec<Frame>,
+    total_bytes: u64,
+}
+
+impl Accumulator {
+    fn new() -> Self {
+        Self {
+            frames: Vec::new(),
+            total_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, frame: Frame) {
+        self.total_bytes = self.total_bytes + frame.pixels.len() as u64;
+        self.frames.push(frame);
+    }
+
+    fn total(&self) -> u64 {
+        self.total_bytes
+    }
+}
+
+fn decode(id: u64) -> Frame {
+    Frame {
+        id,
+        pixels: Vec::new(),
+    }
+}
+
+fn normalize(frame: &Frame) {
+    println!("{}", frame.id);
+}
+
+fn main() {
+    let mut acc = Accumulator::new();
+    let frame = decode(1);
+    normalize(&frame);
+    acc.push(frame);
+    println!("{}", acc.total());
+}

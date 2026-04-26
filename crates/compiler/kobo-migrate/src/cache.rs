@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 
 use kobo_ir::SolutionMap;
 
+use crate::solver::SolveOutcome;
+
 /// A red-green cache for solver results.
 ///
 /// "Red" entries are stale (input changed), "green" entries are valid.
@@ -14,6 +16,7 @@ use kobo_ir::SolutionMap;
 #[derive(Clone, Debug, Default)]
 pub struct SolverCache {
     solution: Option<SolutionMap>,
+    outcome: Option<SolveOutcome>,
     fingerprint_cache: BTreeMap<u64, SolutionMap>,
     generation: u64,
 }
@@ -34,6 +37,17 @@ impl SolverCache {
         self.generation += 1;
     }
 
+    /// Get the cached full solve outcome, if available.
+    pub fn get_outcome(&self) -> Option<&SolveOutcome> {
+        self.outcome.as_ref()
+    }
+
+    /// Cache the full solve outcome.
+    pub fn set_outcome(&mut self, outcome: SolveOutcome) {
+        self.outcome = Some(outcome);
+        self.generation += 1;
+    }
+
     /// Get a cached cluster solution by graph fingerprint.
     pub fn get_by_fingerprint(&self, fingerprint: u64) -> Option<&SolutionMap> {
         self.fingerprint_cache.get(&fingerprint)
@@ -47,6 +61,7 @@ impl SolverCache {
     /// Invalidate all cached results.
     pub fn invalidate(&mut self) {
         self.solution = None;
+        self.outcome = None;
         self.fingerprint_cache.clear();
         self.generation += 1;
     }
@@ -80,9 +95,11 @@ mod tests {
     fn invalidate_clears_all() {
         let mut cache = SolverCache::new();
         cache.set_solution(SolutionMap::new());
+        cache.set_outcome(SolveOutcome::Unique(SolutionMap::new()));
         cache.set_by_fingerprint(99, SolutionMap::new());
         cache.invalidate();
         assert!(cache.get_solution().is_none());
+        assert!(cache.get_outcome().is_none());
         assert!(cache.get_by_fingerprint(99).is_none());
     }
 

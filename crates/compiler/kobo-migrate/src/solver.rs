@@ -123,6 +123,7 @@ impl Default for SolverBudget {
 }
 
 /// Outcome of solving ownership constraints.
+#[derive(Clone, Debug)]
 pub enum SolveOutcome {
     /// Exactly one valid ownership assignment.
     Unique(SolutionMap),
@@ -139,6 +140,7 @@ pub enum SolveOutcome {
 }
 
 /// A single solution candidate with explanation.
+#[derive(Clone)]
 pub struct SolutionCandidate {
     pub solution: SolutionMap,
     pub explanation: String,

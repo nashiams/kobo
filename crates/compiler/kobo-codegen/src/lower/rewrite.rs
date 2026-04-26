@@ -27,6 +27,7 @@ pub(crate) struct Lowerer<'a> {
     pub(super) kir: &'a kobo_ir::Kir,
     pub(super) options: &'a CodegenOptions,
     pub(super) in_async_context: bool,
+    pub(super) needs_local_set: bool,
     pub(super) strict_counter: StrictGuardCounter,
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
@@ -45,6 +46,7 @@ impl<'a> Lowerer<'a> {
             kir,
             options,
             in_async_context: false,
+            needs_local_set: false,
             strict_counter: StrictGuardCounter::new(),
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
@@ -60,20 +62,7 @@ impl<'a> Lowerer<'a> {
     /// S-53: Check whether any captured binding has a non-Send ownership tier.
     /// When true, the spawn block should use `spawn_local` instead of `tokio::spawn`.
     fn any_captured_non_send(&self, captured: &[clone_inject::CapturedBinding]) -> bool {
-        let tf = self.kir.transform_facts();
-        for cap in captured {
-            if let Some(binding) = tf.bindings.iter().find(|b| b.binding_name == cap.name) {
-                if let Some(node) = self.kir.get_node(binding.node) {
-                    if matches!(
-                        node.ownership,
-                        kobo_ir::OwnershipTier::RcShared | kobo_ir::OwnershipTier::RcMutShared
-                    ) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
+        captured_bindings_need_spawn_local(captured)
     }
 
     pub(crate) fn into_parts(self) -> (Vec<AnnotationNote>, Vec<LoweringAnchor>) {
@@ -313,13 +302,20 @@ impl<'a> Lowerer<'a> {
         // Reset guard counter per function (Contract C08 / Trap 16).
         self.strict_counter = StrictGuardCounter::new();
         let prior_async_context = self.in_async_context;
+        let prior_needs_local_set = self.needs_local_set;
         self.in_async_context = function.sig.asyncness.is_some();
+        self.needs_local_set = false;
         let mut scopes = ScopeStack::new();
         scopes.push();
         self.lower_function_params(&mut function.sig.inputs, &mut scopes);
         self.lower_block_statements(&mut function.block, &mut scopes);
         scopes.pop();
+        let needs_local_set = self.needs_local_set;
         self.in_async_context = prior_async_context;
+        self.needs_local_set = prior_needs_local_set;
+        if needs_local_set {
+            wrap_function_body_in_local_set(function);
+        }
     }
 
     fn lower_function_params(
@@ -382,6 +378,9 @@ impl<'a> Lowerer<'a> {
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
                 let use_spawn_local = self.any_captured_non_send(&captured);
+                if use_spawn_local {
+                    self.needs_local_set = true;
+                }
                 if let Some(spawn_expr) =
                     spawn::lower_spawn_macro_with_strategy(&stmt_macro.mac, use_spawn_local)
                 {
@@ -565,6 +564,15 @@ fn collect_spawn_captures(
     captures
 }
 
+fn captured_bindings_need_spawn_local(captured: &[clone_inject::CapturedBinding]) -> bool {
+    captured.iter().any(|binding| {
+        matches!(
+            binding.tier,
+            kobo_ir::OwnershipTier::RcShared | kobo_ir::OwnershipTier::RcMutShared
+        )
+    })
+}
+
 /// Recursively collect all identifiers from a token stream.
 fn collect_idents_from_tokens(
     tokens: &proc_macro2::TokenStream,
@@ -631,13 +639,35 @@ fn is_rust_keyword(s: &str) -> bool {
     )
 }
 
+fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {
+    let original_stmts = std::mem::take(&mut function.block.stmts);
+    let local_set_stmt: syn::Stmt = parse_quote! {
+        let __kobo_local = tokio::task::LocalSet::new();
+    };
+    let run_expr: syn::Expr = if function.sig.asyncness.is_some() {
+        parse_quote! {
+            __kobo_local.run_until(async move { #(#original_stmts)* }).await
+        }
+    } else {
+        parse_quote! {
+            tokio::runtime::Handle::current().block_on(__kobo_local.run_until(async move { #(#original_stmts)* }))
+        }
+    };
+    function.block.stmts = vec![local_set_stmt, syn::Stmt::Expr(run_expr, None)];
+}
+
 #[cfg(test)]
 mod tests {
     use quote::ToTokens;
     use syn::parse_quote;
 
-    use super::{executor_main_attr, is_executor_main_attr};
+    use super::{
+        captured_bindings_need_spawn_local, executor_main_attr, is_executor_main_attr,
+        wrap_function_body_in_local_set,
+    };
     use crate::executor::ExecutorChoice;
+    use crate::lower::rewrite::clone_inject::CapturedBinding;
+    use kobo_ir::OwnershipTier;
 
     fn parsed_executor_attr(choice: ExecutorChoice) -> syn::Attribute {
         executor_main_attr(choice, true).expect("executor attribute should exist")
@@ -663,5 +693,65 @@ mod tests {
     fn executor_attr_renders_expected_tokens() {
         let attr = parsed_executor_attr(ExecutorChoice::Tokio);
         assert_eq!(attr.to_token_stream().to_string(), "# [tokio :: main]");
+    }
+
+    #[test]
+    fn local_set_wrapper_for_async_function_uses_run_until_await() {
+        let mut function: syn::ItemFn = parse_quote! {
+            async fn run_local() -> u32 {
+                tokio::task::spawn_local(async move {});
+                7
+            }
+        };
+
+        wrap_function_body_in_local_set(&mut function);
+        let rendered = function.to_token_stream().to_string();
+
+        assert!(rendered.contains("tokio :: task :: LocalSet :: new"));
+        assert!(rendered.contains("run_until"));
+        assert!(rendered.contains(". await"));
+        assert!(rendered.contains("spawn_local"));
+        assert!(rendered.contains("7"));
+    }
+
+    #[test]
+    fn local_set_wrapper_for_sync_function_uses_runtime_handle() {
+        let mut function: syn::ItemFn = parse_quote! {
+            fn run_local() {
+                tokio::task::spawn_local(async move {});
+            }
+        };
+
+        wrap_function_body_in_local_set(&mut function);
+        let rendered = function.to_token_stream().to_string();
+
+        assert!(rendered.contains("tokio :: task :: LocalSet :: new"));
+        assert!(rendered.contains("tokio :: runtime :: Handle :: current"));
+        assert!(rendered.contains("block_on"));
+        assert!(rendered.contains("spawn_local"));
+    }
+
+    #[test]
+    fn captured_rc_tier_requests_spawn_local() {
+        let captured = vec![CapturedBinding {
+            name: "world".to_owned(),
+            tier: OwnershipTier::RcMutShared,
+            is_copy: false,
+            used_after_spawn: true,
+        }];
+
+        assert!(captured_bindings_need_spawn_local(&captured));
+    }
+
+    #[test]
+    fn captured_arc_tier_keeps_tokio_spawn() {
+        let captured = vec![CapturedBinding {
+            name: "state".to_owned(),
+            tier: OwnershipTier::ArcMutShared,
+            is_copy: false,
+            used_after_spawn: true,
+        }];
+
+        assert!(!captured_bindings_need_spawn_local(&captured));
     }
 }

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Instant;
 
 use super::session::{build_session, render_diagnostics};
 use kobo_driver::run_codegen_pipeline;
@@ -19,6 +20,7 @@ pub(super) fn cmd_bench_tick(file: &Path, tick_budget: bool) -> anyhow::Result<(
     }
 
     // Attempt compilation to get generated Rust — used for body complexity.
+    let compile_start = Instant::now();
     let compiled_source = match build_session(file, None) {
         Ok(mut session) => match run_codegen_pipeline(&mut session, file) {
             Ok(artifacts) => {
@@ -32,10 +34,24 @@ pub(super) fn cmd_bench_tick(file: &Path, tick_budget: bool) -> anyhow::Result<(
         },
         Err(_) => None,
     };
+    let measurement = TickBudgetMeasurement {
+        pipeline_us: compile_start.elapsed().as_micros(),
+        compiled_output: compiled_source.is_some(),
+    };
 
-    let report = generate_tick_budget_report(&source, compiled_source.as_deref());
+    let report = generate_tick_budget_report_with_measurement(
+        &source,
+        compiled_source.as_deref(),
+        Some(measurement),
+    );
     println!("{report}");
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TickBudgetMeasurement {
+    pub pipeline_us: u128,
+    pub compiled_output: bool,
 }
 
 /// A tick-budget entry for a single function.
@@ -151,7 +167,16 @@ fn statement_weight(line: &str) -> f64 {
 ///
 /// If `compiled_source` is provided, count statements in each tick function's
 /// body to give a rough complexity-based budget estimate.
+#[cfg(test)]
 pub(crate) fn generate_tick_budget_report(source: &str, compiled_source: Option<&str>) -> String {
+    generate_tick_budget_report_with_measurement(source, compiled_source, None)
+}
+
+pub(crate) fn generate_tick_budget_report_with_measurement(
+    source: &str,
+    compiled_source: Option<&str>,
+    measurement: Option<TickBudgetMeasurement>,
+) -> String {
     let entries = extract_tick_functions(source, compiled_source);
     if entries.is_empty() {
         return "Tick Budget Report\n══════════════════\nNo #[kobo::tick] functions found."
@@ -162,6 +187,14 @@ pub(crate) fn generate_tick_budget_report(source: &str, compiled_source: Option<
         "Tick Budget Report".to_string(),
         "══════════════════".to_string(),
     ];
+
+    if let Some(measurement) = measurement {
+        lines.push(format!(
+            "measured_pipeline_ms: {:.3} compiled_output={}",
+            measurement.pipeline_us as f64 / 1000.0,
+            measurement.compiled_output
+        ));
+    }
 
     for entry in &entries {
         lines.push(format!(

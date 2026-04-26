@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use kobo_analysis::{
     analyze_send_violations, facts_to_diagnostics, run_analysis, scan_source_cancel_safety,
-    SpawnSite as AnalysisSpawnSite,
+    scan_source_handler_leaks, SpawnSite as AnalysisSpawnSite,
 };
 use kobo_codegen::{
     codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverBudgetJson,
@@ -556,6 +556,43 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
             }
         }
         session.diagnostics.extend(cancel_diags);
+    }
+
+    // S-56: K0067 HandlerRequestStateLeak — request parameters must not escape into spawned tasks.
+    {
+        let mut handler_diags = Vec::new();
+        for (fid, entry) in session.file_set().iter_files() {
+            let leak_warnings = scan_source_handler_leaks(entry.source());
+            for leak in &leak_warnings {
+                let severity = resolve_severity(KErrorCode::K0067, session.mode())
+                    .unwrap_or(Severity::Warning);
+                let span = kobo_ir::KoboSpan::new(
+                    leak.source_offset as u32,
+                    (leak.source_offset + leak.binding_name.len()) as u32,
+                    fid,
+                );
+                handler_diags.push(KDiagnostic::new(
+                    KErrorCode::K0067,
+                    severity,
+                    DiagLabel::primary(
+                        span,
+                        format!(
+                            "handler `{}` leaks request state `{}` into a spawned task",
+                            leak.fn_name, leak.binding_name
+                        ),
+                    ),
+                    format!(
+                        "binding `{}` belongs to one handler request but is captured by a spawned async boundary\n   \
+                         = clone request-safe state before spawning or move long-lived state into an actor",
+                        leak.binding_name
+                    ),
+                    DiagDecision(
+                        "clone request-safe state or move background work behind an actor".to_owned(),
+                    ),
+                ));
+            }
+        }
+        session.diagnostics.extend(handler_diags);
     }
 
     if session.has_errors() {

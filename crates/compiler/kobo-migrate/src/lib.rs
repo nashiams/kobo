@@ -23,7 +23,9 @@ mod solver;
 pub mod summaries;
 
 pub use boundary::{detect_crate_boundaries, BoundaryViolation, ExternalCall};
+pub use ctxt::MigrateCtxt;
 pub use greedy::{greedy_resolve, GreedyConfig, GreedyDiagnostic, GreedyPassResult, GreedyStats};
+pub use query::{query_function_summary, query_solve_outcome};
 pub use solver::{
     build_kir_constraint_graph, graph_fingerprint, outcome_name, solve, solve_with_evidence,
     BoundaryReport, ClusterReport, ConflictReport, ConstraintEdge, ConstraintFactKind,

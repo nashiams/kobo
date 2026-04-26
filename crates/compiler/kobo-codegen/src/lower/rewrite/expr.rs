@@ -70,6 +70,9 @@ impl super::Lowerer<'_> {
                 // S-53: Check for spawn block marker macro with strategy selection.
                 let captured = super::collect_spawn_captures(&expr_macro.mac.tokens, scopes);
                 let use_spawn_local = self.any_captured_non_send(&captured);
+                if use_spawn_local {
+                    self.needs_local_set = true;
+                }
                 if let Some(replacement) =
                     super::spawn::lower_spawn_macro_with_strategy(&expr_macro.mac, use_spawn_local)
                 {

@@ -1,0 +1,14 @@
+struct Request {
+    path: String,
+}
+
+#[kobo::handler]
+async fn handle(req: Request) {
+    spawn {
+        println!("{}", req.path);
+    }
+}
+
+fn main() {
+    println!("handler leak fixture");
+}

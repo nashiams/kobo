@@ -143,6 +143,209 @@ fn migrate_solver_evidence_must_change_when_cli_input_changes() {
     );
 }
 
+#[test]
+fn migrate_review_must_write_visible_decision_artifacts() {
+    let case = FixtureCase::new("evidence-contract-migration-ux", "tiered_mix.kobo");
+    let decisions_path = case.root.join(".kobo").join("decisions.toml");
+    assert!(
+        !decisions_path.exists(),
+        "fixture should start without persisted decisions"
+    );
+
+    let output = run_kobo(
+        ["migrate", "--dry-run", "--review", "--class", "--explain"],
+        &case.fixture_path,
+    );
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+    assert!(
+        combined.contains("silent_decisions: 0"),
+        "migrate review must report zero silent decisions\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("kobo-pick: none"),
+        "migrate review must explicitly report when no ownership picks are produced\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        decisions_path.exists(),
+        "migrate --review must write a durable decisions artifact at {}",
+        decisions_path.display()
+    );
+    let decisions = fs::read_to_string(&decisions_path).expect("decisions file should read");
+    assert!(
+        decisions.contains("# Kobo ownership decisions"),
+        "decisions file must be a durable Kobo decisions artifact\n{decisions}"
+    );
+    assert!(
+        combined.contains("review_artifact_updates: 0"),
+        "no-op migrate review must report that no provisional entries were written\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
+#[test]
+fn migrate_must_report_loaded_persisted_decisions() {
+    let case = FixtureCase::new("evidence-contract-loaded-decisions", "tiered_mix.kobo");
+    let decisions_dir = case.root.join(".kobo");
+    fs::create_dir_all(&decisions_dir).expect("decisions dir should be creatable");
+    fs::write(
+        decisions_dir.join("decisions.toml"),
+        r#"# pre-existing reviewed decision
+
+[binding.node_1]
+tier = "ArcShared"
+locked = true
+reviewed_by = "test"
+comment = "loaded by evidence test"
+"#,
+    )
+    .expect("decisions file should be writable");
+
+    let output = run_kobo(["migrate", "--dry-run", "--class"], &case.fixture_path);
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+    assert!(
+        combined.contains("persisted_decisions: 1"),
+        "migrate must report loaded decision count\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("locked_decisions: 1"),
+        "migrate must report locked decision count\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("node_1"),
+        "migrate class output must expose loaded decision keys\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
+#[test]
+fn migrate_uc_acceptance_fixtures_are_deterministic_and_visible() {
+    for fixture_name in [
+        "uc1_video_pipeline.kobo",
+        "uc2_kv_store.kobo",
+        "uc3_api_gateway.kobo",
+        "uc4_game_server.kobo",
+    ] {
+        let case = FixtureCase::new("evidence-contract-uc-acceptance", fixture_name);
+        let first = run_kobo(
+            ["migrate", "--dry-run", "--class", "--explain"],
+            &case.fixture_path,
+        );
+        let second = run_kobo(
+            ["migrate", "--dry-run", "--class", "--explain"],
+            &case.fixture_path,
+        );
+
+        assert!(
+            first.status.success(),
+            "{fixture_name} first migrate failed\nstdout:\n{}\nstderr:\n{}",
+            first.stdout,
+            first.stderr
+        );
+        assert!(
+            second.status.success(),
+            "{fixture_name} second migrate failed\nstdout:\n{}\nstderr:\n{}",
+            second.stdout,
+            second.stderr
+        );
+        assert_eq!(
+            first.stdout, second.stdout,
+            "{fixture_name} migrate output must be byte-stable across repeated runs"
+        );
+        assert!(
+            first.stdout.contains("solver outcome:"),
+            "{fixture_name} migrate output must expose solver outcome\n{}",
+            first.stdout
+        );
+        assert!(
+            first.stdout.contains("decision class:"),
+            "{fixture_name} migrate output must expose decision class\n{}",
+            first.stdout
+        );
+        assert!(
+            first.stdout.contains("silent_decisions: 0"),
+            "{fixture_name} migrate output must report zero silent decisions\n{}",
+            first.stdout
+        );
+    }
+}
+
+#[test]
+fn bench_tick_budget_reports_measured_pipeline_timing() {
+    let case = FixtureCase::new("evidence-contract-tick-budget", "uc4_game_server.kobo");
+    let output = run_kobo(["bench", "--tick-budget"], &case.fixture_path);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        output.stdout.contains("Tick Budget Report"),
+        "tick budget output must render the report\n{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("tick_world"),
+        "tick budget output must include the UC4 tick function\n{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("measured_pipeline_ms:"),
+        "tick budget output must include a measured pipeline timing line\n{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("compiled_output=true"),
+        "tick budget output must report whether generated Rust was available\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn check_reports_handler_request_state_leaks() {
+    let case = FixtureCase::new("evidence-contract-handler-leak", "handler_leak.kobo");
+    let output = run_kobo(["check"], &case.fixture_path);
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+
+    assert!(
+        combined.contains("K0067"),
+        "handler request-state leak must surface as K0067\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("req"),
+        "K0067 output must name the leaking request binding\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
 fn inspect_source_map(case: &FixtureCase) -> (KoboOutput, Value) {
     let output = run_kobo(["inspect"], &case.fixture_path);
 

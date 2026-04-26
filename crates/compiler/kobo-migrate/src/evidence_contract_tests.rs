@@ -33,11 +33,12 @@ enum OracleClassification {
 fn residual_graph() -> ConstraintGraph {
     ConstraintGraph {
         nodes: vec![KirNodeId(1), KirNodeId(2)],
-        edges: vec![ConstraintEdge {
-            source: KirNodeId(1),
-            target: KirNodeId(2),
-            kind: ConstraintKind::PropagateSharing,
-        }],
+        edges: vec![ConstraintEdge::synthetic(
+            KirNodeId(1),
+            KirNodeId(2),
+            ConstraintKind::PropagateSharing,
+            "test",
+        )],
     }
 }
 
@@ -356,16 +357,18 @@ fn oracle_generated_small_graphs_must_match_bruteforce_classification() {
         graph(
             &[1, 2, 3],
             vec![
-                ConstraintEdge {
-                    source: KirNodeId(1),
-                    target: KirNodeId(2),
-                    kind: ConstraintKind::PropagateSharing,
-                },
-                ConstraintEdge {
-                    source: KirNodeId(2),
-                    target: KirNodeId(3),
-                    kind: ConstraintKind::PropagateSend,
-                },
+                ConstraintEdge::synthetic(
+                    KirNodeId(1),
+                    KirNodeId(2),
+                    ConstraintKind::PropagateSharing,
+                    "test",
+                ),
+                ConstraintEdge::synthetic(
+                    KirNodeId(2),
+                    KirNodeId(3),
+                    ConstraintKind::PropagateSend,
+                    "test",
+                ),
             ],
         ),
     ];
@@ -484,12 +487,13 @@ fn differential_empty_graph_is_the_only_empty_unique_case() {
 
 #[test]
 fn runtime_outcome_variants_have_distinct_contract_names() {
-    let outcomes = vec![
+    let outcomes = [
         SolveOutcome::Unique(SolutionMap::new()),
         SolveOutcome::MultiSolution(Vec::new()),
         SolveOutcome::NoSolution(ConflictReport {
             conflicting_nodes: vec![KirNodeId(1), KirNodeId(2)],
             conflict_reason: "conflicting ownership floors".to_owned(),
+            provenance: vec![],
         }),
         SolveOutcome::ClusterTooLarge(ClusterReport {
             cluster_size: 257,

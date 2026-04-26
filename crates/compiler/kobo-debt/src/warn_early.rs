@@ -132,9 +132,7 @@ pub fn format_warn_early(report: &DebtReport) -> String {
                     "  note[K0080-P4]: self-referential struct `{struct_name}` \
                      without Rc/Box indirection\n"
                 ));
-                out.push_str(
-                    "  = migration: wrap the recursive field in Box<T> or Rc<T>\n",
-                );
+                out.push_str("  = migration: wrap the recursive field in Box<T> or Rc<T>\n");
             }
         }
     }
@@ -147,10 +145,7 @@ pub fn format_warn_early(report: &DebtReport) -> String {
                 .as_deref()
                 .unwrap_or("<no reason provided>");
             let code = pattern_code(&fact.pattern);
-            out.push_str(&format!(
-                "  [{code}] `{}` — {reason}\n",
-                fact.struct_name
-            ));
+            out.push_str(&format!("  [{code}] `{}` — {reason}\n", fact.struct_name));
         }
     }
 
@@ -164,7 +159,9 @@ pub fn format_warn_early(report: &DebtReport) -> String {
             };
             match &site.reason {
                 Some(reason) => {
-                    out.push_str(&format!("  #[kobo::migrate] on {target_label} — {reason}\n"));
+                    out.push_str(&format!(
+                        "  #[kobo::migrate] on {target_label} — {reason}\n"
+                    ));
                 }
                 None => {
                     out.push_str(&format!("  #[kobo::migrate] on {target_label}\n"));
@@ -248,7 +245,10 @@ mod tests {
         let out = format_warn_early(&report);
         assert!(out.contains("K0080-P1"), "should mention K0080-P1");
         assert!(out.contains("Node"), "should mention struct name");
-        assert!(!out.contains("Acknowledged"), "no acknowledged section expected");
+        assert!(
+            !out.contains("Acknowledged"),
+            "no acknowledged section expected"
+        );
     }
 
     #[test]
@@ -256,17 +256,19 @@ mod tests {
         let mut report = DebtReport::new();
         report.warn_early.push(p1_fact(false));
         // Suppressed fact goes to acknowledged
-        report.acknowledged.push(kobo_ir::debt::AcknowledgedDebtRecord {
-            node_id: KirNodeId(0),
-            span: dummy_span(),
-            reason: "known tree pattern".to_owned(),
-            pattern: WarnEarlyPattern::ParentChildBackPointer {
+        report
+            .acknowledged
+            .push(kobo_ir::debt::AcknowledgedDebtRecord {
+                node_id: KirNodeId(0),
+                span: dummy_span(),
+                reason: "known tree pattern".to_owned(),
+                pattern: WarnEarlyPattern::ParentChildBackPointer {
+                    struct_name: "Tree".to_owned(),
+                    children_field: "children".to_owned(),
+                    parent_field: "parent".to_owned(),
+                },
                 struct_name: "Tree".to_owned(),
-                children_field: "children".to_owned(),
-                parent_field: "parent".to_owned(),
-            },
-            struct_name: "Tree".to_owned(),
-        });
+            });
         let grouped = group_by_pattern(&[p1_fact(false), p2_fact(true)]);
         assert_eq!(grouped.bidirectional.len(), 1);
         assert_eq!(grouped.acknowledged.len(), 1);
@@ -324,7 +326,10 @@ mod tests {
             reason: Some("needs refactor".to_owned()),
         });
         let out = format_warn_early(&report);
-        assert!(out.contains("Tagged for migration"), "migrate section header missing");
+        assert!(
+            out.contains("Tagged for migration"),
+            "migrate section header missing"
+        );
         assert!(out.contains("function"), "function target missing");
         assert!(out.contains("let-binding"), "let-binding target missing");
         assert!(out.contains("needs refactor"), "reason missing");
@@ -334,6 +339,9 @@ mod tests {
     fn migrate_tagged_empty_does_not_add_section() {
         let report = DebtReport::new();
         let out = format_warn_early(&report);
-        assert!(!out.contains("Tagged for migration"), "no section when no migrate sites");
+        assert!(
+            !out.contains("Tagged for migration"),
+            "no section when no migrate sites"
+        );
     }
 }

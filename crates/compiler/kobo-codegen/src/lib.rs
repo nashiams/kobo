@@ -10,7 +10,9 @@ mod sourcemap;
 use std::path::Path;
 
 pub use emit::emit_file;
-pub use sourcemap::{wrap_source_map, KoboSourceMap, RsSpan, SourceMapEntry, SolverEvidenceJson, SolverBudgetJson};
+pub use sourcemap::{
+    wrap_source_map, KoboSourceMap, RsSpan, SolverBudgetJson, SolverEvidenceJson, SourceMapEntry,
+};
 
 /// Annotate lock acquisition order in generated Rust source for inspect output.
 ///

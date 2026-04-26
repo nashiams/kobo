@@ -59,10 +59,16 @@ pub fn build_borrow_report(
 
     for event in &usage.uses {
         match event {
-            UseEvent::Borrowed { kind: BorrowKind::Immutable, span } => {
+            UseEvent::Borrowed {
+                kind: BorrowKind::Immutable,
+                span,
+            } => {
                 immutable_borrows.push(*span);
             }
-            UseEvent::Borrowed { kind: BorrowKind::Mutable, span } => {
+            UseEvent::Borrowed {
+                kind: BorrowKind::Mutable,
+                span,
+            } => {
                 mutable_borrows.push(*span);
             }
             UseEvent::Moved { span, .. } => {
@@ -103,7 +109,8 @@ pub fn build_borrow_report(
 
     // Check live borrow at move.
     if facts.live_borrow_at_move {
-        let all_borrows: Vec<KoboSpan> = immutable_borrows.iter()
+        let all_borrows: Vec<KoboSpan> = immutable_borrows
+            .iter()
             .chain(mutable_borrows.iter())
             .copied()
             .collect();
@@ -122,7 +129,12 @@ pub fn build_borrow_report(
         }
     }
 
-    BorrowReport { schema_version: 1, total_bindings_analyzed: 1, bindings_with_overlaps: if overlapping_sites.is_empty() { 0 } else { 1 }, overlapping_sites }
+    BorrowReport {
+        schema_version: 1,
+        total_bindings_analyzed: 1,
+        bindings_with_overlaps: if overlapping_sites.is_empty() { 0 } else { 1 },
+        overlapping_sites,
+    }
 }
 
 fn spans_overlap(a: KoboSpan, b: KoboSpan) -> bool {

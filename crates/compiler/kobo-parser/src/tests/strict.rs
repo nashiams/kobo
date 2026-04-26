@@ -19,7 +19,10 @@ mod tests {
             "rewritten source should contain marker attribute"
         );
         // The rewritten source should be parseable by syn
-        assert!(syn::parse_file(&rewritten).is_ok(), "rewritten source should parse");
+        assert!(
+            syn::parse_file(&rewritten).is_ok(),
+            "rewritten source should parse"
+        );
     }
 
     // Test 2: @strict fn name() → is_strict=true, is_async=false
@@ -29,7 +32,10 @@ mod tests {
         let configs = v05_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(!markers.is_empty(), "should find @strict marker on fn");
-        assert!(syn::parse_file(&rewritten).is_ok(), "should parse as valid Rust");
+        assert!(
+            syn::parse_file(&rewritten).is_ok(),
+            "should parse as valid Rust"
+        );
     }
 
     // Test 3: @strict async fn → is_strict=true, is_async=true
@@ -38,8 +44,14 @@ mod tests {
         let source = "@strict async fn handler() {}";
         let configs = v05_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
-        assert!(!markers.is_empty(), "should find @strict marker on async fn");
-        assert!(syn::parse_file(&rewritten).is_ok(), "should parse as valid Rust");
+        assert!(
+            !markers.is_empty(),
+            "should find @strict marker on async fn"
+        );
+        assert!(
+            syn::parse_file(&rewritten).is_ok(),
+            "should parse as valid Rust"
+        );
     }
 
     // Test 4: fn without @strict → no markers (no false positives)
@@ -48,7 +60,10 @@ mod tests {
         let source = "fn normal() { let x = 1; }";
         let configs = v05_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
-        assert!(markers.is_empty(), "no markers expected in non-@strict source");
+        assert!(
+            markers.is_empty(),
+            "no markers expected in non-@strict source"
+        );
         assert_eq!(source, rewritten, "source should be unchanged");
     }
 
@@ -72,8 +87,7 @@ mod tests {
         // The original source should have @strict starting at byte 9
         let strict_start = source.find("@strict").unwrap();
         assert_eq!(
-            marker.original_span.0,
-            strict_start,
+            marker.original_span.0, strict_start,
             "marker should record original @strict byte offset"
         );
         assert!(
@@ -151,7 +165,10 @@ mod tests {
             rewritten.contains("y: &[u8]"),
             "parameter y: &[u8] must be preserved"
         );
-        assert!(syn::parse_file(&rewritten).is_ok(), "should parse as valid Rust");
+        assert!(
+            syn::parse_file(&rewritten).is_ok(),
+            "should parse as valid Rust"
+        );
     }
 
     // Test 12: #[__kobo_strict] does NOT appear in parse output AST identity

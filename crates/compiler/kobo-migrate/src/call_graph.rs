@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-
 /// A directed call graph.
 #[derive(Clone, Debug, Default)]
 pub struct CallGraph {
@@ -132,12 +131,8 @@ fn strongconnect(state: &mut TarjanState, v: &str, graph: &CallGraph) {
             }
         }
         members.sort(); // Deterministic ordering.
-        let is_recursive = members.len() > 1
-            || graph
-                .edges
-                .get(v)
-                .map(|c| c.contains(v))
-                .unwrap_or(false);
+        let is_recursive =
+            members.len() > 1 || graph.edges.get(v).map(|c| c.contains(v)).unwrap_or(false);
         state.result.push(Scc {
             members,
             is_recursive,
@@ -155,11 +150,7 @@ pub fn build_call_graph(kir: &kobo_ir::Kir) -> CallGraph {
 
         // If a binding has a plain_clone_source, that implies a flow edge.
         if let Some(source_id) = binding.plain_clone_source {
-            if let Some(source_binding) = facts
-                .bindings
-                .iter()
-                .find(|b| b.node == source_id)
-            {
+            if let Some(source_binding) = facts.bindings.iter().find(|b| b.node == source_id) {
                 cg.add_edge(
                     source_binding.binding_name.clone(),
                     binding.binding_name.clone(),

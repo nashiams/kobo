@@ -841,10 +841,15 @@ fn relaxed() {
 }
 "#;
     let output = raw_builder_output_for(source);
-    assert_eq!(output.relaxed_fn_ranges.len(), 1,
-        "one relaxed fn range expected");
-    assert!(output.relax_attr_errors.is_empty(),
-        "no attr errors expected for valid bare attr");
+    assert_eq!(
+        output.relaxed_fn_ranges.len(),
+        1,
+        "one relaxed fn range expected"
+    );
+    assert!(
+        output.relax_attr_errors.is_empty(),
+        "no attr errors expected for valid bare attr"
+    );
 }
 
 #[test]
@@ -856,8 +861,10 @@ fn normal() {
 }
 "#;
     let output = raw_builder_output_for(source);
-    assert!(output.relaxed_fn_ranges.is_empty(),
-        "no relaxed ranges expected when attr absent");
+    assert!(
+        output.relaxed_fn_ranges.is_empty(),
+        "no relaxed ranges expected when attr absent"
+    );
     assert!(output.relax_attr_errors.is_empty());
 }
 
@@ -869,13 +876,21 @@ fn test_relax_attr_parsing_with_value_argument_produces_warning() {
 fn foo() {}
 "#;
     let output = raw_builder_output_for(source);
-    assert!(output.relaxed_fn_ranges.is_empty(),
-        "malformed attr must not record a relaxed range");
+    assert!(
+        output.relaxed_fn_ranges.is_empty(),
+        "malformed attr must not record a relaxed range"
+    );
     assert_eq!(output.relax_attr_errors.len(), 1);
-    assert!(!output.relax_attr_errors[0].is_error,
-        "malformed attr should be a warning, not an error");
-    assert!(output.relax_attr_errors[0].message.contains("takes no arguments"),
-        "message should mention takes no arguments");
+    assert!(
+        !output.relax_attr_errors[0].is_error,
+        "malformed attr should be a warning, not an error"
+    );
+    assert!(
+        output.relax_attr_errors[0]
+            .message
+            .contains("takes no arguments"),
+        "message should mention takes no arguments"
+    );
 }
 
 #[test]
@@ -886,11 +901,15 @@ fn test_relax_attr_parsing_with_list_argument_produces_warning() {
 fn foo() {}
 "#;
     let output = raw_builder_output_for(source);
-    assert!(output.relaxed_fn_ranges.is_empty(),
-        "malformed attr must not record a relaxed range");
+    assert!(
+        output.relaxed_fn_ranges.is_empty(),
+        "malformed attr must not record a relaxed range"
+    );
     assert_eq!(output.relax_attr_errors.len(), 1);
-    assert!(!output.relax_attr_errors[0].is_error,
-        "malformed attr should be a warning, not an error");
+    assert!(
+        !output.relax_attr_errors[0].is_error,
+        "malformed attr should be a warning, not an error"
+    );
 }
 
 #[test]
@@ -905,9 +924,13 @@ struct Foo {
     let output = raw_builder_output_for(source);
     assert!(output.relaxed_fn_ranges.is_empty());
     assert_eq!(output.relax_attr_errors.len(), 1);
-    assert!(output.relax_attr_errors[0].is_error,
-        "non-fn attachment should be an error");
-    assert!(output.relax_attr_errors[0].message.contains("can only be applied to functions"));
+    assert!(
+        output.relax_attr_errors[0].is_error,
+        "non-fn attachment should be an error"
+    );
+    assert!(output.relax_attr_errors[0]
+        .message
+        .contains("can only be applied to functions"));
 }
 
 #[test]
@@ -920,12 +943,20 @@ fn foo() {}
 "#;
     let output = raw_builder_output_for(source);
     // First attr records the range; second is a duplicate warning.
-    assert_eq!(output.relaxed_fn_ranges.len(), 1,
-        "only one range recorded (first occurrence)");
-    assert_eq!(output.relax_attr_errors.len(), 1,
-        "one duplicate lint expected");
-    assert!(!output.relax_attr_errors[0].is_error,
-        "duplicate is a warning, not an error");
+    assert_eq!(
+        output.relaxed_fn_ranges.len(),
+        1,
+        "only one range recorded (first occurrence)"
+    );
+    assert_eq!(
+        output.relax_attr_errors.len(),
+        1,
+        "one duplicate lint expected"
+    );
+    assert!(
+        !output.relax_attr_errors[0].is_error,
+        "duplicate is a warning, not an error"
+    );
     assert!(output.relax_attr_errors[0].message.contains("duplicate"));
 }
 
@@ -940,8 +971,11 @@ fn first() {}
 fn second() {}
 "#;
     let output = raw_builder_output_for(source);
-    assert_eq!(output.relaxed_fn_ranges.len(), 2,
-        "two relaxed fn ranges expected");
+    assert_eq!(
+        output.relaxed_fn_ranges.len(),
+        2,
+        "two relaxed fn ranges expected"
+    );
     assert!(output.relax_attr_errors.is_empty());
 }
 
@@ -970,8 +1004,11 @@ fn relaxed() {}
 fn plain() {}
 "#;
     let output = raw_builder_output_for(source);
-    assert_eq!(output.relaxed_fn_ranges.len(), 1,
-        "only one range — the relaxed fn");
+    assert_eq!(
+        output.relaxed_fn_ranges.len(),
+        1,
+        "only one range — the relaxed fn"
+    );
 }
 
 // ── BUG-11: duplicate #[kobo::migrate] on parameters ──
@@ -983,14 +1020,26 @@ fn foo(#[kobo::migrate] #[kobo::migrate] x: String) {}
 "#;
     let output = raw_builder_output_for(source);
     // Only first attr should be recorded as a migrate site.
-    assert_eq!(output.migrate_sites.len(), 1,
-        "only one migrate site recorded (first occurrence)");
+    assert_eq!(
+        output.migrate_sites.len(),
+        1,
+        "only one migrate site recorded (first occurrence)"
+    );
     // Second attr produces a duplicate lint warning.
-    let dup_errors: Vec<_> = output.relax_attr_errors.iter()
+    let dup_errors: Vec<_> = output
+        .relax_attr_errors
+        .iter()
         .filter(|e| e.message.contains("duplicate") && e.message.contains("migrate"))
         .collect();
-    assert_eq!(dup_errors.len(), 1, "one duplicate migrate lint expected on param");
-    assert!(!dup_errors[0].is_error, "duplicate is a warning, not an error");
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "one duplicate migrate lint expected on param"
+    );
+    assert!(
+        !dup_errors[0].is_error,
+        "duplicate is a warning, not an error"
+    );
 }
 
 // ── BUG-11: duplicate #[kobo::migrate] on let-bindings ──
@@ -1006,17 +1055,31 @@ fn main() {
 "#;
     let output = raw_builder_output_for(source);
     // Only first attr should be recorded as a migrate site.
-    let let_sites: Vec<_> = output.migrate_sites.iter()
+    let let_sites: Vec<_> = output
+        .migrate_sites
+        .iter()
         .filter(|s| s.target == kobo_ir::MigrateTarget::LetBinding)
         .collect();
-    assert_eq!(let_sites.len(), 1,
-        "only one migrate site recorded for let-binding (first occurrence)");
+    assert_eq!(
+        let_sites.len(),
+        1,
+        "only one migrate site recorded for let-binding (first occurrence)"
+    );
     // Second attr produces a duplicate lint warning.
-    let dup_errors: Vec<_> = output.relax_attr_errors.iter()
+    let dup_errors: Vec<_> = output
+        .relax_attr_errors
+        .iter()
         .filter(|e| e.message.contains("duplicate") && e.message.contains("migrate"))
         .collect();
-    assert_eq!(dup_errors.len(), 1, "one duplicate migrate lint expected on let-binding");
-    assert!(!dup_errors[0].is_error, "duplicate is a warning, not an error");
+    assert_eq!(
+        dup_errors.len(),
+        1,
+        "one duplicate migrate lint expected on let-binding"
+    );
+    assert!(
+        !dup_errors[0].is_error,
+        "duplicate is a warning, not an error"
+    );
 }
 
 #[test]
@@ -1035,10 +1098,11 @@ impl Counter {
 "#;
     let facts = raw_facts_for(source);
     // The `step` local inside `increment` must be discovered.
-    let step_binding = facts
-        .iter_bindings()
-        .find(|b| b.binding_name == "step");
-    assert!(step_binding.is_some(), "local `step` inside impl method must be walked");
+    let step_binding = facts.iter_bindings().find(|b| b.binding_name == "step");
+    assert!(
+        step_binding.is_some(),
+        "local `step` inside impl method must be walked"
+    );
 }
 
 #[test]
@@ -1058,7 +1122,11 @@ impl Bar {
         .iter_bindings()
         .filter(|b| b.binding_name == "x")
         .collect();
-    assert_eq!(x_bindings.len(), 2, "two independent x bindings from different impl blocks");
+    assert_eq!(
+        x_bindings.len(),
+        2,
+        "two independent x bindings from different impl blocks"
+    );
 }
 
 fn tier_decision_for_binding(source: &str, name: &str, occurrence: usize) -> TierDecision {
@@ -1123,8 +1191,10 @@ fn main() {
     println!("{:?}", pos);
 }
 "#;
-    let mut options = TransformOptions::default();
-    options.copy_types = vec!["glam::Vec3".to_string(), "glam::Quat".to_string()];
+    let options = TransformOptions {
+        copy_types: vec!["glam::Vec3".to_string(), "glam::Quat".to_string()],
+        ..Default::default()
+    };
     let decision = tier_decision_for_binding_with_options(source, "pos", 0, options);
     assert_eq!(decision.tier, OwnershipTier::PlainOwned);
     assert!(matches!(decision.reason, TierReason::CopyType));
@@ -1254,8 +1324,10 @@ fn main() {
 "#;
     let mut id_gen = kobo_ir::NodeIdGen::new();
     let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
-    let mut options = TransformOptions::default();
-    options.mutating_methods = vec!["Worker::process".to_string()];
+    let options = TransformOptions {
+        mutating_methods: vec!["Worker::process".to_string()],
+        ..Default::default()
+    };
     let kir = build_kir(&ast, &mut id_gen, options);
     // The method_mutability map should have "process" = true from config override
     assert_eq!(
@@ -1357,7 +1429,9 @@ fn main() {
         .iter()
         .find(|b| b.binding_name == "c")
         .expect("should have binding c");
-    let _ = kir.tier_decision(c.node).expect("should have tier decision for c");
+    let _ = kir
+        .tier_decision(c.node)
+        .expect("should have tier decision for c");
 }
 
 /// P0-2 #12: impl + trait impl for the same type both work.
@@ -1387,7 +1461,9 @@ fn main() {
         .iter()
         .find(|b| b.binding_name == "g")
         .expect("should have binding g");
-    let _ = kir.tier_decision(g.node).expect("should have tier decision for g");
+    let _ = kir
+        .tier_decision(g.node)
+        .expect("should have tier decision for g");
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,8 +1513,10 @@ fn main() {
     println!("{:?}", ts);
 }
 "#;
-    let mut options = TransformOptions::default();
-    options.copy_types = vec!["chrono::NaiveDate".to_string()];
+    let options = TransformOptions {
+        copy_types: vec!["chrono::NaiveDate".to_string()],
+        ..Default::default()
+    };
     let decision = tier_decision_for_binding_with_options(source, "ts", 0, options);
     assert_eq!(
         decision.tier,
@@ -1916,7 +1994,7 @@ fn main() {
 }
 "#;
     // Use strict mode tier decision
-    let mut options = TransformOptions::default();
+    let options = TransformOptions::default();
     // Strict mode is passed via KoboMode, not TransformOptions.
     // We test via the builder: in strict mode, tier stays PlainOwned.
     let decision = tier_decision_for_binding_with_options(source, "x", 0, options);

@@ -65,8 +65,14 @@ pub fn validate_spawn_context(source: &str) -> Vec<SpawnContextError> {
         if bytes[pos] == b'"' {
             pos += 1;
             while pos < len {
-                if bytes[pos] == b'\\' { pos += 2; continue; }
-                if bytes[pos] == b'"' { pos += 1; break; }
+                if bytes[pos] == b'\\' {
+                    pos += 2;
+                    continue;
+                }
+                if bytes[pos] == b'"' {
+                    pos += 1;
+                    break;
+                }
                 pos += 1;
             }
             continue;
@@ -91,7 +97,9 @@ pub fn validate_spawn_context(source: &str) -> Vec<SpawnContextError> {
                     name_start += 1;
                 }
                 let mut name_end = name_start;
-                while name_end < len && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_') {
+                while name_end < len
+                    && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+                {
                     name_end += 1;
                 }
                 let fn_name = source[name_start..name_end].to_string();
@@ -175,24 +183,36 @@ fn find_spawn_offsets(source: &str) -> Vec<usize> {
         if bytes[pos] == b'"' {
             pos += 1;
             while pos < len {
-                if bytes[pos] == b'\\' { pos += 2; continue; }
-                if bytes[pos] == b'"' { pos += 1; break; }
+                if bytes[pos] == b'\\' {
+                    pos += 2;
+                    continue;
+                }
+                if bytes[pos] == b'"' {
+                    pos += 1;
+                    break;
+                }
                 pos += 1;
             }
             continue;
         }
         // Skip line comments
         if pos + 1 < len && bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
-            while pos < len && bytes[pos] != b'\n' { pos += 1; }
+            while pos < len && bytes[pos] != b'\n' {
+                pos += 1;
+            }
             continue;
         }
 
         if pos + 5 <= len && &bytes[pos..pos + 5] == b"spawn" {
-            let preceded = pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
-            let followed = pos + 5 < len && (bytes[pos + 5].is_ascii_alphanumeric() || bytes[pos + 5] == b'_');
+            let preceded =
+                pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
+            let followed =
+                pos + 5 < len && (bytes[pos + 5].is_ascii_alphanumeric() || bytes[pos + 5] == b'_');
             if !preceded && !followed {
                 let mut ws = pos + 5;
-                while ws < len && bytes[ws].is_ascii_whitespace() { ws += 1; }
+                while ws < len && bytes[ws].is_ascii_whitespace() {
+                    ws += 1;
+                }
                 if ws < len && bytes[ws] == b'{' {
                     offsets.push(pos);
                     pos = ws + 1;
@@ -276,10 +296,10 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
 
         // Look for `spawn` keyword.
         if pos + 5 <= len && &bytes[pos..pos + 5] == b"spawn" {
-            let preceded_by_ident = pos > 0
-                && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
-            let followed_by_ident = pos + 5 < len
-                && (bytes[pos + 5].is_ascii_alphanumeric() || bytes[pos + 5] == b'_');
+            let preceded_by_ident =
+                pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
+            let followed_by_ident =
+                pos + 5 < len && (bytes[pos + 5].is_ascii_alphanumeric() || bytes[pos + 5] == b'_');
 
             if !preceded_by_ident && !followed_by_ident {
                 let after_spawn = pos + 5;
@@ -296,7 +316,11 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
                     // Find closing brace to record the full span info.
                     if let Some(brace_end) = find_matching_brace(source, brace_pos) {
                         infos.push(SpawnBlockInfo {
-                            span: KoboSpan::new(spawn_start as u32, (brace_end + 1) as u32, file_id),
+                            span: KoboSpan::new(
+                                spawn_start as u32,
+                                (brace_end + 1) as u32,
+                                file_id,
+                            ),
                             body_span: KoboSpan::new(body_start as u32, brace_end as u32, file_id),
                         });
                     }
@@ -498,7 +522,10 @@ async fn work() {
 }
 "#;
         let errors = validate_spawn_context(code);
-        assert!(errors.is_empty(), "spawn in async fn should be OK, got: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "spawn in async fn should be OK, got: {errors:?}"
+        );
     }
 
     #[test]
@@ -543,7 +570,10 @@ async fn work() {
 "#;
         let errors = validate_spawn_context(code);
         // Both spawns are inside async fn work — both OK
-        assert!(errors.is_empty(), "nested spawns in async fn should be OK, got: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "nested spawns in async fn should be OK, got: {errors:?}"
+        );
     }
 
     #[test]
@@ -554,7 +584,10 @@ fn work() {
 }
 "#;
         let errors = validate_spawn_context(code);
-        assert!(errors.is_empty(), "spawn in string literal should not be flagged");
+        assert!(
+            errors.is_empty(),
+            "spawn in string literal should not be flagged"
+        );
     }
 
     // ─── v0.8 edge-case tests ───
@@ -598,7 +631,11 @@ fn another_sync() {
 }
 "#;
         let errors = validate_spawn_context(code);
-        assert_eq!(errors.len(), 2, "expected 2 errors for sync fns, got: {errors:?}");
+        assert_eq!(
+            errors.len(),
+            2,
+            "expected 2 errors for sync fns, got: {errors:?}"
+        );
         let names: Vec<Option<String>> = errors.iter().map(|e| e.function_name.clone()).collect();
         assert!(names.contains(&Some("sync_fn".to_owned())));
         assert!(names.contains(&Some("another_sync".to_owned())));

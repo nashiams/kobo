@@ -6,8 +6,7 @@ mod tests {
     use crate::node_id::{FileId, KirNodeId};
     use crate::span::KoboSpan;
     use crate::strict::{
-        CaptureAccessKind, CaptureSet, CapturedBinding, StrictBoundaryFact,
-        StrictBoundaryViolation,
+        CaptureAccessKind, CaptureSet, CapturedBinding, StrictBoundaryFact, StrictBoundaryViolation,
     };
 
     fn span(start: u32, end: u32) -> KoboSpan {
@@ -67,7 +66,10 @@ mod tests {
             alias_sites: vec![span(5, 10), span(15, 20), span(25, 30)],
         };
         match &violation {
-            StrictBoundaryViolation::ActiveAliases { binding_id, alias_sites } => {
+            StrictBoundaryViolation::ActiveAliases {
+                binding_id,
+                alias_sites,
+            } => {
                 assert_eq!(*binding_id, node(1));
                 assert_eq!(alias_sites.len(), 3);
                 assert_eq!(alias_sites[0].start, 5);

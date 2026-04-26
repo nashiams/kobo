@@ -42,7 +42,10 @@ pub fn compile_and_remap(
         } else {
             vec![]
         };
-        return Ok(CompileOutput { output_path: binary_path, rustc_warnings });
+        return Ok(CompileOutput {
+            output_path: binary_path,
+            rustc_warnings,
+        });
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -87,9 +90,7 @@ fn is_wrapper_noise(diag: &RustcJsonError, kobo_regions: &[(u32, u32)]) -> bool 
         return true;
     }
     // Rule 2: dead_code on __kobo_* symbols → DROP
-    if is_lint(diag, "dead_code")
-        && primary_label_contains(diag, "__kobo_")
-    {
+    if is_lint(diag, "dead_code") && primary_label_contains(diag, "__kobo_") {
         return true;
     }
     // Rule 3: unused_variables for __kobo_* variables → DROP
@@ -105,15 +106,16 @@ fn is_wrapper_noise(diag: &RustcJsonError, kobo_regions: &[(u32, u32)]) -> bool 
         return true;
     }
     // Rule 5: clippy::unnecessary_wraps involving Rc<RefCell<_>> → DROP
-    if is_lint(diag, "clippy::unnecessary_wraps")
-        && diag.message.contains("Rc<RefCell<")
-    {
+    if is_lint(diag, "clippy::unnecessary_wraps") && diag.message.contains("Rc<RefCell<") {
         return true;
     }
     // Rule 6: primary span inside a // kobo: annotated region → DROP
     if let Some(primary) = diag.spans.iter().find(|s| s.is_primary) {
         let line = primary.line_start as u32;
-        if kobo_regions.iter().any(|(start, end)| line >= *start && line <= *end) {
+        if kobo_regions
+            .iter()
+            .any(|(start, end)| line >= *start && line <= *end)
+        {
             return true;
         }
     }
@@ -130,8 +132,10 @@ fn is_lint(diag: &RustcJsonError, lint_name: &str) -> bool {
 }
 
 fn primary_label_contains(diag: &RustcJsonError, needle: &str) -> bool {
-    diag.spans.iter().find(|s| s.is_primary).map_or(false, |s| {
-        s.label.as_deref().map_or(false, |label| label.contains(needle))
+    diag.spans.iter().find(|s| s.is_primary).is_some_and(|s| {
+        s.label
+            .as_deref()
+            .is_some_and(|label| label.contains(needle))
             || s.file_name.contains(needle)
     })
 }
@@ -175,7 +179,6 @@ pub fn extract_kobo_regions(rs_source: &str) -> Vec<(u32, u32)> {
     regions
 }
 
-
 /// Locate the kobo-diag rlib in the same `deps/` directory as the current
 /// executable. Returns None if it cannot be found or the path is ambiguous.
 ///
@@ -201,7 +204,7 @@ fn find_kobo_diag_rlib() -> Option<PathBuf> {
             if name_str.starts_with("libkobo_diag") && name_str.ends_with(".rlib") {
                 if let Ok(meta) = entry.metadata() {
                     if let Ok(mtime) = meta.modified() {
-                        if best.as_ref().map_or(true, |(_, t)| mtime > *t) {
+                        if best.as_ref().is_none_or(|(_, t)| mtime > *t) {
                             best = Some((entry.path(), mtime));
                         }
                     }
@@ -235,10 +238,7 @@ fn run_rustc(
             if let Some(deps_dir) = rlib.parent() {
                 cmd.arg("-L").arg(deps_dir);
             }
-            cmd.arg(format!(
-                "--extern=kobo_diag={}",
-                rlib.display()
-            ));
+            cmd.arg(format!("--extern=kobo_diag={}", rlib.display()));
         }
     }
 
@@ -254,12 +254,14 @@ fn run_rustc(
 #[cfg(test)]
 mod tests {
     use super::{extract_kobo_regions, filter_wrapper_noise};
-    use crate::rustc::json::{RustcJsonError, RustcCode, RustcSpan};
+    use crate::rustc::json::{RustcCode, RustcJsonError, RustcSpan};
 
     fn make_warning(msg: &str, lint: &str, spans: Vec<RustcSpan>) -> RustcJsonError {
         RustcJsonError {
             message: msg.to_owned(),
-            code: Some(RustcCode { code: lint.to_owned() }),
+            code: Some(RustcCode {
+                code: lint.to_owned(),
+            }),
             level: "warning".to_owned(),
             spans,
             children: vec![],
@@ -302,9 +304,16 @@ mod tests {
 
     #[test]
     fn test_filter_wrapper_noise_drops_kobo_unused_variable() {
-        let diag = make_warning("unused variable: `__kobo_guard_0`", "unused_variables", vec![]);
+        let diag = make_warning(
+            "unused variable: `__kobo_guard_0`",
+            "unused_variables",
+            vec![],
+        );
         let result = filter_wrapper_noise(&[diag], &[]);
-        assert!(result.is_empty(), "__kobo_ unused_variables should be filtered");
+        assert!(
+            result.is_empty(),
+            "__kobo_ unused_variables should be filtered"
+        );
     }
 
     #[test]
@@ -331,7 +340,10 @@ mod tests {
         let diag = make_warning("some warning", "some_lint", vec![span]);
         let kobo_regions = vec![(8u32, 15u32)]; // span line 10 is inside
         let result = filter_wrapper_noise(&[diag], &kobo_regions);
-        assert!(result.is_empty(), "Span inside kobo: region should be filtered");
+        assert!(
+            result.is_empty(),
+            "Span inside kobo: region should be filtered"
+        );
     }
 
     #[test]

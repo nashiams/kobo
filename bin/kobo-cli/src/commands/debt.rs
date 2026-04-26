@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use anyhow::Context;
-use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
 use kobo_debt::patterns::{detect_migration_patterns, format_patterns};
+use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_driver::run_kir_phase;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 
@@ -109,7 +109,10 @@ pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
                 overlap.fix_pattern,
             );
         }
-        println!("\n{} borrow overlap(s) found.", combined.overlapping_sites.len());
+        println!(
+            "\n{} borrow overlap(s) found.",
+            combined.overlapping_sites.len()
+        );
     }
 
     Ok(())
@@ -152,7 +155,6 @@ pub(super) fn cmd_debt_errors(file: &Path, json: bool) -> anyhow::Result<()> {
     let lines: Vec<&str> = source.lines().collect();
 
     let mut current_fn: Option<String> = None;
-    let mut is_result_fn = false;
     let mut question_marks: usize = 0;
     let mut brace_depth: i32 = 0;
 
@@ -160,13 +162,14 @@ pub(super) fn cmd_debt_errors(file: &Path, json: bool) -> anyhow::Result<()> {
         let trimmed = line.trim();
 
         // Detect function start
-        if (trimmed.starts_with("fn ") || trimmed.starts_with("async fn ")
-            || trimmed.starts_with("pub fn ") || trimmed.starts_with("pub async fn "))
+        if (trimmed.starts_with("fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub async fn "))
             && trimmed.contains("->")
         {
             let fn_name = extract_fn_name_from_line(trimmed);
-            is_result_fn = trimmed.contains("Result");
-            if is_result_fn {
+            if trimmed.contains("Result") {
                 current_fn = Some(fn_name);
                 question_marks = 0;
                 brace_depth = 0;
@@ -183,7 +186,7 @@ pub(super) fn cmd_debt_errors(file: &Path, json: bool) -> anyhow::Result<()> {
                     if question_marks > 0 {
                         let uses_boxed = trimmed.contains("Box<dyn")
                             || source.contains(&format!("fn {fn_name}"))
-                            && source.contains("Box<dyn Error");
+                                && source.contains("Box<dyn Error");
                         entries.push(ErrorDebtEntry {
                             fn_name,
                             question_mark_count: question_marks,
@@ -196,7 +199,6 @@ pub(super) fn cmd_debt_errors(file: &Path, json: bool) -> anyhow::Result<()> {
                         });
                     }
                 }
-                is_result_fn = false;
             }
         }
     }

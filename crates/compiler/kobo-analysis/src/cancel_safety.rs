@@ -1,17 +1,17 @@
-/// S-55: K0065 SelectBranchNotCancelSafe detection.
-///
-/// Static pattern-match on `select { }` branches against a known list of
-/// non-cancel-safe methods. These methods lose partial progress when a
-/// `tokio::select!` branch is cancelled, causing silent data loss.
-///
-/// Known non-cancel-safe methods (from tokio docs):
-/// - `read_exact` — partial reads lost
-/// - `read_line` — partial line lost
-/// - `read_to_end` — partial buffer lost
-/// - `read_to_string` — partial content lost
-/// - `write_all` — partial writes lost
-///
-/// Emits a K0065 warning (never an error). Does NOT alter the lowered `tokio::select!`.
+//! S-55: K0065 SelectBranchNotCancelSafe detection.
+//!
+//! Static pattern-match on `select { }` branches against a known list of
+//! non-cancel-safe methods. These methods lose partial progress when a
+//! `tokio::select!` branch is cancelled, causing silent data loss.
+//!
+//! Known non-cancel-safe methods (from tokio docs):
+//! - `read_exact` — partial reads lost
+//! - `read_line` — partial line lost
+//! - `read_to_end` — partial buffer lost
+//! - `read_to_string` — partial content lost
+//! - `write_all` — partial writes lost
+//!
+//! Emits a K0065 warning (never an error). Does NOT alter the lowered `tokio::select!`.
 
 /// A detected cancel-safety violation in a select branch.
 #[derive(Clone, Debug, PartialEq)]

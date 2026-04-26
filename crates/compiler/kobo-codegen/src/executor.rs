@@ -70,18 +70,14 @@ mod tests {
     /// Contract: tokio in dependencies → Tokio selected.
     #[test]
     fn tokio_detected() {
-        let deps = HashMap::from([
-            ("tokio".to_string(), toml::Value::String("1".into())),
-        ]);
+        let deps = HashMap::from([("tokio".to_string(), toml::Value::String("1".into()))]);
         assert_eq!(select_executor(&deps), ExecutorChoice::Tokio);
     }
 
     /// Contract: async-std in dependencies → AsyncStd selected.
     #[test]
     fn async_std_detected() {
-        let deps = HashMap::from([
-            ("async-std".to_string(), toml::Value::String("1".into())),
-        ]);
+        let deps = HashMap::from([("async-std".to_string(), toml::Value::String("1".into()))]);
         assert_eq!(select_executor(&deps), ExecutorChoice::AsyncStd);
     }
 
@@ -111,9 +107,7 @@ mod tests {
             "features".to_string(),
             toml::Value::Array(vec![toml::Value::String("full".into())]),
         );
-        let deps = HashMap::from([
-            ("tokio".to_string(), toml::Value::Table(table)),
-        ]);
+        let deps = HashMap::from([("tokio".to_string(), toml::Value::Table(table))]);
         assert_eq!(select_executor(&deps), ExecutorChoice::Tokio);
     }
 

@@ -45,7 +45,7 @@ fn render_label_group(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
     render_grouped_block(file, &labels, &diagnostic.primary)
 }
 
-fn ordered_labels<'a>(diagnostic: &'a KDiagnostic) -> Vec<&'a DiagLabel> {
+fn ordered_labels(diagnostic: &KDiagnostic) -> Vec<&DiagLabel> {
     let mut labels = Vec::with_capacity(diagnostic.secondary.len() + 1);
     labels.extend(diagnostic.secondary.iter());
     labels.push(&diagnostic.primary);
@@ -231,10 +231,13 @@ impl DiagOwnerStats {
 ///
 /// Emits: `warning[K0020]: RefCell accessed >{threshold} times in hot path`
 pub fn render_k0020(stats: &DiagOwnerStats, file_set: &FileSet) -> KDiagnostic {
-    use crate::codes::Severity;
     use crate::codes::KErrorCode;
+    use crate::codes::Severity;
 
-    let label_text = format!("{} borrow calls (x86-64 ref)", stats.borrow_count.max(stats.mut_borrow_count));
+    let label_text = format!(
+        "{} borrow calls (x86-64 ref)",
+        stats.borrow_count.max(stats.mut_borrow_count)
+    );
     let primary = DiagLabel::primary(stats.source_location, label_text);
 
     let est = stats.estimated_total_ms();
@@ -269,13 +272,10 @@ pub fn render_k0020(stats: &DiagOwnerStats, file_set: &FileSet) -> KDiagnostic {
 ///
 /// Emits: `warning[K0021]: DiagOwner borrow counter saturated — count understated`
 pub fn render_k0021(stats: &DiagOwnerStats) -> KDiagnostic {
-    use crate::codes::Severity;
     use crate::codes::KErrorCode;
+    use crate::codes::Severity;
 
-    let primary = DiagLabel::primary(
-        stats.source_location,
-        "counter reached u64::MAX".to_owned(),
-    );
+    let primary = DiagLabel::primary(stats.source_location, "counter reached u64::MAX".to_owned());
 
     let explanation = format!(
         "`{}` borrow counter reached the maximum u64 value\n   \
@@ -307,10 +307,7 @@ pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
         _ => panic!("render_k0041 called with wrong violation type"),
     };
 
-    let primary = DiagLabel::primary(
-        fact.block_span,
-        "active aliases at @strict block entry",
-    );
+    let primary = DiagLabel::primary(fact.block_span, "active aliases at @strict block entry");
 
     let alias_count = alias_sites.len();
     let explanation = format!(
@@ -328,7 +325,8 @@ pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
     );
 
     for &alias_span in alias_sites {
-        diag.secondary.push(DiagLabel::secondary(alias_span, "alias created here"));
+        diag.secondary
+            .push(DiagLabel::secondary(alias_span, "alias created here"));
     }
 
     diag
@@ -350,8 +348,7 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
         "closure captures Rc<RefCell<T>> binding across @strict boundary",
     );
 
-    let explanation =
-        "a closure defined inside an @strict block captures a wrapped binding; \
+    let explanation = "a closure defined inside an @strict block captures a wrapped binding; \
          borrowing through Rc<RefCell<T>> inside a closure may panic if the @strict \
          guard is still active when the closure is called";
 
@@ -364,7 +361,8 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
          the wrapped value",
     );
 
-    diag.secondary.push(DiagLabel::secondary(fact.block_span, "@strict block here"));
+    diag.secondary
+        .push(DiagLabel::secondary(fact.block_span, "@strict block here"));
     diag
 }
 
@@ -381,8 +379,7 @@ pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let primary = DiagLabel::primary(move_site, "value moved here");
 
-    let explanation =
-        "a binding is moved inside an @strict block; the borrow guard is dropped \
+    let explanation = "a binding is moved inside an @strict block; the borrow guard is dropped \
          on exit from the block and the now-moved value cannot be re-wrapped with \
          Rc<RefCell<T>>; this would leave the handle in an inconsistent state";
 
@@ -394,7 +391,8 @@ pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
         "clone the value before moving, or drop the guard before the move statement",
     );
 
-    diag.secondary.push(DiagLabel::secondary(fact.block_span, "@strict block"));
+    diag.secondary
+        .push(DiagLabel::secondary(fact.block_span, "@strict block"));
     diag
 }
 
@@ -414,8 +412,7 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
         "@strict block inside async fn — borrow guards cannot cross .await",
     );
 
-    let explanation =
-        "@strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped \
+    let explanation = "@strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped \
          before any .await point; placing an @strict block directly inside an async \
          fn makes this invariant unenforceable at compile time";
 
@@ -674,7 +671,11 @@ mod strict_renderer_tests {
         };
         let diag = render_k0041(&fact);
         assert_eq!(diag.code, KErrorCode::K0041, "K0041 code expected");
-        assert_eq!(diag.severity, Severity::Error, "K0041 must use Severity::Error (C03)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "K0041 must use Severity::Error (C03)"
+        );
     }
 
     /// Test 2: render_k0041 primary span is the @strict block_span.
@@ -717,7 +718,11 @@ mod strict_renderer_tests {
         };
         let diag = render_k0042(&fact);
         assert_eq!(diag.code, KErrorCode::K0042, "K0042 code expected");
-        assert_eq!(diag.severity, Severity::Error, "K0042 must use Severity::Error (C03)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "K0042 must use Severity::Error (C03)"
+        );
     }
 
     /// Test 4: render_k0042 primary span is the closure_span; block appears as secondary.
@@ -759,7 +764,11 @@ mod strict_renderer_tests {
         };
         let diag = render_k0043(&fact);
         assert_eq!(diag.code, KErrorCode::K0043, "K0043 code expected");
-        assert_eq!(diag.severity, Severity::Error, "K0043 must use Severity::Error (C03)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "K0043 must use Severity::Error (C03)"
+        );
     }
 
     /// Test 6: render_k0043 primary span is the move_site.
@@ -793,6 +802,10 @@ mod strict_renderer_tests {
         };
         let diag = render_k0063(&fact);
         assert_eq!(diag.code, KErrorCode::K0063, "K0063 code expected");
-        assert_eq!(diag.severity, Severity::Error, "K0063 must use Severity::Error (C03)");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "K0063 must use Severity::Error (C03)"
+        );
     }
 }

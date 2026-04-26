@@ -15,9 +15,7 @@
 //           boundaries), not raw mutation event counts.
 // Contract C04: types consumed here (KirStructDef, WarnEarlyFact) live in kobo-ir.
 
-use kobo_ir::{
-    FieldTypeShape, Kir, KirNodeId, WarnEarlyFact, WarnEarlyPattern,
-};
+use kobo_ir::{FieldTypeShape, Kir, KirNodeId, WarnEarlyFact, WarnEarlyPattern};
 
 /// Detect K0080-P1 through K0080-P4 structural ownership patterns.
 ///
@@ -48,9 +46,10 @@ pub fn detect_warn_early(kir: &Kir) -> Vec<WarnEarlyFact> {
 /// `struct Node { child: Rc<RefCell<Node>> }` does NOT trigger P4.
 fn detect_p4_self_referential(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
     for def in kir.struct_defs() {
-        let is_self_ref = def.fields.iter().any(|f| {
-            matches!(&f.shape, FieldTypeShape::DirectNamed(name) if name == &def.name)
-        });
+        let is_self_ref = def
+            .fields
+            .iter()
+            .any(|f| matches!(&f.shape, FieldTypeShape::DirectNamed(name) if name == &def.name));
         if !is_self_ref {
             continue;
         }
@@ -158,10 +157,8 @@ fn detect_p1_bidirectional(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
         // --- Case 1: within-struct self-loops (2+ fields pointing to Self) ---
         for (i, (field_a, target_a)) in rc_fields.iter().enumerate() {
             for (field_b, target_b) in rc_fields.iter().skip(i + 1) {
-                let a_is_self =
-                    *target_a == def.name.as_str() || *target_a == "Self";
-                let b_is_self =
-                    *target_b == def.name.as_str() || *target_b == "Self";
+                let a_is_self = *target_a == def.name.as_str() || *target_a == "Self";
+                let b_is_self = *target_b == def.name.as_str() || *target_b == "Self";
                 if a_is_self && b_is_self {
                     field_pairs.push(((*field_a).to_owned(), (*field_b).to_owned()));
                 }
@@ -186,10 +183,7 @@ fn detect_p1_bidirectional(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
                         _ => continue,
                     };
                     if back_target == def.name.as_str() || back_target == "Self" {
-                        field_pairs.push((
-                            (*field_name).to_owned(),
-                            other_field.name.clone(),
-                        ));
+                        field_pairs.push(((*field_name).to_owned(), other_field.name.clone()));
                     }
                 }
             }
@@ -302,10 +296,9 @@ mod tests {
         }]);
         let facts = detect_warn_early(&kir);
         // P4 should not fire; P1 may fire (self-loop Rc field)
-        assert!(!facts.iter().any(|f| matches!(
-            &f.pattern,
-            WarnEarlyPattern::SelfReferentialStruct { .. }
-        )));
+        assert!(!facts
+            .iter()
+            .any(|f| matches!(&f.pattern, WarnEarlyPattern::SelfReferentialStruct { .. })));
     }
 
     #[test]
@@ -373,10 +366,9 @@ mod tests {
             },
         ]);
         let facts = detect_warn_early(&kir);
-        assert!(facts.iter().any(|f| matches!(
-            &f.pattern,
-            WarnEarlyPattern::BidirectionalRcLinks { .. }
-        )));
+        assert!(facts
+            .iter()
+            .any(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. })));
     }
 
     #[test]
@@ -424,7 +416,9 @@ mod tests {
             known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
-        let p1 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. }));
+        let p1 = facts
+            .iter()
+            .find(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. }));
         assert!(p1.is_some(), "P1 should fire for within-struct self-loop");
         if let WarnEarlyPattern::BidirectionalRcLinks { field_pairs, .. } = &p1.unwrap().pattern {
             assert_eq!(field_pairs.len(), 1);
@@ -457,7 +451,9 @@ mod tests {
             known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
-        let p1 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. }));
+        let p1 = facts
+            .iter()
+            .find(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. }));
         assert!(p1.is_some());
         if let WarnEarlyPattern::BidirectionalRcLinks { field_pairs, .. } = &p1.unwrap().pattern {
             assert_eq!(field_pairs.len(), 3, "3 self-loop pairs from 3 fields");
@@ -492,7 +488,9 @@ mod tests {
             },
         ]);
         let facts = detect_warn_early(&kir);
-        assert!(facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. })));
+        assert!(facts
+            .iter()
+            .any(|f| matches!(&f.pattern, WarnEarlyPattern::BidirectionalRcLinks { .. })));
     }
 
     // --- P2 additional tests ---
@@ -512,7 +510,9 @@ mod tests {
             known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
-        assert!(!facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::ParentChildBackPointer { .. })));
+        assert!(!facts
+            .iter()
+            .any(|f| matches!(&f.pattern, WarnEarlyPattern::ParentChildBackPointer { .. })));
     }
 
     #[test]
@@ -530,7 +530,9 @@ mod tests {
             known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
-        assert!(!facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::ParentChildBackPointer { .. })));
+        assert!(!facts
+            .iter()
+            .any(|f| matches!(&f.pattern, WarnEarlyPattern::ParentChildBackPointer { .. })));
     }
 
     #[test]
@@ -591,8 +593,7 @@ mod tests {
 
     fn make_kir_with_binding(mutable_sites: usize) -> Kir {
         use kobo_ir::{
-            BindingUsage, KoboAstNodeId, SharedBindingFacts, TransformBindingFacts,
-            TransformFacts,
+            BindingUsage, KoboAstNodeId, SharedBindingFacts, TransformBindingFacts, TransformFacts,
         };
         let mut kir = Kir::default();
         let mut facts = TransformFacts::default();
@@ -632,7 +633,10 @@ mod tests {
         // 2 mutable sites → no P3 (threshold is 3).
         let kir = make_kir_with_binding(2);
         let facts = detect_warn_early(&kir);
-        assert!(!facts.iter().any(|f| matches!(&f.pattern, WarnEarlyPattern::SharedMutableAt3PlusSites { .. })));
+        assert!(!facts.iter().any(|f| matches!(
+            &f.pattern,
+            WarnEarlyPattern::SharedMutableAt3PlusSites { .. }
+        )));
     }
 
     #[test]
@@ -640,9 +644,15 @@ mod tests {
         // Exactly 3 mutable sites → P3 detected.
         let kir = make_kir_with_binding(3);
         let facts = detect_warn_early(&kir);
-        let p3 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::SharedMutableAt3PlusSites { .. }));
+        let p3 = facts.iter().find(|f| {
+            matches!(
+                &f.pattern,
+                WarnEarlyPattern::SharedMutableAt3PlusSites { .. }
+            )
+        });
         assert!(p3.is_some(), "P3 should fire at exactly 3 sites");
-        if let WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } = &p3.unwrap().pattern {
+        if let WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } = &p3.unwrap().pattern
+        {
             assert_eq!(*site_count, 3);
         }
     }
@@ -652,9 +662,15 @@ mod tests {
         // 10 mutable sites → P3 detected with site_count=10.
         let kir = make_kir_with_binding(10);
         let facts = detect_warn_early(&kir);
-        let p3 = facts.iter().find(|f| matches!(&f.pattern, WarnEarlyPattern::SharedMutableAt3PlusSites { .. }));
+        let p3 = facts.iter().find(|f| {
+            matches!(
+                &f.pattern,
+                WarnEarlyPattern::SharedMutableAt3PlusSites { .. }
+            )
+        });
         assert!(p3.is_some());
-        if let WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } = &p3.unwrap().pattern {
+        if let WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } = &p3.unwrap().pattern
+        {
             assert_eq!(*site_count, 10);
         }
     }
@@ -682,8 +698,14 @@ mod tests {
             known_debt_parse_error: None,
         }]);
         let facts = detect_warn_early(&kir);
-        let p4_count = facts.iter().filter(|f| matches!(&f.pattern, WarnEarlyPattern::SelfReferentialStruct { .. })).count();
-        assert_eq!(p4_count, 1, "one P4 fact per struct regardless of field count");
+        let p4_count = facts
+            .iter()
+            .filter(|f| matches!(&f.pattern, WarnEarlyPattern::SelfReferentialStruct { .. }))
+            .count();
+        assert_eq!(
+            p4_count, 1,
+            "one P4 fact per struct regardless of field count"
+        );
     }
 
     // --- Edge case tests ---

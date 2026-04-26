@@ -167,10 +167,10 @@ fn no_extraction_for_sequential_reads_only() {
 /// Input: fn main() { let data = vec![1,2,3]; data.len(); data.push(42); }
 #[test]
 fn extract_detected_in_real_kir() {
-    use kobo_ir::{FileId, NodeIdGen};
-    use kobo_parser::parse_file;
     use crate::options::TransformOptions;
     use crate::transform::build_kir;
+    use kobo_ir::{FileId, NodeIdGen};
+    use kobo_parser::parse_file;
 
     let source = r#"
 fn main() {
@@ -198,10 +198,10 @@ fn main() {
 /// S-17 Integration Test: No extraction when no conflict exists
 #[test]
 fn no_extraction_in_real_kir_without_conflict() {
-    use kobo_ir::{FileId, NodeIdGen};
-    use kobo_parser::parse_file;
     use crate::options::TransformOptions;
     use crate::transform::build_kir;
+    use kobo_ir::{FileId, NodeIdGen};
+    use kobo_parser::parse_file;
 
     let source = r#"
 fn main() {

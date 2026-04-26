@@ -60,10 +60,7 @@ pub fn execute_solve_unit(cluster: &Cluster) -> SolveUnitResult {
             cluster_id: cluster.id.0,
             outcome: SolveUnitOutcome::Conflict {
                 node_id: node.0,
-                reason: format!(
-                    "floor {:?} exceeds ceiling {:?}",
-                    floor, ceiling
-                ),
+                reason: format!("floor {:?} exceeds ceiling {:?}", floor, ceiling),
             },
         },
     }
@@ -99,7 +96,7 @@ mod tests {
     fn make_cluster(id: u32, n: usize) -> Cluster {
         let nodes: Vec<ConstraintNode> = (0..n)
             .map(|i| ConstraintNode {
-                id: KirNodeId((id * 100 + i as u32)),
+                id: KirNodeId(id * 100 + i as u32),
                 floor: OwnershipTier::PlainOwned,
                 ceiling: None,
                 is_boundary: false,

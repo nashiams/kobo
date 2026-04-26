@@ -65,9 +65,10 @@ pub fn build_debt_report(kir: &Kir, file_count: usize, line_count: usize) -> Deb
             .map(|b| b.binding_name.clone())
             .unwrap_or_else(|| format!("_{}", node.id.0));
 
-        let is_strict_covered = kir.strict_capture_sets().iter().any(|cap| {
-            cap.bindings.iter().any(|b| b.binding_id == node.id)
-        });
+        let is_strict_covered = kir
+            .strict_capture_sets()
+            .iter()
+            .any(|cap| cap.bindings.iter().any(|b| b.binding_id == node.id));
 
         let strict_annotation = if is_strict_covered {
             Some("covered by @strict \u{2014} no runtime overhead".into())
@@ -101,10 +102,7 @@ pub fn build_debt_report(kir: &Kir, file_count: usize, line_count: usize) -> Deb
             report.acknowledged.push(AcknowledgedDebtRecord {
                 node_id: fact.node_id,
                 span: fact.span,
-                reason: fact
-                    .known_debt_reason
-                    .clone()
-                    .unwrap_or_default(),
+                reason: fact.known_debt_reason.clone().unwrap_or_default(),
                 pattern: fact.pattern.clone(),
                 struct_name: fact.struct_name.clone(),
             });
@@ -176,8 +174,7 @@ mod tests {
         let report = build_debt_report(&kir, 1, 50);
         let sum = report.complexity.tier1 + report.complexity.tier2 + report.complexity.tier3;
         assert_eq!(
-            sum,
-            report.inventory.rc_mut_shared,
+            sum, report.inventory.rc_mut_shared,
             "tier1 + tier2 + tier3 must equal rc_mut_shared"
         );
     }

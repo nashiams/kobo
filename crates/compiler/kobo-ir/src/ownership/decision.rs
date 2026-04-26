@@ -3,7 +3,9 @@ use super::elision::ElisionFallbackReason;
 /// Ownership tier assigned to a KIR node. Determines what wrapper type (if any)
 /// `kobo-codegen` emits for the corresponding binding in the generated `.rs`
 /// file.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum OwnershipTier {
     /// `T` - moved. No wrapper, no allocation. Zero overhead.
     PlainOwned,
@@ -275,9 +277,7 @@ impl TierReason {
             TierReason::GenericWrapperFloor => "generic T: Copy unknown".to_owned(),
             TierReason::AsyncBoxDeferred => "Box<T> deferred: async fn (v0.7)".to_owned(),
             TierReason::ResourceWrapper => "resource wrapper".to_owned(),
-            TierReason::AsyncSharedAttribute => {
-                "explicit async-shared opt-in: Arc tier".to_owned()
-            }
+            TierReason::AsyncSharedAttribute => "explicit async-shared opt-in: Arc tier".to_owned(),
             TierReason::ValidationEscalation(SatisfactionCheck::ReturnEscapeBoxDeferred) => {
                 "return escape: Box<T> requires signature rewrite (v0.4)".to_owned()
             }

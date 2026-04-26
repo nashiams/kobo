@@ -4,7 +4,6 @@
 /// that are live across `.await` points. These cause runtime deadlocks
 /// and compile errors (`future is not Send`). The analysis produces
 /// advisory facts that the driver projects as K0062 diagnostics.
-
 use kobo_ir::{Kir, KirNodeId, KoboSpan};
 
 /// A guard binding that is live across an await point.

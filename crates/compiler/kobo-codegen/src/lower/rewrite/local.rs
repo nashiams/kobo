@@ -35,11 +35,7 @@ impl super::Lowerer<'_> {
         }
     }
 
-    fn lower_local_without_binding(
-        &mut self,
-        local: &mut syn::Local,
-        scopes: &mut ScopeStack,
-    ) {
+    fn lower_local_without_binding(&mut self, local: &mut syn::Local, scopes: &mut ScopeStack) {
         let Some(init) = &mut local.init else {
             return;
         };
@@ -59,14 +55,14 @@ impl super::Lowerer<'_> {
 
         if self.plan.binding_uses_plain_clone_alias(binding) {
             if let Some((ident, _)) = binding_tier_from_expr(init.expr.as_ref(), scopes) {
-                init.expr = Box::new(parse_quote!(#ident.clone()));
+                *init.expr = parse_quote!(#ident.clone());
                 return true;
             }
         }
 
         if let Some((ident, source_tier)) = binding_tier_from_expr(init.expr.as_ref(), scopes) {
             if source_tier.is_cloneable_wrapper() {
-                init.expr = Box::new(parse_quote!(#ident.clone()));
+                *init.expr = parse_quote!(#ident.clone());
                 return true;
             }
             if source_tier == OwnershipTier::BoxOwned && target_tier == OwnershipTier::BoxOwned {

@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use kobo_driver::run_codegen_pipeline;
 use super::session::{build_session, render_diagnostics};
+use kobo_driver::run_codegen_pipeline;
 
 /// Per-function timing report for tick-loop functions.
 ///
@@ -20,18 +20,16 @@ pub(super) fn cmd_bench_tick(file: &Path, tick_budget: bool) -> anyhow::Result<(
 
     // Attempt compilation to get generated Rust — used for body complexity.
     let compiled_source = match build_session(file, None) {
-        Ok(mut session) => {
-            match run_codegen_pipeline(&mut session, file) {
-                Ok(artifacts) => {
-                    render_diagnostics(&session);
-                    Some(artifacts.rs_source)
-                }
-                Err(()) => {
-                    render_diagnostics(&session);
-                    None
-                }
+        Ok(mut session) => match run_codegen_pipeline(&mut session, file) {
+            Ok(artifacts) => {
+                render_diagnostics(&session);
+                Some(artifacts.rs_source)
             }
-        }
+            Err(()) => {
+                render_diagnostics(&session);
+                None
+            }
+        },
         Err(_) => None,
     };
 
@@ -58,11 +56,20 @@ impl TickBudgetEntry {
             let est_ms = est_us / 1000.0;
             let pct = (est_ms / self.budget_ms) * 100.0;
             if pct > 80.0 {
-                format!("OVER BUDGET — est. {:.2}ms ({:.0}% of {:.1}ms frame)", est_ms, pct, self.budget_ms)
+                format!(
+                    "OVER BUDGET — est. {:.2}ms ({:.0}% of {:.1}ms frame)",
+                    est_ms, pct, self.budget_ms
+                )
             } else if pct > 50.0 {
-                format!("WARNING — est. {:.2}ms ({:.0}% of {:.1}ms frame)", est_ms, pct, self.budget_ms)
+                format!(
+                    "WARNING — est. {:.2}ms ({:.0}% of {:.1}ms frame)",
+                    est_ms, pct, self.budget_ms
+                )
             } else {
-                format!("OK — est. {:.2}ms ({:.0}% of {:.1}ms frame)", est_ms, pct, self.budget_ms)
+                format!(
+                    "OK — est. {:.2}ms ({:.0}% of {:.1}ms frame)",
+                    est_ms, pct, self.budget_ms
+                )
             }
         } else if self.body_stmts == 0 {
             "UNKNOWN (no compiled output)".to_string()
@@ -127,7 +134,10 @@ fn statement_weight(line: &str) -> f64 {
     // Method chains add complexity
     w += trimmed.matches('.').count() as f64 * 0.5;
     // Allocations
-    if trimmed.contains("Vec::new") || trimmed.contains("String::new") || trimmed.contains("clone()") {
+    if trimmed.contains("Vec::new")
+        || trimmed.contains("String::new")
+        || trimmed.contains("clone()")
+    {
         w += 3.0;
     }
     // I/O operations
@@ -144,7 +154,8 @@ fn statement_weight(line: &str) -> f64 {
 pub(crate) fn generate_tick_budget_report(source: &str, compiled_source: Option<&str>) -> String {
     let entries = extract_tick_functions(source, compiled_source);
     if entries.is_empty() {
-        return "Tick Budget Report\n══════════════════\nNo #[kobo::tick] functions found.".to_string();
+        return "Tick Budget Report\n══════════════════\nNo #[kobo::tick] functions found."
+            .to_string();
     }
 
     let mut lines = vec![
@@ -184,8 +195,8 @@ fn extract_tick_functions(source: &str, compiled_source: Option<&str>) -> Vec<Ti
                     let body_stmts = compiled_source
                         .map(|src| count_fn_body_stmts(src, fn_name))
                         .unwrap_or(0);
-                    let estimated_us = compiled_source
-                        .and_then(|src| estimate_tick_time_us(src, fn_name));
+                    let estimated_us =
+                        compiled_source.and_then(|src| estimate_tick_time_us(src, fn_name));
                     entries.push(TickBudgetEntry {
                         fn_name: fn_name.to_string(),
                         rate_hz: rate,
@@ -296,7 +307,9 @@ fn render_loop(ctx: &mut RenderCtx) {
         // budget for 20Hz = 50ms, 60Hz ≈ 16.7ms
         assert!(report.contains("50.0ms"), "report: {report}");
         assert!(
-            report.contains("WITHIN BUDGET") || report.contains("OVER BUDGET") || report.contains("UNKNOWN"),
+            report.contains("WITHIN BUDGET")
+                || report.contains("OVER BUDGET")
+                || report.contains("UNKNOWN"),
             "report: {report}"
         );
     }
@@ -306,12 +319,18 @@ fn render_loop(ctx: &mut RenderCtx) {
         let source = "fn main() { println!(\"hello\"); }";
         let report = generate_tick_budget_report(source, None);
         assert!(report.contains("Tick Budget Report"), "report: {report}");
-        assert!(report.contains("No #[kobo::tick] functions found"), "report: {report}");
+        assert!(
+            report.contains("No #[kobo::tick] functions found"),
+            "report: {report}"
+        );
     }
 
     #[test]
     fn parse_tick_rate_20() {
-        assert_eq!(parse_tick_rate_from_line("#[kobo::tick(rate=20)]"), Some(20));
+        assert_eq!(
+            parse_tick_rate_from_line("#[kobo::tick(rate=20)]"),
+            Some(20)
+        );
     }
 
     #[test]
@@ -324,11 +343,17 @@ fn render_loop(ctx: &mut RenderCtx) {
 
     #[test]
     fn extract_fn_name_basic() {
-        assert_eq!(extract_fn_name("fn game_loop(state: &mut S) {"), Some("game_loop"));
+        assert_eq!(
+            extract_fn_name("fn game_loop(state: &mut S) {"),
+            Some("game_loop")
+        );
     }
 
     #[test]
     fn extract_fn_name_async() {
-        assert_eq!(extract_fn_name("async fn render(ctx: &Ctx) {"), Some("render"));
+        assert_eq!(
+            extract_fn_name("async fn render(ctx: &Ctx) {"),
+            Some("render")
+        );
     }
 }

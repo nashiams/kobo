@@ -5,31 +5,18 @@
 
 use std::collections::BTreeSet;
 
-use kobo_ir::{FileId, KirNodeId, Kir, KoboSpan, NodeKind, OwnershipTier};
+use kobo_ir::{FileId, Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier};
 
 use crate::greedy::GreedyPassResult;
-use crate::solver::{ConstraintEdge, ConstraintGraph, ConstraintKind};
+use crate::solver::{
+    ConstraintEdge, ConstraintFactKind, ConstraintGraph, ConstraintKind, ConstraintProvenance,
+};
 
 /// Provenance attached to every constraint edge — explains *why* this constraint exists.
-#[derive(Clone, Debug)]
-pub struct ProvenanceRef {
-    pub span: KoboSpan,
-    pub fact_kind: FactKind,
-    pub rule_name: &'static str,
-    pub source_binding: Option<String>,
-}
+pub type ProvenanceRef = ConstraintProvenance;
 
 /// The kind of fact that generated a constraint edge.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FactKind {
-    NeedsSharing,
-    NeedsSend,
-    MutableShared,
-    AliasFlow,
-    EngineCeiling,
-    BoundaryMarker,
-    CoMutation,
-}
+pub type FactKind = ConstraintFactKind;
 
 /// A constraint edge with mandatory provenance.
 #[derive(Clone, Debug)]
@@ -153,7 +140,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
     }
 
     let mut edge_set = BTreeSet::new();
-    for (_block, decl_ids) in &scope_groups {
+    for decl_ids in scope_groups.values() {
         let unique: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
         let vec: Vec<KirNodeId> = unique.into_iter().collect();
         for i in 0..vec.len() {
@@ -165,18 +152,16 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                 };
                 if edge_set.insert((a, b, "sharing")) {
                     let span = find_binding_span(kir, a);
+                    let provenance =
+                        ProvenanceRef::new(span, FactKind::NeedsSharing, "co-scope-sharing", None);
                     edges.push(ProvenancedEdge {
-                        edge: ConstraintEdge {
-                            source: a,
-                            target: b,
-                            kind: ConstraintKind::PropagateSharing,
-                        },
-                        provenance: ProvenanceRef {
-                            span,
-                            fact_kind: FactKind::NeedsSharing,
-                            rule_name: "co-scope-sharing",
-                            source_binding: None,
-                        },
+                        edge: ConstraintEdge::new(
+                            a,
+                            b,
+                            ConstraintKind::PropagateSharing,
+                            provenance.clone(),
+                        ),
+                        provenance,
                     });
                 }
             }
@@ -190,7 +175,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
         .map(|n| n.id)
         .collect();
 
-    for (_block, decl_ids) in &scope_groups {
+    for decl_ids in scope_groups.values() {
         let unique: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
         for &id in &unique {
             if send_nodes.contains(&id) {
@@ -199,18 +184,20 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                         let (a, b) = if id < other { (id, other) } else { (other, id) };
                         if edge_set.insert((a, b, "send")) {
                             let span = find_binding_span(kir, id);
+                            let provenance = ProvenanceRef::new(
+                                span,
+                                FactKind::NeedsSend,
+                                "send-propagation",
+                                None,
+                            );
                             edges.push(ProvenancedEdge {
-                                edge: ConstraintEdge {
-                                    source: a,
-                                    target: b,
-                                    kind: ConstraintKind::PropagateSend,
-                                },
-                                provenance: ProvenanceRef {
-                                    span,
-                                    fact_kind: FactKind::NeedsSend,
-                                    rule_name: "send-propagation",
-                                    source_binding: None,
-                                },
+                                edge: ConstraintEdge::new(
+                                    a,
+                                    b,
+                                    ConstraintKind::PropagateSend,
+                                    provenance.clone(),
+                                ),
+                                provenance,
                             });
                         }
                     }
@@ -220,7 +207,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
     }
 
     // Mutual exclusion: if two bindings both need mutable wrappers in the same scope.
-    for (_block, decl_ids) in &scope_groups {
+    for decl_ids in scope_groups.values() {
         let unique: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
         let mutable_in_scope: Vec<KirNodeId> = unique
             .iter()
@@ -240,18 +227,20 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                 };
                 if edge_set.insert((a, b, "mutex")) {
                     let span = find_binding_span(kir, a);
+                    let provenance = ProvenanceRef::new(
+                        span,
+                        FactKind::CoMutation,
+                        "co-mutation-exclusion",
+                        None,
+                    );
                     edges.push(ProvenancedEdge {
-                        edge: ConstraintEdge {
-                            source: a,
-                            target: b,
-                            kind: ConstraintKind::MutuallyExclusive,
-                        },
-                        provenance: ProvenanceRef {
-                            span,
-                            fact_kind: FactKind::CoMutation,
-                            rule_name: "co-mutation-exclusion",
-                            source_binding: None,
-                        },
+                        edge: ConstraintEdge::new(
+                            a,
+                            b,
+                            ConstraintKind::MutuallyExclusive,
+                            provenance.clone(),
+                        ),
+                        provenance,
                     });
                 }
             }

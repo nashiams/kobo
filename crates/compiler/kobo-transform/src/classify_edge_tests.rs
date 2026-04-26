@@ -21,7 +21,10 @@ fn shared_ref_is_copy() {
 #[test]
 fn shared_ref_to_vec_is_copy() {
     let ty: syn::Type = parse_quote!(&Vec<u8>);
-    assert!(is_copy_type(&ty), "&Vec<u8> (the reference itself) should be Copy");
+    assert!(
+        is_copy_type(&ty),
+        "&Vec<u8> (the reference itself) should be Copy"
+    );
 }
 
 // ------------------------------------------------------------------
@@ -40,10 +43,7 @@ fn mut_ref_is_not_copy() {
 #[test]
 fn mut_ref_to_vec_is_not_copy() {
     let ty: syn::Type = parse_quote!(&mut Vec<u8>);
-    assert!(
-        !is_copy_type(&ty),
-        "&mut Vec<u8> must NOT be Copy"
-    );
+    assert!(!is_copy_type(&ty), "&mut Vec<u8> must NOT be Copy");
 }
 
 // ------------------------------------------------------------------
@@ -114,7 +114,10 @@ fn option_is_not_copy() {
 #[test]
 fn double_shared_ref_is_copy() {
     let ty: syn::Type = parse_quote!(&&i32);
-    assert!(is_copy_type(&ty), "&&i32 should be Copy (outer ref is shared)");
+    assert!(
+        is_copy_type(&ty),
+        "&&i32 should be Copy (outer ref is shared)"
+    );
 }
 
 // ------------------------------------------------------------------

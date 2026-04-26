@@ -1,3 +1,4 @@
+use kobo_errors::Severity;
 /// Pinpoint the exact binding and await point causing a non-Send future.
 ///
 /// When a binding with tier Rc*/RefCell crosses a spawn boundary,
@@ -10,9 +11,7 @@
 /// 1. Knowing which bindings are captured by the spawn block
 /// 2. Knowing which bindings are !Send (Rc, RefCell, non-Send user types)
 /// 3. Finding the .await points that cause the capture to span across suspend
-
-use kobo_ir::{KirNodeId, KoboSpan, OwnershipTier, Kir, NodeKind, TransformFacts};
-use kobo_errors::Severity;
+use kobo_ir::{Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, TransformFacts};
 
 /// Represents a spawn site in the source.
 #[derive(Clone, Debug)]
@@ -132,8 +131,8 @@ pub fn analyze_send_violations(
 mod tests {
     use super::*;
     use kobo_ir::{
-        BindingUsage, FileId, KirNode, KirNodeId, KoboAstNodeId, KoboSpan,
-        SharedBindingFacts, TransformBindingFacts, TransformFacts,
+        BindingUsage, FileId, KirNode, KirNodeId, KoboAstNodeId, KoboSpan, SharedBindingFacts,
+        TransformBindingFacts, TransformFacts,
     };
 
     fn make_binding_facts(id: u32, name: &str) -> TransformBindingFacts {
@@ -424,8 +423,15 @@ mod tests {
         }];
 
         let diagnostics = analyze_send_violations(&spawn_sites, &facts, &kir);
-        assert_eq!(diagnostics.len(), 2, "expected 2 diagnostics for 2 !Send bindings");
-        let names: Vec<&str> = diagnostics.iter().map(|d| d.binding_name.as_str()).collect();
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "expected 2 diagnostics for 2 !Send bindings"
+        );
+        let names: Vec<&str> = diagnostics
+            .iter()
+            .map(|d| d.binding_name.as_str())
+            .collect();
         assert!(names.contains(&"cache"));
         assert!(names.contains(&"state"));
     }
@@ -460,7 +466,10 @@ mod tests {
             await_points: vec![],
         }];
         let diagnostics = analyze_send_violations(&spawn_sites, &facts, &kir);
-        assert!(diagnostics.is_empty(), "unknown binding should be silently skipped");
+        assert!(
+            diagnostics.is_empty(),
+            "unknown binding should be silently skipped"
+        );
     }
 
     /// is_not_send for all 8 tiers.

@@ -40,8 +40,8 @@ mod tests {
     /// Tests use this helper after wiring (TDD step 2 — make tests pass).
     fn parse_kobo_strict(source: &str) -> (KoboFile, kobo_ir::NodeIdGen) {
         use kobo_parser::{
-            collect_strict_items_from_syn, postprocess_strict_markers,
-            preprocess_kobo_keywords, v05_keyword_configs,
+            collect_strict_items_from_syn, postprocess_strict_markers, preprocess_kobo_keywords,
+            v05_keyword_configs,
         };
         let configs = v05_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
@@ -63,7 +63,11 @@ mod tests {
     fn test_p3_empty_strict_block_produces_one_capture_set() {
         let source = "fn f() { @strict { } }";
         let (ast, mut id_gen) = parse_kobo_strict(source);
-        assert_eq!(ast.strict_blocks().len(), 1, "parser must collect 1 @strict block");
+        assert_eq!(
+            ast.strict_blocks().len(),
+            1,
+            "parser must collect 1 @strict block"
+        );
         let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
         assert_eq!(
             kir.strict_capture_sets().len(),
@@ -86,7 +90,11 @@ mod tests {
     fn test_p3_no_strict_source_empty_capture_sets() {
         let source = "fn f() { let x: i32 = 1; }";
         let (ast, mut id_gen) = parse_kobo_strict(source);
-        assert_eq!(ast.strict_blocks().len(), 0, "no @strict blocks in plain source");
+        assert_eq!(
+            ast.strict_blocks().len(),
+            0,
+            "no @strict blocks in plain source"
+        );
         let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
         assert!(
             kir.strict_capture_sets().is_empty(),

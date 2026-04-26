@@ -132,7 +132,13 @@ impl TransformFactsBuilder<'_> {
             span,
             binding_state.decl_id,
         ));
-        self.record_event(binding_state.decl_id, UseEvent::Moved { span, scope_depth: self.scope_depth });
+        self.record_event(
+            binding_state.decl_id,
+            UseEvent::Moved {
+                span,
+                scope_depth: self.scope_depth,
+            },
+        );
         if let Some(kind) = escape_kind.filter(|kind| {
             !matches!(
                 (kind, binding_state.kind),

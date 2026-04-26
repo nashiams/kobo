@@ -19,7 +19,7 @@ pub struct CapturedBinding {
     pub binding_id: KirNodeId,
     pub name: String,
     pub access_kind: CaptureAccessKind,
-    pub access_count: usize,         // F-06: for v0.6 suggestion quality scoring
+    pub access_count: usize, // F-06: for v0.6 suggestion quality scoring
     pub access_spans: Vec<KoboSpan>, // F-06: for v0.6 access-site clustering
 }
 
@@ -78,7 +78,7 @@ pub enum StrictBoundaryViolation {
     ClosureCapture {
         closure_span: KoboSpan,
         captured_binding_id: KirNodeId,
-        is_move_closure: bool,                // F-01
+        is_move_closure: bool,               // F-01
         captures: Vec<ClosureCaptureDetail>, // F-01
     },
 

@@ -399,11 +399,7 @@ async fn process() {
     let has_k0063 = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::StrictAsyncViolation { .. }));
-    assert!(
-        has_k0063,
-        "A9: Strict + Send → K0063, got {:?}",
-        violations
-    );
+    assert!(has_k0063, "A9: Strict + Send → K0063, got {:?}", violations);
 }
 
 /// A10: Strict, local-only (no Send needed) → PlainOwned, no violations.

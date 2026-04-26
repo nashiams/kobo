@@ -27,9 +27,7 @@ pub(super) enum RelaxAttrResult {
 /// Parse `#[kobo::relax]` from a single attribute.
 pub(super) fn parse_relax_attr(attr: &syn::Attribute) -> RelaxAttrResult {
     match &attr.meta {
-        syn::Meta::Path(path) if is_kobo_path(path, "relax") => {
-            RelaxAttrResult::Valid(attr.span())
-        }
+        syn::Meta::Path(path) if is_kobo_path(path, "relax") => RelaxAttrResult::Valid(attr.span()),
         syn::Meta::NameValue(nv) if is_kobo_path(&nv.path, "relax") => {
             RelaxAttrResult::HasArguments(attr.span())
         }
@@ -135,22 +133,20 @@ pub(super) enum AsyncSharedAttrResult {
     /// Attribute is not a `kobo::async_shared` attribute.
     NotAsyncShared,
     /// Valid bare `#[kobo::async_shared]`.
-    Valid(proc_macro2::Span),
+    Valid,
     /// Malformed `#[kobo::async_shared = ...]` or `#[kobo::async_shared(...)]` — takes no args.
-    HasArguments(proc_macro2::Span),
+    HasArguments,
 }
 
 /// Parse `#[kobo::async_shared]` from a single attribute.
 pub(super) fn parse_async_shared_attr(attr: &syn::Attribute) -> AsyncSharedAttrResult {
     match &attr.meta {
-        syn::Meta::Path(path) if is_kobo_path(path, "async_shared") => {
-            AsyncSharedAttrResult::Valid(attr.span())
-        }
+        syn::Meta::Path(path) if is_kobo_path(path, "async_shared") => AsyncSharedAttrResult::Valid,
         syn::Meta::NameValue(nv) if is_kobo_path(&nv.path, "async_shared") => {
-            AsyncSharedAttrResult::HasArguments(attr.span())
+            AsyncSharedAttrResult::HasArguments
         }
         syn::Meta::List(list) if is_kobo_path(&list.path, "async_shared") => {
-            AsyncSharedAttrResult::HasArguments(attr.span())
+            AsyncSharedAttrResult::HasArguments
         }
         _ => AsyncSharedAttrResult::NotAsyncShared,
     }

@@ -44,7 +44,7 @@ pub fn query_solve_all(ctxt: &mut MigrateCtxt) -> SolutionMap {
                     solution.insert(id, tier);
                 }
             }
-            LatticeOutcome::Conflict { node, floor, ceiling } => {
+            LatticeOutcome::Conflict { node, floor, .. } => {
                 // Conflict: fall back to floor.
                 solution.insert(node, floor);
             }
@@ -58,7 +58,10 @@ pub fn query_solve_all(ctxt: &mut MigrateCtxt) -> SolutionMap {
 }
 
 /// Query: get function summary by name.
-pub fn query_function_summary<'a>(ctxt: &'a MigrateCtxt, name: &str) -> Option<&'a FunctionSummary> {
+pub fn query_function_summary<'a>(
+    ctxt: &'a MigrateCtxt,
+    name: &str,
+) -> Option<&'a FunctionSummary> {
     ctxt.summaries().get(name)
 }
 

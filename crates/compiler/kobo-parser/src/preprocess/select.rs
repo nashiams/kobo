@@ -1,25 +1,25 @@
-/// Parse `select { arm from channel => body }` and generate `tokio::select!`.
-///
-/// Input:
-///   select {
-///       msg from rx1 => { handle_msg(msg) }
-///       tick from timer => { handle_tick() }
-///   }
-///
-/// Output:
-///   tokio::select! {
-///       msg = rx1.recv() => { handle_msg(msg.unwrap()) }
-///       _ = timer.tick() => { handle_tick() }
-///   }
-///
-/// Safe cancellation defaults:
-/// - Branches are biased (first match wins, no fairness)
-/// - No implicit else branch (user must handle all cases)
-/// - Timer channels use `.tick()` not `.recv()`
-///
-/// Invariants:
-/// - Empty `select {}` → hard error
-/// - Single-arm `select { ... }` → warning (likely a mistake)
+//! Parse `select { arm from channel => body }` and generate `tokio::select!`.
+//!
+//! Input:
+//!   select {
+//!       msg from rx1 => { handle_msg(msg) }
+//!       tick from timer => { handle_tick() }
+//!   }
+//!
+//! Output:
+//!   tokio::select! {
+//!       msg = rx1.recv() => { handle_msg(msg.unwrap()) }
+//!       _ = timer.tick() => { handle_tick() }
+//!   }
+//!
+//! Safe cancellation defaults:
+//! - Branches are biased (first match wins, no fairness)
+//! - No implicit else branch (user must handle all cases)
+//! - Timer channels use `.tick()` not `.recv()`
+//!
+//! Invariants:
+//! - Empty `select {}` → hard error
+//! - Single-arm `select { ... }` → warning (likely a mistake)
 
 /// Errors from select preprocessing.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,7 +69,9 @@ struct SelectArm {
 ///
 /// Returns `(rewritten_source, select_infos, warnings)`.
 /// Returns `Err` if an empty `select {}` is found (hard error per contract).
-pub fn preprocess_select_blocks(source: &str) -> Result<(String, Vec<SelectInfo>, Vec<SelectWarning>), SelectError> {
+pub fn preprocess_select_blocks(
+    source: &str,
+) -> Result<(String, Vec<SelectInfo>, Vec<SelectWarning>), SelectError> {
     let mut result = String::with_capacity(source.len());
     let mut infos = Vec::new();
     let mut warnings = Vec::new();
@@ -366,7 +368,10 @@ let y = 2;"#;
     fn empty_select_with_whitespace_returns_error() {
         let input = "select {   \n  \n  }";
         let result = preprocess_select_blocks(input);
-        assert!(result.is_err(), "whitespace-only select should be a hard error");
+        assert!(
+            result.is_err(),
+            "whitespace-only select should be a hard error"
+        );
     }
 
     #[test]
@@ -375,7 +380,11 @@ let y = 2;"#;
     msg from rx => { handle(msg) }
 }"#;
         let (_, _, warnings) = preprocess_select_blocks(input).unwrap();
-        assert_eq!(warnings.len(), 1, "single-arm select should produce a warning");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "single-arm select should produce a warning"
+        );
         assert!(matches!(warnings[0], SelectWarning::SingleArm { .. }));
     }
 
@@ -386,7 +395,10 @@ let y = 2;"#;
     tick from timer => { on_tick() }
 }"#;
         let (_, _, warnings) = preprocess_select_blocks(input).unwrap();
-        assert!(warnings.is_empty(), "two-arm select should have no warnings");
+        assert!(
+            warnings.is_empty(),
+            "two-arm select should have no warnings"
+        );
     }
 
     #[test]
@@ -394,7 +406,10 @@ let y = 2;"#;
         let err = SelectError::EmptySelect { offset: 42 };
         let msg = format!("{err}");
         assert!(msg.contains("empty"), "error message: {msg}");
-        assert!(msg.contains("42"), "error message should contain offset: {msg}");
+        assert!(
+            msg.contains("42"),
+            "error message should contain offset: {msg}"
+        );
     }
 
     // ─── Preserved unit tests ───

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
-use kobo_ir::{KirNodeId, Kir, NodeKind, OwnershipTier, SolutionMap};
+use kobo_ir::{FileId, Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, SolutionMap};
 
 /// Input to the solver: a graph of ownership constraints extracted from KIR.
 pub struct ConstraintGraph {
@@ -16,6 +16,84 @@ pub struct ConstraintEdge {
     pub source: KirNodeId,
     pub target: KirNodeId,
     pub kind: ConstraintKind,
+    pub provenance: ConstraintProvenance,
+}
+
+impl ConstraintEdge {
+    pub fn new(
+        source: KirNodeId,
+        target: KirNodeId,
+        kind: ConstraintKind,
+        provenance: ConstraintProvenance,
+    ) -> Self {
+        Self {
+            source,
+            target,
+            kind,
+            provenance,
+        }
+    }
+
+    pub fn synthetic(
+        source: KirNodeId,
+        target: KirNodeId,
+        kind: ConstraintKind,
+        rule_name: &'static str,
+    ) -> Self {
+        Self::new(
+            source,
+            target,
+            kind,
+            ConstraintProvenance::synthetic(rule_name),
+        )
+    }
+}
+
+/// Provenance attached to every solver constraint edge.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ConstraintProvenance {
+    pub span: KoboSpan,
+    pub fact_kind: ConstraintFactKind,
+    pub rule_name: &'static str,
+    pub source_binding: Option<String>,
+}
+
+impl ConstraintProvenance {
+    pub fn new(
+        span: KoboSpan,
+        fact_kind: ConstraintFactKind,
+        rule_name: &'static str,
+        source_binding: Option<String>,
+    ) -> Self {
+        Self {
+            span,
+            fact_kind,
+            rule_name,
+            source_binding,
+        }
+    }
+
+    pub fn synthetic(rule_name: &'static str) -> Self {
+        Self {
+            span: KoboSpan::new(0, 0, FileId(0)),
+            fact_kind: ConstraintFactKind::Generated,
+            rule_name,
+            source_binding: None,
+        }
+    }
+}
+
+/// The source fact that generated a constraint edge.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum ConstraintFactKind {
+    NeedsSharing,
+    NeedsSend,
+    MutableShared,
+    AliasFlow,
+    EngineCeiling,
+    BoundaryMarker,
+    CoMutation,
+    Generated,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -70,7 +148,10 @@ pub struct SolutionCandidate {
 impl std::fmt::Debug for SolutionCandidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SolutionCandidate")
-            .field("solution", &format!("SolutionMap[len={}]", self.solution.len()))
+            .field(
+                "solution",
+                &format!("SolutionMap[len={}]", self.solution.len()),
+            )
             .field("explanation", &self.explanation)
             .field("risk_score", &self.risk_score)
             .finish()
@@ -82,6 +163,7 @@ impl std::fmt::Debug for SolutionCandidate {
 pub struct ConflictReport {
     pub conflicting_nodes: Vec<KirNodeId>,
     pub conflict_reason: String,
+    pub provenance: Vec<ConstraintProvenance>,
 }
 
 /// Explanation for cluster size violation.
@@ -133,12 +215,14 @@ pub struct SolverEvidence {
 }
 
 /// Candidate tiers considered during constraint solving.
-const CANDIDATE_TIERS: [OwnershipTier; 5] = [
+const CANDIDATE_TIERS: [OwnershipTier; 7] = [
     OwnershipTier::PlainOwned,
+    OwnershipTier::BoxOwned,
     OwnershipTier::RcShared,
     OwnershipTier::ArcShared,
     OwnershipTier::RcMutShared,
     OwnershipTier::ArcMutShared,
+    OwnershipTier::Scoped,
 ];
 
 /// Compute a deterministic fingerprint for a constraint graph.
@@ -153,6 +237,7 @@ pub fn graph_fingerprint(graph: &ConstraintGraph) -> String {
         edge.source.0.hash(&mut hasher);
         edge.target.0.hash(&mut hasher);
         edge.kind.hash(&mut hasher);
+        edge.provenance.hash(&mut hasher);
     }
     format!("{:016x}{:016x}", hasher.finish(), {
         // Second round for length ≥ 16 chars and better distribution.
@@ -165,10 +250,7 @@ pub fn graph_fingerprint(graph: &ConstraintGraph) -> String {
 
 /// Build a constraint graph from KIR declaration nodes.
 pub fn build_kir_constraint_graph(kir: &Kir) -> ConstraintGraph {
-    let decl_nodes: Vec<KirNodeId> = kir
-        .iter_decl_nodes()
-        .map(|n| n.id)
-        .collect();
+    let decl_nodes: Vec<KirNodeId> = kir.iter_decl_nodes().map(|n| n.id).collect();
 
     let mut edges = Vec::new();
     let decl_set: BTreeSet<KirNodeId> = decl_nodes.iter().copied().collect();
@@ -192,7 +274,7 @@ pub fn build_kir_constraint_graph(kir: &Kir) -> ConstraintGraph {
 
     // For bindings used together in the same scope block, add PropagateSharing edges.
     let mut edge_set = BTreeSet::new();
-    for (_block, decl_ids) in &scope_decls {
+    for decl_ids in scope_decls.values() {
         let unique_decls: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
         let unique_vec: Vec<KirNodeId> = unique_decls.into_iter().collect();
         for i in 0..unique_vec.len() {
@@ -203,11 +285,17 @@ pub fn build_kir_constraint_graph(kir: &Kir) -> ConstraintGraph {
                     (unique_vec[j], unique_vec[i])
                 };
                 if edge_set.insert((a, b)) {
-                    edges.push(ConstraintEdge {
-                        source: a,
-                        target: b,
-                        kind: ConstraintKind::PropagateSharing,
-                    });
+                    edges.push(ConstraintEdge::new(
+                        a,
+                        b,
+                        ConstraintKind::PropagateSharing,
+                        ConstraintProvenance::new(
+                            KoboSpan::new(0, 0, FileId(0)),
+                            ConstraintFactKind::AliasFlow,
+                            "kir-co-scope-sharing",
+                            None,
+                        ),
+                    ));
                 }
             }
         }
@@ -277,6 +365,11 @@ pub fn solve(graph: &ConstraintGraph, budget: SolverBudget) -> SolveOutcome {
         return SolveOutcome::NoSolution(ConflictReport {
             conflicting_nodes: empty_nodes,
             conflict_reason: "constraint propagation eliminated all valid tiers".to_owned(),
+            provenance: graph
+                .edges
+                .iter()
+                .map(|edge| edge.provenance.clone())
+                .collect(),
         });
     }
 
@@ -313,6 +406,11 @@ pub fn solve(graph: &ConstraintGraph, budget: SolverBudget) -> SolveOutcome {
         0 => SolveOutcome::NoSolution(ConflictReport {
             conflicting_nodes: graph.nodes.clone(),
             conflict_reason: "no valid ownership assignment satisfies all constraints".to_owned(),
+            provenance: graph
+                .edges
+                .iter()
+                .map(|edge| edge.provenance.clone())
+                .collect(),
         }),
         1 => {
             let mut map = SolutionMap::new();
@@ -359,10 +457,18 @@ pub fn solve_with_evidence(graph: &ConstraintGraph, budget: SolverBudget) -> Sol
                 .unwrap_or_default();
             ("MultiSolution".to_owned(), sol)
         }
-        SolveOutcome::NoSolution(_) => ("NoSolution".to_owned(), SolutionMap::new()),
-        SolveOutcome::ClusterTooLarge(_) => ("ClusterTooLarge".to_owned(), SolutionMap::new()),
-        SolveOutcome::BudgetExceeded(_) => ("BudgetExceeded".to_owned(), SolutionMap::new()),
-        SolveOutcome::BoundaryStop(_) => ("BoundaryStop".to_owned(), SolutionMap::new()),
+        SolveOutcome::NoSolution(_) => ("NoSolution".to_owned(), partial_solution_for_graph(graph)),
+        SolveOutcome::ClusterTooLarge(_) => (
+            "ClusterTooLarge".to_owned(),
+            partial_solution_for_graph(graph),
+        ),
+        SolveOutcome::BudgetExceeded(_) => (
+            "BudgetExceeded".to_owned(),
+            partial_solution_for_graph(graph),
+        ),
+        SolveOutcome::BoundaryStop(_) => {
+            ("BoundaryStop".to_owned(), partial_solution_for_graph(graph))
+        }
     };
 
     SolverEvidence {
@@ -373,6 +479,14 @@ pub fn solve_with_evidence(graph: &ConstraintGraph, budget: SolverBudget) -> Sol
         budget: budget_clone,
         solution,
     }
+}
+
+fn partial_solution_for_graph(graph: &ConstraintGraph) -> SolutionMap {
+    let mut map = SolutionMap::new();
+    for node in &graph.nodes {
+        map.insert(*node, OwnershipTier::PlainOwned);
+    }
+    map
 }
 
 /// Returns the canonical name for a SolveOutcome variant.
@@ -461,6 +575,7 @@ fn propagate_arc_consistency(
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 fn backtrack_search(
     nodes: &[KirNodeId],
     index: usize,
@@ -528,9 +643,7 @@ fn partial_consistent(
     edges: &[ConstraintEdge],
 ) -> bool {
     for edge in edges {
-        if let (Some(&s), Some(&t)) =
-            (assignment.get(&edge.source), assignment.get(&edge.target))
-        {
+        if let (Some(&s), Some(&t)) = (assignment.get(&edge.source), assignment.get(&edge.target)) {
             if !check_constraint(s, t, &edge.kind) {
                 return false;
             }
@@ -555,11 +668,12 @@ mod tests {
 
     #[test]
     fn constraint_edge_propagation() {
-        let edge = ConstraintEdge {
-            source: KirNodeId(1),
-            target: KirNodeId(2),
-            kind: ConstraintKind::PropagateSharing,
-        };
+        let edge = ConstraintEdge::synthetic(
+            KirNodeId(1),
+            KirNodeId(2),
+            ConstraintKind::PropagateSharing,
+            "test",
+        );
         assert_eq!(edge.kind, ConstraintKind::PropagateSharing);
     }
 
@@ -591,6 +705,7 @@ mod tests {
             SolveOutcome::NoSolution(ConflictReport {
                 conflicting_nodes: vec![],
                 conflict_reason: "no solution".to_owned(),
+                provenance: vec![],
             }),
             SolveOutcome::ClusterTooLarge(ClusterReport {
                 cluster_size: 999,
@@ -628,13 +743,12 @@ mod tests {
     fn non_empty_unconstrained_graph_is_multi_solution() {
         let graph = ConstraintGraph {
             nodes: vec![KirNodeId(1), KirNodeId(2), KirNodeId(3)],
-            edges: vec![
-                ConstraintEdge {
-                    source: KirNodeId(1),
-                    target: KirNodeId(2),
-                    kind: ConstraintKind::PropagateSharing,
-                },
-            ],
+            edges: vec![ConstraintEdge::synthetic(
+                KirNodeId(1),
+                KirNodeId(2),
+                ConstraintKind::PropagateSharing,
+                "test",
+            )],
         };
         let result = solve(&graph, SolverBudget::default());
         assert!(matches!(result, SolveOutcome::MultiSolution(_)));
@@ -646,7 +760,10 @@ mod tests {
         let budget = SolverBudget::default();
         assert!(budget.max_cluster_size > 0);
         assert!(budget.budget_seconds > 0.0);
-        assert!(budget.max_cluster_size <= 65536, "cluster limit seems too large");
+        assert!(
+            budget.max_cluster_size <= 65536,
+            "cluster limit seems too large"
+        );
         assert!(budget.budget_seconds <= 300.0, "budget seems too generous");
     }
 
@@ -656,6 +773,7 @@ mod tests {
         let r = ConflictReport {
             conflicting_nodes: vec![KirNodeId(1), KirNodeId(2)],
             conflict_reason: "conflict".to_owned(),
+            provenance: vec![],
         };
         assert_eq!(r.conflicting_nodes.len(), 2);
     }
@@ -703,10 +821,10 @@ mod tests {
         let no_sol = SolveOutcome::NoSolution(ConflictReport {
             conflicting_nodes: vec![],
             conflict_reason: String::new(),
+            provenance: vec![],
         });
         // They are different enum variants
         assert!(!matches!(multi, SolveOutcome::NoSolution(_)));
         assert!(!matches!(no_sol, SolveOutcome::MultiSolution(_)));
     }
 }
-

@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 pub struct KoboAstNodeId(pub u32);
 
 /// Stable identifier for a KIR node.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub struct KirNodeId(pub u32);
 
 /// Stable identifier for a CFG basic block (used by the async pass in v0.7).

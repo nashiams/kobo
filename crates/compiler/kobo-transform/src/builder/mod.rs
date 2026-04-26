@@ -45,6 +45,7 @@ pub(crate) struct BuilderOutput {
     /// Method name → is_mut_self, from impl block scanning + config.
     pub(crate) method_mutability: std::collections::HashMap<String, bool>,
     /// Spawn sites with captured binding info [S-8 / S-9].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) spawn_sites: Vec<crate::escape::SpawnSite>,
 }
 
@@ -85,9 +86,9 @@ pub(crate) struct TransformFactsBuilder<'a> {
     spawn_captured: Vec<kobo_ir::KirNodeId>,
 }
 
+mod attrs;
 mod emit;
 mod helpers;
-mod attrs;
 mod struct_collect;
 #[cfg(test)]
 mod tests;
@@ -128,10 +129,7 @@ impl<'a> TransformFactsBuilder<'a> {
                 ast,
                 options.small_struct_clone_threshold_bytes,
             ),
-            copy_registry: build_copy_registry(
-                scan_derive_copy(&ast.inner),
-                &options.copy_types,
-            ),
+            copy_registry: build_copy_registry(scan_derive_copy(&ast.inner), &options.copy_types),
             method_registry: MethodRegistry::from_impl_blocks(&ast.inner)
                 .with_config_overrides(&options.mutating_methods),
             function_names: ast

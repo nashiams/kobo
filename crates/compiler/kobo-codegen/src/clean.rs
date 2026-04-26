@@ -1,19 +1,19 @@
-/// Strip all Kobo-specific wrappers from generated Rust code.
-///
-/// Removals:
-/// 1. `DiagOwner<T>` → `T`
-/// 2. `ScopedHandle<T>` → `T`
-/// 3. `Owned<T>` → `T`
-/// 4. `kobo::` attribute annotations → removed
-/// 5. `__kobo_` prefixed markers → removed
-/// 6. `kobo_diag::` imports → removed
-///
-/// Additions (via `generate_use_stmts`):
-/// 1. `use` statements for standard library types (Arc, Rc, RefCell, etc.)
-/// 2. `use` statements for external crate types from dependencies
-///
-/// String-level manipulation is chosen for simplicity. Kobo generates wrappers
-/// in predictable formats so direct string replacement handles all known patterns.
+//! Strip all Kobo-specific wrappers from generated Rust code.
+//!
+//! Removals:
+//! 1. `DiagOwner<T>` → `T`
+//! 2. `ScopedHandle<T>` → `T`
+//! 3. `Owned<T>` → `T`
+//! 4. `kobo::` attribute annotations → removed
+//! 5. `__kobo_` prefixed markers → removed
+//! 6. `kobo_diag::` imports → removed
+//!
+//! Additions (via `generate_use_stmts`):
+//! 1. `use` statements for standard library types (Arc, Rc, RefCell, etc.)
+//! 2. `use` statements for external crate types from dependencies
+//!
+//! String-level manipulation is chosen for simplicity. Kobo generates wrappers
+//! in predictable formats so direct string replacement handles all known patterns.
 
 /// Strip Kobo-specific wrappers from generated Rust source.
 pub fn strip_kobo_wrappers(source: &str) -> String {
@@ -278,7 +278,8 @@ mod tests {
 
     #[test]
     fn generate_use_stmts_for_arc() {
-        let source = "let x: Arc<RwLock<HashMap<String, i32>>> = Arc::new(RwLock::new(HashMap::new()));";
+        let source =
+            "let x: Arc<RwLock<HashMap<String, i32>>> = Arc::new(RwLock::new(HashMap::new()));";
         let uses = generate_use_stmts(source, &[]);
         assert!(uses.contains(&"use std::sync::Arc;".to_string()));
         assert!(uses.contains(&"use std::collections::HashMap;".to_string()));
@@ -321,7 +322,10 @@ mod tests {
     fn strip_kobo_debt_import() {
         let input = "use kobo_debt::DebtTracker;\nlet x = 1;";
         let output = strip_kobo_wrappers(input);
-        assert!(!output.contains("kobo_debt"), "kobo_debt import not stripped");
+        assert!(
+            !output.contains("kobo_debt"),
+            "kobo_debt import not stripped"
+        );
     }
 
     #[test]
@@ -407,7 +411,10 @@ mod tests {
         assert!(!output.contains("kobo_debt"), "kobo_debt leaked");
         assert!(!output.contains("kobo_errors"), "kobo_errors leaked");
         assert!(!output.contains("use kobo::"), "kobo:: leaked");
-        assert!(output.contains("use std::sync::Arc;"), "std import must survive");
+        assert!(
+            output.contains("use std::sync::Arc;"),
+            "std import must survive"
+        );
     }
 
     /// Trap 10: __kobo_ macro markers stripped.
@@ -464,7 +471,10 @@ mod tests {
     fn scoped_handle_stripped() {
         let input = "let f: ScopedHandle<File> = ScopedHandle::new(open());";
         let output = strip_kobo_wrappers(input);
-        assert!(!output.contains("ScopedHandle"), "ScopedHandle leaked: {output}");
+        assert!(
+            !output.contains("ScopedHandle"),
+            "ScopedHandle leaked: {output}"
+        );
         assert!(output.contains("File"));
     }
 
@@ -480,7 +490,8 @@ mod tests {
     /// Nested wrapper: DiagOwner<Arc<RwLock<T>>> → Arc<RwLock<T>>.
     #[test]
     fn nested_wrapper_preserves_inner() {
-        let input = "let x: DiagOwner<Arc<RwLock<HashMap<String, Vec<i32>>>>> = DiagOwner::new(val);";
+        let input =
+            "let x: DiagOwner<Arc<RwLock<HashMap<String, Vec<i32>>>>> = DiagOwner::new(val);";
         let output = strip_kobo_wrappers(input);
         assert!(!output.contains("DiagOwner"));
         assert!(output.contains("Arc<RwLock<HashMap<String, Vec<i32>>>>"));

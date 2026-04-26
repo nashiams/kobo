@@ -14,7 +14,6 @@
 /// - edition = "2021" (default)
 /// - NO kobo_diag dependency
 /// - NO kobo_ prefixed dependencies
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -203,7 +202,10 @@ kobo-runtime = { path = "../kobo-runtime" }
         assert_eq!(config.dependencies.len(), 2);
         assert!(config.dependencies.iter().any(|(n, _)| n == "tokio"));
         assert!(config.dependencies.iter().any(|(n, _)| n == "serde"));
-        assert!(!config.dependencies.iter().any(|(n, _)| n.starts_with("kobo")));
+        assert!(!config
+            .dependencies
+            .iter()
+            .any(|(n, _)| n.starts_with("kobo")));
     }
 
     #[test]
@@ -216,7 +218,10 @@ kobo-runtime = { path = "../kobo-runtime" }
         };
         let sources = vec![
             (PathBuf::from("src/main.kobo"), "fn main() {}".to_owned()),
-            (PathBuf::from("src/lib.kobo"), "pub fn greet() {}".to_owned()),
+            (
+                PathBuf::from("src/lib.kobo"),
+                "pub fn greet() {}".to_owned(),
+            ),
         ];
 
         let temp = tempfile::tempdir().unwrap();

@@ -8,7 +8,6 @@
 /// This is heuristic-based: looks for function name patterns
 /// (auth, log, rate_limit, etc.) and their call order.
 /// Not guaranteed to catch all issues — conservative safety bias.
-
 use kobo_ir::KoboSpan;
 
 /// Kinds of pipeline ordering issues.
@@ -63,8 +62,7 @@ fn classify_call(name: &str) -> CallRole {
         CallRole::Auth
     } else if lower.contains("rate_limit") || lower.contains("throttle") {
         CallRole::RateLimit
-    } else if lower.contains("handle") || lower.contains("process") || lower.contains("dispatch")
-    {
+    } else if lower.contains("handle") || lower.contains("process") || lower.contains("dispatch") {
         CallRole::Handler
     } else if lower.contains("log") || lower.contains("trace") || lower.contains("record") {
         CallRole::Logging

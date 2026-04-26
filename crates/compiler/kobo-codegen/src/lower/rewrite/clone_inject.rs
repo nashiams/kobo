@@ -15,7 +15,6 @@
 /// Naming: `__{original_name}_clone` to avoid collision.
 /// If original is still used after spawn → clone is required.
 /// If original is NOT used after spawn → move into spawn, no clone.
-
 use kobo_ir::OwnershipTier;
 
 /// Describes a binding captured by a spawn block for clone injection.
@@ -44,6 +43,8 @@ pub(crate) enum CaptureAction {
 
 /// Determine how a captured binding should be handled at a spawn boundary.
 pub(crate) fn capture_action(binding: &CapturedBinding) -> CaptureAction {
+    debug_assert_ne!(binding.tier, OwnershipTier::Undecided);
+
     // Copy types need no explicit clone — they are cheaply copied.
     if binding.is_copy {
         return CaptureAction::Copy;
@@ -66,6 +67,7 @@ pub(crate) fn clone_var_name(binding_name: &str) -> String {
 }
 
 /// Check if a tier is a shared Arc-based tier that can be cheaply cloned.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_arc_tier(tier: OwnershipTier) -> bool {
     matches!(tier, OwnershipTier::ArcShared | OwnershipTier::ArcMutShared)
 }
@@ -74,7 +76,12 @@ pub(crate) fn is_arc_tier(tier: OwnershipTier) -> bool {
 mod tests {
     use super::*;
 
-    fn binding(name: &str, tier: OwnershipTier, is_copy: bool, used_after: bool) -> CapturedBinding {
+    fn binding(
+        name: &str,
+        tier: OwnershipTier,
+        is_copy: bool,
+        used_after: bool,
+    ) -> CapturedBinding {
         CapturedBinding {
             name: name.to_owned(),
             tier,

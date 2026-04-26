@@ -10,10 +10,7 @@ use syn::visit_mut::VisitMut;
 /// Apply split-borrow destructuring to a method based on detected sites.
 ///
 /// Returns `true` if rewriting was applied.
-pub(crate) fn generate_split_borrow(
-    method: &mut syn::ImplItemFn,
-    site: &SplitBorrowSite,
-) -> bool {
+pub(crate) fn generate_split_borrow(method: &mut syn::ImplItemFn, site: &SplitBorrowSite) -> bool {
     // Only &mut self methods get split-borrow.
     if !has_mut_self_receiver(method) {
         return false;

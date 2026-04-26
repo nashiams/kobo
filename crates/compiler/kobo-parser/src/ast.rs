@@ -145,11 +145,15 @@ impl KoboFile {
 
     /// S-3: Find AST binding IDs whose declared type matches any of the given engine struct names.
     pub fn engine_typed_binding_ids(&self, engine_names: &[String]) -> Vec<KoboAstNodeId> {
-        self.bindings.iter()
+        self.bindings
+            .iter()
             .filter_map(|b| {
                 let ty = b.ty.as_ref()?;
                 let ty_name = type_path_name(ty)?;
-                if engine_names.iter().any(|name| ty_name.contains(name.as_str())) {
+                if engine_names
+                    .iter()
+                    .any(|name| ty_name.contains(name.as_str()))
+                {
                     Some(b.id)
                 } else {
                     None
@@ -224,7 +228,10 @@ fn build_line_starts(source: &str) -> Vec<usize> {
 fn type_path_name(ty: &syn::Type) -> Option<String> {
     match ty {
         syn::Type::Path(tp) => {
-            let name = tp.path.segments.iter()
+            let name = tp
+                .path
+                .segments
+                .iter()
                 .map(|s| s.ident.to_string())
                 .collect::<Vec<_>>()
                 .join("::");

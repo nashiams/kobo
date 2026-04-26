@@ -2,7 +2,7 @@ pub mod guard_liveness;
 
 use kobo_ir::{AsyncViolationFact, AsyncViolationKind, Kir, KoboMode};
 
-use crate::cfg::{compute_send_requirements, build_cfg, SendRequirements};
+use crate::cfg::{build_cfg, compute_send_requirements, SendRequirements};
 
 /// Check async ownership constraints and return violation facts.
 ///
@@ -78,12 +78,7 @@ pub fn check_strict_async(
     // K0062: async code detected but no executor dependency configured
     if has_any_async_binding && !has_executor {
         // Use the span of the first async binding for the diagnostic location
-        if let Some(first_async) = kir
-            .transform_facts()
-            .bindings
-            .iter()
-            .find(|b| b.is_async)
-        {
+        if let Some(first_async) = kir.transform_facts().bindings.iter().find(|b| b.is_async) {
             violations.push(AsyncViolationFact {
                 span: first_async.span,
                 kind: AsyncViolationKind::MissingExecutor,

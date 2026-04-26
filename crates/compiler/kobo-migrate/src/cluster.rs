@@ -189,11 +189,12 @@ mod tests {
 
     fn make_edge(src: u32, tgt: u32) -> ProvenancedEdge {
         ProvenancedEdge {
-            edge: ConstraintEdge {
-                source: KirNodeId(src),
-                target: KirNodeId(tgt),
-                kind: ConstraintKind::PropagateSharing,
-            },
+            edge: ConstraintEdge::synthetic(
+                KirNodeId(src),
+                KirNodeId(tgt),
+                ConstraintKind::PropagateSharing,
+                "test",
+            ),
             provenance: ProvenanceRef {
                 span: KoboSpan::new(0, 1, FileId(0)),
                 fact_kind: FactKind::NeedsSharing,
@@ -214,12 +215,7 @@ mod tests {
             ],
             edges: vec![make_edge(1, 2), make_edge(3, 4)],
             graph: ConstraintGraph {
-                nodes: vec![
-                    KirNodeId(1),
-                    KirNodeId(2),
-                    KirNodeId(3),
-                    KirNodeId(4),
-                ],
+                nodes: vec![KirNodeId(1), KirNodeId(2), KirNodeId(3), KirNodeId(4)],
                 edges: vec![],
             },
         };
@@ -238,12 +234,7 @@ mod tests {
             ],
             edges: vec![make_edge(1, 2), make_edge(2, 3), make_edge(3, 4)],
             graph: ConstraintGraph {
-                nodes: vec![
-                    KirNodeId(1),
-                    KirNodeId(2),
-                    KirNodeId(3),
-                    KirNodeId(4),
-                ],
+                nodes: vec![KirNodeId(1), KirNodeId(2), KirNodeId(3), KirNodeId(4)],
                 edges: vec![],
             },
         };
@@ -263,12 +254,7 @@ mod tests {
             ],
             edges: vec![make_edge(1, 2), make_edge(10, 20)],
             graph: ConstraintGraph {
-                nodes: vec![
-                    KirNodeId(10),
-                    KirNodeId(1),
-                    KirNodeId(20),
-                    KirNodeId(2),
-                ],
+                nodes: vec![KirNodeId(10), KirNodeId(1), KirNodeId(20), KirNodeId(2)],
                 edges: vec![],
             },
         };

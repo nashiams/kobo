@@ -285,34 +285,38 @@ impl Foo {
         let bindings: Vec<_> = kobo_file.iter_bindings().collect();
 
         // read(&self) -> SelfParam
-        let read_self = bindings.iter().find(|b| {
-            b.ident == "self" && b.kind == KoboBindingKind::SelfParam
-        });
+        let read_self = bindings
+            .iter()
+            .find(|b| b.ident == "self" && b.kind == KoboBindingKind::SelfParam);
         assert!(read_self.is_some(), "expected SelfParam for &self");
 
         // write(&mut self) -> MutSelfParam
-        let write_self = bindings.iter().find(|b| {
-            b.ident == "self" && b.kind == KoboBindingKind::MutSelfParam
-        });
+        let write_self = bindings
+            .iter()
+            .find(|b| b.ident == "self" && b.kind == KoboBindingKind::MutSelfParam);
         assert!(write_self.is_some(), "expected MutSelfParam for &mut self");
 
         // consume(self) -> SelfParam (by-value self is not &mut)
-        let consume_self = bindings.iter().filter(|b| {
-            b.ident == "self" && b.kind == KoboBindingKind::SelfParam
-        }).count();
+        let consume_self = bindings
+            .iter()
+            .filter(|b| b.ident == "self" && b.kind == KoboBindingKind::SelfParam)
+            .count();
         // read(&self), consume(self), and with_param(&self) are all SelfParam
-        assert_eq!(consume_self, 3, "expected 3 SelfParam (read + consume + with_param)");
+        assert_eq!(
+            consume_self, 3,
+            "expected 3 SelfParam (read + consume + with_param)"
+        );
 
         // with_param has x: i32 as Parameter
-        let x_param = bindings.iter().find(|b| {
-            b.ident == "x" && b.kind == KoboBindingKind::Parameter
-        });
+        let x_param = bindings
+            .iter()
+            .find(|b| b.ident == "x" && b.kind == KoboBindingKind::Parameter);
         assert!(x_param.is_some(), "expected Parameter for x");
 
         // v in write is Parameter
-        let v_param = bindings.iter().find(|b| {
-            b.ident == "v" && b.kind == KoboBindingKind::Parameter
-        });
+        let v_param = bindings
+            .iter()
+            .find(|b| b.ident == "v" && b.kind == KoboBindingKind::Parameter);
         assert!(v_param.is_some(), "expected Parameter for v");
     }
 }

@@ -83,7 +83,10 @@ edition = "2021"
 /// Runs the build pipeline: discovers .kobo files, compiles each to .rs,
 /// generates Cargo.toml, shells out to `cargo build`, and writes everything
 /// under `<project_dir>/target/kobo-gen/`.
-pub fn run_build_pipeline(config: &KoboConfig, project_dir: &Path) -> Result<BuildOutput, DriverError> {
+pub fn run_build_pipeline(
+    config: &KoboConfig,
+    project_dir: &Path,
+) -> Result<BuildOutput, DriverError> {
     let gen_dir = project_dir.join("target").join("kobo-gen");
     let gen_src_dir = gen_dir.join("src");
     fs::create_dir_all(&gen_src_dir)?;
@@ -114,28 +117,23 @@ pub fn run_build_pipeline(config: &KoboConfig, project_dir: &Path) -> Result<Bui
         }
 
         let mut build_config = config.clone();
-        build_config.output_dir = Some(
-            rs_out
-                .parent()
-                .unwrap_or(&gen_src_dir)
-                .to_path_buf(),
-        );
+        build_config.output_dir = Some(rs_out.parent().unwrap_or(&gen_src_dir).to_path_buf());
 
         let mut session = CompileSession::new(build_config);
-        let rs_source = crate::pipeline::run_pipeline(&mut session, kobo_path)
-            .map_err(|()| DriverError::TransformFailed {
+        let rs_source = crate::pipeline::run_pipeline(&mut session, kobo_path).map_err(|()| {
+            DriverError::TransformFailed {
                 file: kobo_path.clone(),
                 message: "compilation failed".to_string(),
-            })?;
+            }
+        })?;
 
         fs::write(&rs_out, &rs_source)?;
         rs_files.push(rs_out);
     }
 
-    generate_cargo_toml(config, &gen_dir)
-        .map_err(|e| DriverError::CargoTomlGenFailed {
-            message: e.to_string(),
-        })?;
+    generate_cargo_toml(config, &gen_dir).map_err(|e| DriverError::CargoTomlGenFailed {
+        message: e.to_string(),
+    })?;
 
     let cargo_toml_path = gen_dir.join("Cargo.toml");
 
@@ -175,10 +173,7 @@ pub fn run_build_pipeline(config: &KoboConfig, project_dir: &Path) -> Result<Bui
     if !cargo_output.status.success() {
         let stderr = String::from_utf8_lossy(&cargo_output.stderr).to_string();
         let exit_code = cargo_output.status.code().unwrap_or(1);
-        return Err(DriverError::CargoBuildFailed {
-            stderr,
-            exit_code,
-        });
+        return Err(DriverError::CargoBuildFailed { stderr, exit_code });
     }
 
     Ok(BuildOutput {
@@ -218,9 +213,11 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("kobo-cargo-gen-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
 
-        let mut config = KoboConfig::default();
-        config.package_name = "test_pkg".to_string();
-        config.package_version = "1.0.0".to_string();
+        let mut config = KoboConfig {
+            package_name: "test_pkg".to_string(),
+            package_version: "1.0.0".to_string(),
+            ..Default::default()
+        };
         config
             .dependencies
             .insert("log".to_string(), toml::Value::String("0.4".to_string()));

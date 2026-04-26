@@ -5,8 +5,8 @@
 
 use kobo_ir::Kir;
 
-use crate::call_graph::CallGraph;
 use crate::cache::SolverCache;
+use crate::call_graph::CallGraph;
 use crate::greedy::GreedyConfig;
 use crate::summaries::SummaryTable;
 

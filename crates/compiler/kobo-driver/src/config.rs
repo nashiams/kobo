@@ -114,7 +114,7 @@ pub enum ConfigError {
     Parse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("failed to parse TOML: {0}")]
     ParseError(String),
@@ -183,7 +183,7 @@ fn read_optional_config(config_path: &Path) -> Result<Option<RawKoboConfig>, Con
         .map(Some)
         .map_err(|source| ConfigError::Parse {
             path: config_path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })
 }
 
@@ -422,10 +422,7 @@ external = ["MyPoint", "Color"]
 methods = ["push", "insert", "remove"]
 "#;
         let config = parse_kobo_config(toml).unwrap();
-        assert_eq!(
-            config.mutating_methods,
-            vec!["push", "insert", "remove"]
-        );
+        assert_eq!(config.mutating_methods, vec!["push", "insert", "remove"]);
     }
 
     #[test]

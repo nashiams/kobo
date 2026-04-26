@@ -1,21 +1,38 @@
+#![allow(clippy::result_unit_err)]
+
 use std::path::{Path, PathBuf};
 
-use kobo_analysis::{facts_to_diagnostics, run_analysis, analyze_send_violations, SpawnSite as AnalysisSpawnSite, scan_source_cancel_safety};
-use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverEvidenceJson, SolverBudgetJson};
-use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
-use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
-use kobo_migrate::{build_kir_constraint_graph, solve_modular, solve_modular_with_evidence, SolveOutcome, SolverBudget, SolverEvidence, ModularEvidence};
-use kobo_parser::{
-    collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
-    preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
-    v05_keyword_configs, mode_parse::parse_file_mode, KoboFile,
+use kobo_analysis::{
+    analyze_send_violations, facts_to_diagnostics, run_analysis, scan_source_cancel_safety,
+    SpawnSite as AnalysisSpawnSite,
 };
-use kobo_transform::{build_kir, TransformOptions, strict_async::check_strict_async, strict_async::guard_liveness::detect_guard_across_await};
+use kobo_codegen::{
+    codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverBudgetJson,
+    SolverEvidenceJson,
+};
+use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
+use kobo_ir::{
+    AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern,
+};
+use kobo_migrate::{
+    solve_modular, solve_modular_with_evidence, SolveOutcome, SolverBudget, SolverEvidence,
+};
+use kobo_parser::{
+    collect_strict_items_from_syn, mode_parse::parse_file_mode, parse_file,
+    postprocess_strict_markers, preprocess_kobo_keywords, preprocess_spawn_blocks,
+    preprocess_strict_reject_invalid, v05_keyword_configs, KoboFile,
+};
+use kobo_transform::{
+    build_kir, strict_async::check_strict_async,
+    strict_async::guard_liveness::detect_guard_across_await, TransformOptions,
+};
 
 use crate::filesystem::{
     map_path_for, output_path_for, read_kobo_file, write_map_file, write_rs_file,
 };
-use crate::rustc::{compile_and_remap, extract_kobo_regions, filter_wrapper_noise, remap_warnings_to_diagnostics};
+use crate::rustc::{
+    compile_and_remap, extract_kobo_regions, filter_wrapper_noise, remap_warnings_to_diagnostics,
+};
 use crate::session::CompileSession;
 
 pub struct CodegenArtifacts {
@@ -81,7 +98,10 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     // S-3: Collect #[kobo::engine] structs for downstream constraint ceilings.
     let engine_structs = kobo_parser::collect_engine_structs(kobo_file.syn_file());
     if !engine_structs.is_empty() {
-        session.engine_struct_names = engine_structs.iter().map(|e| e.struct_name.clone()).collect();
+        session.engine_struct_names = engine_structs
+            .iter()
+            .map(|e| e.struct_name.clone())
+            .collect();
     }
 
     // Collect @strict blocks/fns before stripping marker attributes.
@@ -130,7 +150,10 @@ pub fn run_check_pipeline(session: &mut CompileSession, input: &Path) -> Result<
 ///
 /// Parses the file, extracts middleware call sites, and checks for common
 /// ordering mistakes (auth-after-handler, log-after-response, etc.).
-pub fn run_pipeline_ordering_check(session: &mut CompileSession, input: &Path) -> Vec<kobo_analysis::PipelineWarning> {
+pub fn run_pipeline_ordering_check(
+    session: &mut CompileSession,
+    input: &Path,
+) -> Vec<kobo_analysis::PipelineWarning> {
     let (kobo_file, _kir) = match run_kir_phase(session, input) {
         Ok(pair) => pair,
         Err(()) => return Vec::new(),
@@ -149,10 +172,16 @@ pub fn run_codegen_pipeline(
     // Phase 00/05: Project non-Unique solver outcomes to K-code diagnostics.
     project_solver_diagnostics(session, &kir, &outcome);
 
-    // Use solver solution for codegen when available (Phase 06), empty otherwise.
     let mut solution = match &outcome {
         SolveOutcome::Unique(map) => map.clone(),
-        _ => SolutionMap::new(),
+        SolveOutcome::MultiSolution(candidates) => match candidates.first() {
+            Some(candidate) => candidate.solution.clone(),
+            None => return Err(()),
+        },
+        SolveOutcome::NoSolution(_)
+        | SolveOutcome::ClusterTooLarge(_)
+        | SolveOutcome::BudgetExceeded(_)
+        | SolveOutcome::BoundaryStop(_) => return Err(()),
     };
 
     // S-3: Cap engine struct bindings to PlainOwned ceiling.
@@ -243,12 +272,7 @@ pub fn run_and_compile(session: &mut CompileSession, input: &Path) -> Result<Pat
     if session.mode().is_checked() && !compile_output.rustc_warnings.is_empty() {
         let kobo_regions = extract_kobo_regions(&artifacts.rs_source);
         let surviving = filter_wrapper_noise(&compile_output.rustc_warnings, &kobo_regions);
-        remap_warnings_to_diagnostics(
-            surviving,
-            &artifacts.source_map,
-            artifacts.file_id,
-            session,
-        );
+        remap_warnings_to_diagnostics(surviving, &artifacts.source_map, artifacts.file_id, session);
     }
 
     Ok(compile_output.output_path)
@@ -273,8 +297,8 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     for def in kir.struct_defs() {
         if let Some(error_msg) = &def.known_debt_parse_error {
             let span = def.known_debt_span.unwrap_or(def.span);
-            let severity = resolve_severity(KErrorCode::K0025, session.mode())
-                .unwrap_or(Severity::Error);
+            let severity =
+                resolve_severity(KErrorCode::K0025, session.mode()).unwrap_or(Severity::Error);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0025,
                 severity,
@@ -288,7 +312,12 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     // Emit diagnostics for #[kobo::relax] attribute validation errors/warnings [G5].
     // K0026 error path: structural validation errors use hardcoded Error (AC-19 exception).
     // K0026 warning path: use resolve_severity for consistency [BUG-06].
-    for RelaxAttrError { span, message, is_error } in kir.relax_attr_errors() {
+    for RelaxAttrError {
+        span,
+        message,
+        is_error,
+    } in kir.relax_attr_errors()
+    {
         let severity = if *is_error {
             Severity::Error
         } else {
@@ -305,8 +334,8 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     // Warn when #[kobo::relax] is used in script mode (has no effect).
     if session.mode().is_script() && !session.relaxed_fn_ranges.is_empty() {
         // Emit per-relaxed-fn advisory using the fn span itself.
-        let severity = resolve_severity(KErrorCode::K0026, session.mode())
-            .unwrap_or(Severity::Warning);
+        let severity =
+            resolve_severity(KErrorCode::K0026, session.mode()).unwrap_or(Severity::Warning);
         for &fn_span in &session.relaxed_fn_ranges.clone() {
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0026,
@@ -375,7 +404,10 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
             advisory_severity,
             DiagLabel::primary(fact.span, label_text),
             explanation,
-            DiagDecision("advisory only — no automatic fix; see `kobo debt` for migration guidance".to_owned()),
+            DiagDecision(
+                "advisory only — no automatic fix; see `kobo debt` for migration guidance"
+                    .to_owned(),
+            ),
         ));
     }
 
@@ -431,13 +463,17 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     // Build synthetic SpawnSites from bindings with needs_send=true.
     {
         let tf = kir.transform_facts();
-        let send_bindings: Vec<_> = tf.bindings.iter()
+        let send_bindings: Vec<_> = tf
+            .bindings
+            .iter()
             .filter(|b| b.shared_facts.needs_send)
             .map(|b| b.node)
             .collect();
         if !send_bindings.is_empty() {
             let synthetic_site = AnalysisSpawnSite {
-                span: tf.bindings.iter()
+                span: tf
+                    .bindings
+                    .iter()
                     .find(|b| b.shared_facts.needs_send)
                     .map(|b| b.span)
                     .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0))),
@@ -446,15 +482,18 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
             };
             let send_diags = analyze_send_violations(&[synthetic_site], tf, kir);
             for diag in &send_diags {
-                let severity = resolve_severity(KErrorCode::K0061, session.mode())
-                    .unwrap_or(Severity::Error);
+                let severity =
+                    resolve_severity(KErrorCode::K0061, session.mode()).unwrap_or(Severity::Error);
                 session.diagnostics.push(KDiagnostic::new(
                     KErrorCode::K0061,
                     severity,
-                    DiagLabel::primary(diag.spawn_span, format!(
-                        "future requires Send but `{}` uses {}",
-                        diag.binding_name, diag.wrapper_type
-                    )),
+                    DiagLabel::primary(
+                        diag.spawn_span,
+                        format!(
+                            "future requires Send but `{}` uses {}",
+                            diag.binding_name, diag.wrapper_type
+                        ),
+                    ),
                     format!(
                         "binding `{}` cannot cross thread boundary — {}\n   = {}",
                         diag.binding_name, diag.wrapper_type, diag.suggestion
@@ -469,8 +508,8 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     {
         let guard_violations = detect_guard_across_await(kir);
         for gv in &guard_violations {
-            let severity = resolve_severity(KErrorCode::K0064, session.mode())
-                .unwrap_or(Severity::Warning);
+            let severity =
+                resolve_severity(KErrorCode::K0064, session.mode()).unwrap_or(Severity::Warning);
             let label = format!(
                 "{:?} `{}` held across .await",
                 gv.guard_kind, gv.binding_name
@@ -485,7 +524,9 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
                 severity,
                 DiagLabel::primary(gv.guard_span, label),
                 explanation,
-                DiagDecision("drop the guard before .await or restructure with a block scope".to_owned()),
+                DiagDecision(
+                    "drop the guard before .await or restructure with a block scope".to_owned(),
+                ),
             ));
         }
     }
@@ -498,13 +539,19 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
             for cw in &cancel_warnings {
                 let severity = resolve_severity(KErrorCode::K0065, session.mode())
                     .unwrap_or(Severity::Warning);
-                let span = kobo_ir::KoboSpan::new(cw.source_offset as u32, (cw.source_offset + cw.method_name.len()) as u32, fid);
+                let span = kobo_ir::KoboSpan::new(
+                    cw.source_offset as u32,
+                    (cw.source_offset + cw.method_name.len()) as u32,
+                    fid,
+                );
                 cancel_diags.push(KDiagnostic::new(
                     KErrorCode::K0065,
                     severity,
                     DiagLabel::primary(span, format!("`.{}()` is not cancel-safe", cw.method_name)),
                     cw.suggestion.clone(),
-                    DiagDecision("move operation outside select or use a cancel-safe wrapper".to_owned()),
+                    DiagDecision(
+                        "move operation outside select or use a cancel-safe wrapper".to_owned(),
+                    ),
                 ));
             }
         }
@@ -526,14 +573,38 @@ fn resolve_solution(kir: &Kir) -> (SolverEvidence, SolveOutcome) {
 }
 
 /// Project non-Unique solver outcomes to K-code diagnostics (Phase 00/05).
-fn project_solver_diagnostics(
-    session: &mut CompileSession,
-    kir: &Kir,
-    outcome: &SolveOutcome,
-) {
+fn project_solver_diagnostics(session: &mut CompileSession, kir: &Kir, outcome: &SolveOutcome) {
     match outcome {
-        SolveOutcome::Unique(_) | SolveOutcome::MultiSolution(_) => {
-            // Unique and multi-solution are not errors.
+        SolveOutcome::Unique(_) => {}
+        SolveOutcome::MultiSolution(candidates) => {
+            if candidates.is_empty() {
+                return;
+            }
+            let first_node = candidates[0]
+                .solution
+                .iter()
+                .map(|(id, _)| id)
+                .min_by_key(|id| id.0);
+            let span = first_node
+                .and_then(|id| kir.get_node(id))
+                .map(|n| n.span)
+                .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
+            let severity =
+                resolve_severity(KErrorCode::K0083, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0083,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "ownership has {} valid solver candidate(s)",
+                        candidates.len()
+                    ),
+                ),
+                "solver found multiple valid ownership assignments; using the lowest-risk candidate for code generation"
+                    .to_owned(),
+                DiagDecision("run `kobo migrate --review` to inspect and lock a candidate".to_owned()),
+            ));
         }
         SolveOutcome::NoSolution(report) => {
             let span = report
@@ -547,7 +618,10 @@ fn project_solver_diagnostics(
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0080,
                 severity,
-                DiagLabel::primary(span, format!("ownership conflict: {}", report.conflict_reason)),
+                DiagLabel::primary(
+                    span,
+                    format!("ownership conflict: {}", report.conflict_reason),
+                ),
                 format!(
                     "solver found no valid ownership assignment for {} node(s)",
                     report.conflicting_nodes.len()
@@ -680,10 +754,8 @@ fn apply_extract_before_borrow_rewrites(
                     if let Some(paren_end) = find_balanced_paren(rest) {
                         let call_expr = &rest[..paren_end + 1];
                         let indent = &line[..line.len() - line.trim_start().len()];
-                        let extraction = format!(
-                            "{}let {} = {};",
-                            indent, site.temp_name, call_expr
-                        );
+                        let extraction =
+                            format!("{}let {} = {};", indent, site.temp_name, call_expr);
                         let replacement = line.replacen(call_expr, &site.temp_name, 1);
                         insertions.push((i, extraction, replacement));
                         break;
@@ -725,7 +797,10 @@ fn find_balanced_paren(s: &str) -> Option<usize> {
     None
 }
 
-fn inject_solver_evidence(mut source_map: KoboSourceMap, evidence: &SolverEvidence) -> KoboSourceMap {
+fn inject_solver_evidence(
+    mut source_map: KoboSourceMap,
+    evidence: &SolverEvidence,
+) -> KoboSourceMap {
     // Set top-level solver evidence.
     source_map.solver_evidence = Some(SolverEvidenceJson {
         outcome: evidence.outcome_name.clone(),
@@ -771,8 +846,8 @@ pub fn apply_lifetime_erasure(source: &str, mode: KoboMode) -> String {
 
 #[cfg(test)]
 mod tests {
-    use kobo_ir::KoboMode;
     use super::effective_mode;
+    use kobo_ir::KoboMode;
 
     /// S-26: CLI flag takes highest priority.
     #[test]
@@ -788,11 +863,7 @@ mod tests {
     /// S-26: File attribute overrides Kobo.toml when no CLI flag.
     #[test]
     fn file_overrides_config() {
-        let result = effective_mode(
-            None,
-            Some(KoboMode::Checked),
-            KoboMode::Script,
-        );
+        let result = effective_mode(None, Some(KoboMode::Checked), KoboMode::Script);
         assert_eq!(result, KoboMode::Checked);
     }
 
@@ -848,10 +919,9 @@ async fn main() {
 }
 "#;
         let mut config = crate::config::KoboConfig::default();
-        config.dependencies.insert(
-            "tokio".to_string(),
-            toml::Value::String("1".into()),
-        );
+        config
+            .dependencies
+            .insert("tokio".to_string(), toml::Value::String("1".into()));
         let output = crate::test_utils::compile_and_inspect_with_config(input, config);
         assert!(
             output.contains("#[tokio::main]"),

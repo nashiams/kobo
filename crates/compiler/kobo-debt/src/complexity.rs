@@ -16,10 +16,11 @@ pub fn classify_site(
 ) -> DebtComplexityTier {
     // --- Tier 3: P4 or unsolvable escape ---
     for fact in warn_facts {
-        if fact.node_id == site && !fact.suppressed {
-            if matches!(fact.pattern, WarnEarlyPattern::SelfReferentialStruct { .. }) {
-                return DebtComplexityTier::Tier3;
-            }
+        if fact.node_id == site
+            && !fact.suppressed
+            && matches!(fact.pattern, WarnEarlyPattern::SelfReferentialStruct { .. })
+        {
+            return DebtComplexityTier::Tier3;
         }
     }
 

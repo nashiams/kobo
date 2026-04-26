@@ -111,16 +111,12 @@ impl DecisionsStore {
 
     /// Insert or update a decision.
     pub fn set(&mut self, decision: PersistedDecision) {
-        self.entries
-            .insert(decision.binding_name.clone(), decision);
+        self.entries.insert(decision.binding_name.clone(), decision);
     }
 
     /// Check if a binding is locked.
     pub fn is_locked(&self, name: &str) -> bool {
-        self.entries
-            .get(name)
-            .map(|d| d.locked)
-            .unwrap_or(false)
+        self.entries.get(name).map(|d| d.locked).unwrap_or(false)
     }
 
     /// Iterate all entries.

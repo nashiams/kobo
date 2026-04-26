@@ -15,11 +15,11 @@ use syn::parse_quote;
 use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
 use super::plan::{AnnotationNote, LoweringPlan};
-use super::scope::{ScopeStack, type_name_from_syn};
+use super::scope::{type_name_from_syn, ScopeStack};
 use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
-use crate::CodegenOptions;
 use crate::executor::executor_attribute;
+use crate::CodegenOptions;
 
 pub(crate) struct Lowerer<'a> {
     pub(super) ast: &'a KoboFile,
@@ -87,12 +87,24 @@ impl<'a> Lowerer<'a> {
                 // P5: check if this is an @strict fn (by span matching against ast.strict_fns()).
                 use syn::spanned::Spanned;
                 let fn_span = self.ast.span_from_syn(function.span());
-                if let Some(kfn) = self.ast.strict_fns().iter().find(|f| f.span == fn_span).cloned() {
+                if let Some(kfn) = self
+                    .ast
+                    .strict_fns()
+                    .iter()
+                    .find(|f| f.span == fn_span)
+                    .cloned()
+                {
                     let fn_body_span = self.ast.span_from_syn(function.block.span());
-                    let cap = self.kir.strict_capture_sets().iter()
+                    let cap = self
+                        .kir
+                        .strict_capture_sets()
+                        .iter()
                         .find(|cs| cs.block_span == fn_body_span)
                         .cloned();
-                    let mode = self.kir.strict_fn_modes().get(&kfn.span)
+                    let mode = self
+                        .kir
+                        .strict_fn_modes()
+                        .get(&kfn.span)
                         .copied()
                         .unwrap_or(kobo_ir::StrictFnMode::Full);
                     let ts = super::strict::lower_strict_fn(
@@ -149,17 +161,15 @@ impl<'a> Lowerer<'a> {
         util::strip_kobo_attrs(&mut item_impl.attrs);
 
         // S-20: Detect split-borrow sites and apply destructuring.
-        let items_snapshot: Vec<syn::Item> =
-            vec![syn::Item::Impl(item_impl.clone())];
-        let split_sites =
-            kobo_analysis::split_borrow::detect_split_borrow_sites(&items_snapshot);
+        let items_snapshot: Vec<syn::Item> = vec![syn::Item::Impl(item_impl.clone())];
+        let split_sites = kobo_analysis::split_borrow::detect_split_borrow_sites(&items_snapshot);
 
         for impl_item in &mut item_impl.items {
             if let syn::ImplItem::Fn(method) = impl_item {
                 // Apply split-borrow rewrite if a site was detected for this method.
                 if let Some(site) = split_sites
                     .iter()
-                    .find(|s| s.method_name == method.sig.ident.to_string())
+                    .find(|s| method.sig.ident == s.method_name)
                 {
                     split_borrow::generate_split_borrow(method, site);
                 }
@@ -219,7 +229,11 @@ impl<'a> Lowerer<'a> {
             // Make the function async.
             function.sig.asyncness = Some(syn::token::Async::default());
             // Inject the interval loop wrapping the original body.
-            let interval_ms = if rate > 0 { 1000u64 / rate as u64 } else { 1000u64 };
+            let interval_ms = if rate > 0 {
+                1000u64 / rate as u64
+            } else {
+                1000u64
+            };
             let original_stmts = std::mem::take(&mut function.block.stmts);
             let preamble: Vec<syn::Stmt> = syn::parse_quote! {
                 use std::time::Duration;
@@ -239,9 +253,7 @@ impl<'a> Lowerer<'a> {
         // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
         let is_handler = function.attrs.iter().any(|attr| {
             let segments: Vec<_> = attr.path().segments.iter().collect();
-            segments.len() == 2
-                && segments[0].ident == "kobo"
-                && segments[1].ident == "handler"
+            segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
         });
         if is_handler {
             // S-56: Per-request isolation — clone Arc params into locals, then wrap in catch_unwind.
@@ -354,11 +366,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn lower_nested_block(
-        &mut self,
-        block: &mut syn::Block,
-        scopes: &mut ScopeStack,
-    ) {
+    pub(super) fn lower_nested_block(&mut self, block: &mut syn::Block, scopes: &mut ScopeStack) {
         scopes.push();
         self.lower_block_statements(block, scopes);
         scopes.pop();
@@ -374,7 +382,9 @@ impl<'a> Lowerer<'a> {
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
                 let use_spawn_local = self.any_captured_non_send(&captured);
-                if let Some(spawn_expr) = spawn::lower_spawn_macro_with_strategy(&stmt_macro.mac, use_spawn_local) {
+                if let Some(spawn_expr) =
+                    spawn::lower_spawn_macro_with_strategy(&stmt_macro.mac, use_spawn_local)
+                {
                     let semi = stmt_macro.semi_token;
                     if captured.is_empty() {
                         *stmt = syn::Stmt::Expr(spawn_expr, semi);
@@ -385,8 +395,10 @@ impl<'a> Lowerer<'a> {
                             let action = clone_inject::capture_action(cap);
                             if action == clone_inject::CaptureAction::Clone {
                                 let clone_name = clone_inject::clone_var_name(&cap.name);
-                                let clone_ident = syn::Ident::new(&clone_name, proc_macro2::Span::call_site());
-                                let orig_ident = syn::Ident::new(&cap.name, proc_macro2::Span::call_site());
+                                let clone_ident =
+                                    syn::Ident::new(&clone_name, proc_macro2::Span::call_site());
+                                let orig_ident =
+                                    syn::Ident::new(&cap.name, proc_macro2::Span::call_site());
                                 let clone_stmt: syn::Stmt = parse_quote! {
                                     let #clone_ident = #orig_ident.clone();
                                 };
@@ -554,7 +566,10 @@ fn collect_spawn_captures(
 }
 
 /// Recursively collect all identifiers from a token stream.
-fn collect_idents_from_tokens(tokens: &proc_macro2::TokenStream, out: &mut std::collections::HashSet<String>) {
+fn collect_idents_from_tokens(
+    tokens: &proc_macro2::TokenStream,
+    out: &mut std::collections::HashSet<String>,
+) {
     for token in tokens.clone() {
         match token {
             proc_macro2::TokenTree::Ident(ident) => {
@@ -575,11 +590,44 @@ fn collect_idents_from_tokens(tokens: &proc_macro2::TokenStream, out: &mut std::
 fn is_rust_keyword(s: &str) -> bool {
     matches!(
         s,
-        "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "dyn" | "else"
-        | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop"
-        | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self"
-        | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe" | "use"
-        | "where" | "while" | "yield"
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "yield"
     )
 }
 
@@ -597,8 +645,12 @@ mod tests {
 
     #[test]
     fn executor_attr_detector_matches_supported_executors() {
-        assert!(is_executor_main_attr(&parsed_executor_attr(ExecutorChoice::Tokio)));
-        assert!(is_executor_main_attr(&parsed_executor_attr(ExecutorChoice::AsyncStd)));
+        assert!(is_executor_main_attr(&parsed_executor_attr(
+            ExecutorChoice::Tokio
+        )));
+        assert!(is_executor_main_attr(&parsed_executor_attr(
+            ExecutorChoice::AsyncStd
+        )));
     }
 
     #[test]

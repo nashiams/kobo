@@ -334,7 +334,10 @@ mod tests {
     fn dead_original_assignment_uses_move() {
         let usage = BindingUsage {
             declaration: span(0),
-            uses: vec![UseEvent::Moved { span: span(10), scope_depth: 0 }],
+            uses: vec![UseEvent::Moved {
+                span: span(10),
+                scope_depth: 0,
+            }],
         };
         let shared_facts = SharedBindingFacts::default();
         let candidate = CloneElisionCandidate {
@@ -353,7 +356,10 @@ mod tests {
         let usage = BindingUsage {
             declaration: span(0),
             uses: vec![
-                UseEvent::Moved { span: span(10), scope_depth: 0 },
+                UseEvent::Moved {
+                    span: span(10),
+                    scope_depth: 0,
+                },
                 UseEvent::ReadOnly { span: span(20) },
             ],
         };
@@ -379,7 +385,10 @@ mod tests {
     fn live_borrow_at_move_forces_conservative_clone() {
         let usage = BindingUsage {
             declaration: span(0),
-            uses: vec![UseEvent::Moved { span: span(10), scope_depth: 0 }],
+            uses: vec![UseEvent::Moved {
+                span: span(10),
+                scope_depth: 0,
+            }],
         };
         let shared_facts = SharedBindingFacts {
             live_borrow_at_move: true,
@@ -406,7 +415,10 @@ mod tests {
     fn bindings_without_a_candidate_do_not_produce_clone_elision_decisions() {
         let usage = BindingUsage {
             declaration: span(0),
-            uses: vec![UseEvent::Moved { span: span(10), scope_depth: 0 }],
+            uses: vec![UseEvent::Moved {
+                span: span(10),
+                scope_depth: 0,
+            }],
         };
 
         assert_eq!(
@@ -454,7 +466,10 @@ fn main() {
         let usage = BindingUsage {
             declaration: span(0),
             uses: vec![
-                UseEvent::Moved { span: span(10), scope_depth: 0 },
+                UseEvent::Moved {
+                    span: span(10),
+                    scope_depth: 0,
+                },
                 UseEvent::ReadOnly { span: span(20) },
             ],
         };

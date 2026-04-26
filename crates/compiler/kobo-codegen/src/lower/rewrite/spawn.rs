@@ -9,7 +9,6 @@
 ///
 /// Clone injection (Phase 3) will insert `.clone()` calls for shared bindings
 /// before the `tokio::spawn` call. This phase only generates the spawn structure.
-
 use syn::parse_quote;
 
 /// Name of the marker macro emitted by the spawn preprocessor.
@@ -26,6 +25,7 @@ pub(crate) fn is_spawn_block_macro(mac: &syn::Macro) -> bool {
 /// Lower a `__kobo_spawn_block!({ body })` macro into `tokio::spawn(async move { body })`.
 ///
 /// Returns `Some(expr)` if the macro was a spawn block, `None` otherwise.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn lower_spawn_macro(mac: &syn::Macro) -> Option<syn::Expr> {
     lower_spawn_macro_with_strategy(mac, false)
 }
@@ -34,7 +34,10 @@ pub(crate) fn lower_spawn_macro(mac: &syn::Macro) -> Option<syn::Expr> {
 ///
 /// When `use_spawn_local` is true, generates `tokio::task::spawn_local(async move { body })`
 /// instead of `tokio::spawn(async move { body })`.
-pub(crate) fn lower_spawn_macro_with_strategy(mac: &syn::Macro, use_spawn_local: bool) -> Option<syn::Expr> {
+pub(crate) fn lower_spawn_macro_with_strategy(
+    mac: &syn::Macro,
+    use_spawn_local: bool,
+) -> Option<syn::Expr> {
     if !is_spawn_block_macro(mac) {
         return None;
     }

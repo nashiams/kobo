@@ -24,7 +24,11 @@ pub(crate) fn choose_tiers(facts: &TransformFacts, kir: &mut kobo_ir::Kir) -> Ve
     let send_reqs = compute_send_requirements(kir);
 
     for binding in facts.iter_bindings() {
-        decisions.push(choose_tier_for_binding(binding, &freeze_rotate_set, &send_reqs));
+        decisions.push(choose_tier_for_binding(
+            binding,
+            &freeze_rotate_set,
+            &send_reqs,
+        ));
     }
 
     let mut seen = HashSet::new();
@@ -91,9 +95,9 @@ fn choose_tier_for_binding(
     // S-1: Local-only bindings skip Rc/RefCell wrapping.
     // Mutation on a non-shared, non-escaping local is just `let mut`.
     // Exception: async + box_reason needs special handling (Box is deferred in async).
-    if !binding.shared_facts.needs_sharing
-        && !binding.shared_facts.has_escape
-        && !(binding.is_async && binding.shared_facts.box_reason.is_some())
+    if !(binding.shared_facts.needs_sharing
+        || binding.shared_facts.has_escape
+        || binding.is_async && binding.shared_facts.box_reason.is_some())
     {
         let tier = if binding.shared_facts.box_reason.is_some() {
             OwnershipTier::BoxOwned
@@ -500,7 +504,11 @@ mod tests {
 
     #[test]
     fn local_only_bindings_choose_plain_owned() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts::default()), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts::default()),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::PlainOwned);
         assert_eq!(decision.reason, TierReason::LocalOnly);
@@ -508,21 +516,29 @@ mod tests {
 
     #[test]
     fn box_reason_chooses_box_owned_before_shared_wrappers() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            box_reason: Some(BoxReason::StackSizeHeuristic),
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                box_reason: Some(BoxReason::StackSizeHeuristic),
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::BoxOwned);
     }
 
     #[test]
     fn return_escape_chooses_rc_shared_with_deferred_reason() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            escape_floor: Some(EscapeKind::ReturnedFromFunction),
-            has_escape: true,
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                escape_floor: Some(EscapeKind::ReturnedFromFunction),
+                has_escape: true,
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::RcShared);
         assert_eq!(
@@ -533,22 +549,30 @@ mod tests {
 
     #[test]
     fn read_only_sharing_chooses_rc_shared() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            needs_sharing: true,
-            read_sites: 2,
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                needs_sharing: true,
+                read_sites: 2,
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::RcShared);
     }
 
     #[test]
     fn opaque_call_escape_stays_plain_owned_until_boundary_rewrite_exists() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            escape_floor: Some(EscapeKind::PassedToOpaqueCall),
-            has_escape: true,
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                escape_floor: Some(EscapeKind::PassedToOpaqueCall),
+                has_escape: true,
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::PlainOwned);
         assert_eq!(decision.reason, TierReason::LocalOnly);
@@ -556,90 +580,118 @@ mod tests {
 
     #[test]
     fn send_required_sharing_chooses_arc_shared() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            needs_send: true,
-            needs_sharing: true,
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                needs_send: true,
+                needs_sharing: true,
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::ArcShared);
     }
 
     #[test]
     fn mutable_floor_chooses_rc_refcell() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            mutation_required: true,
-            needs_mutable_wrapper: true,
-            needs_sharing: true,
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                mutation_required: true,
+                needs_mutable_wrapper: true,
+                needs_sharing: true,
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::RcMutShared);
     }
 
     #[test]
     fn mutable_borrow_only_still_chooses_rc_refcell() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            mutation_required: true,
-            needs_mutable_wrapper: true,
-            needs_sharing: true,
-            borrow_sites: vec![KoboSpan::new(0, 1, FileId(0))],
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                mutation_required: true,
+                needs_mutable_wrapper: true,
+                needs_sharing: true,
+                borrow_sites: vec![KoboSpan::new(0, 1, FileId(0))],
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::RcMutShared);
     }
 
     #[test]
     fn two_immutable_borrows_choose_rc_shared() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            needs_sharing: true,
-            borrow_sites: vec![
-                KoboSpan::new(0, 1, FileId(0)),
-                KoboSpan::new(2, 3, FileId(0)),
-            ],
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                needs_sharing: true,
+                borrow_sites: vec![
+                    KoboSpan::new(0, 1, FileId(0)),
+                    KoboSpan::new(2, 3, FileId(0)),
+                ],
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::RcShared);
     }
 
     #[test]
     fn immutable_and_mutable_borrow_choose_rc_refcell() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            needs_sharing: true,
-            mutation_required: true,
-            needs_mutable_wrapper: true,
-            borrow_sites: vec![
-                KoboSpan::new(0, 1, FileId(0)),
-                KoboSpan::new(2, 3, FileId(0)),
-            ],
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                needs_sharing: true,
+                mutation_required: true,
+                needs_mutable_wrapper: true,
+                borrow_sites: vec![
+                    KoboSpan::new(0, 1, FileId(0)),
+                    KoboSpan::new(2, 3, FileId(0)),
+                ],
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::RcMutShared);
     }
 
     #[test]
     fn single_immutable_borrow_stays_plain_owned() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            borrow_sites: vec![KoboSpan::new(0, 1, FileId(0))],
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                borrow_sites: vec![KoboSpan::new(0, 1, FileId(0))],
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::PlainOwned);
     }
 
     #[test]
     fn read_only_then_mutable_prefers_rc_refcell() {
-        let decision = choose_tier_for_binding(&binding(SharedBindingFacts {
-            needs_sharing: true,
-            read_sites: 1,
-            mutation_required: true,
-            mutable_sites: 1,
-            needs_mutable_wrapper: true,
-            ..Default::default()
-        }), &empty_set(), &empty_send_reqs());
+        let decision = choose_tier_for_binding(
+            &binding(SharedBindingFacts {
+                needs_sharing: true,
+                read_sites: 1,
+                mutation_required: true,
+                mutable_sites: 1,
+                needs_mutable_wrapper: true,
+                ..Default::default()
+            }),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
 
         assert_eq!(decision.tier, OwnershipTier::RcMutShared);
     }
@@ -675,7 +727,11 @@ mod tests {
             read_sites: 2,
             ..Default::default()
         };
-        let left = choose_tier_for_binding(&binding(shared_facts.clone()), &empty_set(), &empty_send_reqs());
+        let left = choose_tier_for_binding(
+            &binding(shared_facts.clone()),
+            &empty_set(),
+            &empty_send_reqs(),
+        );
         let mut right_binding = binding(shared_facts);
         right_binding.binding_name = "other".to_owned();
         let right = choose_tier_for_binding(&right_binding, &empty_set(), &empty_send_reqs());
@@ -941,8 +997,8 @@ mod tests {
         // ArcMutShared must never generate Mutex in output
         let tier = OwnershipTier::ArcMutShared;
         assert_ne!(tier, OwnershipTier::PlainOwned); // basic sanity
-        // The label mapping in send_diagnostic confirms it maps to "Arc<RwLock<T>>"
-        // Here we verify the tier exists and is distinct.
+                                                     // The label mapping in send_diagnostic confirms it maps to "Arc<RwLock<T>>"
+                                                     // Here we verify the tier exists and is distinct.
         assert_ne!(tier, OwnershipTier::ArcShared);
     }
 
@@ -963,8 +1019,14 @@ mod tests {
     #[test]
     fn ladder_arc_mut_before_rc_mut() {
         use super::LADDER;
-        let arc_pos = LADDER.iter().position(|t| *t == OwnershipTier::ArcMutShared).unwrap();
-        let rc_pos = LADDER.iter().position(|t| *t == OwnershipTier::RcMutShared).unwrap();
+        let arc_pos = LADDER
+            .iter()
+            .position(|t| *t == OwnershipTier::ArcMutShared)
+            .unwrap();
+        let rc_pos = LADDER
+            .iter()
+            .position(|t| *t == OwnershipTier::RcMutShared)
+            .unwrap();
         assert!(
             arc_pos < rc_pos,
             "ArcMutShared ({arc_pos}) must be before RcMutShared ({rc_pos})"
@@ -1083,9 +1145,15 @@ mod tests {
         // Freeze-rotate may or may not change the tier depending on implementation,
         // but the function should not panic with it set.
         assert!(
-            [OwnershipTier::PlainOwned, OwnershipTier::BoxOwned, OwnershipTier::RcShared,
-             OwnershipTier::ArcShared, OwnershipTier::ArcMutShared, OwnershipTier::RcMutShared]
-                .contains(&decision_frozen.tier),
+            [
+                OwnershipTier::PlainOwned,
+                OwnershipTier::BoxOwned,
+                OwnershipTier::RcShared,
+                OwnershipTier::ArcShared,
+                OwnershipTier::ArcMutShared,
+                OwnershipTier::RcMutShared
+            ]
+            .contains(&decision_frozen.tier),
             "freeze-rotate decision should be a valid tier"
         );
         let _ = decision_normal; // just ensure no panic

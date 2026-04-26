@@ -1,12 +1,12 @@
-/// S-57: `sync { }` / `async { }` bridge block preprocessing.
-///
-/// Rewrites bridge blocks in Kobo source before syn parse:
-/// - `sync { body }` inside an async fn → `tokio::task::spawn_blocking(move || { body }).await`
-/// - `async { body }` inside a sync fn → `tokio::runtime::Handle::current().block_on(async { body })`
-///
-/// These dissolve function-coloring friction by letting developers mix
-/// sync and async code naturally. The preprocessor detects context (async/sync fn)
-/// and emits the appropriate tokio bridge call.
+//! S-57: `sync { }` / `async { }` bridge block preprocessing.
+//!
+//! Rewrites bridge blocks in Kobo source before syn parse:
+//! - `sync { body }` inside an async fn → `tokio::task::spawn_blocking(move || { body }).await`
+//! - `async { body }` inside a sync fn → `tokio::runtime::Handle::current().block_on(async { body })`
+//!
+//! These dissolve function-coloring friction by letting developers mix
+//! sync and async code naturally. The preprocessor detects context (async/sync fn)
+//! and emits the appropriate tokio bridge call.
 
 /// Information about a bridge block rewrite.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,29 +58,30 @@ pub fn preprocess_bridge_blocks(source: &str) -> (String, Vec<BridgeBlockInfo>) 
         }
 
         // Check for `sync` keyword followed by `{`
-        if pos + 4 <= len && source.is_char_boundary(pos + 4) && &source[pos..pos + 4] == "sync" {
-            if (pos == 0 || !is_ident_byte(bytes[pos - 1]))
-                && (pos + 4 >= len || !is_ident_byte(bytes[pos + 4]))
-            {
-                let mut scan = pos + 4;
-                while scan < len && bytes[scan].is_ascii_whitespace() {
-                    scan += 1;
-                }
-                if scan < len && bytes[scan] == b'{' {
-                    if let Some(close) = find_matching_brace(source, scan) {
-                        // Only rewrite if inside an async fn
-                        if is_inside_ranges(pos, &async_fn_ranges) {
-                            let body = &source[scan + 1..close];
-                            result.push_str("tokio::task::spawn_blocking(move || {");
-                            result.push_str(body);
-                            result.push_str("}).await");
-                            infos.push(BridgeBlockInfo {
-                                offset: pos,
-                                kind: BridgeKind::SyncInAsync,
-                            });
-                            pos = close + 1;
-                            continue;
-                        }
+        if pos + 4 <= len
+            && source.is_char_boundary(pos + 4)
+            && &source[pos..pos + 4] == "sync"
+            && (pos == 0 || !is_ident_byte(bytes[pos - 1]))
+            && (pos + 4 >= len || !is_ident_byte(bytes[pos + 4]))
+        {
+            let mut scan = pos + 4;
+            while scan < len && bytes[scan].is_ascii_whitespace() {
+                scan += 1;
+            }
+            if scan < len && bytes[scan] == b'{' {
+                if let Some(close) = find_matching_brace(source, scan) {
+                    // Only rewrite if inside an async fn
+                    if is_inside_ranges(pos, &async_fn_ranges) {
+                        let body = &source[scan + 1..close];
+                        result.push_str("tokio::task::spawn_blocking(move || {");
+                        result.push_str(body);
+                        result.push_str("}).await");
+                        infos.push(BridgeBlockInfo {
+                            offset: pos,
+                            kind: BridgeKind::SyncInAsync,
+                        });
+                        pos = close + 1;
+                        continue;
                     }
                 }
             }
@@ -88,46 +89,47 @@ pub fn preprocess_bridge_blocks(source: &str) -> (String, Vec<BridgeBlockInfo>) 
 
         // Check for `async` keyword followed by `{` in a sync fn context
         // Be careful: `async fn`, `async move {`, `async {` inside async fn are NOT bridges
-        if pos + 5 <= len && source.is_char_boundary(pos + 5) && &source[pos..pos + 5] == "async" {
-            if (pos == 0 || !is_ident_byte(bytes[pos - 1]))
-                && (pos + 5 >= len || !is_ident_byte(bytes[pos + 5]))
-            {
-                let mut scan = pos + 5;
-                while scan < len && bytes[scan].is_ascii_whitespace() {
-                    scan += 1;
-                }
+        if pos + 5 <= len
+            && source.is_char_boundary(pos + 5)
+            && &source[pos..pos + 5] == "async"
+            && (pos == 0 || !is_ident_byte(bytes[pos - 1]))
+            && (pos + 5 >= len || !is_ident_byte(bytes[pos + 5]))
+        {
+            let mut scan = pos + 5;
+            while scan < len && bytes[scan].is_ascii_whitespace() {
+                scan += 1;
+            }
 
-                // Skip `async fn` — that's a function definition, not a bridge
-                if scan + 2 <= len && &source[scan..scan + 2] == "fn" {
-                    result.push(bytes[pos] as char);
-                    pos += 1;
-                    continue;
-                }
+            // Skip `async fn` — that's a function definition, not a bridge
+            if scan + 2 <= len && &source[scan..scan + 2] == "fn" {
+                result.push(bytes[pos] as char);
+                pos += 1;
+                continue;
+            }
 
-                // Skip `async move` — leave as-is
-                if scan + 4 <= len && &source[scan..scan + 4] == "move" {
-                    result.push(bytes[pos] as char);
-                    pos += 1;
-                    continue;
-                }
+            // Skip `async move` — leave as-is
+            if scan + 4 <= len && &source[scan..scan + 4] == "move" {
+                result.push(bytes[pos] as char);
+                pos += 1;
+                continue;
+            }
 
-                if scan < len && bytes[scan] == b'{' {
-                    if let Some(close) = find_matching_brace(source, scan) {
-                        // Only rewrite if inside a sync fn (not inside an async fn)
-                        if is_inside_ranges(pos, &sync_fn_ranges)
-                            && !is_inside_ranges(pos, &async_fn_ranges)
-                        {
-                            let body = &source[scan + 1..close];
-                            result.push_str("tokio::runtime::Handle::current().block_on(async {");
-                            result.push_str(body);
-                            result.push_str("})");
-                            infos.push(BridgeBlockInfo {
-                                offset: pos,
-                                kind: BridgeKind::AsyncInSync,
-                            });
-                            pos = close + 1;
-                            continue;
-                        }
+            if scan < len && bytes[scan] == b'{' {
+                if let Some(close) = find_matching_brace(source, scan) {
+                    // Only rewrite if inside a sync fn (not inside an async fn)
+                    if is_inside_ranges(pos, &sync_fn_ranges)
+                        && !is_inside_ranges(pos, &async_fn_ranges)
+                    {
+                        let body = &source[scan + 1..close];
+                        result.push_str("tokio::runtime::Handle::current().block_on(async {");
+                        result.push_str(body);
+                        result.push_str("})");
+                        infos.push(BridgeBlockInfo {
+                            offset: pos,
+                            kind: BridgeKind::AsyncInSync,
+                        });
+                        pos = close + 1;
+                        continue;
                     }
                 }
             }
@@ -176,8 +178,12 @@ fn find_fn_ranges(source: &str, want_async: bool) -> Vec<FnRange> {
             // Verify it's not `async fn` when we want sync
             if !want_async && pos >= 6 {
                 let start = pos.saturating_sub(6);
-                let start = if source.is_char_boundary(start) { start } else {
-                    (start..pos).find(|&i| source.is_char_boundary(i)).unwrap_or(pos)
+                let start = if source.is_char_boundary(start) {
+                    start
+                } else {
+                    (start..pos)
+                        .find(|&i| source.is_char_boundary(i))
+                        .unwrap_or(pos)
                 };
                 let before = &source[start..pos];
                 if before.trim_end().ends_with("async") {
@@ -206,7 +212,9 @@ fn find_fn_ranges(source: &str, want_async: bool) -> Vec<FnRange> {
 }
 
 fn is_inside_ranges(offset: usize, ranges: &[FnRange]) -> bool {
-    ranges.iter().any(|&(start, end)| offset > start && offset < end)
+    ranges
+        .iter()
+        .any(|&(start, end)| offset > start && offset < end)
 }
 
 fn is_ident_byte(b: u8) -> bool {

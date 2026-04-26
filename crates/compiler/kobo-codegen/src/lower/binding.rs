@@ -35,21 +35,21 @@ pub(crate) fn apply_tier_to_local(
     match tier {
         OwnershipTier::BoxOwned if !already_wrapped => {
             let expr = (*init.expr).clone();
-            init.expr = Box::new(parse_quote!(Box::new(#expr)));
+            *init.expr = parse_quote!(Box::new(#expr));
         }
         OwnershipTier::RcShared if !already_wrapped => {
             let expr = (*init.expr).clone();
-            init.expr = Box::new(parse_quote!(Rc::new(#expr)));
+            *init.expr = parse_quote!(Rc::new(#expr));
         }
         OwnershipTier::ArcShared if !already_wrapped => {
             let expr = (*init.expr).clone();
-            init.expr = Box::new(parse_quote!(Arc::new(#expr)));
+            *init.expr = parse_quote!(Arc::new(#expr));
         }
         OwnershipTier::ArcMutShared if !already_wrapped => {
             // Phase 11: Arc<tokio::sync::RwLock<T>> for async mutable sharing.
             // HARD RULE: never Arc<std::sync::Mutex<T>> — use tokio::sync::RwLock.
             let expr = (*init.expr).clone();
-            init.expr = Box::new(parse_quote!(Arc::new(tokio::sync::RwLock::new(#expr))));
+            *init.expr = parse_quote!(Arc::new(tokio::sync::RwLock::new(#expr)));
         }
         OwnershipTier::RcMutShared if !already_wrapped => {
             let expr = (*init.expr).clone();
@@ -57,16 +57,16 @@ pub(crate) fn apply_tier_to_local(
                 // DiagOwner wraps the Rc<RefCell<T>> for borrow instrumentation.
                 // The source location literal is baked at codegen time — it never
                 // allocates at runtime (it is a &'static str).
-                init.expr = Box::new(parse_quote!(
+                *init.expr = parse_quote!(
                     DiagOwner::new(Rc::new(RefCell::new(#expr)), #loc)
-                ));
+                );
             } else {
-                init.expr = Box::new(parse_quote!(Rc::new(RefCell::new(#expr))));
+                *init.expr = parse_quote!(Rc::new(RefCell::new(#expr)));
             }
         }
         OwnershipTier::Scoped => {
             let expr = (*init.expr).clone();
-            init.expr = Box::new(parse_quote!(ScopedHandle::new(#expr)));
+            *init.expr = parse_quote!(ScopedHandle::new(#expr));
         }
         _ => {}
     }
@@ -74,7 +74,7 @@ pub(crate) fn apply_tier_to_local(
 
 pub(crate) fn apply_tier_to_fn_arg_type(argument: &mut syn::PatType, tier: OwnershipTier) {
     let original_ty = (*argument.ty).clone();
-    argument.ty = Box::new(wrap_owned_type(original_ty, tier));
+    *argument.ty = wrap_owned_type(original_ty, tier);
 }
 
 pub(crate) fn binding_tier_from_expr(
@@ -152,7 +152,7 @@ fn apply_tier_to_pat_type(pat: &mut syn::Pat, tier: OwnershipTier) {
     };
 
     let original_ty = (*typed.ty).clone();
-    typed.ty = Box::new(wrap_owned_type(original_ty, tier));
+    *typed.ty = wrap_owned_type(original_ty, tier);
 }
 
 fn wrap_owned_type(original_ty: syn::Type, tier: OwnershipTier) -> syn::Type {
@@ -219,7 +219,13 @@ mod tests {
         let init: syn::Expr = parse_quote!(value);
         let mut local = make_local(init);
 
-        apply_tier_to_local(&mut local, OwnershipTier::RcMutShared, false, Some("test.kobo:5"), false);
+        apply_tier_to_local(
+            &mut local,
+            OwnershipTier::RcMutShared,
+            false,
+            Some("test.kobo:5"),
+            false,
+        );
 
         let output = quote::quote!(#local).to_string();
         assert!(

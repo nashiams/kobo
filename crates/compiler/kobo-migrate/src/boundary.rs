@@ -1,3 +1,4 @@
+use kobo_ir::{KirNodeId, KoboSpan};
 /// Detect crate boundaries where migration must stop (K0090).
 ///
 /// K0090 fires when a binding is passed to an external crate function
@@ -5,9 +6,7 @@
 ///
 /// Example:
 ///   external_crate::process(&data)  — migration cannot change external_crate signature
-
 use std::collections::HashMap;
-use kobo_ir::{KirNodeId, KoboSpan};
 
 /// An external crate call site.
 #[derive(Clone, Debug)]
@@ -48,10 +47,7 @@ pub fn detect_crate_boundaries_with_names(
         }
 
         for binding_id in &call.passed_bindings {
-            let binding_name = binding_names
-                .get(binding_id)
-                .cloned()
-                .unwrap_or_default();
+            let binding_name = binding_names.get(binding_id).cloned().unwrap_or_default();
             violations.push(BoundaryViolation {
                 binding_id: *binding_id,
                 binding_name,
@@ -226,7 +222,10 @@ mod tests {
             passed_bindings: vec![KirNodeId(5)],
         }];
         let violations = detect_crate_boundaries(&calls);
-        assert!(!violations.is_empty(), "external crate 'rand' must be flagged");
+        assert!(
+            !violations.is_empty(),
+            "external crate 'rand' must be flagged"
+        );
     }
 
     /// Binding name populated from map.

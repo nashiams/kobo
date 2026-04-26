@@ -13,7 +13,9 @@ pub fn explain_decision(decision: &ClassifiedDecision) -> String {
     let class_desc = match decision.class {
         DecisionClass::Greedy => "decided by the greedy pass (simple analysis)",
         DecisionClass::LatticeUnique => "decided by the lattice solver (constraint propagation)",
-        DecisionClass::BacktrackResolved => "decided by backtracking search (explored alternatives)",
+        DecisionClass::BacktrackResolved => {
+            "decided by backtracking search (explored alternatives)"
+        }
         DecisionClass::Conflict => "CONFLICT — the solver could not find a valid ownership tier",
         DecisionClass::BudgetCapped => "BUDGET EXCEEDED — analysis was cut short",
         DecisionClass::BoundaryStopped => "BOUNDARY — depends on external crate, cannot infer",
@@ -27,7 +29,11 @@ pub fn explain_decision(decision: &ClassifiedDecision) -> String {
 
     format!(
         "`{}` → {} ({}). {} [{}]",
-        decision.binding_name, tier_desc, decision.tier_debug(), class_desc, confidence_desc
+        decision.binding_name,
+        tier_desc,
+        decision.tier_debug(),
+        class_desc,
+        confidence_desc
     )
 }
 

@@ -9,7 +9,6 @@
 /// 6. Mutably shared >2 sites, conflict constraints → K0080
 ///
 /// The greedy pass does NOT backtrack. Each binding is resolved independently.
-
 use std::time::Instant;
 
 use kobo_errors::KErrorCode;
@@ -187,7 +186,10 @@ fn resolve_single_binding(binding: &TransformBindingFacts) -> SingleResult {
     // Rule 2: Read-only shared.
     if sf.needs_sharing && !sf.needs_mutable_wrapper {
         if sf.needs_send {
-            return SingleResult::Resolved(OwnershipTier::ArcShared, TierReason::SendRequiredShared);
+            return SingleResult::Resolved(
+                OwnershipTier::ArcShared,
+                TierReason::SendRequiredShared,
+            );
         }
         return SingleResult::Resolved(
             OwnershipTier::RcShared,
@@ -222,7 +224,10 @@ fn resolve_single_binding(binding: &TransformBindingFacts) -> SingleResult {
     // Escape but no sharing: needs box or remains unresolved.
     if sf.has_escape && sf.box_reason.is_some() {
         if let Some(box_reason) = sf.box_reason {
-            return SingleResult::Resolved(OwnershipTier::BoxOwned, TierReason::HeapStable(box_reason));
+            return SingleResult::Resolved(
+                OwnershipTier::BoxOwned,
+                TierReason::HeapStable(box_reason),
+            );
         }
     }
 
@@ -307,7 +312,11 @@ mod tests {
                 mutation_required: needs_mutable,
                 escape_floor: None,
                 borrow_sites: Vec::new(),
-                read_sites: if needs_sharing && !needs_mutable { 2 } else { 0 },
+                read_sites: if needs_sharing && !needs_mutable {
+                    2
+                } else {
+                    0
+                },
                 mutable_sites,
                 has_escape: false,
                 needs_sharing,
@@ -379,7 +388,10 @@ mod tests {
         let kir = make_kir_with_bindings(vec![binding]);
         let result = greedy_resolve(&kir, &GreedyConfig::default());
         assert_eq!(result.stats.k0080_count, 1);
-        let diag = result.diagnostics.iter().find(|d| d.code == KErrorCode::K0080);
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code == KErrorCode::K0080);
         assert!(diag.is_some());
     }
 
@@ -389,10 +401,15 @@ mod tests {
             .map(|i| make_binding(i, &format!("b{i}"), false, false, false, 0))
             .collect();
         let kir = make_kir_with_bindings(bindings);
-        let mut config = GreedyConfig::default();
-        config.solver_cluster_limit = 20;
+        let config = GreedyConfig {
+            solver_cluster_limit: 20,
+            ..Default::default()
+        };
         let result = greedy_resolve(&kir, &config);
-        let diag = result.diagnostics.iter().find(|d| d.code == KErrorCode::K0081);
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code == KErrorCode::K0081);
         assert!(diag.is_some());
         assert_eq!(result.stats.unresolved_count, 30);
     }

@@ -33,7 +33,7 @@ macro_rules! define_error_codes {
                     Self::K0063 => "@strict block inside async fn without @strict async fn",
                     Self::K0064 => "@strict inside async block — ownership cannot be tracked across yield",
                     Self::K0065 => "select branch may not be cancel-safe",
-                    Self::K0067 => "spawn_local requires LocalSet executor context",
+                    Self::K0067 => "handler request-state leaks across async boundary",
                     Self::K0080 => "structural ownership conflict - no automatic fix possible",
                     Self::K0080P1 => "ownership pattern will require architectural decision at migration",
                     Self::K0080P2 => "parent↔child Rc back-pointer tree — cycle risk",
@@ -221,18 +221,18 @@ impl KErrorCode {
 /// depend on Severity (kobo-errors). No orphan impl allowed.
 fn ownership_severity(mode: KoboMode) -> Option<Severity> {
     match mode {
-        KoboMode::Script  => None,
+        KoboMode::Script => None,
         KoboMode::Checked => Some(Severity::Warning),
-        KoboMode::Strict  => Some(Severity::Error),
+        KoboMode::Strict => Some(Severity::Error),
     }
 }
 
 /// Async-specific severity: Script/Checked → Warning, Strict → Error.
 fn async_severity(mode: KoboMode) -> Option<Severity> {
     match mode {
-        KoboMode::Script  => Some(Severity::Warning),
+        KoboMode::Script => Some(Severity::Warning),
         KoboMode::Checked => Some(Severity::Warning),
-        KoboMode::Strict  => Some(Severity::Error),
+        KoboMode::Strict => Some(Severity::Error),
     }
 }
 
@@ -295,21 +295,15 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
 
         // Reserved/uncategorized codes — use mode-dependent ownership default.
         // When a code becomes active, move it to its own explicit arm above.
-        K0003 | K0004 | K0005 | K0006 | K0007 | K0008 | K0009 |
-        K0010 | K0011 | K0012 | K0013 | K0014 | K0015 | K0016 |
-        K0017 | K0018 |
-        K0022 | K0023 | K0024 | K0027 | K0028 | K0029 |
-        K0031 | K0032 | K0033 | K0034 | K0035 | K0036 | K0037 |
-        K0038 | K0039 | K0040 | K0045 | K0046 | K0047 |
-        K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 |
-        K0055 | K0056 | K0057 | K0058 | K0059 |
-        K0064 | K0065 | K0066 | K0067 | K0068 | K0069 |
-        K0070 | K0071 | K0072 | K0073 | K0074 | K0075 | K0076 |
-        K0077 | K0078 | K0079 | K0083 | K0084 |
-        K0085 | K0086 | K0087 | K0088 | K0089 | K0091 | K0092 |
-        K0093 | K0094 | K0096 | K0097 | K0098
-            => ownership_severity(mode),
-        // NO wildcard `_` arm — new variants cause compile error [R2-02].
+        K0003 | K0004 | K0005 | K0006 | K0007 | K0008 | K0009 | K0010 | K0011 | K0012 | K0013
+        | K0014 | K0015 | K0016 | K0017 | K0018 | K0022 | K0023 | K0024 | K0027 | K0028 | K0029
+        | K0031 | K0032 | K0033 | K0034 | K0035 | K0036 | K0037 | K0038 | K0039 | K0040 | K0045
+        | K0046 | K0047 | K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 | K0055 | K0056
+        | K0057 | K0058 | K0059 | K0064 | K0065 | K0066 | K0067 | K0068 | K0069 | K0070 | K0071
+        | K0072 | K0073 | K0074 | K0075 | K0076 | K0077 | K0078 | K0079 | K0083 | K0084 | K0085
+        | K0086 | K0087 | K0088 | K0089 | K0091 | K0092 | K0093 | K0094 | K0096 | K0097 | K0098 => {
+            ownership_severity(mode)
+        } // NO wildcard `_` arm — new variants cause compile error [R2-02].
     }
 }
 
@@ -482,8 +476,17 @@ mod tests {
 
     #[test]
     fn k0026_is_always_warning() {
-        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Script), Some(Severity::Warning));
-        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Checked), Some(Severity::Warning));
-        assert_eq!(resolve_severity(KErrorCode::K0026, KoboMode::Strict), Some(Severity::Warning));
+        assert_eq!(
+            resolve_severity(KErrorCode::K0026, KoboMode::Script),
+            Some(Severity::Warning)
+        );
+        assert_eq!(
+            resolve_severity(KErrorCode::K0026, KoboMode::Checked),
+            Some(Severity::Warning)
+        );
+        assert_eq!(
+            resolve_severity(KErrorCode::K0026, KoboMode::Strict),
+            Some(Severity::Warning)
+        );
     }
 }

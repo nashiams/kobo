@@ -16,10 +16,10 @@ pub struct SpawnSite {
 /// When a binding is captured by a `spawn { ... }` block, it must be `Send`
 /// because `tokio::spawn` requires `Future: Send`. This propagates that
 /// requirement into `SharedBindingFacts::needs_send`.
-pub(crate) fn propagate_spawn_send(
-    facts: &mut TransformFacts,
-    spawn_sites: &[SpawnSite],
-) {
+pub(crate) fn propagate_spawn_send(facts: &mut TransformFacts, spawn_sites: &[SpawnSite]) {
+    debug_assert!(spawn_sites
+        .iter()
+        .all(|site| site.span.start <= site.span.end));
     let captured: HashSet<KirNodeId> = spawn_sites
         .iter()
         .flat_map(|site| site.captured_bindings.iter().copied())

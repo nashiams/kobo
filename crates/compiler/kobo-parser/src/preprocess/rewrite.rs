@@ -1,7 +1,7 @@
 /// Source text rewriting: scan for Kobo keywords, replace with marker attributes.
 ///
 /// Handles `macro_rules!` body skipping (Trap 21 / R-06) and string literal skipping.
-use super::{KoboKeywordConfig, KeywordMarker};
+use super::{KeywordMarker, KoboKeywordConfig};
 
 /// Scan source text, rewrite Kobo keywords to `#[marker_attribute]` syntax.
 ///
@@ -114,9 +114,13 @@ pub fn preprocess_kobo_keywords(
                 let after_ws = skip_whitespace(source, keyword_end);
                 let rest = &source[after_ws..];
 
-                if rest.starts_with("async ") || rest.starts_with("async\t") || rest.starts_with("async\n") {
-                    result.push_str("#[__kobo_strict]\n");
-                } else if rest.starts_with("fn ") || rest.starts_with("fn\t") || rest.starts_with("fn\n") {
+                if rest.starts_with("async ")
+                    || rest.starts_with("async\t")
+                    || rest.starts_with("async\n")
+                    || rest.starts_with("fn ")
+                    || rest.starts_with("fn\t")
+                    || rest.starts_with("fn\n")
+                {
                     result.push_str("#[__kobo_strict]\n");
                 } else {
                     result.push_str("#[__kobo_strict] ");

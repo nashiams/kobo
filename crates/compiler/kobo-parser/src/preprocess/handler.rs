@@ -1,9 +1,9 @@
-/// Validate `#[kobo::handler]` attribute usage.
-///
-/// Rules:
-/// - `#[kobo::handler]` is only valid on `async fn` items.
-/// - Applying it to a non-async fn is an error.
-/// - The attribute is stripped during codegen (handled by `strip_kobo_attrs`).
+//! Validate `#[kobo::handler]` attribute usage.
+//!
+//! Rules:
+//! - `#[kobo::handler]` is only valid on `async fn` items.
+//! - Applying it to a non-async fn is an error.
+//! - The attribute is stripped during codegen (handled by `strip_kobo_attrs`).
 
 /// Check all items in a syn File for invalid `#[kobo::handler]` usage.
 ///
@@ -45,9 +45,7 @@ fn validate_item_handler(item: &syn::Item) -> Result<(), String> {
 fn has_kobo_handler_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        segments.len() == 2
-            && segments[0].ident == "kobo"
-            && segments[1].ident == "handler"
+        segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
     })
 }
 
@@ -56,8 +54,7 @@ mod tests {
     use super::*;
 
     fn parse_and_validate(code: &str) -> Result<(), String> {
-        let file = syn::parse_str::<syn::File>(code)
-            .map_err(|e| format!("parse error: {e}"))?;
+        let file = syn::parse_str::<syn::File>(code).map_err(|e| format!("parse error: {e}"))?;
         validate_handler_attributes(&file)
     }
 

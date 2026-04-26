@@ -40,10 +40,7 @@ pub fn lower_strict_block(
     emit_block_body(stmts, capture_set, &guard_stmts, &rebind_stmts, &drop_stmts)
 }
 
-fn build_guard_stmts(
-    guard_indices: &[usize],
-    capture_set: &CaptureSet,
-) -> Vec<TokenStream> {
+fn build_guard_stmts(guard_indices: &[usize], capture_set: &CaptureSet) -> Vec<TokenStream> {
     guard_indices
         .iter()
         .zip(&capture_set.bindings)
@@ -65,10 +62,7 @@ fn build_guard_stmts(
         .collect()
 }
 
-fn build_rebind_stmts(
-    guard_indices: &[usize],
-    capture_set: &CaptureSet,
-) -> Vec<TokenStream> {
+fn build_rebind_stmts(guard_indices: &[usize], capture_set: &CaptureSet) -> Vec<TokenStream> {
     guard_indices
         .iter()
         .zip(&capture_set.bindings)
@@ -203,7 +197,9 @@ mod tests {
 
     #[test]
     fn test1_write_binding_guard_and_drop() {
-        let body: syn::Block = parse_quote!({ data.push(1); });
+        let body: syn::Block = parse_quote!({
+            data.push(1);
+        });
         let cs = make_capture_set(vec![make_binding("data", CaptureAccessKind::Write)]);
         let mut counter = StrictGuardCounter::new();
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
@@ -215,7 +211,9 @@ mod tests {
 
     #[test]
     fn test2_read_binding_uses_borrow_not_borrow_mut() {
-        let body: syn::Block = parse_quote!({ let _ = data.len(); });
+        let body: syn::Block = parse_quote!({
+            let _ = data.len();
+        });
         let cs = make_capture_set(vec![make_binding("data", CaptureAccessKind::Read)]);
         let mut counter = StrictGuardCounter::new();
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
@@ -231,7 +229,7 @@ mod tests {
 
     #[test]
     fn test3_two_bindings_lifo_drops() {
-        let body: syn::Block = parse_quote!({ });
+        let body: syn::Block = parse_quote!({});
         let cs = make_capture_set(vec![
             make_binding("alpha", CaptureAccessKind::Write),
             make_binding("beta", CaptureAccessKind::Read),
@@ -241,11 +239,18 @@ mod tests {
         let s = token_str(ts);
         assert!(s.contains("__kobo_guard_0"), "first guard");
         assert!(s.contains("__kobo_guard_1"), "second guard");
-        let pos_drop_0 = s.find("drop (__kobo_guard_0)").or_else(|| s.find("drop(__kobo_guard_0)"));
-        let pos_drop_1 = s.find("drop (__kobo_guard_1)").or_else(|| s.find("drop(__kobo_guard_1)"));
+        let pos_drop_0 = s
+            .find("drop (__kobo_guard_0)")
+            .or_else(|| s.find("drop(__kobo_guard_0)"));
+        let pos_drop_1 = s
+            .find("drop (__kobo_guard_1)")
+            .or_else(|| s.find("drop(__kobo_guard_1)"));
         let pos_0 = pos_drop_0.expect("drop guard_0 expected");
         let pos_1 = pos_drop_1.expect("drop guard_1 expected");
-        assert!(pos_1 < pos_0, "LIFO: guard_1 must be dropped before guard_0");
+        assert!(
+            pos_1 < pos_0,
+            "LIFO: guard_1 must be dropped before guard_0"
+        );
     }
 
     #[test]
@@ -263,12 +268,19 @@ mod tests {
         assert!(s.contains("__kobo_strict_result"), "result var expected");
         let pos_drop = s.find("drop").expect("drop expected");
         let pos_question = s.rfind('?').expect("? propagation expected");
-        assert!(pos_drop < pos_question, "guards must be dropped before ? propagation");
+        assert!(
+            pos_drop < pos_question,
+            "guards must be dropped before ? propagation"
+        );
     }
 
     #[test]
     fn test5_break_cf_enum_dispatch() {
-        let body: syn::Block = parse_quote!({ if done { break; } });
+        let body: syn::Block = parse_quote!({
+            if done {
+                break;
+            }
+        });
         let mut cs = make_capture_set(vec![make_binding("data", CaptureAccessKind::Write)]);
         cs.has_break = true;
         let mut counter = StrictGuardCounter::new();
@@ -283,7 +295,11 @@ mod tests {
 
     #[test]
     fn test6_continue_cf_enum_dispatch() {
-        let body: syn::Block = parse_quote!({ if skip { continue; } });
+        let body: syn::Block = parse_quote!({
+            if skip {
+                continue;
+            }
+        });
         let mut cs = make_capture_set(vec![make_binding("data", CaptureAccessKind::Write)]);
         cs.has_continue = true;
         let mut counter = StrictGuardCounter::new();
@@ -298,7 +314,9 @@ mod tests {
 
     #[test]
     fn test7_labeled_break_treated_as_break() {
-        let body: syn::Block = parse_quote!({ break 'outer; });
+        let body: syn::Block = parse_quote!({
+            break 'outer;
+        });
         let mut cs = make_capture_set(vec![make_binding("data", CaptureAccessKind::Write)]);
         cs.has_break = true;
         let mut counter = StrictGuardCounter::new();
@@ -310,22 +328,43 @@ mod tests {
 
     #[test]
     fn test8_empty_capture_set_verbatim_body() {
-        let body: syn::Block = parse_quote!({ let x = 1 + 2; x });
+        let body: syn::Block = parse_quote!({
+            let x = 1 + 2;
+            x
+        });
         let cs = make_capture_set(vec![]);
         let mut counter = StrictGuardCounter::new();
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
         let s = token_str(ts);
-        assert!(!s.contains("__kobo_guard"), "no guards for empty capture set");
+        assert!(
+            !s.contains("__kobo_guard"),
+            "no guards for empty capture set"
+        );
         assert!(s.contains("let x"), "body preserved verbatim");
-        assert!(!s.contains("borrow"), "no borrow calls for empty capture set");
+        assert!(
+            !s.contains("borrow"),
+            "no borrow calls for empty capture set"
+        );
     }
 
     #[test]
     fn test9_guard_names_deterministic_c08() {
-        let body: syn::Block = parse_quote!({ let _ = d.len(); });
+        let body: syn::Block = parse_quote!({
+            let _ = d.len();
+        });
         let cs = make_capture_set(vec![make_binding("d", CaptureAccessKind::Read)]);
-        let ts1 = lower_strict_block(&body.stmts, &cs, &mut StrictGuardCounter::new(), &CodegenOptions::default());
-        let ts2 = lower_strict_block(&body.stmts, &cs, &mut StrictGuardCounter::new(), &CodegenOptions::default());
+        let ts1 = lower_strict_block(
+            &body.stmts,
+            &cs,
+            &mut StrictGuardCounter::new(),
+            &CodegenOptions::default(),
+        );
+        let ts2 = lower_strict_block(
+            &body.stmts,
+            &cs,
+            &mut StrictGuardCounter::new(),
+            &CodegenOptions::default(),
+        );
         assert_eq!(
             ts1.to_string(),
             ts2.to_string(),
@@ -335,8 +374,12 @@ mod tests {
 
     #[test]
     fn test10_two_blocks_sequential_counter() {
-        let body1: syn::Block = parse_quote!({ let _ = a.len(); });
-        let body2: syn::Block = parse_quote!({ let _ = b.len(); });
+        let body1: syn::Block = parse_quote!({
+            let _ = a.len();
+        });
+        let body2: syn::Block = parse_quote!({
+            let _ = b.len();
+        });
         let cs1 = make_capture_set(vec![make_binding("a", CaptureAccessKind::Read)]);
         let cs2 = make_capture_set(vec![make_binding("b", CaptureAccessKind::Write)]);
         let mut counter = StrictGuardCounter::new();
@@ -345,45 +388,69 @@ mod tests {
         let s1 = ts1.to_string();
         let s2 = ts2.to_string();
         assert!(s1.contains("__kobo_guard_0"), "first block uses guard_0");
-        assert!(s2.contains("__kobo_guard_1"), "second block uses guard_1 (shared counter, Trap 16)");
-        assert!(!s2.contains("__kobo_guard_0"), "second block must NOT reuse guard_0");
+        assert!(
+            s2.contains("__kobo_guard_1"),
+            "second block uses guard_1 (shared counter, Trap 16)"
+        );
+        assert!(
+            !s2.contains("__kobo_guard_0"),
+            "second block must NOT reuse guard_0"
+        );
     }
 
     #[test]
     fn test11_write_rebinding_raw_ref_mut() {
-        let body: syn::Block = parse_quote!({ data.push(99); });
+        let body: syn::Block = parse_quote!({
+            data.push(99);
+        });
         let cs = make_capture_set(vec![make_binding("data", CaptureAccessKind::Write)]);
         let mut counter = StrictGuardCounter::new();
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
         let s = token_str(ts);
-        assert!(s.contains("& mut *"), "Write rebinding must use &mut *guard; got: {s}");
+        assert!(
+            s.contains("& mut *"),
+            "Write rebinding must use &mut *guard; got: {s}"
+        );
     }
 
     #[test]
     fn test12_read_rebinding_raw_ref() {
-        let body: syn::Block = parse_quote!({ let n = cache.len(); });
+        let body: syn::Block = parse_quote!({
+            let n = cache.len();
+        });
         let cs = make_capture_set(vec![make_binding("cache", CaptureAccessKind::Read)]);
         let mut counter = StrictGuardCounter::new();
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
         let s = token_str(ts);
-        assert!(s.contains("& *"), "Read rebinding must use &*guard; got: {s}");
+        assert!(
+            s.contains("& *"),
+            "Read rebinding must use &*guard; got: {s}"
+        );
         assert!(!s.contains("& mut *"), "Read must not use &mut *guard");
     }
 
     #[test]
     fn test13_non_strict_verbatim_c07() {
-        let body: syn::Block = parse_quote!({ let y = x + 1; });
+        let body: syn::Block = parse_quote!({
+            let y = x + 1;
+        });
         let cs = make_capture_set(vec![]);
         let mut counter = StrictGuardCounter::new();
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
         let s = token_str(ts);
         assert!(s.contains("let y"), "body preserved");
-        assert!(!s.contains("__kobo_guard"), "no guards for non-strict block");
+        assert!(
+            !s.contains("__kobo_guard"),
+            "no guards for non-strict block"
+        );
     }
 
     #[test]
     fn test14_merged_nested_capture_set() {
-        let body: syn::Block = parse_quote!({ outer_data.push(1); inner_data.push(2); });
+        let body: syn::Block = parse_quote!({
+            outer_data.push(1);
+            inner_data.push(2);
+        });
         let mut cs = make_capture_set(vec![
             make_binding("outer_data", CaptureAccessKind::Write),
             make_binding("inner_data", CaptureAccessKind::Write),
@@ -396,7 +463,10 @@ mod tests {
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
         let s = token_str(ts);
         assert!(s.contains("__kobo_guard_0"), "first guard");
-        assert!(s.contains("__kobo_guard_1"), "second guard from nested merge");
+        assert!(
+            s.contains("__kobo_guard_1"),
+            "second guard from nested merge"
+        );
     }
 
     #[test]
@@ -411,12 +481,20 @@ mod tests {
 
     #[test]
     fn test16_kobo_strict_not_in_output_c06() {
-        let body: syn::Block = parse_quote!({ data.push(1); });
+        let body: syn::Block = parse_quote!({
+            data.push(1);
+        });
         let cs = make_capture_set(vec![make_binding("data", CaptureAccessKind::Write)]);
         let mut counter = StrictGuardCounter::new();
         let ts = lower_strict_block(&body.stmts, &cs, &mut counter, &CodegenOptions::default());
         let s = token_str(ts);
-        assert!(!s.contains("@strict"), "@strict keyword must not appear in output (C06)");
-        assert!(!s.contains("__kobo_strict"), "#[__kobo_strict] marker must not appear in output (C06)");
+        assert!(
+            !s.contains("@strict"),
+            "@strict keyword must not appear in output (C06)"
+        );
+        assert!(
+            !s.contains("__kobo_strict"),
+            "#[__kobo_strict] marker must not appear in output (C06)"
+        );
     }
 }

@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 
 use crate::cluster::Cluster;
-use crate::lattice_solve::lattice_lub;
 use crate::solver::ConstraintKind;
 
 /// A disjunctive constraint: at least one of the alternatives must hold.
@@ -24,7 +23,6 @@ pub struct Disjunction {
 #[derive(Clone, Debug)]
 struct Checkpoint {
     assignments: BTreeMap<KirNodeId, OwnershipTier>,
-    depth: u32,
 }
 
 /// Backtracking solver state.
@@ -87,7 +85,6 @@ impl BacktrackSolver {
     fn checkpoint(&mut self) {
         self.checkpoints.push(Checkpoint {
             assignments: self.current.clone(),
-            depth: self.checkpoints.len() as u32,
         });
     }
 
@@ -103,7 +100,11 @@ impl BacktrackSolver {
 
     /// Attempt to assign `tier` to `node`, returning false on conflict.
     fn try_assign(&mut self, node: KirNodeId, tier: OwnershipTier) -> bool {
-        let floor = self.floors.get(&node).copied().unwrap_or(OwnershipTier::PlainOwned);
+        let floor = self
+            .floors
+            .get(&node)
+            .copied()
+            .unwrap_or(OwnershipTier::PlainOwned);
         let ceiling = self.ceilings.get(&node).copied().flatten();
 
         let rank = crate::lattice_solve::tier_rank(tier);
@@ -121,11 +122,7 @@ impl BacktrackSolver {
     }
 
     /// Run backtracking search with disjunctions.
-    pub fn solve(
-        &mut self,
-        cluster: &Cluster,
-        disjunctions: &[Disjunction],
-    ) -> BacktrackResult {
+    pub fn solve(&mut self, cluster: &Cluster, disjunctions: &[Disjunction]) -> BacktrackResult {
         // If no disjunctions, the current assignment (from floors) is the answer.
         if disjunctions.is_empty() {
             let mut map = SolutionMap::new();
@@ -198,10 +195,8 @@ impl BacktrackSolver {
             if let (Some(&s), Some(&t)) = (src, tgt) {
                 match &edge.kind {
                     ConstraintKind::PropagateSharing => {
-                        // Both must be at least as high as the LUB.
-                        let lub = lattice_lub(s, t);
-                        if s != lub && t != lub {
-                            // One must dominate the other.
+                        if s.is_shared() && !t.is_shared() {
+                            return false;
                         }
                     }
                     ConstraintKind::PropagateSend => {
@@ -212,14 +207,10 @@ impl BacktrackSolver {
                     }
                     ConstraintKind::MutuallyExclusive => {
                         // Cannot both be mutable-shared wrappers.
-                        let s_mut = matches!(
-                            s,
-                            OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-                        );
-                        let t_mut = matches!(
-                            t,
-                            OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-                        );
+                        let s_mut =
+                            matches!(s, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared);
+                        let t_mut =
+                            matches!(t, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared);
                         if s_mut && t_mut {
                             return false;
                         }
@@ -262,10 +253,7 @@ mod tests {
 
     #[test]
     fn empty_disjunctions_yields_floor_solution() {
-        let cluster = make_cluster(
-            vec![make_node(1, OwnershipTier::RcShared)],
-            vec![],
-        );
+        let cluster = make_cluster(vec![make_node(1, OwnershipTier::RcShared)], vec![]);
         let mut solver = BacktrackSolver::new(&cluster);
         match solver.solve(&cluster, &[]) {
             BacktrackResult::Solved(map) => {
@@ -277,10 +265,7 @@ mod tests {
 
     #[test]
     fn disjunction_picks_valid_alternative() {
-        let cluster = make_cluster(
-            vec![make_node(1, OwnershipTier::PlainOwned)],
-            vec![],
-        );
+        let cluster = make_cluster(vec![make_node(1, OwnershipTier::PlainOwned)], vec![]);
         let mut solver = BacktrackSolver::new(&cluster);
         let disj = vec![Disjunction {
             node: KirNodeId(1),
@@ -321,10 +306,7 @@ mod tests {
 
     #[test]
     fn budget_exceeded_returns_early() {
-        let cluster = make_cluster(
-            vec![make_node(1, OwnershipTier::PlainOwned)],
-            vec![],
-        );
+        let cluster = make_cluster(vec![make_node(1, OwnershipTier::PlainOwned)], vec![]);
         let mut solver = BacktrackSolver::new(&cluster);
         solver.set_node_budget(0);
         let disj = vec![Disjunction {

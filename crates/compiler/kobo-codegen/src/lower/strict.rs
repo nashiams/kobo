@@ -11,6 +11,5 @@ mod func;
 mod guard;
 
 pub use block::lower_strict_block;
-pub use cf::{emit_cf_enum_def, emit_cf_dispatch};
 pub use func::lower_strict_fn;
 pub use guard::StrictGuardCounter;

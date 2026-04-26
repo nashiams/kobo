@@ -12,9 +12,7 @@ pub(crate) fn annotate(
 
     let had_trailing_newline = formatted.ends_with('\n');
     let mut lines: Vec<String> = formatted.lines().map(str::to_owned).collect();
-    let mut inserted_before = 0usize;
-
-    for (site, entry) in sites.iter().zip(entries.iter_mut()) {
+    for (inserted_before, (site, entry)) in sites.iter().zip(entries.iter_mut()).enumerate() {
         let insertion_index = entry
             .rs_span
             .line
@@ -32,7 +30,6 @@ pub(crate) fn annotate(
             ),
         );
         entry.rs_span.line += inserted_before + 1;
-        inserted_before += 1;
     }
 
     let site_anchor_lines = sites
@@ -47,9 +44,7 @@ pub(crate) fn annotate(
             .unwrap_or(usize::MAX);
         (line, *index)
     });
-    let mut inserted_notes = 0usize;
-
-    for (_, note) in ordered_notes {
+    for (inserted_notes, (_, note)) in ordered_notes.into_iter().enumerate() {
         let anchor = anchors.get(note.node).unwrap_or_else(|| {
             unreachable!("invariant: every annotation note must resolve to an anchor")
         });
@@ -78,7 +73,6 @@ pub(crate) fn annotate(
                 entry.rs_span.line += 1;
             }
         }
-        inserted_notes += 1;
     }
 
     let mut annotated = lines.join("\n");

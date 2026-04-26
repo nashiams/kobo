@@ -19,12 +19,11 @@ impl DiagThreshold {
     /// Return the threshold, reading and caching `KOBO_DIAG_THRESHOLD` on the
     /// first call.
     pub fn read_env() -> Self {
-        let borrow_count = *THRESHOLD_CACHE.get_or_init(|| {
-            match std::env::var("KOBO_DIAG_THRESHOLD") {
+        let borrow_count =
+            *THRESHOLD_CACHE.get_or_init(|| match std::env::var("KOBO_DIAG_THRESHOLD") {
                 Ok(val) => Self::parse_threshold_str(&val),
                 Err(_) => Self::default_threshold(),
-            }
-        });
+            });
         Self { borrow_count }
     }
 

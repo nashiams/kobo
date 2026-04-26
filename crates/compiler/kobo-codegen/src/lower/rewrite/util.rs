@@ -8,11 +8,10 @@ use super::super::binding::is_mutating_method;
 /// Remove all `#[kobo::...]` attributes from an attribute list.
 pub(super) fn strip_kobo_attrs(attrs: &mut Vec<syn::Attribute>) {
     attrs.retain(|attr| {
-        !attr
-            .path()
+        attr.path()
             .segments
             .first()
-            .is_some_and(|segment| segment.ident == "kobo")
+            .is_none_or(|segment| segment.ident != "kobo")
     });
 }
 
@@ -167,12 +166,8 @@ mod tests {
         let method: syn::Ident = parse_quote!(touch);
 
         // With receiver type "Reader", should use the qualified immutable answer
-        let expr = lowered_receiver_expr(
-            parse_quote!(r),
-            &method,
-            &method_mutability,
-            Some("Reader"),
-        );
+        let expr =
+            lowered_receiver_expr(parse_quote!(r), &method, &method_mutability, Some("Reader"));
         assert_eq!(render_expr(&expr), "r . borrow ()");
 
         // Without receiver type, falls back to bare conservative (mutating)

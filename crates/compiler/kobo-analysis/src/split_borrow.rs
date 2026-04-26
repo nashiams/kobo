@@ -123,16 +123,16 @@ pub fn detect_split_borrow_sites_with_source(
             // Need 2+ distinct fields with at least one mutable access.
             let distinct_fields: std::collections::HashSet<&str> =
                 fields.iter().map(|f| f.field_name.as_str()).collect();
-            let has_mutable = fields
-                .iter()
-                .any(|f| matches!(f.access_kind, FieldAccessKind::Write | FieldAccessKind::BorrowMut));
+            let has_mutable = fields.iter().any(|f| {
+                matches!(
+                    f.access_kind,
+                    FieldAccessKind::Write | FieldAccessKind::BorrowMut
+                )
+            });
 
             if distinct_fields.len() >= 2 && has_mutable {
-                let method_span = span_to_kobo_span(
-                    method.sig.ident.span(),
-                    &line_offsets,
-                    file_id,
-                );
+                let method_span =
+                    span_to_kobo_span(method.sig.ident.span(), &line_offsets, file_id);
                 sites.push(SplitBorrowSite {
                     method_span,
                     struct_name: struct_name.clone(),
@@ -365,11 +365,7 @@ struct Foo { x: i32 }
     }
 }"#;
         let items = syn::parse_file(code).unwrap().items;
-        let sites = detect_split_borrow_sites_with_source(
-            &items,
-            code,
-            kobo_ir::FileId(0),
-        );
+        let sites = detect_split_borrow_sites_with_source(&items, code, kobo_ir::FileId(0));
         assert_eq!(sites.len(), 1);
         let site = &sites[0];
         // method_span should cover "update" — NOT (0, 0)
@@ -383,7 +379,8 @@ struct Foo { x: i32 }
             assert!(
                 fa.span.start > 0 || fa.span.end > 0,
                 "field '{}' span should not be dummy zero: {:?}",
-                fa.field_name, fa.span
+                fa.field_name,
+                fa.span
             );
         }
     }
@@ -392,11 +389,7 @@ struct Foo { x: i32 }
     fn method_span_points_to_ident() {
         let code = "impl S {\n    fn do_work(&mut self) {\n        self.a = 1;\n        self.b.run();\n    }\n}";
         let items = syn::parse_file(code).unwrap().items;
-        let sites = detect_split_borrow_sites_with_source(
-            &items,
-            code,
-            kobo_ir::FileId(0),
-        );
+        let sites = detect_split_borrow_sites_with_source(&items, code, kobo_ir::FileId(0));
         assert_eq!(sites.len(), 1);
         let span = sites[0].method_span;
         let slice = &code[span.start as usize..span.end as usize];
@@ -417,7 +410,10 @@ impl State {
 "#;
         let items = syn::parse_file(code).unwrap().items;
         let sites = detect_split_borrow_sites(&items);
-        assert!(sites.is_empty(), "single-field write must not trigger split");
+        assert!(
+            sites.is_empty(),
+            "single-field write must not trigger split"
+        );
     }
 
     /// &self method → never triggers (not &mut self).
@@ -467,7 +463,11 @@ impl App {
         let items = syn::parse_file(code).unwrap().items;
         let sites = detect_split_borrow_sites(&items);
         assert_eq!(sites.len(), 1);
-        let names: Vec<&str> = sites[0].fields_accessed.iter().map(|f| f.field_name.as_str()).collect();
+        let names: Vec<&str> = sites[0]
+            .fields_accessed
+            .iter()
+            .map(|f| f.field_name.as_str())
+            .collect();
         assert!(names.contains(&"renderer"));
         assert!(names.contains(&"state"));
     }
@@ -504,11 +504,7 @@ impl Foo {
     }
 }"#;
         let items = syn::parse_file(code).unwrap().items;
-        let sites = detect_split_borrow_sites_with_source(
-            &items,
-            code,
-            kobo_ir::FileId(42),
-        );
+        let sites = detect_split_borrow_sites_with_source(&items, code, kobo_ir::FileId(42));
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].method_span.file_id, kobo_ir::FileId(42));
     }

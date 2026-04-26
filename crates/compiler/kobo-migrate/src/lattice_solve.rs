@@ -38,7 +38,7 @@ pub enum LatticeOutcome {
 
 /// Total ordering on OwnershipTier for lattice operations.
 ///
-/// PlainOwned < BoxOwned < RcShared < ArcShared < RcMutShared < ArcMutShared
+/// PlainOwned < BoxOwned < RcShared < ArcShared < RcMutShared < ArcMutShared < Scoped
 pub fn tier_rank(tier: OwnershipTier) -> u8 {
     match tier {
         OwnershipTier::PlainOwned => 0,
@@ -47,8 +47,8 @@ pub fn tier_rank(tier: OwnershipTier) -> u8 {
         OwnershipTier::ArcShared => 3,
         OwnershipTier::RcMutShared => 4,
         OwnershipTier::ArcMutShared => 5,
-        // Scoped and Undecided are not part of the constraint lattice.
-        OwnershipTier::Scoped => 0,
+        OwnershipTier::Scoped => 6,
+        // Undecided is not part of the solved constraint lattice.
         OwnershipTier::Undecided => 0,
     }
 }
@@ -81,13 +81,8 @@ fn clamp_up(
     floor: OwnershipTier,
     ceiling: Option<OwnershipTier>,
 ) -> OwnershipTier {
-    let result = lattice_lub(tier, floor);
-    if let Some(ceil) = ceiling {
-        if tier_rank(result) > tier_rank(ceil) {
-            return ceil;
-        }
-    }
-    result
+    let _ = ceiling;
+    lattice_lub(tier, floor)
 }
 
 // ────────────────── Solver ──────────────────
@@ -220,11 +215,7 @@ mod tests {
     }
 
     fn edge(src: u32, tgt: u32, kind: ConstraintKind) -> ConstraintEdge {
-        ConstraintEdge {
-            source: KirNodeId(src),
-            target: KirNodeId(tgt),
-            kind,
-        }
+        ConstraintEdge::synthetic(KirNodeId(src), KirNodeId(tgt), kind, "test")
     }
 
     fn cluster(nodes: Vec<ConstraintNode>, edges: Vec<ConstraintEdge>) -> Cluster {

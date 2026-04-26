@@ -69,7 +69,10 @@ fn move_then_dead_is_eligible() {
         span(0, 5),
         vec![
             UseEvent::Mutated { span: span(10, 15) },
-            UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(20, 25),
+                scope_depth: 0,
+            },
             // No uses after move → eligible
         ],
     )]);
@@ -92,7 +95,10 @@ fn used_after_move_not_eligible() {
         span(0, 5),
         vec![
             UseEvent::Mutated { span: span(10, 15) },
-            UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(20, 25),
+                scope_depth: 0,
+            },
             UseEvent::ReadOnly { span: span(30, 35) }, // used after move!
         ],
     )]);
@@ -136,7 +142,10 @@ fn only_dead_moved_binding_eligible() {
             span(0, 5),
             vec![
                 UseEvent::Mutated { span: span(10, 15) },
-                UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
+                UseEvent::Moved {
+                    span: span(20, 25),
+                    scope_depth: 0,
+                },
             ],
         ),
         make_binding(
@@ -145,7 +154,10 @@ fn only_dead_moved_binding_eligible() {
             span(30, 35),
             vec![
                 UseEvent::Mutated { span: span(40, 45) },
-                UseEvent::Moved { span: span(50, 55), scope_depth: 0 },
+                UseEvent::Moved {
+                    span: span(50, 55),
+                    scope_depth: 0,
+                },
                 UseEvent::ReadOnly { span: span(60, 65) },
             ],
         ),
@@ -165,7 +177,10 @@ fn borrowed_after_move_not_eligible() {
         "data",
         span(0, 5),
         vec![
-            UseEvent::Moved { span: span(10, 15), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(10, 15),
+                scope_depth: 0,
+            },
             UseEvent::Borrowed {
                 kind: kobo_ir::BorrowKind::Immutable,
                 span: span(20, 25),
@@ -185,10 +200,10 @@ fn borrowed_after_move_not_eligible() {
 /// Binding moved with no subsequent usage → PlainOwned
 #[test]
 fn freeze_rotate_in_real_kir() {
-    use kobo_ir::{FileId, NodeIdGen, OwnershipTier};
-    use kobo_parser::parse_file;
     use crate::options::TransformOptions;
     use crate::transform::build_kir;
+    use kobo_ir::{FileId, NodeIdGen, OwnershipTier};
+    use kobo_parser::parse_file;
 
     let source = r#"
 fn main() {
@@ -209,7 +224,8 @@ fn main() {
         .find(|b| b.binding_name == "data")
         .expect("data binding should exist");
 
-    let decision = kir.tier_decision(data_binding.node)
+    let decision = kir
+        .tier_decision(data_binding.node)
         .expect("tier decision should exist");
 
     // data should be PlainOwned because it's moved and dead afterward
@@ -225,8 +241,8 @@ fn main() {
 /// A binding with needs_sharing=true but moved-and-dead → PlainOwned(MoveRebind)
 #[test]
 fn move_rebind_reason_when_sharing_needed() {
-    use kobo_ir::{OwnershipTier, TierReason};
     use crate::tiered::choose_tiers;
+    use kobo_ir::{OwnershipTier, TierReason};
 
     // Build a binding where needs_sharing=true, so S-1 won't catch it,
     // but the binding is moved and dead → S-2 should catch it.
@@ -246,13 +262,16 @@ fn move_rebind_reason_when_sharing_needed() {
             declaration: span(0, 5),
             uses: vec![
                 UseEvent::ReadOnly { span: span(10, 15) },
-                UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
+                UseEvent::Moved {
+                    span: span(20, 25),
+                    scope_depth: 0,
+                },
                 // No uses after move
             ],
         },
         shared_facts: SharedBindingFacts {
             node_id: KirNodeId(1),
-            needs_sharing: true,  // S-1 won't catch this
+            needs_sharing: true, // S-1 won't catch this
             has_escape: false,
             mutation_required: false,
             ..Default::default()
@@ -281,8 +300,8 @@ fn move_rebind_reason_when_sharing_needed() {
 /// S-2 Contract Acceptance Test: Used-after-move binding does NOT get MoveRebind
 #[test]
 fn no_move_rebind_when_used_after_move() {
-    use kobo_ir::{OwnershipTier, TierReason};
     use crate::tiered::choose_tiers;
+    use kobo_ir::TierReason;
 
     let binding = TransformBindingFacts {
         node: KirNodeId(1),
@@ -300,7 +319,10 @@ fn no_move_rebind_when_used_after_move() {
             declaration: span(0, 5),
             uses: vec![
                 UseEvent::ReadOnly { span: span(10, 15) },
-                UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
+                UseEvent::Moved {
+                    span: span(20, 25),
+                    scope_depth: 0,
+                },
                 UseEvent::ReadOnly { span: span(30, 35) }, // used after move!
             ],
         },
@@ -344,7 +366,10 @@ fn move_in_deeper_scope_not_eligible() {
         vec![
             UseEvent::Mutated { span: span(10, 15) },
             // Move at scope_depth 1 (inside if-branch), but decl is at depth 0
-            UseEvent::Moved { span: span(20, 25), scope_depth: 1 },
+            UseEvent::Moved {
+                span: span(20, 25),
+                scope_depth: 1,
+            },
         ],
     )]);
 
@@ -367,7 +392,10 @@ fn move_in_loop_scope_not_eligible() {
         vec![
             UseEvent::Mutated { span: span(10, 15) },
             // Move at scope_depth 2 (nested loop), but decl is at depth 0
-            UseEvent::Moved { span: span(20, 25), scope_depth: 2 },
+            UseEvent::Moved {
+                span: span(20, 25),
+                scope_depth: 2,
+            },
         ],
     )]);
 
@@ -391,7 +419,10 @@ fn move_at_declaration_scope_is_eligible() {
         vec![
             UseEvent::Mutated { span: span(10, 15) },
             // Move at scope_depth 0, same as decl_scope_depth 0
-            UseEvent::Moved { span: span(20, 25), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(20, 25),
+                scope_depth: 0,
+            },
         ],
     )]);
 

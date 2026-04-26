@@ -17,6 +17,7 @@ pub use debt::{
 };
 pub use kir::{BorrowKind, NodeKind, UseKind};
 pub use kir::{Kir, KirNode, MigrateSite, MigrateTarget, RelaxAttrError};
+pub use mode::KoboMode;
 pub use node_id::{
     CfgBlockId, FileEntry, FileId, FileSet, FileSetBuilder, KirNodeId, KoboAstNodeId, NodeIdGen,
 };
@@ -29,9 +30,8 @@ pub use ownership::{
 pub use resource::ResourceKind;
 pub use solution_map::SolutionMap;
 pub use span::KoboSpan;
-pub use mode::KoboMode;
 pub use strict::{
-    AsyncViolationFact, AsyncViolationKind,
-    CaptureAccessKind, CaptureSet, CapturedBinding, ClosureCaptureDetail, ClosureCaptureMode,
-    NestedStrictBlock, StrictBoundaryFact, StrictBoundaryViolation, StrictFnMode,
+    AsyncViolationFact, AsyncViolationKind, CaptureAccessKind, CaptureSet, CapturedBinding,
+    ClosureCaptureDetail, ClosureCaptureMode, NestedStrictBlock, StrictBoundaryFact,
+    StrictBoundaryViolation, StrictFnMode,
 };

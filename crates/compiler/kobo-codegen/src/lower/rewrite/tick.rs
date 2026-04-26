@@ -1,25 +1,27 @@
-/// Generate fixed-timestep loop from #[kobo::tick(rate=N)].
-///
-/// Input:
-///   #[kobo::tick(rate=20)]
-///   fn game_loop(state: &mut GameState) {
-///       state.physics.step();
-///       state.renderer.draw();
-///   }
-///
-/// Output:
-///   async fn game_loop(state: &mut GameState) {
-///       let mut interval = tokio::time::interval(Duration::from_millis(50));
-///       interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-///       loop {
-///           interval.tick().await;
-///           state.physics.step();
-///           state.renderer.draw();
-///       }
-///   }
-///
-/// rate=N means N ticks per second → interval = 1000/N ms
-/// MissedTickBehavior::Skip prevents drift accumulation.
+//! Generate fixed-timestep loop from #[kobo::tick(rate=N)].
+//!
+//! Input:
+//!   #[kobo::tick(rate=20)]
+//!   fn game_loop(state: &mut GameState) {
+//!       state.physics.step();
+//!       state.renderer.draw();
+//!   }
+//!
+//! Output:
+//!   async fn game_loop(state: &mut GameState) {
+//!       let mut interval = tokio::time::interval(Duration::from_millis(50));
+//!       interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+//!       loop {
+//!           interval.tick().await;
+//!           state.physics.step();
+//!           state.renderer.draw();
+//!       }
+//!   }
+//!
+//! rate=N means N ticks per second → interval = 1000/N ms
+//! MissedTickBehavior::Skip prevents drift accumulation.
+
+#![cfg_attr(not(test), allow(dead_code))]
 
 /// Parse tick rate from `#[kobo::tick(rate=N)]` attribute.
 pub(crate) fn parse_tick_rate(attr: &syn::Attribute) -> Option<u32> {
@@ -103,8 +105,14 @@ mod tests {
             20,
         );
         assert!(output.contains("tokio::time::interval"), "output: {output}");
-        assert!(output.contains("Duration::from_millis(50)"), "output: {output}");
-        assert!(output.contains("MissedTickBehavior::Skip"), "output: {output}");
+        assert!(
+            output.contains("Duration::from_millis(50)"),
+            "output: {output}"
+        );
+        assert!(
+            output.contains("MissedTickBehavior::Skip"),
+            "output: {output}"
+        );
         assert!(output.contains("loop {"), "output: {output}");
     }
 
@@ -117,7 +125,10 @@ mod tests {
             60,
         );
         // 1000/60 = 16
-        assert!(output.contains("Duration::from_millis(16)"), "output: {output}");
+        assert!(
+            output.contains("Duration::from_millis(16)"),
+            "output: {output}"
+        );
     }
 
     #[test]

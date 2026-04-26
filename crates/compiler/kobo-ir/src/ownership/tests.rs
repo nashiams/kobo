@@ -68,7 +68,10 @@ fn dead_borrow_before_move_does_not_force_sharing() {
                 kind: BorrowKind::Immutable,
                 span: span(10),
             },
-            UseEvent::Moved { span: span(20), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(20),
+                scope_depth: 0,
+            },
         ]),
         Some(&CloneElisionDecision::Move),
     );
@@ -85,7 +88,10 @@ fn live_borrow_at_move_requires_sharing() {
                 kind: BorrowKind::Immutable,
                 span: span(10),
             },
-            UseEvent::Moved { span: span(20), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(20),
+                scope_depth: 0,
+            },
             UseEvent::ReadOnly { span: span(30) },
         ]),
         None,
@@ -125,7 +131,10 @@ fn shared_binding_facts_are_a_pure_function_of_usage() {
             kind: BorrowKind::Immutable,
             span: span(10),
         },
-        UseEvent::Moved { span: span(20), scope_depth: 0 },
+        UseEvent::Moved {
+            span: span(20),
+            scope_depth: 0,
+        },
         UseEvent::ReadOnly { span: span(30) },
     ]);
 
@@ -148,7 +157,10 @@ fn derive_transform_facts_populates_schema_for_all_usage_kinds() {
                 kind: EscapeKind::StoredInStruct,
                 span: span(30),
             },
-            UseEvent::Moved { span: span(40), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(40),
+                scope_depth: 0,
+            },
         ])],
         vec![CloneElisionDecision::Clone],
         vec![HintConflictFact {
@@ -196,6 +208,12 @@ fn greedy_priority_orders_the_user_facing_ladder() {
 #[test]
 fn arc_mut_shared_label_says_rwlock_not_mutex() {
     let label = OwnershipTier::ArcMutShared.label();
-    assert_eq!(label, "arc_rwlock", "BUG-10: ArcMutShared label must be arc_rwlock, got {label}");
-    assert!(!label.contains("mutex"), "BUG-10: label must not mention mutex");
+    assert_eq!(
+        label, "arc_rwlock",
+        "BUG-10: ArcMutShared label must be arc_rwlock, got {label}"
+    );
+    assert!(
+        !label.contains("mutex"),
+        "BUG-10: label must not mention mutex"
+    );
 }

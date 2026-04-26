@@ -4,7 +4,7 @@ use kobo_analysis::{facts_to_diagnostics, run_analysis};
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverEvidenceJson, SolverBudgetJson};
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
-use kobo_migrate::{build_kir_constraint_graph, solve_with_evidence, SolverBudget, SolverEvidence};
+use kobo_migrate::{build_kir_constraint_graph, solve_with_evidence, SolveOutcome, SolverBudget, SolverEvidence};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
     preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
@@ -111,10 +111,16 @@ pub fn run_codegen_pipeline(
 ) -> Result<CodegenArtifacts, ()> {
     let (kobo_file, kir) = run_kir_phase(session, input)?;
     run_analysis_phase(session, &kir)?;
-    let evidence = resolve_solution(&kir);
-    // Use empty solution for codegen — KIR analysis tiers are authoritative.
-    // Solver evidence is injected into the source map for provenance only.
-    let solution = SolutionMap::new();
+    let (evidence, outcome) = resolve_solution(&kir);
+
+    // Phase 00/05: Project non-Unique solver outcomes to K-code diagnostics.
+    project_solver_diagnostics(session, &kir, &outcome);
+
+    // Use solver solution for codegen when available (Phase 06), empty otherwise.
+    let solution = match &outcome {
+        SolveOutcome::Unique(map) => map.clone(),
+        _ => SolutionMap::new(),
+    };
     let rs_path = output_path_for(input, &session.config);
     let map_path = map_path_for(input, &session.config);
     let executor_choice = kobo_codegen::executor::select_executor(&session.config.dependencies);
@@ -364,10 +370,125 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     }
 }
 
-fn resolve_solution(kir: &Kir) -> SolverEvidence {
+fn resolve_solution(kir: &Kir) -> (SolverEvidence, SolveOutcome) {
     let graph = build_kir_constraint_graph(kir);
     let budget = SolverBudget::default();
-    solve_with_evidence(&graph, budget)
+    let evidence = solve_with_evidence(&graph, budget.clone());
+    let outcome = kobo_migrate::solve(&graph, budget);
+    (evidence, outcome)
+}
+
+/// Project non-Unique solver outcomes to K-code diagnostics (Phase 00/05).
+fn project_solver_diagnostics(
+    session: &mut CompileSession,
+    kir: &Kir,
+    outcome: &SolveOutcome,
+) {
+    match outcome {
+        SolveOutcome::Unique(_) | SolveOutcome::MultiSolution(_) => {
+            // Unique and multi-solution are not errors.
+        }
+        SolveOutcome::NoSolution(report) => {
+            let span = report
+                .conflicting_nodes
+                .first()
+                .and_then(|id| kir.get_node(*id))
+                .map(|n| n.span)
+                .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
+            let severity =
+                resolve_severity(KErrorCode::K0080, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0080,
+                severity,
+                DiagLabel::primary(span, format!("ownership conflict: {}", report.conflict_reason)),
+                format!(
+                    "solver found no valid ownership assignment for {} node(s)",
+                    report.conflicting_nodes.len()
+                ),
+                DiagDecision("review sharing patterns or add ownership hints".to_owned()),
+            ));
+        }
+        SolveOutcome::ClusterTooLarge(report) => {
+            let span = report
+                .member_nodes
+                .first()
+                .and_then(|id| kir.get_node(*id))
+                .map(|n| n.span)
+                .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
+            let severity =
+                resolve_severity(KErrorCode::K0081, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0081,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "constraint cluster too large ({} nodes, limit {})",
+                        report.cluster_size, report.limit
+                    ),
+                ),
+                format!(
+                    "cluster of {} interdependent bindings exceeds solver limit of {}",
+                    report.cluster_size, report.limit
+                ),
+                DiagDecision(
+                    "split large functions or reduce sharing to lower cluster size".to_owned(),
+                ),
+            ));
+        }
+        SolveOutcome::BudgetExceeded(report) => {
+            let span = kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0));
+            let severity =
+                resolve_severity(KErrorCode::K0082, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0082,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "solver budget exceeded ({:.1}s of {:.1}s, {}/{} resolved)",
+                        report.elapsed_seconds,
+                        report.budget_seconds,
+                        report.resolved_count,
+                        report.total_count,
+                    ),
+                ),
+                format!(
+                    "solver resolved {}/{} nodes before {:.1}s budget expired",
+                    report.resolved_count, report.total_count, report.budget_seconds
+                ),
+                DiagDecision(
+                    "increase solver_budget_seconds or reduce constraint complexity".to_owned(),
+                ),
+            ));
+        }
+        SolveOutcome::BoundaryStop(report) => {
+            let span = kir
+                .get_node(report.crossing_node)
+                .map(|n| n.span)
+                .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
+            let severity =
+                resolve_severity(KErrorCode::K0090, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0090,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "ownership depends on external crate `{}`",
+                        report.external_crate
+                    ),
+                ),
+                format!(
+                    "binding crosses into `{}::{}` — solver cannot infer ownership across crate boundaries",
+                    report.external_crate, report.external_function
+                ),
+                DiagDecision(
+                    "add an explicit ownership hint or use #[kobo::migrate]".to_owned(),
+                ),
+            ));
+        }
+    }
 }
 
 fn inject_solver_evidence(mut source_map: KoboSourceMap, evidence: &SolverEvidence) -> KoboSourceMap {

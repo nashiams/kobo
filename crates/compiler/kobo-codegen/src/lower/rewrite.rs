@@ -4,6 +4,7 @@ mod expr;
 mod local;
 pub(crate) mod lock_order;
 pub(crate) mod spawn;
+pub(crate) mod spawn_strategy;
 pub(crate) mod split_borrow;
 pub(crate) mod tick;
 mod util;

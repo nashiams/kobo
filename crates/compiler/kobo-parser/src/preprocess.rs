@@ -15,6 +15,7 @@ mod engine;
 mod handler;
 mod postprocess;
 mod rewrite;
+pub(crate) mod bridge;
 pub(crate) mod spawn;
 pub(crate) mod channel;
 pub(crate) mod select;

@@ -24,6 +24,9 @@ pub(crate) enum KoboCommand {
         #[arg(long, conflicts_with = "checked",
               help = "Check in strict mode (v0.9 — not yet implemented)")]
         strict: bool,
+        #[arg(long,
+              help = "Show full solver pipeline diagnostics (constraint graph, clusters, solver outcome)")]
+        pipeline: bool,
     },
     /// Reformat a .kobo file when the source map proves the edit is lossless.
     Fmt {

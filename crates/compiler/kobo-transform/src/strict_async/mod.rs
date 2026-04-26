@@ -1,3 +1,5 @@
+pub mod guard_liveness;
+
 use kobo_ir::{AsyncViolationFact, AsyncViolationKind, Kir, KoboMode};
 
 use crate::cfg::{compute_send_requirements, build_cfg, SendRequirements};

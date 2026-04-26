@@ -3,7 +3,7 @@ use super::elision::ElisionFallbackReason;
 /// Ownership tier assigned to a KIR node. Determines what wrapper type (if any)
 /// `kobo-codegen` emits for the corresponding binding in the generated `.rs`
 /// file.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
 pub enum OwnershipTier {
     /// `T` - moved. No wrapper, no allocation. Zero overhead.
     PlainOwned,

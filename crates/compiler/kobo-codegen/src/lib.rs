@@ -10,7 +10,20 @@ mod sourcemap;
 use std::path::Path;
 
 pub use emit::emit_file;
-pub use sourcemap::{wrap_source_map, KoboSourceMap, RsSpan, SourceMapEntry};
+pub use sourcemap::{wrap_source_map, KoboSourceMap, RsSpan, SourceMapEntry, SolverEvidenceJson, SolverBudgetJson};
+
+/// Annotate lock acquisition order in generated Rust source for inspect output.
+///
+/// Returns the source with a leading `// kobo: lock order: ...` comment if
+/// two or more lock sites are detected, otherwise returns the source unchanged.
+pub fn annotate_lock_order(source: &str) -> String {
+    let sites = lower::rewrite::lock_order::detect_lock_sites(source);
+    if let Some(comment) = lower::rewrite::lock_order::lock_order_comment(&sites) {
+        format!("{comment}\n{source}")
+    } else {
+        source.to_owned()
+    }
+}
 
 pub struct CodegenOutput {
     pub rs_source: String,

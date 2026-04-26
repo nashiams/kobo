@@ -5,7 +5,7 @@ use kobo_ir::KoboMode;
 
 use super::session::{build_session, render_diagnostics};
 
-pub(super) fn cmd_check(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Result<()> {
+pub(super) fn cmd_check(file: &Path, cli_mode: Option<KoboMode>, pipeline: bool) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
     if session.mode() == KoboMode::Strict {
         eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
@@ -13,9 +13,18 @@ pub(super) fn cmd_check(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Resu
         std::process::exit(1);
     }
 
+    if pipeline {
+        eprintln!("[kobo] --pipeline: running full solver pipeline diagnostics");
+    }
+
     match run_check_pipeline(&mut session, file) {
         Ok(()) => {
             render_diagnostics(&session);
+
+            if pipeline {
+                eprintln!("[kobo] pipeline: {} diagnostic(s) emitted", session.diagnostics.len());
+            }
+
             Ok(())
         }
         Err(()) => {

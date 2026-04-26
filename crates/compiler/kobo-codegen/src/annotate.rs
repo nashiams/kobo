@@ -151,6 +151,9 @@ mod tests {
                 },
                 kobo_span: KoboSpan::new(0, 1, FileId(0)),
                 ownership_tier: "rc".to_owned(),
+                solver_outcome: None,
+                decision_source: None,
+                solver_node_id: None,
             },
             SourceMapEntry {
                 rs_span: RsSpan {
@@ -160,6 +163,9 @@ mod tests {
                 },
                 kobo_span: KoboSpan::new(2, 3, FileId(0)),
                 ownership_tier: "plain".to_owned(),
+                solver_outcome: None,
+                decision_source: None,
+                solver_node_id: None,
             },
         ];
 

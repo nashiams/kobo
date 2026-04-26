@@ -183,7 +183,7 @@ fn apply_migration(
 }
 
 /// Generate actor scaffold at the given line.
-fn cmd_migrate_actor(_file: &Path, actor_spec: &str) -> anyhow::Result<()> {
+fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     // Parse actor_spec: "path:line" or just "path" (uses line 1).
     let (actor_file, line) = if let Some(colon_pos) = actor_spec.rfind(':') {
         let line_str = &actor_spec[colon_pos + 1..];
@@ -196,23 +196,48 @@ fn cmd_migrate_actor(_file: &Path, actor_spec: &str) -> anyhow::Result<()> {
         (actor_spec, 1)
     };
 
+    // Read the source file to extract context for the actor scaffold.
+    let source_path = file.parent().unwrap_or(Path::new(".")).join(actor_file);
+    let source = std::fs::read_to_string(&source_path)
+        .unwrap_or_default();
+
+    // Extract state fields and operations from the targeted region.
+    let (state_fields, message_variants) = extract_actor_context(&source, line);
+
     println!("// kobo migrate --actor: generating actor scaffold");
     println!("// Source: {}:{}", actor_file, line);
     println!();
 
-    // Generate the actor scaffold.
+    // Generate the actor scaffold with extracted context.
     println!("use tokio::sync::mpsc;");
     println!();
+
+    // Message enum from extracted operations.
     println!("enum ActorMessage {{");
-    println!("    // TODO: Define your message variants");
-    println!("    Ping,");
+    if message_variants.is_empty() {
+        println!("    // TODO: Define your message variants");
+        println!("    Ping,");
+    } else {
+        for variant in &message_variants {
+            println!("    {},", variant);
+        }
+    }
     println!("}}");
     println!();
+
+    // Actor struct with extracted state fields.
     println!("struct Actor {{");
     println!("    receiver: mpsc::Receiver<ActorMessage>,");
-    println!("    // TODO: Add actor state fields");
+    if state_fields.is_empty() {
+        println!("    // TODO: Add actor state fields");
+    } else {
+        for field in &state_fields {
+            println!("    {},", field);
+        }
+    }
     println!("}}");
     println!();
+
     println!("impl Actor {{");
     println!("    fn new(receiver: mpsc::Receiver<ActorMessage>) -> Self {{");
     println!("        Self {{ receiver }}");
@@ -229,9 +254,18 @@ fn cmd_migrate_actor(_file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     println!();
     println!("    async fn handle(&mut self, msg: ActorMessage) {{");
     println!("        match msg {{");
-    println!("            ActorMessage::Ping => {{");
-    println!("                // TODO: Handle message");
-    println!("            }}");
+    if message_variants.is_empty() {
+        println!("            ActorMessage::Ping => {{");
+        println!("                // TODO: Handle message");
+        println!("            }}");
+    } else {
+        for variant in &message_variants {
+            let name = variant.split(|c: char| c == '(' || c == ' ').next().unwrap_or(variant);
+            println!("            ActorMessage::{name} => {{");
+            println!("                // TODO: Handle {name}");
+            println!("            }}");
+        }
+    }
     println!("        }}");
     println!("    }}");
     println!("}}");
@@ -246,6 +280,89 @@ fn cmd_migrate_actor(_file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     println!("}}");
 
     Ok(())
+}
+
+/// Extract state fields and message variants from source context around a line.
+fn extract_actor_context(source: &str, target_line: usize) -> (Vec<String>, Vec<String>) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut state_fields = Vec::new();
+    let mut message_variants = Vec::new();
+
+    if source.is_empty() || target_line == 0 || target_line > lines.len() {
+        return (state_fields, message_variants);
+    }
+
+    // Scan from target_line outward to find the enclosing function/struct.
+    // Look backward for struct fields (state) and forward for method calls (messages).
+    let start = target_line.saturating_sub(1);
+    let context_range = start.saturating_sub(20)..std::cmp::min(start + 40, lines.len());
+
+    for i in context_range {
+        let trimmed = lines[i].trim();
+
+        // Extract struct fields: `name: Type`
+        if trimmed.contains(':') && !trimmed.starts_with("//") && !trimmed.starts_with("fn ")
+            && !trimmed.starts_with("let ") && !trimmed.starts_with("pub fn ")
+            && !trimmed.contains("->")
+        {
+            let field = trimmed.trim_end_matches(',');
+            if field.contains(':') {
+                let parts: Vec<&str> = field.splitn(2, ':').collect();
+                if parts.len() == 2 {
+                    let name = parts[0].trim().trim_start_matches("pub ");
+                    let ty = parts[1].trim();
+                    // Heuristic: looks like a field if name is a simple ident and type is capitalized
+                    if !name.is_empty() && !name.contains(' ')
+                        && ty.chars().next().map_or(false, |c| c.is_uppercase() || c == '&')
+                    {
+                        state_fields.push(format!("{name}: {ty}"));
+                    }
+                }
+            }
+        }
+
+        // Extract method calls as potential message variants.
+        if trimmed.contains('.') && (trimmed.contains("(") || trimmed.contains("await")) {
+            if let Some(dot_pos) = trimmed.find('.') {
+                let after_dot = &trimmed[dot_pos + 1..];
+                if let Some(paren_pos) = after_dot.find('(') {
+                    let method = &after_dot[..paren_pos];
+                    let method = method.trim();
+                    if !method.is_empty() && method.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        && !["await", "clone", "unwrap", "map", "ok", "err", "into", "as_ref", "len", "is_empty"]
+                            .contains(&method)
+                    {
+                        let variant = to_pascal_case(method);
+                        if !message_variants.contains(&variant) {
+                            message_variants.push(variant);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Deduplicate and limit.
+    state_fields.truncate(10);
+    message_variants.truncate(10);
+    (state_fields, message_variants)
+}
+
+/// Convert snake_case to PascalCase.
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => {
+                    let upper: String = c.to_uppercase().collect();
+                    upper + &chars.as_str().to_lowercase()
+                }
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

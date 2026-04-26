@@ -13,3 +13,9 @@ pub use format::{
     DiagOwnerStats,
 };
 pub use kobo_ir::KoboSpan;
+
+/// Convenience alias for library-level error handling.
+///
+/// Use `KoboError` in library crates (kobo-ir, kobo-migrate, etc.).
+/// Binary crates (kobo-cli) use `anyhow::Error` instead.
+pub type KoboError = Box<dyn std::error::Error + Send + Sync>;

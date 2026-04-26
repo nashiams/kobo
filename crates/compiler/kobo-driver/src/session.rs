@@ -22,6 +22,9 @@ pub struct CompileSession {
     pub relaxed_fn_ranges: Vec<KoboSpan>,
     /// True when the mode was set by a CLI flag. CLI overrides file attribute [S-26].
     pub cli_mode_override: bool,
+    /// Struct names annotated with `#[kobo::engine]` in the source. Used by the
+    /// solver to impose PlainOwned ceiling constraints on engine resources [S-3].
+    pub engine_struct_names: Vec<String>,
 }
 
 impl CompileSession {
@@ -37,6 +40,7 @@ impl CompileSession {
             diag_enabled,
             relaxed_fn_ranges: Vec::new(),
             cli_mode_override: false,
+            engine_struct_names: Vec::new(),
         }
     }
 

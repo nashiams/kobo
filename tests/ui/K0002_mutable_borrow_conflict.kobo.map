@@ -16,7 +16,10 @@
         "end": 24,
         "file_id": 0
       },
-      "ownership_tier": "plain"
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 5
     },
     {
       "rs_span": {
@@ -29,7 +32,20 @@
         "end": 91,
         "file_id": 0
       },
-      "ownership_tier": "plain"
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 9
     }
-  ]
+  ],
+  "solver_evidence": {
+    "outcome": "Unique",
+    "graph_fingerprint": "683db9044ec6c2f3e4b2b482c48902ec",
+    "node_count": 3,
+    "edge_count": 1,
+    "budget": {
+      "max_cluster_size": 256,
+      "budget_seconds": 5.0
+    }
+  }
 }

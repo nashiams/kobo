@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::time::SystemTime;
 
+use kobo_driver::run_check_pipeline;
+use super::session::{build_session, render_diagnostics};
+
 /// File-watcher re-run on save.
 ///
 /// In `--simple` mode: polls the file's modification time, and when it changes,
@@ -43,9 +46,33 @@ fn get_mtime(file: &Path) -> anyhow::Result<SystemTime> {
         .map_err(|e| anyhow::anyhow!("cannot get mtime for {}: {}", file.display(), e))
 }
 
-/// Called when a file change is detected.
+/// Called when a file change is detected — runs the check pipeline.
 fn on_file_changed(file: &Path) {
     println!("[kobo-watch] Triggering rebuild for {}", file.display());
+    match build_session(file, None) {
+        Ok(mut session) => {
+            match run_check_pipeline(&mut session, file) {
+                Ok(()) => {
+                    render_diagnostics(&session);
+                    if session.diagnostics.is_empty() {
+                        println!("[kobo-watch] OK — no diagnostics");
+                    } else {
+                        println!(
+                            "[kobo-watch] {} diagnostic(s)",
+                            session.diagnostics.len()
+                        );
+                    }
+                }
+                Err(()) => {
+                    render_diagnostics(&session);
+                    eprintln!("[kobo-watch] check failed");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[kobo-watch] session error: {e}");
+        }
+    }
 }
 
 /// Detect whether a file has been modified since a given timestamp.

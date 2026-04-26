@@ -10,6 +10,7 @@ use crate::ownership::OwnershipTier;
 ///
 /// KIR nodes that already have a decided tier are not present here —
 /// `kobo-codegen` falls back to `KirNode.ownership` for those.
+#[derive(Clone, Debug)]
 pub struct SolutionMap {
     inner: HashMap<KirNodeId, OwnershipTier>,
 }
@@ -46,6 +47,10 @@ impl SolutionMap {
 
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (KirNodeId, OwnershipTier)> + '_ {
+        self.inner.iter().map(|(&id, &tier)| (id, tier))
     }
 }
 

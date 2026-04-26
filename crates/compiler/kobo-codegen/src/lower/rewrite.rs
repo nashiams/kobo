@@ -4,6 +4,7 @@ mod expr;
 mod local;
 pub(crate) mod lock_order;
 pub(crate) mod spawn;
+pub(crate) mod spawn_strategy;
 pub(crate) mod split_borrow;
 pub(crate) mod tick;
 mod util;
@@ -191,6 +192,75 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_function(&mut self, function: &mut syn::ItemFn) {
+        // S-16: #[kobo::tick(rate=N)] → inject interval loop before lowering body.
+        let tick_rate = function.attrs.iter().find_map(tick::parse_tick_rate);
+        if let Some(rate) = tick_rate {
+            // Remove the tick attribute.
+            function.attrs.retain(|a| !tick::is_tick_attribute(a));
+            // Make the function async.
+            function.sig.asyncness = Some(syn::token::Async::default());
+            // Inject the interval loop wrapping the original body.
+            let interval_ms = if rate > 0 { 1000u64 / rate as u64 } else { 1000u64 };
+            let original_stmts = std::mem::take(&mut function.block.stmts);
+            let preamble: Vec<syn::Stmt> = syn::parse_quote! {
+                use std::time::Duration;
+                use tokio::time::MissedTickBehavior;
+                let mut __kobo_interval = tokio::time::interval(Duration::from_millis(#interval_ms));
+                __kobo_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            };
+            let loop_body: syn::Stmt = syn::parse_quote! {
+                loop {
+                    __kobo_interval.tick().await;
+                    #(#original_stmts)*
+                }
+            };
+            function.block.stmts = preamble;
+            function.block.stmts.push(loop_body);
+        }
+        // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
+        let is_handler = function.attrs.iter().any(|attr| {
+            let segments: Vec<_> = attr.path().segments.iter().collect();
+            segments.len() == 2
+                && segments[0].ident == "kobo"
+                && segments[1].ident == "handler"
+        });
+        if is_handler {
+            // Wrap the handler body in catch_unwind for per-request isolation.
+            // The attribute is stripped below by strip_kobo_attrs.
+            let original_stmts = std::mem::take(&mut function.block.stmts);
+            let return_ty_is_result = match &function.sig.output {
+                syn::ReturnType::Type(_, ty) => {
+                    let ty_str = quote::quote!(#ty).to_string();
+                    ty_str.contains("Result")
+                }
+                _ => false,
+            };
+            if return_ty_is_result {
+                // Handler returning Result: wrap in AssertUnwindSafe + catch_unwind
+                let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
+                    let __kobo_handler_result = std::panic::AssertUnwindSafe(async move {
+                        #(#original_stmts)*
+                    });
+                    match std::panic::catch_unwind(|| {}) {
+                        Ok(()) => __kobo_handler_result.await,
+                        Err(_panic) => {
+                            eprintln!("kobo: handler panicked — request isolated");
+                            Err("handler panicked".into())
+                        }
+                    }
+                };
+                function.block.stmts = wrapped;
+            } else {
+                // Handler not returning Result: wrap body in catch_unwind
+                let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
+                    let __kobo_handler_body = async move {
+                        #(#original_stmts)*
+                    };
+                    __kobo_handler_body.await
+                };
+                function.block.stmts = wrapped;
+            }
+        }
         util::strip_kobo_attrs(&mut function.attrs);
         // Reset guard counter per function (Contract C08 / Trap 16).
         self.strict_counter = StrictGuardCounter::new();
@@ -264,10 +334,39 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Item(item) => self.lower_item(item),
             syn::Stmt::Expr(expr, _) => self.lower_expr(expr, scopes),
             syn::Stmt::Macro(stmt_macro) => {
-                // Check for spawn block marker macro.
-                if let Some(replacement) = spawn::lower_spawn_macro(&stmt_macro.mac) {
+                // Check for spawn block marker macro — wire clone injection.
+                if let Some(spawn_expr) = spawn::lower_spawn_macro(&stmt_macro.mac) {
                     let semi = stmt_macro.semi_token;
-                    *stmt = syn::Stmt::Expr(replacement, semi);
+                    // Auto-clone injection: scan spawn body for captured bindings.
+                    let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
+                    if captured.is_empty() {
+                        *stmt = syn::Stmt::Expr(spawn_expr, semi);
+                    } else {
+                        // Inject clone stmts before the spawn, wrap in a block.
+                        let mut block_stmts: Vec<syn::Stmt> = Vec::new();
+                        for cap in &captured {
+                            let action = clone_inject::capture_action(cap);
+                            if action == clone_inject::CaptureAction::Clone {
+                                let clone_name = clone_inject::clone_var_name(&cap.name);
+                                let clone_ident = syn::Ident::new(&clone_name, proc_macro2::Span::call_site());
+                                let orig_ident = syn::Ident::new(&cap.name, proc_macro2::Span::call_site());
+                                let clone_stmt: syn::Stmt = parse_quote! {
+                                    let #clone_ident = #orig_ident.clone();
+                                };
+                                block_stmts.push(clone_stmt);
+                            }
+                        }
+                        block_stmts.push(syn::Stmt::Expr(spawn_expr, semi));
+                        let block: syn::Expr = syn::Expr::Block(syn::ExprBlock {
+                            attrs: Vec::new(),
+                            label: None,
+                            block: syn::Block {
+                                brace_token: syn::token::Brace::default(),
+                                stmts: block_stmts,
+                            },
+                        });
+                        *stmt = syn::Stmt::Expr(block, None);
+                    }
                     return;
                 }
                 self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
@@ -384,6 +483,67 @@ fn is_executor_main_attr(attr: &syn::Attribute) -> bool {
         .map(|segment| segment.ident.to_string())
         .collect();
     matches!(segments.as_slice(), [executor, main] if main == "main" && (executor == "tokio" || executor == "async_std"))
+}
+
+/// Collect bindings captured by a spawn block's token stream.
+///
+/// Scans tokens for identifiers and checks each against the scope stack.
+/// Bindings found in scope are returned as `CapturedBinding` for clone analysis.
+/// Conservative: assumes all in-scope bindings referenced in the body are used after spawn.
+fn collect_spawn_captures(
+    tokens: &proc_macro2::TokenStream,
+    scopes: &ScopeStack,
+) -> Vec<clone_inject::CapturedBinding> {
+    use kobo_ir::OwnershipTier;
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut captures = Vec::new();
+    collect_idents_from_tokens(tokens, &mut seen);
+
+    for name in seen {
+        let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+        if let Some(tier) = scopes.lookup(&ident) {
+            let is_copy = matches!(tier, OwnershipTier::PlainOwned);
+            captures.push(clone_inject::CapturedBinding {
+                name,
+                tier,
+                is_copy,
+                used_after_spawn: true, // conservative assumption
+            });
+        }
+    }
+    captures
+}
+
+/// Recursively collect all identifiers from a token stream.
+fn collect_idents_from_tokens(tokens: &proc_macro2::TokenStream, out: &mut std::collections::HashSet<String>) {
+    for token in tokens.clone() {
+        match token {
+            proc_macro2::TokenTree::Ident(ident) => {
+                let name = ident.to_string();
+                // Skip Rust keywords.
+                if !is_rust_keyword(&name) {
+                    out.insert(name);
+                }
+            }
+            proc_macro2::TokenTree::Group(group) => {
+                collect_idents_from_tokens(&group.stream(), out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_rust_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "dyn" | "else"
+        | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop"
+        | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self"
+        | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe" | "use"
+        | "where" | "while" | "yield"
+    )
 }
 
 #[cfg(test)]

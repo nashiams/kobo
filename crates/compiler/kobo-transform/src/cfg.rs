@@ -390,6 +390,30 @@ pub fn compute_binding_liveness(cfg: &CfgGraph, kir: &Kir) -> BindingLiveness {
     }
 }
 
+/// Build the CFG, stamp `cfg_block` on each KIR node, and compute binding liveness.
+///
+/// This is the production entry point that replaces the old `let _cfg = build_cfg(&kir)`.
+/// Downstream passes (greedy solver, constraint extraction) can use `cfg_block`
+/// on each KirNode to look up liveness.
+pub fn stamp_cfg_and_liveness(kir: &mut Kir) -> (CfgGraph, BindingLiveness) {
+    let cfg = build_cfg(kir);
+    // Build node→block mapping.
+    let mut node_to_block: HashMap<KirNodeId, CfgBlockId> = HashMap::new();
+    for block in cfg.blocks() {
+        for &node_id in &block.kir_nodes {
+            node_to_block.insert(node_id, block.id);
+        }
+    }
+    // Stamp cfg_block on each KirNode.
+    for node in kir.iter_nodes_mut() {
+        if let Some(&block_id) = node_to_block.get(&node.id) {
+            node.cfg_block = Some(kobo_ir::CfgBlockId(block_id as u32));
+        }
+    }
+    let liveness = compute_binding_liveness(&cfg, kir);
+    (cfg, liveness)
+}
+
 /// Send requirements for bindings in async contexts.
 ///
 /// Any binding inside an async function conservatively needs `Send`,

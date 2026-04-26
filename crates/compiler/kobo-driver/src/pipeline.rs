@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use kobo_analysis::{facts_to_diagnostics, run_analysis};
-use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
+use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, SolverEvidenceJson, SolverBudgetJson};
 use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{AsyncViolationKind, FileId, Kir, KoboMode, RelaxAttrError, SolutionMap, WarnEarlyPattern};
-use kobo_migrate::{solve, ConstraintGraph, SolveOutcome, SolverBudget};
+use kobo_migrate::{build_kir_constraint_graph, solve_modular, solve_modular_with_evidence, SolveOutcome, SolverBudget, SolverEvidence, ModularEvidence};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
     preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
@@ -75,6 +75,12 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         return Err(());
     }
 
+    // S-3: Collect #[kobo::engine] structs for downstream constraint ceilings.
+    let engine_structs = kobo_parser::collect_engine_structs(kobo_file.syn_file());
+    if !engine_structs.is_empty() {
+        session.engine_struct_names = engine_structs.iter().map(|e| e.struct_name.clone()).collect();
+    }
+
     // Collect @strict blocks/fns before stripping marker attributes.
     let (strict_blocks, strict_fns) =
         collect_strict_items_from_syn(kobo_file.syn_file(), &rewritten, file_id);
@@ -111,7 +117,16 @@ pub fn run_codegen_pipeline(
 ) -> Result<CodegenArtifacts, ()> {
     let (kobo_file, kir) = run_kir_phase(session, input)?;
     run_analysis_phase(session, &kir)?;
-    let solution = resolve_solution();
+    let (evidence, outcome) = resolve_solution(&kir);
+
+    // Phase 00/05: Project non-Unique solver outcomes to K-code diagnostics.
+    project_solver_diagnostics(session, &kir, &outcome);
+
+    // Use solver solution for codegen when available (Phase 06), empty otherwise.
+    let solution = match &outcome {
+        SolveOutcome::Unique(map) => map.clone(),
+        _ => SolutionMap::new(),
+    };
     let rs_path = output_path_for(input, &session.config);
     let map_path = map_path_for(input, &session.config);
     let executor_choice = kobo_codegen::executor::select_executor(&session.config.dependencies);
@@ -129,7 +144,36 @@ pub fn run_codegen_pipeline(
             executor_choice,
         },
     );
-    let map_json = source_map.to_json_string().map_err(|error| {
+
+    // Inject solver evidence into source map before serialization.
+    let injected_map = inject_solver_evidence(source_map, &evidence);
+
+    // S-17: Apply extract-before-borrow annotations.
+    let rs_source = {
+        let sites = kobo_transform::patterns::extract_borrow::find_extract_before_borrow(
+            kir.transform_facts(),
+        );
+        if sites.is_empty() {
+            rs_source
+        } else {
+            let mut annotated = rs_source;
+            for site in &sites {
+                let comment = format!(
+                    "// kobo: extract-before-borrow: {} → {} (borrow conflict at {}:{})\n",
+                    site.binding_name,
+                    site.temp_name,
+                    site.borrow_expr_span.start,
+                    site.conflict_span.start,
+                );
+                if !annotated.contains(&comment) {
+                    annotated = format!("{comment}{annotated}");
+                }
+            }
+            annotated
+        }
+    };
+
+    let map_json = injected_map.to_json_string().map_err(|error| {
         eprintln!("kobo: failed to serialize source map: {error}");
     })?;
 
@@ -147,7 +191,7 @@ pub fn run_codegen_pipeline(
         rs_source,
         rs_path,
         map_path,
-        source_map,
+        source_map: injected_map,
     })
 }
 
@@ -357,20 +401,146 @@ fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()>
     }
 }
 
-fn resolve_solution() -> SolutionMap {
-    let graph = ConstraintGraph {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-    };
+fn resolve_solution(kir: &Kir) -> (SolverEvidence, SolveOutcome) {
     let budget = SolverBudget::default();
-    match solve(&graph, budget) {
-        SolveOutcome::Unique(map) => map,
-        SolveOutcome::MultiSolution(_) => SolutionMap::new(), // TODO: implement chooser
-        SolveOutcome::NoSolution(_) => SolutionMap::new(),
-        SolveOutcome::ClusterTooLarge(_) => SolutionMap::new(),
-        SolveOutcome::BudgetExceeded(_) => SolutionMap::new(),
-        SolveOutcome::BoundaryStop(_) => SolutionMap::new(),
+    let modular = solve_modular_with_evidence(kir, &budget);
+    let outcome = solve_modular(kir, &budget);
+    (modular.solver_evidence, outcome)
+}
+
+/// Project non-Unique solver outcomes to K-code diagnostics (Phase 00/05).
+fn project_solver_diagnostics(
+    session: &mut CompileSession,
+    kir: &Kir,
+    outcome: &SolveOutcome,
+) {
+    match outcome {
+        SolveOutcome::Unique(_) | SolveOutcome::MultiSolution(_) => {
+            // Unique and multi-solution are not errors.
+        }
+        SolveOutcome::NoSolution(report) => {
+            let span = report
+                .conflicting_nodes
+                .first()
+                .and_then(|id| kir.get_node(*id))
+                .map(|n| n.span)
+                .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
+            let severity =
+                resolve_severity(KErrorCode::K0080, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0080,
+                severity,
+                DiagLabel::primary(span, format!("ownership conflict: {}", report.conflict_reason)),
+                format!(
+                    "solver found no valid ownership assignment for {} node(s)",
+                    report.conflicting_nodes.len()
+                ),
+                DiagDecision("review sharing patterns or add ownership hints".to_owned()),
+            ));
+        }
+        SolveOutcome::ClusterTooLarge(report) => {
+            let span = report
+                .member_nodes
+                .first()
+                .and_then(|id| kir.get_node(*id))
+                .map(|n| n.span)
+                .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
+            let severity =
+                resolve_severity(KErrorCode::K0081, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0081,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "constraint cluster too large ({} nodes, limit {})",
+                        report.cluster_size, report.limit
+                    ),
+                ),
+                format!(
+                    "cluster of {} interdependent bindings exceeds solver limit of {}",
+                    report.cluster_size, report.limit
+                ),
+                DiagDecision(
+                    "split large functions or reduce sharing to lower cluster size".to_owned(),
+                ),
+            ));
+        }
+        SolveOutcome::BudgetExceeded(report) => {
+            let span = kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0));
+            let severity =
+                resolve_severity(KErrorCode::K0082, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0082,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "solver budget exceeded ({:.1}s of {:.1}s, {}/{} resolved)",
+                        report.elapsed_seconds,
+                        report.budget_seconds,
+                        report.resolved_count,
+                        report.total_count,
+                    ),
+                ),
+                format!(
+                    "solver resolved {}/{} nodes before {:.1}s budget expired",
+                    report.resolved_count, report.total_count, report.budget_seconds
+                ),
+                DiagDecision(
+                    "increase solver_budget_seconds or reduce constraint complexity".to_owned(),
+                ),
+            ));
+        }
+        SolveOutcome::BoundaryStop(report) => {
+            let span = kir
+                .get_node(report.crossing_node)
+                .map(|n| n.span)
+                .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
+            let severity =
+                resolve_severity(KErrorCode::K0090, session.mode()).unwrap_or(Severity::Warning);
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0090,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "ownership depends on external crate `{}`",
+                        report.external_crate
+                    ),
+                ),
+                format!(
+                    "binding crosses into `{}::{}` — solver cannot infer ownership across crate boundaries",
+                    report.external_crate, report.external_function
+                ),
+                DiagDecision(
+                    "add an explicit ownership hint or use #[kobo::migrate]".to_owned(),
+                ),
+            ));
+        }
     }
+}
+
+fn inject_solver_evidence(mut source_map: KoboSourceMap, evidence: &SolverEvidence) -> KoboSourceMap {
+    // Set top-level solver evidence.
+    source_map.solver_evidence = Some(SolverEvidenceJson {
+        outcome: evidence.outcome_name.clone(),
+        graph_fingerprint: evidence.graph_fingerprint.clone(),
+        node_count: evidence.node_count as u64,
+        edge_count: evidence.edge_count as u64,
+        budget: SolverBudgetJson {
+            max_cluster_size: evidence.budget.max_cluster_size as u64,
+            budget_seconds: evidence.budget.budget_seconds,
+        },
+    });
+
+    // Annotate each mapping with solver provenance.
+    for entry in &mut source_map.x_kobo_mappings {
+        entry.solver_outcome = Some(evidence.outcome_name.clone());
+        entry.decision_source = Some("solver".to_owned());
+    }
+
+    source_map
 }
 
 /// Resolves the effective mode for a file.
@@ -382,6 +552,17 @@ pub fn effective_mode(
     config_mode: KoboMode,
 ) -> KoboMode {
     cli_mode.or(file_mode).unwrap_or(config_mode)
+}
+
+/// S-21: Apply lifetime erasure to Rust source in Script mode.
+///
+/// Rewrites reference parameters (`&T`, `&mut T`, `&str`) to owned types
+/// (`T`, `T`, `String`). Intended for Script-mode prototyping where the
+/// user opts in to simplified ownership.
+///
+/// Call this on the codegen output when `--erase-lifetimes` is requested.
+pub fn apply_lifetime_erasure(source: &str, mode: KoboMode) -> String {
+    kobo_transform::lifetime_erase::rewrite_fn_signature(source, mode)
 }
 
 #[cfg(test)]

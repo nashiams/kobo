@@ -14,8 +14,8 @@ use crate::{resolve_cli_mode, KoboCommand};
 
 pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
     match command {
-        KoboCommand::Check { file, checked, strict } => {
-            check::cmd_check(&file, resolve_cli_mode(checked, strict))
+        KoboCommand::Check { file, checked, strict, pipeline } => {
+            check::cmd_check(&file, resolve_cli_mode(checked, strict), pipeline)
         }
         KoboCommand::Fmt { file } => fmt::cmd_fmt(&file),
         KoboCommand::Run { file, checked, strict } => {

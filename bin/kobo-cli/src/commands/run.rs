@@ -68,7 +68,8 @@ pub(super) fn cmd_inspect(
     let output = if clean || cargo_dir.is_some() {
         kobo_codegen::clean::strip_kobo_wrappers(&rs_source)
     } else {
-        rs_source
+        // Annotate lock acquisition order for inspect output.
+        kobo_codegen::annotate_lock_order(&rs_source)
     };
 
     if let Some(dir) = cargo_dir {

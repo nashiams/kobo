@@ -27,15 +27,38 @@ pub struct SourceMapEntry {
     pub rs_span: RsSpan,
     pub kobo_span: KoboSpan,
     pub ownership_tier: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_node_id: Option<u64>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SolverEvidenceJson {
+    pub outcome: String,
+    pub graph_fingerprint: String,
+    pub node_count: u64,
+    pub edge_count: u64,
+    pub budget: SolverBudgetJson,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SolverBudgetJson {
+    pub max_cluster_size: u64,
+    pub budget_seconds: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KoboSourceMap {
     pub version: u32,
     pub file: String,
     pub sources: Vec<String>,
     #[serde(rename = "x_kobo_mappings")]
     pub x_kobo_mappings: Vec<SourceMapEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_evidence: Option<SolverEvidenceJson>,
 }
 
 pub(crate) fn build_source_map_entries(
@@ -57,6 +80,9 @@ pub(crate) fn build_source_map_entries(
             },
             kobo_span: site.kobo_span,
             ownership_tier: ownership_tier_label(site.ownership_tier).to_owned(),
+            solver_outcome: None,
+            decision_source: None,
+            solver_node_id: Some(site.node.0 as u64),
         });
     }
 
@@ -73,6 +99,7 @@ pub fn wrap_source_map(
         file: rs_path.display().to_string(),
         sources: vec![kobo_path.display().to_string()],
         x_kobo_mappings: entries,
+        solver_evidence: None,
     }
 }
 

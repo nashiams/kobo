@@ -435,7 +435,7 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
 
 /// Render a labeled break/continue crossing @strict boundary diagnostic.
 ///
-/// v0.5: uses K0041 code as placeholder (K0044 reserved for v0.6).
+/// Render K0044 for labeled break/continue across an @strict boundary.
 /// Contract C03: Severity::Error.
 pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
     use crate::codes::{KErrorCode, Severity};
@@ -460,7 +460,7 @@ pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
     );
 
     let mut diag = KDiagnostic::new(
-        KErrorCode::K0041,
+        KErrorCode::K0044,
         Severity::Error,
         primary,
         explanation,

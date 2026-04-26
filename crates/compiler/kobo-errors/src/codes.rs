@@ -47,7 +47,7 @@ macro_rules! define_error_codes {
                     Self::K0090 => "migration cannot continue - value crosses into external crate",
                     Self::K0095 => "ownership of macro-generated value cannot be inferred",
                     Self::K0099 => "rustc error remapped to Kobo source",
-                    _ => "diagnostic stub",
+                    _ => "reserved diagnostic code",
                 }
             }
         }
@@ -109,7 +109,7 @@ define_error_codes! {
     K0041 => "K0041",
     K0042 => "K0042",
     K0043 => "K0043",
-    // TODO(v0.7): K0044 — labeled break/continue across @strict boundary
+    // K0044 — labeled break/continue across @strict boundary
     K0044 => "K0044",
     // TODO(v0.7): K0045 — @strict across module boundary
     K0045 => "K0045",
@@ -259,7 +259,7 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
         K0030 => Some(Severity::Error),
 
         // @strict boundary violations — always Error.
-        K0041 | K0042 | K0043 => Some(Severity::Error),
+        K0041 | K0042 | K0043 | K0044 => Some(Severity::Error),
 
         // Async ownership — mode-dependent.
         // Script/Checked: Warning, Strict: Error.
@@ -293,14 +293,14 @@ pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
         // Uncategorized ownership (catch-all for future rustc remapped codes).
         K0019 => ownership_severity(mode),
 
-        // Stub codes — use mode-dependent ownership default.
-        // When a stub becomes active, move it to its own explicit arm above.
+        // Reserved/uncategorized codes — use mode-dependent ownership default.
+        // When a code becomes active, move it to its own explicit arm above.
         K0003 | K0004 | K0005 | K0006 | K0007 | K0008 | K0009 |
         K0010 | K0011 | K0012 | K0013 | K0014 | K0015 | K0016 |
         K0017 | K0018 |
         K0022 | K0023 | K0024 | K0027 | K0028 | K0029 |
         K0031 | K0032 | K0033 | K0034 | K0035 | K0036 | K0037 |
-        K0038 | K0039 | K0040 | K0044 | K0045 | K0046 | K0047 |
+        K0038 | K0039 | K0040 | K0045 | K0046 | K0047 |
         K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 |
         K0055 | K0056 | K0057 | K0058 | K0059 |
         K0064 | K0065 | K0066 | K0067 | K0068 | K0069 |

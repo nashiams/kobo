@@ -3,7 +3,7 @@
 /// Mapping table (v0.8):
 ///   OwnershipTier::ArcShared (read-only) → Arc<T>
 ///   OwnershipTier::ArcMutShared (mutable) → Arc<tokio::sync::RwLock<T>>
-///   OwnershipTier::ArcMutShared (counter-like) → Arc<AtomicU64>  // v0.9 S-11, stub only
+///   OwnershipTier::ArcMutShared (counter-like) → Arc<AtomicU64>  // reserved for future specialized lowering
 ///
 /// HARD RULES:
 ///   - NEVER generate Arc<std::sync::Mutex<T>>

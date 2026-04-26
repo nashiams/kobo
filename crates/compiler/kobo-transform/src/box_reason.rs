@@ -16,7 +16,7 @@ pub(crate) fn collect_box_reasons(
 
         // Recursive type handling belongs to type-definition validation, not
         // v0.3's binding-level BoxOwned lowering. Keep the enum variant reserved
-        // for future work, but do not synthesize it from transform today.
+        // Leave this reason reserved; transform does not synthesize it today.
         if struct_size_bytes(item_struct)
             .is_some_and(|size| size >= small_struct_clone_threshold_bytes)
             && !struct_has_heap_fields(item_struct)

@@ -3,7 +3,6 @@
 /// Subcommands/flags:
 ///   kobo migrate file.kobo           — migrate single file
 ///   kobo migrate --dry-run file.kobo — show diff without applying
-///   kobo migrate --apply file.kobo   — apply changes
 ///   kobo migrate --graph file.kobo   — show dependency graph
 ///   kobo migrate --root fn_name file.kobo — start from specific function
 ///   kobo migrate --actor file.kobo:42     — generate actor scaffold at line
@@ -164,22 +163,10 @@ fn apply_migration(
         return Ok(());
     }
 
-    // For now, apply is a preview + confirmation.
-    // Full rewriting requires source-map integration (future work).
-    println!("// kobo migrate: applying {} change(s)...", result.resolved.len());
-    println!("// NOTE: source rewriting not yet implemented — showing plan.");
-
-    for decision in &result.resolved {
-        let tier_label = format!("{:?}", decision.tier);
-        println!(
-            "  node({}) -> {} (reason: {:?})",
-            decision.node.0, tier_label, decision.reason,
-        );
-    }
-
-    println!("// {} change(s) planned.", result.resolved.len());
-
-    Ok(())
+    anyhow::bail!(
+        "--apply is not available in this build; use --dry-run to review {} planned change(s)",
+        result.resolved.len()
+    )
 }
 
 /// Generate actor scaffold at the given line.
@@ -420,6 +407,17 @@ mod tests {
         let result = make_test_result(3);
         let out = print_dependency_graph(&result, None);
         assert!(out.is_ok());
+    }
+
+    #[test]
+    fn apply_errors_when_rewrite_is_unavailable() {
+        let result = make_test_result(2);
+        let file = Path::new("test.kobo");
+        let err = apply_migration(file, &result, None).unwrap_err();
+        assert!(
+            err.to_string().contains("--apply is not available in this build"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

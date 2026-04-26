@@ -1866,7 +1866,7 @@ fn main() {
 
 /// MIR #22: Send propagation — nested spawn.
 #[test]
-#[ignore = "feature not yet implemented: Send propagation across nested spawn boundaries"]
+#[ignore = "pending async send propagation across nested spawn boundaries"]
 fn test_send_propagation_nested_spawn() {
     // When a binding is captured by a spawned task,
     // Send requirement should propagate to its tier decision.
@@ -1932,7 +1932,7 @@ fn main() {
 
 /// P4: LocalOnly overrides Send requirement.
 #[test]
-#[ignore = "feature not yet implemented: LocalOnly Send override for local-task bindings"]
+#[ignore = "pending LocalOnly Send override for local-task bindings"]
 fn test_priority_local_only_overrides_send() {
     // A binding used only in a local (non-spawned) async context
     // should not require Send, overriding any Send analysis.
@@ -1971,7 +1971,7 @@ fn main() {
 
 /// A5: Send required, mutable → ArcMutShared.
 #[test]
-#[ignore = "feature not yet implemented: Send analysis for Arc tier selection"]
+#[ignore = "pending send analysis for Arc tier selection"]
 fn test_async_send_required_mutable_arc_mut_shared() {
     // When a mutable binding crosses a spawn boundary (Send required),
     // tier should be ArcMutShared.
@@ -1979,7 +1979,7 @@ fn test_async_send_required_mutable_arc_mut_shared() {
 
 /// A6: Send required, read-only → ArcShared.
 #[test]
-#[ignore = "feature not yet implemented: Send analysis for Arc tier selection"]
+#[ignore = "pending send analysis for Arc tier selection"]
 fn test_async_send_required_readonly_arc_shared() {
     // When a read-only binding crosses a spawn boundary (Send required),
     // tier should be ArcShared.

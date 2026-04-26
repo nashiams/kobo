@@ -111,8 +111,8 @@ pub(crate) enum KoboCommand {
         /// Show diff without applying changes (default)
         #[arg(long)]
         dry_run: bool,
-        /// Apply migration changes to the source file
-        #[arg(long)]
+        /// Reserved for in-place rewriting; currently returns an error
+        #[arg(long, hide = true)]
         apply: bool,
         /// Show dependency graph
         #[arg(long)]

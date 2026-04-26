@@ -19,7 +19,8 @@ const PHASES: [&str; 15] = [
     "phase_14_v08_gap_closure.md",
 ];
 
-const CONTRACTS: [&str; 3] = [
+const CONTRACTS: [&str; 4] = [
+    "anti_lie_verification.md",
     "evidence_contract.md",
     "solver_contract.md",
     "source_coverage.md",
@@ -206,6 +207,67 @@ fn every_contract_is_referenced_and_has_a_verification_surface() {
         "MultiSolution never collapses",
     ] {
         assert_contains(&solver, needle, "solver contract lost anti-evasion rule");
+    }
+}
+
+#[test]
+fn anti_lie_contract_has_one_oracle_gate_per_phase_and_required_layers() {
+    let anti_lie = read(roadmap_root().join("contracts/anti_lie_verification.md"));
+    let evidence = read(roadmap_root().join("contracts/evidence_contract.md"));
+    let implement = read(roadmap_root().join("IMPLEMENT.md"));
+    let combined = format!("{anti_lie}\n{evidence}\n{implement}");
+
+    for phase in 0..=14 {
+        let marker = format!("### Phase {phase:02}:");
+        assert_contains(
+            &anti_lie,
+            &marker,
+            "anti-lie contract must define an oracle section for every phase",
+        );
+    }
+
+    for needle in [
+        "Layer 1: Source-Structure Probes",
+        "Layer 2: Behavioral Differential Tests",
+        "Layer 3: Cross-Layer Consistency Checks",
+        "assert_ne!",
+        "negative test",
+        "independent oracle",
+        "actual `kobo` binary",
+        "raw terminal output",
+        "P1-P5",
+    ] {
+        assert_contains(
+            &combined,
+            needle,
+            "anti-lie gate lost a hard-to-game verification requirement",
+        );
+    }
+}
+
+#[test]
+fn executable_oracle_tests_must_include_differential_negative_and_cross_layer_checks() {
+    let solver_oracle =
+        read(repo_root().join("crates/compiler/kobo-migrate/src/evidence_contract_tests.rs"));
+    let cli_oracle = read(repo_root().join("bin/kobo-cli/tests/evidence_contract.rs"));
+    let combined = format!("{solver_oracle}\n{cli_oracle}");
+
+    for needle in [
+        "assert_ne!",
+        "BudgetExceeded",
+        "NoSolution",
+        "run_kobo",
+        "migrate",
+        "inspect_source_map",
+        "source_map_solver_evidence_summary",
+        "brute_force_oracle",
+        "oracle_seven_tier_lub_matrix_must_match_solver_lattice_contract",
+    ] {
+        assert_contains(
+            &combined,
+            needle,
+            "executable oracle suite lost behavioral, negative, or cross-layer coverage",
+        );
     }
 }
 

@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/strict_read_only.rs",
+  "sources": [
+    "tests/fixtures/strict_read_only.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 8,
+        "column_start": 8,
+        "column_end": 11
+      },
+      "kobo_span": {
+        "start": 112,
+        "end": 115,
+        "file_id": 0
+      },
+      "ownership_tier": "rc",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 5
+    },
+    {
+      "rs_span": {
+        "line": 10,
+        "column_start": 12,
+        "column_end": 18
+      },
+      "kobo_span": {
+        "start": 155,
+        "end": 161,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 6
+    }
+  ],
+  "solver_evidence": {
+    "outcome": "Unique",
+    "graph_fingerprint": "38daf0e68acf79fd957130641ff15f0c",
+    "node_count": 2,
+    "edge_count": 1,
+    "budget": {
+      "max_cluster_size": 256,
+      "budget_seconds": 5.0
+    }
+  }
+}

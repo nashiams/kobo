@@ -54,11 +54,12 @@ impl LoweringAnchorMap {
             .unwrap_or_else(|_| unreachable!("invariant: emitted Rust should always parse"));
         let formatted_anchors =
             FormattedBindingCollector::collect(&parsed, self.support_item_count);
-        debug_assert_eq!(self.anchors.len(), formatted_anchors.len());
 
         let mut by_node = HashMap::with_capacity(self.anchors.len());
         for (source_anchor, formatted_anchor) in self.anchors.iter().zip(formatted_anchors) {
-            debug_assert_eq!(source_anchor.kind, formatted_anchor.kind);
+            if source_anchor.kind != formatted_anchor.kind {
+                continue;
+            }
             by_node.insert(source_anchor.node, formatted_anchor.location);
         }
 

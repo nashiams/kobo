@@ -1,0 +1,171 @@
+// Oracle Gate: Resource pool with borrow-after-move pattern.
+// A connection pool lends out handles. The handle borrows from the pool,
+// then the pool itself is moved (e.g., into a new scope or returned).
+// This is an S-17 extract-before-borrow situation.
+//
+// Oracle property: The solver must detect the live borrow at the point
+// of move and either (a) rewrite to extract before borrow (S-17 fix)
+// or (b) report K0080 with provenance showing exactly which borrow
+// blocks the move. A solver that silently assigns PlainOwned to both
+// the pool and the handle is unsound — it would allow use-after-move.
+
+struct Connection {
+    id: u64,
+    host: String,
+    active: bool,
+}
+
+impl Connection {
+    fn new(id: u64, host: String) -> Self {
+        Self {
+            id,
+            host,
+            active: true,
+        }
+    }
+
+    fn execute(&self, query: &str) -> u64 {
+        query.len() as u64
+    }
+
+    fn close(&mut self) {
+        self.active = false;
+    }
+}
+
+struct Pool {
+    connections: Vec<Connection>,
+    host: String,
+    max_size: usize,
+    checkout_count: u64,
+}
+
+impl Pool {
+    fn new(host: String, max_size: usize) -> Self {
+        Self {
+            connections: Vec::new(),
+            host,
+            max_size,
+            checkout_count: 0,
+        }
+    }
+
+    fn init(&mut self) {
+        let mut i = 0;
+        while i < self.max_size {
+            self.connections
+                .push(Connection::new(i as u64, self.host.clone()));
+            i = i + 1;
+        }
+    }
+
+    fn checkout(&mut self) -> Option<u64> {
+        for conn in &mut self.connections {
+            if conn.active {
+                self.checkout_count = self.checkout_count + 1;
+                return Some(conn.id);
+            }
+        }
+        None
+    }
+
+    fn checkin(&mut self, id: u64) {
+        for conn in &mut self.connections {
+            if conn.id == id {
+                conn.active = true;
+                return;
+            }
+        }
+    }
+
+    fn execute_on(&self, conn_id: u64, query: &str) -> u64 {
+        for conn in &self.connections {
+            if conn.id == conn_id {
+                return conn.execute(query);
+            }
+        }
+        0
+    }
+
+    fn stats(&self) -> String {
+        let active = self.connections.iter().filter(|c| c.active).count();
+        format!(
+            "host={} total={} active={} checkouts={}",
+            self.host,
+            self.connections.len(),
+            active,
+            self.checkout_count
+        )
+    }
+}
+
+// Uses pool, then pool is consumed by transfer_pool
+fn use_pool_then_transfer(pool: &mut Pool) -> String {
+    pool.init();
+
+    // Checkout a connection — creates a dependency on pool
+    let conn_id = pool.checkout();
+    match conn_id {
+        Some(id) => {
+            let result = pool.execute_on(id, "SELECT * FROM users");
+            pool.checkin(id);
+            format!("query result: {} bytes", result)
+        }
+        None => String::from("no connections available"),
+    }
+}
+
+// Transfer pool ownership — tests move semantics
+fn transfer_pool(pool: Pool) -> Pool {
+    println!("transferring pool: {}", pool.stats());
+    pool
+}
+
+struct PoolManager {
+    pools: Vec<Pool>,
+}
+
+impl PoolManager {
+    fn new() -> Self {
+        Self { pools: Vec::new() }
+    }
+
+    fn add_pool(&mut self, pool: Pool) {
+        self.pools.push(pool);
+    }
+
+    fn total_checkouts(&self) -> u64 {
+        let mut total = 0;
+        for pool in &self.pools {
+            total = total + pool.checkout_count;
+        }
+        total
+    }
+}
+
+fn main() {
+    let mut pool = Pool::new(String::from("db.example.com"), 5);
+
+    // Use pool — creates borrows
+    let result = use_pool_then_transfer(&mut pool);
+    println!("{}", result);
+
+    // Now move pool into manager — borrow must not be live here
+    let mut manager = PoolManager::new();
+    manager.add_pool(pool);
+
+    // Create second pool and exercise it
+    let mut pool2 = Pool::new(String::from("cache.example.com"), 3);
+    pool2.init();
+    let id = pool2.checkout();
+    match id {
+        Some(conn_id) => {
+            pool2.execute_on(conn_id, "GET cache:key");
+            pool2.checkin(conn_id);
+        }
+        None => {}
+    }
+    manager.add_pool(pool2);
+
+    println!("total checkouts: {}", manager.total_checkouts());
+}

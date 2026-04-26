@@ -1,0 +1,339 @@
+{
+  "version": 3,
+  "file": "tests/fixtures/oracle_deep_call_ceiling.rs",
+  "sources": [
+    "tests/fixtures/oracle_deep_call_ceiling.kobo"
+  ],
+  "x_kobo_mappings": [
+    {
+      "rs_span": {
+        "line": 17,
+        "column_start": 29,
+        "column_end": 33
+      },
+      "kobo_span": {
+        "start": 880,
+        "end": 884,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 46
+    },
+    {
+      "rs_span": {
+        "line": 33,
+        "column_start": 11,
+        "column_end": 15
+      },
+      "kobo_span": {
+        "start": 1157,
+        "end": 1161,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 52
+    },
+    {
+      "rs_span": {
+        "line": 41,
+        "column_start": 14,
+        "column_end": 18
+      },
+      "kobo_span": {
+        "start": 1329,
+        "end": 1333,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 58
+    },
+    {
+      "rs_span": {
+        "line": 63,
+        "column_start": 25,
+        "column_end": 31
+      },
+      "kobo_span": {
+        "start": 1773,
+        "end": 1779,
+        "file_id": 0
+      },
+      "ownership_tier": "rc",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 64
+    },
+    {
+      "rs_span": {
+        "line": 80,
+        "column_start": 11,
+        "column_end": 19
+      },
+      "kobo_span": {
+        "start": 2287,
+        "end": 2295,
+        "file_id": 0
+      },
+      "ownership_tier": "rc_refcell",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 76
+    },
+    {
+      "rs_span": {
+        "line": 81,
+        "column_start": 49,
+        "column_end": 58
+      },
+      "kobo_span": {
+        "start": 2312,
+        "end": 2321,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 77
+    },
+    {
+      "rs_span": {
+        "line": 90,
+        "column_start": 11,
+        "column_end": 19
+      },
+      "kobo_span": {
+        "start": 2612,
+        "end": 2620,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 89
+    },
+    {
+      "rs_span": {
+        "line": 91,
+        "column_start": 36,
+        "column_end": 45
+      },
+      "kobo_span": {
+        "start": 2637,
+        "end": 2646,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 90
+    },
+    {
+      "rs_span": {
+        "line": 97,
+        "column_start": 11,
+        "column_end": 19
+      },
+      "kobo_span": {
+        "start": 2828,
+        "end": 2836,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 97
+    },
+    {
+      "rs_span": {
+        "line": 98,
+        "column_start": 36,
+        "column_end": 45
+      },
+      "kobo_span": {
+        "start": 2853,
+        "end": 2862,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 98
+    },
+    {
+      "rs_span": {
+        "line": 104,
+        "column_start": 11,
+        "column_end": 19
+      },
+      "kobo_span": {
+        "start": 3044,
+        "end": 3052,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 105
+    },
+    {
+      "rs_span": {
+        "line": 105,
+        "column_start": 36,
+        "column_end": 45
+      },
+      "kobo_span": {
+        "start": 3069,
+        "end": 3078,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 106
+    },
+    {
+      "rs_span": {
+        "line": 111,
+        "column_start": 11,
+        "column_end": 19
+      },
+      "kobo_span": {
+        "start": 3260,
+        "end": 3268,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 113
+    },
+    {
+      "rs_span": {
+        "line": 112,
+        "column_start": 36,
+        "column_end": 45
+      },
+      "kobo_span": {
+        "start": 3285,
+        "end": 3294,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 114
+    },
+    {
+      "rs_span": {
+        "line": 119,
+        "column_start": 4,
+        "column_end": 12
+      },
+      "kobo_span": {
+        "start": 3567,
+        "end": 3575,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 121
+    },
+    {
+      "rs_span": {
+        "line": 121,
+        "column_start": 4,
+        "column_end": 13
+      },
+      "kobo_span": {
+        "start": 3592,
+        "end": 3601,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 122
+    },
+    {
+      "rs_span": {
+        "line": 130,
+        "column_start": 12,
+        "column_end": 20
+      },
+      "kobo_span": {
+        "start": 3816,
+        "end": 3824,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 131
+    },
+    {
+      "rs_span": {
+        "line": 132,
+        "column_start": 12,
+        "column_end": 21
+      },
+      "kobo_span": {
+        "start": 3858,
+        "end": 3867,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 132
+    },
+    {
+      "rs_span": {
+        "line": 136,
+        "column_start": 12,
+        "column_end": 21
+      },
+      "kobo_span": {
+        "start": 4106,
+        "end": 4115,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 135
+    },
+    {
+      "rs_span": {
+        "line": 138,
+        "column_start": 12,
+        "column_end": 22
+      },
+      "kobo_span": {
+        "start": 4148,
+        "end": 4158,
+        "file_id": 0
+      },
+      "ownership_tier": "plain",
+      "solver_outcome": "Unique",
+      "decision_source": "solver",
+      "solver_node_id": 136
+    }
+  ],
+  "solver_evidence": {
+    "outcome": "Unique",
+    "graph_fingerprint": "d3bc7b3583a15ee449bf7f25190e5dee",
+    "node_count": 23,
+    "edge_count": 12,
+    "budget": {
+      "max_cluster_size": 256,
+      "budget_seconds": 5.0
+    }
+  }
+}

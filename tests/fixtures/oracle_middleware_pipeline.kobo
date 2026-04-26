@@ -1,0 +1,228 @@
+// Oracle Gate: Middleware pipeline with mixed ownership requirements.
+// Each middleware captures shared state differently:
+// - rate_limiter: mutates a counter (needs mutable shared)
+// - auth_cache: reads a lookup table (needs shared read)
+// - logger: captures a write handle sent to another thread (needs Send + mutable)
+// - request_id: thread-local counter (can stay owned, no sharing)
+//
+// A production solver (C2Rust-style) must assign DIFFERENT tiers per
+// middleware's capture set. A solver that assigns one uniform tier is wrong.
+// Swift's constraint solver would generate per-middleware disjunctions.
+
+struct RateLimiter {
+    window_ms: u64,
+    max_requests: u64,
+    current_count: u64,
+}
+
+impl RateLimiter {
+    fn new(window_ms: u64, max_requests: u64) -> Self {
+        Self {
+            window_ms,
+            max_requests,
+            current_count: 0,
+        }
+    }
+
+    fn check(&mut self) -> bool {
+        self.current_count = self.current_count + 1;
+        self.current_count <= self.max_requests
+    }
+
+    fn reset(&mut self) {
+        self.current_count = 0;
+    }
+}
+
+struct AuthEntry {
+    token: String,
+    user_id: u64,
+    expires_at: u64,
+}
+
+struct AuthCache {
+    entries: Vec<AuthEntry>,
+}
+
+impl AuthCache {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, token: String, user_id: u64) {
+        self.entries.push(AuthEntry {
+            token,
+            user_id,
+            expires_at: 3600,
+        });
+    }
+
+    fn lookup(&self, token: &str) -> bool {
+        let mut i = 0;
+        while i < self.entries.len() {
+            if self.entries[i].token.as_str() == token {
+                return true;
+            }
+            i = i + 1;
+        }
+        false
+    }
+
+    fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+struct Logger {
+    buffer: Vec<String>,
+    flush_count: u64,
+}
+
+impl Logger {
+    fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            flush_count: 0,
+        }
+    }
+
+    fn log(&mut self, msg: String) {
+        self.buffer.push(msg);
+    }
+
+    fn flush(&mut self) {
+        self.flush_count = self.flush_count + 1;
+        self.buffer = Vec::new();
+    }
+}
+
+struct RequestIdGen {
+    next_id: u64,
+}
+
+impl RequestIdGen {
+    fn new() -> Self {
+        Self { next_id: 1 }
+    }
+
+    fn next(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id + 1;
+        id
+    }
+}
+
+struct Request {
+    path: String,
+    token: String,
+    body_len: u64,
+}
+
+struct Response {
+    status: u64,
+    request_id: u64,
+}
+
+// Middleware chain: each function takes different shared-state references
+fn middleware_rate_limit(limiter: &mut RateLimiter, _req: &Request) -> bool {
+    limiter.check()
+}
+
+fn middleware_auth(cache: &AuthCache, req: &Request) -> bool {
+    cache.lookup(req.token.as_str())
+}
+
+fn middleware_log(logger: &mut Logger, req: &Request, resp: &Response) {
+    let msg = format!(
+        "req_id={} path={} status={}",
+        resp.request_id, req.path, resp.status
+    );
+    logger.log(msg);
+}
+
+fn handle_request(
+    limiter: &mut RateLimiter,
+    cache: &AuthCache,
+    logger: &mut Logger,
+    id_gen: &mut RequestIdGen,
+    req: Request,
+) -> Response {
+    let request_id = id_gen.next();
+
+    if !middleware_rate_limit(limiter, &req) {
+        let resp = Response {
+            status: 429,
+            request_id,
+        };
+        middleware_log(logger, &req, &resp);
+        return resp;
+    }
+
+    if !middleware_auth(cache, &req) {
+        let resp = Response {
+            status: 401,
+            request_id,
+        };
+        middleware_log(logger, &req, &resp);
+        return resp;
+    }
+
+    let resp = Response {
+        status: 200,
+        request_id,
+    };
+    middleware_log(logger, &req, &resp);
+    resp
+}
+
+// Background flush crosses a spawn boundary — logger must become Send
+async fn background_flush(logger: &mut Logger) {
+    logger.flush();
+}
+
+fn main() {
+    let mut limiter = RateLimiter::new(1000, 100);
+    let mut cache = AuthCache::new();
+    let mut logger = Logger::new();
+    let mut id_gen = RequestIdGen::new();
+
+    cache.insert(String::from("tok_abc"), 1);
+    cache.insert(String::from("tok_def"), 2);
+    cache.insert(String::from("tok_ghi"), 3);
+
+    // Process multiple requests — sequential, no Send needed
+    let req1 = Request {
+        path: String::from("/api/users"),
+        token: String::from("tok_abc"),
+        body_len: 128,
+    };
+    let resp1 = handle_request(&mut limiter, &cache, &mut logger, &mut id_gen, req1);
+
+    let req2 = Request {
+        path: String::from("/api/items"),
+        token: String::from("tok_def"),
+        body_len: 256,
+    };
+    let resp2 = handle_request(&mut limiter, &cache, &mut logger, &mut id_gen, req2);
+
+    let req3 = Request {
+        path: String::from("/api/orders"),
+        token: String::from("tok_unknown"),
+        body_len: 64,
+    };
+    let resp3 = handle_request(&mut limiter, &cache, &mut logger, &mut id_gen, req3);
+
+    // Rate limit reset
+    limiter.reset();
+
+    // Background flush — this is the Send boundary
+    background_flush(&mut logger);
+
+    println!(
+        "responses: {} {} {}",
+        resp1.status, resp2.status, resp3.status
+    );
+    println!("entries: {}", cache.entry_count());
+}

@@ -1,0 +1,176 @@
+// Oracle Gate: Observer pattern with mixed lifetime constraints.
+// Multiple observers hold shared references to a subject. Some observers
+// are read-only (Rc), some mutate their own state on notification (Rc<RefCell>),
+// and one observer is sent to another thread (must be Arc).
+//
+// A production solver MUST assign different tiers to different observer
+// registrations based on their actual usage pattern. A solver that unifies
+// all observers to the same tier is either over-promoting (everything Arc)
+// or under-promoting (everything Rc, missing the Send requirement).
+
+struct Event {
+    name: String,
+    payload: u64,
+}
+
+struct ReadObserver {
+    seen_count: u64,
+    last_name: String,
+}
+
+impl ReadObserver {
+    fn new() -> Self {
+        Self {
+            seen_count: 0,
+            last_name: String::new(),
+        }
+    }
+
+    fn on_event(&mut self, event: &Event) {
+        self.seen_count = self.seen_count + 1;
+        self.last_name = event.name.clone();
+    }
+
+    fn count(&self) -> u64 {
+        self.seen_count
+    }
+}
+
+struct AggregateObserver {
+    total_payload: u64,
+    max_payload: u64,
+    event_count: u64,
+}
+
+impl AggregateObserver {
+    fn new() -> Self {
+        Self {
+            total_payload: 0,
+            max_payload: 0,
+            event_count: 0,
+        }
+    }
+
+    fn on_event(&mut self, event: &Event) {
+        self.total_payload = self.total_payload + event.payload;
+        if event.payload > self.max_payload {
+            self.max_payload = event.payload;
+        }
+        self.event_count = self.event_count + 1;
+    }
+
+    fn average(&self) -> u64 {
+        if self.event_count == 0 {
+            return 0;
+        }
+        self.total_payload / self.event_count
+    }
+}
+
+struct FilterObserver {
+    threshold: u64,
+    filtered_count: u64,
+    passed_count: u64,
+}
+
+impl FilterObserver {
+    fn new(threshold: u64) -> Self {
+        Self {
+            threshold,
+            filtered_count: 0,
+            passed_count: 0,
+        }
+    }
+
+    fn on_event(&mut self, event: &Event) {
+        if event.payload >= self.threshold {
+            self.passed_count = self.passed_count + 1;
+        } else {
+            self.filtered_count = self.filtered_count + 1;
+        }
+    }
+}
+
+struct EventBus {
+    pending: Vec<Event>,
+}
+
+impl EventBus {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
+    }
+
+    fn emit(&mut self, name: String, payload: u64) {
+        self.pending.push(Event { name, payload });
+    }
+
+    fn drain(&mut self) -> Vec<Event> {
+        std::mem::replace(&mut self.pending, Vec::new())
+    }
+}
+
+// Dispatch to all observers — each has different sharing needs
+fn dispatch_events(
+    bus: &mut EventBus,
+    reader: &mut ReadObserver,
+    aggregator: &mut AggregateObserver,
+    filter: &mut FilterObserver,
+) {
+    let events = bus.drain();
+    for event in &events {
+        reader.on_event(event);
+        aggregator.on_event(event);
+        filter.on_event(event);
+    }
+}
+
+// Background aggregation task — crosses spawn boundary
+async fn background_aggregate(aggregator: &mut AggregateObserver, event: Event) {
+    aggregator.on_event(&event);
+}
+
+// Read-only summary from another thread
+async fn remote_summary(reader: &ReadObserver) -> u64 {
+    reader.count()
+}
+
+fn main() {
+    let mut bus = EventBus::new();
+    let mut reader = ReadObserver::new();
+    let mut aggregator = AggregateObserver::new();
+    let mut filter = FilterObserver::new(50);
+
+    // Emit events
+    bus.emit(String::from("click"), 10);
+    bus.emit(String::from("scroll"), 80);
+    bus.emit(String::from("resize"), 5);
+    bus.emit(String::from("submit"), 200);
+    bus.emit(String::from("navigate"), 45);
+
+    // Local dispatch — no Send needed
+    dispatch_events(&mut bus, &mut reader, &mut aggregator, &mut filter);
+
+    // More events
+    bus.emit(String::from("error"), 500);
+    bus.emit(String::from("retry"), 100);
+    dispatch_events(&mut bus, &mut reader, &mut aggregator, &mut filter);
+
+    // Now cross a spawn boundary with the aggregator
+    let bg_event = Event {
+        name: String::from("background_tick"),
+        payload: 75,
+    };
+    background_aggregate(&mut aggregator, bg_event);
+
+    // And read from reader across a spawn
+    remote_summary(&reader);
+
+    println!("reader count: {}", reader.count());
+    println!("average payload: {}", aggregator.average());
+    println!(
+        "filter: passed={} filtered={}",
+        filter.passed_count, filter.filtered_count
+    );
+}

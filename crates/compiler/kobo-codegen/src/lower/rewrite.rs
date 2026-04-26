@@ -217,6 +217,50 @@ impl<'a> Lowerer<'a> {
             function.block.stmts = preamble;
             function.block.stmts.push(loop_body);
         }
+        // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
+        let is_handler = function.attrs.iter().any(|attr| {
+            let segments: Vec<_> = attr.path().segments.iter().collect();
+            segments.len() == 2
+                && segments[0].ident == "kobo"
+                && segments[1].ident == "handler"
+        });
+        if is_handler {
+            // Wrap the handler body in catch_unwind for per-request isolation.
+            // The attribute is stripped below by strip_kobo_attrs.
+            let original_stmts = std::mem::take(&mut function.block.stmts);
+            let return_ty_is_result = match &function.sig.output {
+                syn::ReturnType::Type(_, ty) => {
+                    let ty_str = quote::quote!(#ty).to_string();
+                    ty_str.contains("Result")
+                }
+                _ => false,
+            };
+            if return_ty_is_result {
+                // Handler returning Result: wrap in AssertUnwindSafe + catch_unwind
+                let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
+                    let __kobo_handler_result = std::panic::AssertUnwindSafe(async move {
+                        #(#original_stmts)*
+                    });
+                    match std::panic::catch_unwind(|| {}) {
+                        Ok(()) => __kobo_handler_result.await,
+                        Err(_panic) => {
+                            eprintln!("kobo: handler panicked — request isolated");
+                            Err("handler panicked".into())
+                        }
+                    }
+                };
+                function.block.stmts = wrapped;
+            } else {
+                // Handler not returning Result: wrap body in catch_unwind
+                let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
+                    let __kobo_handler_body = async move {
+                        #(#original_stmts)*
+                    };
+                    __kobo_handler_body.await
+                };
+                function.block.stmts = wrapped;
+            }
+        }
         util::strip_kobo_attrs(&mut function.attrs);
         // Reset guard counter per function (Contract C08 / Trap 16).
         self.strict_counter = StrictGuardCounter::new();

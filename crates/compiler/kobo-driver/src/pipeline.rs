@@ -148,6 +148,31 @@ pub fn run_codegen_pipeline(
     // Inject solver evidence into source map before serialization.
     let injected_map = inject_solver_evidence(source_map, &evidence);
 
+    // S-17: Apply extract-before-borrow annotations.
+    let rs_source = {
+        let sites = kobo_transform::patterns::extract_borrow::find_extract_before_borrow(
+            kir.transform_facts(),
+        );
+        if sites.is_empty() {
+            rs_source
+        } else {
+            let mut annotated = rs_source;
+            for site in &sites {
+                let comment = format!(
+                    "// kobo: extract-before-borrow: {} → {} (borrow conflict at {}:{})\n",
+                    site.binding_name,
+                    site.temp_name,
+                    site.borrow_expr_span.start,
+                    site.conflict_span.start,
+                );
+                if !annotated.contains(&comment) {
+                    annotated = format!("{comment}{annotated}");
+                }
+            }
+            annotated
+        }
+    };
+
     let map_json = injected_map.to_json_string().map_err(|error| {
         eprintln!("kobo: failed to serialize source map: {error}");
     })?;
@@ -527,6 +552,17 @@ pub fn effective_mode(
     config_mode: KoboMode,
 ) -> KoboMode {
     cli_mode.or(file_mode).unwrap_or(config_mode)
+}
+
+/// S-21: Apply lifetime erasure to Rust source in Script mode.
+///
+/// Rewrites reference parameters (`&T`, `&mut T`, `&str`) to owned types
+/// (`T`, `T`, `String`). Intended for Script-mode prototyping where the
+/// user opts in to simplified ownership.
+///
+/// Call this on the codegen output when `--erase-lifetimes` is requested.
+pub fn apply_lifetime_erasure(source: &str, mode: KoboMode) -> String {
+    kobo_transform::lifetime_erase::rewrite_fn_signature(source, mode)
 }
 
 #[cfg(test)]

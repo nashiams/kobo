@@ -11,6 +11,7 @@ use crate::ctxt::MigrateCtxt;
 use crate::greedy::greedy_resolve;
 use crate::lattice_solve::{lattice_solve, LatticeOutcome};
 use crate::modular_pipeline::solve_modular;
+use crate::solver::{build_kir_constraint_graph, graph_fingerprint};
 use crate::solver::{SolveOutcome, SolverBudget};
 use crate::summaries::FunctionSummary;
 
@@ -70,7 +71,21 @@ pub fn query_solve_outcome(ctxt: &mut MigrateCtxt, budget: &SolverBudget) -> Sol
         return cached.clone();
     }
 
+    let graph = build_kir_constraint_graph(&ctxt.kir);
+    let fingerprint = graph_fingerprint(&graph);
+    if let Some(cache_dir) = ctxt.cache_dir() {
+        if let Some(outcome) =
+            crate::cache::SolverCache::load_unique_outcome(cache_dir, &fingerprint)
+        {
+            ctxt.cache_mut().set_outcome(outcome.clone());
+            return outcome;
+        }
+    }
+
     let outcome = solve_modular(&ctxt.kir, budget);
+    if let Some(cache_dir) = ctxt.cache_dir() {
+        let _ = crate::cache::SolverCache::save_unique_outcome(cache_dir, &fingerprint, &outcome);
+    }
     ctxt.cache_mut().set_outcome(outcome.clone());
     outcome
 }

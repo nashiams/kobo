@@ -31,6 +31,7 @@ use crate::solver::{
 /// Evidence produced by the modular pipeline, richer than SolverEvidence.
 #[derive(Clone, Debug)]
 pub struct ModularEvidence {
+    pub outcome: SolveOutcome,
     pub solver_evidence: SolverEvidence,
     pub greedy_resolved_count: usize,
     pub greedy_unresolved_count: usize,
@@ -579,6 +580,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
     };
 
     ModularEvidence {
+        outcome,
         solver_evidence,
         greedy_resolved_count,
         greedy_unresolved_count,

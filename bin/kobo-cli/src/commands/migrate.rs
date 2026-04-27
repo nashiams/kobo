@@ -21,8 +21,9 @@ use kobo_driver::{extract_before_borrow_rewrite, run_kir_phase};
 use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 use kobo_migrate::decisions_cache::{DecisionsStore, PersistedDecision};
 use kobo_migrate::{
-    build_kir_constraint_graph, query_solve_outcome, solve_modular_with_evidence, GreedyConfig,
-    MigrateCtxt, SolveOutcome, SolverBudget, SolverEvidence,
+    build_kir_constraint_graph, graph_fingerprint, query_solve_outcome,
+    solve_modular_with_evidence, GreedyConfig, MigrateCtxt, SolveOutcome, SolverBudget,
+    SolverEvidence,
 };
 
 use super::session::build_session;
@@ -60,9 +61,33 @@ pub(super) fn cmd_migrate(
         solver_budget_seconds: budget.budget_seconds,
         mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
     };
-    let mut migrate_ctxt = MigrateCtxt::new(kir, config);
-    let modular = solve_modular_with_evidence(migrate_ctxt.kir(), &budget);
-    let outcome = query_solve_outcome(&mut migrate_ctxt, &budget);
+    let cache_dir = solver_cache_dir_for(file);
+    let mut migrate_ctxt = MigrateCtxt::new_with_cache_dir(kir, config, cache_dir);
+    let graph_for_cache = build_kir_constraint_graph(migrate_ctxt.kir());
+    let graph_fingerprint_for_cache = graph_fingerprint(&graph_for_cache);
+    let cached_outcome = query_solve_outcome(&mut migrate_ctxt, &budget);
+    let (outcome, solver_evidence) = if matches!(cached_outcome, SolveOutcome::Unique(_)) {
+        let evidence = solver_evidence_from_outcome(
+            &cached_outcome,
+            &graph_fingerprint_for_cache,
+            graph_for_cache.nodes.len(),
+            graph_for_cache.edges.len(),
+            &budget,
+            migrate_ctxt.kir(),
+        );
+        (cached_outcome, evidence)
+    } else {
+        let modular = solve_modular_with_evidence(migrate_ctxt.kir(), &budget);
+        let outcome = modular.outcome.clone();
+        let _ = kobo_migrate::cache::SolverCache::save_unique_outcome(
+            migrate_ctxt
+                .cache_dir()
+                .expect("migrate context has cache dir"),
+            &modular.solver_evidence.graph_fingerprint,
+            &outcome,
+        );
+        (outcome, modular.solver_evidence)
+    };
     let extract_plan = build_extract_before_borrow_plan(file, migrate_ctxt.kir())?;
     let decisions_path = decisions_path_for(file);
     let mut decisions = DecisionsStore::load(&decisions_path);
@@ -80,19 +105,14 @@ pub(super) fn cmd_migrate(
     };
 
     if graph {
-        return print_dependency_graph(
-            migrate_ctxt.kir(),
-            &outcome,
-            &modular.solver_evidence,
-            root,
-        );
+        return print_dependency_graph(migrate_ctxt.kir(), &outcome, &solver_evidence, root);
     }
 
     if dry_run || !apply {
         return print_dry_run_diff(
             file,
             &outcome,
-            &modular.solver_evidence,
+            &solver_evidence,
             DryRunDiffOptions {
                 extract_plan: extract_plan.as_ref(),
                 decisions_path: &decisions_path,
@@ -114,7 +134,7 @@ pub(super) fn cmd_migrate(
     print_dry_run_diff(
         file,
         &outcome,
-        &modular.solver_evidence,
+        &solver_evidence,
         DryRunDiffOptions {
             extract_plan: extract_plan.as_ref(),
             decisions_path: &decisions_path,
@@ -427,6 +447,45 @@ fn print_solution_graph(solution: &SolutionMap) {
 fn decisions_path_for(file: &Path) -> PathBuf {
     let root = file.parent().unwrap_or_else(|| Path::new("."));
     root.join(".kobo").join("decisions.toml")
+}
+
+fn solver_cache_dir_for(file: &Path) -> PathBuf {
+    let root = file.parent().unwrap_or_else(|| Path::new("."));
+    root.join(".kobo").join("cache").join("solver-v1")
+}
+
+fn solver_evidence_from_outcome(
+    outcome: &SolveOutcome,
+    fingerprint: &str,
+    node_count: usize,
+    edge_count: usize,
+    budget: &SolverBudget,
+    kir: &kobo_ir::Kir,
+) -> SolverEvidence {
+    let solution = match outcome {
+        SolveOutcome::Unique(map) => map.clone(),
+        SolveOutcome::MultiSolution(candidates) => candidates
+            .first()
+            .map(|candidate| candidate.solution.clone())
+            .unwrap_or_default(),
+        _ => partial_solution_from_kir(kir),
+    };
+    SolverEvidence {
+        outcome_name: kobo_migrate::outcome_name(outcome).to_owned(),
+        graph_fingerprint: fingerprint.to_owned(),
+        node_count,
+        edge_count,
+        budget: budget.clone(),
+        solution,
+    }
+}
+
+fn partial_solution_from_kir(kir: &kobo_ir::Kir) -> SolutionMap {
+    let mut map = SolutionMap::new();
+    for node in kir.iter_decl_nodes() {
+        map.insert(node.id, OwnershipTier::Undecided);
+    }
+    map
 }
 
 fn ensure_review_decisions(decisions: &mut DecisionsStore, outcome: &SolveOutcome) -> usize {

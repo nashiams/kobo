@@ -73,11 +73,35 @@ pub fn execute_solve_unit(cluster: &Cluster) -> SolveUnitResult {
     }
 }
 
-/// Execute all solve units sequentially and merge results.
-///
-/// In a future parallel implementation, these would run on separate threads/tasks.
+/// Execute all solve units in parallel and preserve input order in the result.
 pub fn execute_all(clusters: &[Cluster]) -> Vec<SolveUnitResult> {
-    clusters.iter().map(execute_solve_unit).collect()
+    if clusters.len() <= 1 {
+        return clusters.iter().map(execute_solve_unit).collect();
+    }
+
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = clusters
+            .iter()
+            .map(|cluster| {
+                let cluster_id = cluster.id.0;
+                (cluster_id, scope.spawn(move || execute_solve_unit(cluster)))
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|(cluster_id, handle)| match handle.join() {
+                Ok(result) => result,
+                Err(_) => SolveUnitResult {
+                    cluster_id,
+                    outcome: SolveUnitOutcome::Conflict {
+                        node_id: 0,
+                        reason: "parallel solve worker panicked".to_owned(),
+                    },
+                },
+            })
+            .collect()
+    })
 }
 
 /// Merge solve unit results into a single solution map.
@@ -142,5 +166,16 @@ mod tests {
         let results = execute_all(&clusters);
         let merged = merge_results(&results);
         assert_eq!(merged.len(), 5);
+    }
+
+    #[test]
+    fn execute_all_preserves_cluster_order_under_parallel_dispatch() {
+        let clusters: Vec<_> = (0..32).map(|id| make_cluster(id, 4)).collect();
+        let results = execute_all(&clusters);
+        assert_eq!(results.len(), clusters.len());
+        for (idx, result) in results.iter().enumerate() {
+            assert_eq!(result.cluster_id, idx as u32);
+            assert!(matches!(result.outcome, SolveUnitOutcome::Solved(_)));
+        }
     }
 }

@@ -1,7 +1,3 @@
-// TODO(v0.7): Trap 7 — remap secondary spans ("note: defined here") from rustc.
-// Currently only the primary span is remapped to .kobo coordinates.
-// Secondary spans are dropped. This is a known limitation for v0.6.
-
 use kobo_codegen::{KoboSourceMap, RsSpan};
 use kobo_errors::{
     CliSuggestion, DiagDecision, DiagExplanation, DiagLabel, DiagLabelKind, KDiagnostic,

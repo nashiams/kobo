@@ -677,6 +677,14 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
 
     // Extract state fields and operations from the targeted region.
     let (state_fields, message_variants) = extract_actor_context(&source, line);
+    let state_field_names: Vec<String> = state_fields
+        .iter()
+        .filter_map(|field| {
+            field
+                .split_once(':')
+                .map(|(name, _)| name.trim().to_owned())
+        })
+        .collect();
 
     println!("// kobo migrate --actor: generating actor scaffold");
     println!("// Source: {}:{}", actor_file, line);
@@ -689,7 +697,6 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     // Message enum from extracted operations.
     println!("enum ActorMessage {{");
     if message_variants.is_empty() {
-        println!("    // TODO: Define your message variants");
         println!("    Ping,");
     } else {
         for variant in &message_variants {
@@ -702,9 +709,7 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     // Actor struct with extracted state fields.
     println!("struct Actor {{");
     println!("    receiver: mpsc::Receiver<ActorMessage>,");
-    if state_fields.is_empty() {
-        println!("    // TODO: Add actor state fields");
-    } else {
+    if !state_fields.is_empty() {
         for field in &state_fields {
             println!("    {},", field);
         }
@@ -713,8 +718,18 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     println!();
 
     println!("impl Actor {{");
-    println!("    fn new(receiver: mpsc::Receiver<ActorMessage>) -> Self {{");
-    println!("        Self {{ receiver }}");
+    let constructor_params = if state_fields.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", state_fields.join(", "))
+    };
+    let constructor_fields = if state_field_names.is_empty() {
+        "receiver".to_owned()
+    } else {
+        format!("receiver, {}", state_field_names.join(", "))
+    };
+    println!("    fn new(receiver: mpsc::Receiver<ActorMessage>{constructor_params}) -> Self {{");
+    println!("        Self {{ {constructor_fields} }}");
     println!("    }}");
     println!();
     println!("    async fn run(mut self) {{");
@@ -730,24 +745,40 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     println!("        match msg {{");
     if message_variants.is_empty() {
         println!("            ActorMessage::Ping => {{");
-        println!("                // TODO: Handle message");
+        println!("                // default health-check message");
         println!("            }}");
     } else {
         for variant in &message_variants {
             let name = variant.split(['(', ' ']).next().unwrap_or(variant);
+            let handler_name = name.to_ascii_lowercase();
             println!("            ActorMessage::{name} => {{");
-            println!("                // TODO: Handle {name}");
+            println!("                self.handle_{handler_name}_message().await;");
             println!("            }}");
         }
     }
     println!("        }}");
     println!("    }}");
+
+    for variant in &message_variants {
+        let name = variant.split(['(', ' ']).next().unwrap_or(variant);
+        let handler_name = name.to_ascii_lowercase();
+        println!();
+        println!("    async fn handle_{handler_name}_message(&mut self) {{");
+        println!("    }}");
+    }
+
     println!("}}");
     println!();
-    println!("fn spawn_actor() -> mpsc::Sender<ActorMessage> {{");
+    let spawn_params = state_fields.join(", ");
+    let spawn_args = if state_field_names.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", state_field_names.join(", "))
+    };
+    println!("fn spawn_actor({spawn_params}) -> mpsc::Sender<ActorMessage> {{");
     println!("    let (tx, rx) = mpsc::channel(100);");
     println!("    tokio::spawn(async move {{");
-    println!("        let actor = Actor::new(rx);");
+    println!("        let actor = Actor::new(rx{spawn_args});");
     println!("        actor.run().await;");
     println!("    }});");
     println!("    tx");
@@ -788,13 +819,10 @@ fn extract_actor_context(source: &str, target_line: usize) -> (Vec<String>, Vec<
                 if parts.len() == 2 {
                     let name = parts[0].trim().trim_start_matches("pub ");
                     let ty = parts[1].trim();
-                    // Heuristic: looks like a field if name is a simple ident and type is capitalized
+                    // Heuristic: actor state must be owned and named like a type.
                     if !name.is_empty()
                         && !name.contains(' ')
-                        && ty
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_uppercase() || c == '&')
+                        && ty.chars().next().is_some_and(|c| c.is_uppercase())
                     {
                         state_fields.push(format!("{name}: {ty}"));
                     }

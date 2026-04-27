@@ -1,7 +1,3 @@
-// TODO(v0.5.1): Add SourceMapRegionKind::StrictEntry, StrictInterior,
-// StrictExit, StrictFn variants. See .claude/prompt/roadmap/v0.5/phases/P6-sourcemap.md
-// and bugs.md BUG-04.
-
 // Source map precision: LINE_LEVEL
 // Column fields in RsSpan are line-boundary approximations (0..line_len).
 // Reason: prettyplease::unparse returns a String with no token positions.

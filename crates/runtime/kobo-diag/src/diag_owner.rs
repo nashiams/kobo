@@ -17,13 +17,16 @@
 // Contract C06: every counter increment uses saturating_add, never +=.
 
 #[cfg(feature = "diag")]
+use std::cell::Cell;
+#[cfg(feature = "diag")]
 use std::cell::Ref;
+use std::cell::RefCell;
 #[cfg(feature = "diag")]
 use std::cell::RefMut;
-use std::cell::{Cell, RefCell};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
+#[cfg(feature = "diag")]
 use crate::thresholds::DiagThreshold;
 
 // ---------------------------------------------------------------------------

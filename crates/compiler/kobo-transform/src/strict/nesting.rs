@@ -36,7 +36,11 @@ pub fn flatten_nested_strict(outer: &mut CaptureSet, inner_blocks: Vec<CaptureSe
 /// If the binding already exists: max(Read, Write) = Write.
 /// If it's new: add it.
 fn merge_binding(outer: &mut CaptureSet, inner: CapturedBinding) {
-    if let Some(existing) = outer.bindings.iter_mut().find(|b| b.binding_id == inner.binding_id) {
+    if let Some(existing) = outer
+        .bindings
+        .iter_mut()
+        .find(|b| b.binding_id == inner.binding_id)
+    {
         // R-12: Write escalates Read
         if inner.access_kind == CaptureAccessKind::Write {
             existing.access_kind = CaptureAccessKind::Write;

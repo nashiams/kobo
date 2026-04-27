@@ -3,7 +3,9 @@ use super::elision::ElisionFallbackReason;
 /// Ownership tier assigned to a KIR node. Determines what wrapper type (if any)
 /// `kobo-codegen` emits for the corresponding binding in the generated `.rs`
 /// file.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 pub enum OwnershipTier {
     /// `T` - moved. No wrapper, no allocation. Zero overhead.
     PlainOwned,
@@ -109,6 +111,16 @@ pub struct TierDecision {
 }
 
 impl OwnershipTier {
+    pub const SOLVED_LATTICE: [OwnershipTier; 7] = [
+        OwnershipTier::PlainOwned,
+        OwnershipTier::BoxOwned,
+        OwnershipTier::RcShared,
+        OwnershipTier::ArcShared,
+        OwnershipTier::RcMutShared,
+        OwnershipTier::ArcMutShared,
+        OwnershipTier::Scoped,
+    ];
+
     /// Returns whether this tier uses shared ownership semantics.
     pub fn is_shared(&self) -> bool {
         matches!(
@@ -141,6 +153,28 @@ impl OwnershipTier {
         !matches!(self, OwnershipTier::Undecided)
     }
 
+    pub fn is_solved_lattice_member(self) -> bool {
+        !matches!(self, OwnershipTier::Undecided)
+    }
+
+    pub fn lattice_join(self, other: OwnershipTier) -> Option<OwnershipTier> {
+        if !self.is_solved_lattice_member() || !other.is_solved_lattice_member() {
+            return None;
+        }
+        if self.priority() >= other.priority() {
+            Some(self)
+        } else {
+            Some(other)
+        }
+    }
+
+    pub fn lattice_leq(self, other: OwnershipTier) -> Option<bool> {
+        if !self.is_solved_lattice_member() || !other.is_solved_lattice_member() {
+            return None;
+        }
+        Some(self.priority() <= other.priority())
+    }
+
     /// Stable label used by inspect output and source maps.
     pub fn label(self) -> &'static str {
         match self {
@@ -155,32 +189,26 @@ impl OwnershipTier {
         }
     }
 
-    /// Relative floor strength used when multiple constraints must be compared.
+    /// Relative floor strength. Canonical ordering shared with `tier_rank()`.
+    ///
+    /// Undecided(0) < PlainOwned(1) < BoxOwned(2) < RcShared(3) < ArcShared(4)
+    /// < RcMutShared(5) < ArcMutShared(6) < Scoped(7)
     pub fn priority(self) -> usize {
         match self {
-            OwnershipTier::PlainOwned => 1,
-            OwnershipTier::RcShared => 2,
-            OwnershipTier::ArcShared => 3,
-            OwnershipTier::BoxOwned => 4,
-            OwnershipTier::RcMutShared => 5,
-            OwnershipTier::ArcMutShared => 6,
-            OwnershipTier::Scoped => 0,
             OwnershipTier::Undecided => 0,
-        }
-    }
-
-    /// Greedy ladder position shown in user-facing diagnostics.
-    pub fn greedy_priority(self) -> usize {
-        match self {
             OwnershipTier::PlainOwned => 1,
             OwnershipTier::BoxOwned => 2,
             OwnershipTier::RcShared => 3,
             OwnershipTier::ArcShared => 4,
             OwnershipTier::RcMutShared => 5,
             OwnershipTier::ArcMutShared => 6,
-            OwnershipTier::Scoped => 0,
-            OwnershipTier::Undecided => 0,
+            OwnershipTier::Scoped => 7,
         }
+    }
+
+    /// Greedy ladder position. Delegates to canonical ordering.
+    pub fn greedy_priority(self) -> usize {
+        self.priority()
     }
 }
 
@@ -275,9 +303,7 @@ impl TierReason {
             TierReason::GenericWrapperFloor => "generic T: Copy unknown".to_owned(),
             TierReason::AsyncBoxDeferred => "Box<T> deferred: async fn (v0.7)".to_owned(),
             TierReason::ResourceWrapper => "resource wrapper".to_owned(),
-            TierReason::AsyncSharedAttribute => {
-                "explicit async-shared opt-in: Arc tier".to_owned()
-            }
+            TierReason::AsyncSharedAttribute => "explicit async-shared opt-in: Arc tier".to_owned(),
             TierReason::ValidationEscalation(SatisfactionCheck::ReturnEscapeBoxDeferred) => {
                 "return escape: Box<T> requires signature rewrite (v0.4)".to_owned()
             }

@@ -75,9 +75,7 @@ fn is_inside_closure(source: &str, pos: usize) -> bool {
     let prefix = before[..bs].trim_end();
     prefix.ends_with("||")
         || prefix.ends_with('|')
-        || (prefix.ends_with(')') && {
-            prefix.rfind('|').is_some()
-        })
+        || (prefix.ends_with(')') && { prefix.rfind('|').is_some() })
 }
 
 /// Heuristic: is `pos` inside the body of a `macro_rules!` definition?

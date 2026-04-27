@@ -27,15 +27,13 @@ impl TransformFactsBuilder<'_> {
                 }
                 KnownDebtResult::MissingReason(attr_span) => {
                     known_debt_span = Some(self.ast.span_from_syn(attr_span));
-                    known_debt_parse_error = Some(
-                        "`#[kobo::known_debt]` requires a reason string".to_owned(),
-                    );
+                    known_debt_parse_error =
+                        Some("`#[kobo::known_debt]` requires a reason string".to_owned());
                 }
                 KnownDebtResult::EmptyReason(attr_span) => {
                     known_debt_span = Some(self.ast.span_from_syn(attr_span));
-                    known_debt_parse_error = Some(
-                        "`#[kobo::known_debt]` reason string must not be empty".to_owned(),
-                    );
+                    known_debt_parse_error =
+                        Some("`#[kobo::known_debt]` reason string must not be empty".to_owned());
                 }
                 KnownDebtResult::NotKnownDebt => {}
             }
@@ -99,30 +97,30 @@ fn field_type_shape(ty: &syn::Type, struct_name: &str) -> FieldTypeShape {
                 }
                 // Option<...>
                 [opt] if opt == "Option" => {
-                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
-                        if let syn::GenericArgument::Type(inner_ty) = inner {
-                            if let FieldTypeShape::RcRefCellOf(name) =
-                                field_type_shape(inner_ty, struct_name)
-                            {
-                                return FieldTypeShape::OptionRcRefCellOf(name);
-                            }
+                    if let Some(syn::GenericArgument::Type(inner_ty)) =
+                        first_generic_arg(&type_path.path.segments[0])
+                    {
+                        if let FieldTypeShape::RcRefCellOf(name) =
+                            field_type_shape(inner_ty, struct_name)
+                        {
+                            return FieldTypeShape::OptionRcRefCellOf(name);
                         }
                     }
                     FieldTypeShape::Other
                 }
                 // Vec<...>
                 [vec] if vec == "Vec" => {
-                    if let Some(inner) = first_generic_arg(&type_path.path.segments[0]) {
-                        if let syn::GenericArgument::Type(inner_ty) = inner {
-                            match field_type_shape(inner_ty, struct_name) {
-                                FieldTypeShape::RcRefCellOf(name) => {
-                                    return FieldTypeShape::VecRcRefCellOf(name)
-                                }
-                                FieldTypeShape::DirectNamed(name) => {
-                                    return FieldTypeShape::VecDirectNamed(name)
-                                }
-                                _ => {}
+                    if let Some(syn::GenericArgument::Type(inner_ty)) =
+                        first_generic_arg(&type_path.path.segments[0])
+                    {
+                        match field_type_shape(inner_ty, struct_name) {
+                            FieldTypeShape::RcRefCellOf(name) => {
+                                return FieldTypeShape::VecRcRefCellOf(name)
                             }
+                            FieldTypeShape::DirectNamed(name) => {
+                                return FieldTypeShape::VecDirectNamed(name)
+                            }
+                            _ => {}
                         }
                     }
                     FieldTypeShape::Other
@@ -149,28 +147,29 @@ fn first_generic_arg(seg: &syn::PathSegment) -> Option<&syn::GenericArgument> {
 /// If `ty` is `RefCell<X>`, return the canonical name of `X` (with "Self"
 /// replaced by `struct_name`).
 fn extract_rc_refcell_inner(arg: &syn::GenericArgument, struct_name: &str) -> Option<String> {
-    if let syn::GenericArgument::Type(inner_ty) = arg {
-        if let syn::Type::Path(tp) = inner_ty {
-            let segs: Vec<_> = tp.path.segments.iter().map(|s| s.ident.to_string()).collect();
-            if segs.first().map(String::as_str) == Some("RefCell") {
-                if let Some(inner_arg) = first_generic_arg(tp.path.segments.first()?) {
-                    if let syn::GenericArgument::Type(value_ty) = inner_arg {
-                        if let syn::Type::Path(vp) = value_ty {
-                            let name = vp
-                                .path
-                                .segments
-                                .last()
-                                .map(|s| s.ident.to_string())
-                                .unwrap_or_default();
-                            let canonical = if name == "Self" {
-                                struct_name.to_owned()
-                            } else {
-                                name
-                            };
-                            return Some(canonical);
-                        }
-                    }
-                }
+    if let syn::GenericArgument::Type(syn::Type::Path(tp)) = arg {
+        let segs: Vec<_> = tp
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
+        if segs.first().map(String::as_str) == Some("RefCell") {
+            if let Some(syn::GenericArgument::Type(syn::Type::Path(vp))) =
+                first_generic_arg(tp.path.segments.first()?)
+            {
+                let name = vp
+                    .path
+                    .segments
+                    .last()
+                    .map(|s| s.ident.to_string())
+                    .unwrap_or_default();
+                let canonical = if name == "Self" {
+                    struct_name.to_owned()
+                } else {
+                    name
+                };
+                return Some(canonical);
             }
         }
     }

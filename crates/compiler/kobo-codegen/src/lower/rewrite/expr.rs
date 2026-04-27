@@ -6,7 +6,7 @@ use syn::spanned::Spanned;
 
 use super::super::binding::{binding_tier_from_expr, wrapper_binding_from_expr};
 use super::super::strict::lower_strict_block;
-use super::{ScopeStack, util};
+use super::{util, ScopeStack};
 
 impl super::Lowerer<'_> {
     pub(super) fn lower_expr(&mut self, expr: &mut syn::Expr, scopes: &mut ScopeStack) {
@@ -26,10 +26,16 @@ impl super::Lowerer<'_> {
                 // The span uses the INNER block's span (node.block.span()), which is stable
                 // across postprocess_strict_markers (Contract C06, Trap 17).
                 let bspan = self.ast.span_from_syn(block.block.span());
-                let strict_kblock = self.ast.strict_blocks().iter()
+                let strict_kblock = self
+                    .ast
+                    .strict_blocks()
+                    .iter()
                     .find(|kb| kb.span == bspan)
                     .cloned();
-                let strict_cs = self.kir.strict_capture_sets().iter()
+                let strict_cs = self
+                    .kir
+                    .strict_capture_sets()
+                    .iter()
                     .find(|cs| cs.block_span == bspan)
                     .cloned();
                 if let (Some(kblock), Some(cap)) = (strict_kblock, strict_cs) {
@@ -42,9 +48,9 @@ impl super::Lowerer<'_> {
                         &mut self.strict_counter,
                         self.options,
                     );
-                    match syn::parse2::<syn::Expr>(ts) {
-                        Ok(lowered) => { *expr = lowered; return; }
-                        Err(_) => {} // fallback: normal lowering
+                    if let Ok(lowered) = syn::parse2::<syn::Expr>(ts) {
+                        *expr = lowered;
+                        return;
                     }
                 }
                 self.lower_nested_block(&mut block.block, scopes)
@@ -61,17 +67,22 @@ impl super::Lowerer<'_> {
             }
             syn::Expr::Loop(expr_loop) => self.lower_nested_block(&mut expr_loop.body, scopes),
             syn::Expr::Macro(expr_macro) => {
-                // Check for spawn block marker macro first.
-                if let Some(replacement) = super::spawn::lower_spawn_macro(&expr_macro.mac) {
+                // S-53: Check for spawn block marker macro with strategy selection.
+                let captured = super::collect_spawn_captures(&expr_macro.mac.tokens, scopes);
+                let use_spawn_local = self.any_captured_non_send(&captured);
+                if use_spawn_local {
+                    self.needs_local_set = true;
+                }
+                if let Some(replacement) =
+                    super::spawn::lower_spawn_macro_with_strategy(&expr_macro.mac, use_spawn_local)
+                {
                     *expr = replacement;
                     return;
                 }
                 self.lower_macro_tokens(&mut expr_macro.mac.tokens, scopes);
             }
             syn::Expr::Match(expr_match) => self.lower_match_expr(expr_match, scopes),
-            syn::Expr::MethodCall(method_call) => {
-                self.lower_method_call_expr(method_call, scopes)
-            }
+            syn::Expr::MethodCall(method_call) => self.lower_method_call_expr(method_call, scopes),
             syn::Expr::Paren(paren) => self.lower_expr(paren.expr.as_mut(), scopes),
             syn::Expr::Path(path) => {
                 if let Some(replacement) = self.lower_path_expr(path, scopes) {
@@ -111,8 +122,7 @@ impl super::Lowerer<'_> {
         tokens: &mut proc_macro2::TokenStream,
         scopes: &mut ScopeStack,
     ) {
-        let parser =
-            syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
         let Ok(mut exprs) = parser.parse2(tokens.clone()) else {
             return;
         };
@@ -126,9 +136,7 @@ impl super::Lowerer<'_> {
         assign: &mut syn::ExprAssign,
         scopes: &mut ScopeStack,
     ) -> Option<syn::Expr> {
-        let Some((ident, tier)) =
-            wrapper_binding_from_expr(assign.left.as_ref(), scopes)
-        else {
+        let Some((ident, tier)) = wrapper_binding_from_expr(assign.left.as_ref(), scopes) else {
             self.lower_expr(assign.left.as_mut(), scopes);
             self.lower_expr(assign.right.as_mut(), scopes);
             return None;
@@ -154,12 +162,9 @@ impl super::Lowerer<'_> {
         let parameter_tiers = self.plan.called_function_param_tiers(call.func.as_ref());
 
         for (index, argument) in call.args.iter_mut().enumerate() {
-            let expected_tier =
-                parameter_tiers.and_then(|tiers| tiers.get(index)).copied();
+            let expected_tier = parameter_tiers.and_then(|tiers| tiers.get(index)).copied();
             if let Some(expected_tier) = expected_tier {
-                if let Some((ident, source_tier)) =
-                    binding_tier_from_expr(argument, scopes)
-                {
+                if let Some((ident, source_tier)) = binding_tier_from_expr(argument, scopes) {
                     if source_tier == expected_tier {
                         if expected_tier.is_cloneable_wrapper() {
                             *argument = parse_quote!(#ident.clone());
@@ -180,11 +185,7 @@ impl super::Lowerer<'_> {
         }
     }
 
-    fn lower_for_loop_expr(
-        &mut self,
-        for_loop: &mut syn::ExprForLoop,
-        scopes: &mut ScopeStack,
-    ) {
+    fn lower_for_loop_expr(&mut self, for_loop: &mut syn::ExprForLoop, scopes: &mut ScopeStack) {
         self.lower_expr(for_loop.expr.as_mut(), scopes);
         self.lower_nested_block(&mut for_loop.body, scopes);
     }
@@ -198,11 +199,7 @@ impl super::Lowerer<'_> {
         }
     }
 
-    fn lower_match_expr(
-        &mut self,
-        expr_match: &mut syn::ExprMatch,
-        scopes: &mut ScopeStack,
-    ) {
+    fn lower_match_expr(&mut self, expr_match: &mut syn::ExprMatch, scopes: &mut ScopeStack) {
         self.lower_expr(expr_match.expr.as_mut(), scopes);
 
         for arm in &mut expr_match.arms {
@@ -227,8 +224,7 @@ impl super::Lowerer<'_> {
         method_call: &mut syn::ExprMethodCall,
         scopes: &mut ScopeStack,
     ) {
-        let Some((ident, tier)) =
-            wrapper_binding_from_expr(method_call.receiver.as_ref(), scopes)
+        let Some((ident, tier)) = wrapper_binding_from_expr(method_call.receiver.as_ref(), scopes)
         else {
             self.lower_expr(method_call.receiver.as_mut(), scopes);
             return;
@@ -237,22 +233,22 @@ impl super::Lowerer<'_> {
         let receiver_type = scopes.lookup_type_name(&ident);
         match tier {
             OwnershipTier::RcMutShared => {
-                method_call.receiver = Box::new(util::lowered_receiver_expr(
+                *method_call.receiver = util::lowered_receiver_expr(
                     ident,
                     &method_call.method,
                     self.kir.method_mutability(),
                     receiver_type,
-                ));
+                );
                 return;
             }
             OwnershipTier::ArcMutShared => {
-                method_call.receiver = Box::new(util::lowered_async_receiver_expr(
+                *method_call.receiver = util::lowered_async_receiver_expr(
                     ident,
                     &method_call.method,
                     self.kir.method_mutability(),
                     receiver_type,
                     self.in_async_context,
-                ));
+                );
                 return;
             }
             _ => {}
@@ -266,11 +262,7 @@ impl super::Lowerer<'_> {
         path: &mut syn::ExprPath,
         scopes: &mut ScopeStack,
     ) -> Option<syn::Expr> {
-        let Some((ident, tier)) =
-            wrapper_binding_from_expr(&syn::Expr::Path(path.clone()), scopes)
-        else {
-            return None;
-        };
+        let (ident, tier) = wrapper_binding_from_expr(&syn::Expr::Path(path.clone()), scopes)?;
 
         match tier {
             OwnershipTier::RcMutShared => Some(parse_quote!(#ident.borrow())),
@@ -287,37 +279,25 @@ impl super::Lowerer<'_> {
         reference: &mut syn::ExprReference,
         scopes: &mut ScopeStack,
     ) -> Option<syn::Expr> {
-        let Some((ident, tier)) =
-            wrapper_binding_from_expr(reference.expr.as_ref(), scopes)
-        else {
+        let Some((ident, tier)) = wrapper_binding_from_expr(reference.expr.as_ref(), scopes) else {
             self.lower_expr(reference.expr.as_mut(), scopes);
             return None;
         };
 
         match (tier, reference.mutability.is_some()) {
-            (OwnershipTier::RcMutShared, true) => {
-                Some(parse_quote!(&mut *#ident.borrow_mut()))
-            }
+            (OwnershipTier::RcMutShared, true) => Some(parse_quote!(&mut *#ident.borrow_mut())),
             (OwnershipTier::RcMutShared, false) => Some(parse_quote!(&*#ident.borrow())),
             _ => None,
         }
     }
 
-    fn lower_return_expr(
-        &mut self,
-        return_expr: &mut syn::ExprReturn,
-        scopes: &mut ScopeStack,
-    ) {
+    fn lower_return_expr(&mut self, return_expr: &mut syn::ExprReturn, scopes: &mut ScopeStack) {
         if let Some(inner) = &mut return_expr.expr {
             self.lower_expr(inner.as_mut(), scopes);
         }
     }
 
-    fn lower_struct_expr(
-        &mut self,
-        expr_struct: &mut syn::ExprStruct,
-        scopes: &mut ScopeStack,
-    ) {
+    fn lower_struct_expr(&mut self, expr_struct: &mut syn::ExprStruct, scopes: &mut ScopeStack) {
         for field in &mut expr_struct.fields {
             self.lower_expr(&mut field.expr, scopes);
         }
@@ -327,11 +307,7 @@ impl super::Lowerer<'_> {
         }
     }
 
-    fn lower_while_expr(
-        &mut self,
-        expr_while: &mut syn::ExprWhile,
-        scopes: &mut ScopeStack,
-    ) {
+    fn lower_while_expr(&mut self, expr_while: &mut syn::ExprWhile, scopes: &mut ScopeStack) {
         self.lower_expr(expr_while.cond.as_mut(), scopes);
         self.lower_nested_block(&mut expr_while.body, scopes);
     }

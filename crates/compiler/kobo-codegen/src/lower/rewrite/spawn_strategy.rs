@@ -1,13 +1,14 @@
-/// Select spawn strategy for async tasks: `tokio::spawn` vs `tokio::task::spawn_local`.
-///
-/// When the solver assigns a non-Send tier (RcShared, RcMutShared) to bindings
-/// captured by a spawn block, the task cannot use `tokio::spawn` (requires Send).
-/// Instead, we emit `tokio::task::spawn_local` and wrap the surrounding context
-/// in a `LocalSet` so the runtime can schedule the non-Send future.
-///
-/// K0067 is emitted when `spawn_local` is selected but no `LocalSet` context is
-/// detected in the enclosing code.
+//! Select spawn strategy for async tasks: `tokio::spawn` vs `tokio::task::spawn_local`.
+//!
+//! When the solver assigns a non-Send tier (RcShared, RcMutShared) to bindings
+//! captured by a spawn block, the task cannot use `tokio::spawn` (requires Send).
+//! Instead, we emit `tokio::task::spawn_local` and wrap the surrounding context
+//! in a `LocalSet` so the runtime can schedule the non-Send future.
+//!
+//! K0067 is emitted when `spawn_local` is selected but no `LocalSet` context is
+//! detected in the enclosing code.
 
+#![cfg_attr(not(test), allow(dead_code))]
 use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 
 /// Strategy chosen for a particular spawn block.
@@ -80,6 +81,10 @@ pub(crate) fn spawn_call_prefix(strategy: SpawnStrategy) -> &'static str {
 ///
 /// Returns true if any spawn block in the function uses `SpawnLocal` strategy.
 pub(crate) fn needs_local_set(spawn_blocks: &[SpawnCaptures]) -> bool {
+    debug_assert!(spawn_blocks.iter().all(|spawn| spawn
+        .non_send_bindings
+        .iter()
+        .all(|node| spawn.captured_bindings.contains(node))));
     spawn_blocks
         .iter()
         .any(|s| s.strategy == SpawnStrategy::SpawnLocal)
@@ -100,5 +105,18 @@ mod tests {
     fn spawn_call_prefix_matches_strategy() {
         assert!(spawn_call_prefix(SpawnStrategy::TokioSpawn).contains("tokio::spawn"));
         assert!(spawn_call_prefix(SpawnStrategy::SpawnLocal).contains("spawn_local"));
+    }
+
+    #[test]
+    fn non_send_captures_request_local_set() {
+        let node = KirNodeId(7);
+        let mut solution = SolutionMap::new();
+        solution.insert(node, OwnershipTier::RcShared);
+
+        let captures = select_spawn_strategy(&[node], &solution);
+        assert_eq!(captures.strategy, SpawnStrategy::SpawnLocal);
+        assert_eq!(captures.captured_bindings, vec![node]);
+        assert_eq!(captures.non_send_bindings, vec![node]);
+        assert!(needs_local_set(&[captures]));
     }
 }

@@ -93,7 +93,7 @@ pub struct TransformBindingFacts {
 }
 
 /// Frozen transform facts consumed by the tier chooser and diagnostics.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TransformFacts {
     pub bindings: Vec<TransformBindingFacts>,
     pub usages: Vec<BindingUsage>,
@@ -117,17 +117,6 @@ impl Default for SharedBindingFacts {
             live_borrow_at_move: false,
             sequential_read_only: false,
             box_reason: None,
-        }
-    }
-}
-
-impl Default for TransformFacts {
-    fn default() -> Self {
-        Self {
-            bindings: Vec::new(),
-            usages: Vec::new(),
-            shared_facts: Vec::new(),
-            hint_conflicts: Vec::new(),
         }
     }
 }

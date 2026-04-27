@@ -105,8 +105,10 @@ mod tests {
 
     #[test]
     fn output_path_for_uses_configured_output_dir() {
-        let mut config = KoboConfig::default();
-        config.output_dir = Some(Path::new("generated").to_path_buf());
+        let config = KoboConfig {
+            output_dir: Some(Path::new("generated").to_path_buf()),
+            ..Default::default()
+        };
 
         let output_path = output_path_for(Path::new("src/demo.kobo"), &config);
         assert_eq!(output_path, Path::new("generated/demo.rs"));
@@ -114,8 +116,10 @@ mod tests {
 
     #[test]
     fn map_path_for_uses_kobo_map_suffix() {
-        let mut config = KoboConfig::default();
-        config.output_dir = Some(Path::new("generated").to_path_buf());
+        let config = KoboConfig {
+            output_dir: Some(Path::new("generated").to_path_buf()),
+            ..Default::default()
+        };
 
         let map_path = map_path_for(Path::new("src/demo.kobo"), &config);
         assert_eq!(map_path, Path::new("generated/demo.kobo.map"));

@@ -9,7 +9,6 @@
 /// 6. Mutably shared >2 sites, conflict constraints → K0080
 ///
 /// The greedy pass does NOT backtrack. Each binding is resolved independently.
-
 use std::time::Instant;
 
 use kobo_errors::KErrorCode;
@@ -23,13 +22,15 @@ use kobo_ir::{
 pub struct GreedyConfig {
     pub solver_cluster_limit: usize,
     pub solver_budget_seconds: f64,
+    pub mutable_sites_threshold: usize,
 }
 
 impl Default for GreedyConfig {
     fn default() -> Self {
         Self {
-            solver_cluster_limit: 256,
+            solver_cluster_limit: 2048,
             solver_budget_seconds: 5.0,
+            mutable_sites_threshold: 2,
         }
     }
 }
@@ -128,7 +129,7 @@ pub fn greedy_resolve(kir: &Kir, config: &GreedyConfig) -> GreedyPassResult {
             continue;
         }
 
-        match resolve_single_binding(binding) {
+        match resolve_single_binding(binding, config.mutable_sites_threshold) {
             SingleResult::Resolved(tier, reason) => {
                 resolved.push(TierDecision {
                     node: binding.node,
@@ -154,6 +155,15 @@ pub fn greedy_resolve(kir: &Kir, config: &GreedyConfig) -> GreedyPassResult {
     }
 
     let elapsed = start.elapsed().as_millis() as u64;
+
+    // Post-greedy consistency check: demote bindings whose tiers conflict
+    // with co-scoped resolved bindings under sharing/send constraints.
+    let inconsistent = find_inconsistent_greedy_pairs(&resolved, kir);
+    for node_id in &inconsistent {
+        resolved.retain(|d| d.node != *node_id);
+        unresolved.push(*node_id);
+    }
+
     let resolved_count = resolved.len();
     let unresolved_count = unresolved.len();
     GreedyPassResult {
@@ -176,8 +186,12 @@ enum SingleResult {
     Unresolved,
 }
 
-fn resolve_single_binding(binding: &TransformBindingFacts) -> SingleResult {
+fn resolve_single_binding(
+    binding: &TransformBindingFacts,
+    mutable_sites_threshold: usize,
+) -> SingleResult {
     let sf = &binding.shared_facts;
+    let requires_send = binding_requires_send(binding);
 
     // Rule 1: Not shared at all → PlainOwned.
     if !sf.needs_sharing && !sf.has_escape {
@@ -186,8 +200,11 @@ fn resolve_single_binding(binding: &TransformBindingFacts) -> SingleResult {
 
     // Rule 2: Read-only shared.
     if sf.needs_sharing && !sf.needs_mutable_wrapper {
-        if sf.needs_send {
-            return SingleResult::Resolved(OwnershipTier::ArcShared, TierReason::SendRequiredShared);
+        if requires_send {
+            return SingleResult::Resolved(
+                OwnershipTier::ArcShared,
+                TierReason::SendRequiredShared,
+            );
         }
         return SingleResult::Resolved(
             OwnershipTier::RcShared,
@@ -200,13 +217,13 @@ fn resolve_single_binding(binding: &TransformBindingFacts) -> SingleResult {
 
     // Rule 3-5: Mutably shared.
     if sf.needs_sharing && sf.needs_mutable_wrapper {
-        if sf.needs_send {
+        if requires_send {
             return SingleResult::Resolved(
                 OwnershipTier::ArcMutShared,
                 TierReason::MutableSharedLastResort,
             );
         }
-        if sf.mutable_sites <= 2 {
+        if sf.mutable_sites <= mutable_sites_threshold {
             return SingleResult::Resolved(
                 OwnershipTier::RcMutShared,
                 TierReason::MutableSharedLastResort,
@@ -222,11 +239,79 @@ fn resolve_single_binding(binding: &TransformBindingFacts) -> SingleResult {
     // Escape but no sharing: needs box or remains unresolved.
     if sf.has_escape && sf.box_reason.is_some() {
         if let Some(box_reason) = sf.box_reason {
-            return SingleResult::Resolved(OwnershipTier::BoxOwned, TierReason::HeapStable(box_reason));
+            return SingleResult::Resolved(
+                OwnershipTier::BoxOwned,
+                TierReason::HeapStable(box_reason),
+            );
         }
     }
 
     SingleResult::Unresolved
+}
+
+fn binding_requires_send(binding: &TransformBindingFacts) -> bool {
+    binding.shared_facts.needs_send || binding.async_shared || binding.is_async
+}
+
+/// Find resolved bindings whose tiers are inconsistent with co-scoped bindings.
+///
+/// If binding A was resolved to RcShared but co-scoped binding B needs Send
+/// (and thus ArcShared), A's RcShared is inconsistent because in the same
+/// scope, sharing propagation would require both to be thread-safe.
+///
+/// Returns node IDs that should be demoted from resolved to unresolved.
+fn find_inconsistent_greedy_pairs(resolved: &[TierDecision], kir: &Kir) -> Vec<KirNodeId> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let facts = kir.transform_facts();
+
+    // Build a map: node_id → (tier, needs_send).
+    let mut info: BTreeMap<KirNodeId, (OwnershipTier, bool)> = BTreeMap::new();
+    for decision in resolved {
+        let needs_send = facts
+            .bindings
+            .iter()
+            .find(|b| b.node == decision.node)
+            .map(binding_requires_send)
+            .unwrap_or(false);
+        info.insert(decision.node, (decision.tier, needs_send));
+    }
+
+    // Group resolved bindings by scope depth.
+    let mut scope_groups: BTreeMap<usize, Vec<KirNodeId>> = BTreeMap::new();
+    for binding in &facts.bindings {
+        if info.contains_key(&binding.node) {
+            scope_groups
+                .entry(binding.decl_scope_depth)
+                .or_default()
+                .push(binding.node);
+        }
+    }
+
+    let mut inconsistent = BTreeSet::new();
+
+    for group in scope_groups.values() {
+        if group.len() < 2 {
+            continue;
+        }
+        // If any binding in the group needs Send, all shared bindings should
+        // be thread-safe. If one was resolved as Rc but another needs Send,
+        // the Rc one is inconsistent.
+        let any_needs_send = group
+            .iter()
+            .any(|id| info.get(id).map(|(_, ns)| *ns).unwrap_or(false));
+        if any_needs_send {
+            for &id in group {
+                if let Some(&(tier, _)) = info.get(&id) {
+                    if tier == OwnershipTier::RcShared || tier == OwnershipTier::RcMutShared {
+                        inconsistent.insert(id);
+                    }
+                }
+            }
+        }
+    }
+
+    inconsistent.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -307,7 +392,11 @@ mod tests {
                 mutation_required: needs_mutable,
                 escape_floor: None,
                 borrow_sites: Vec::new(),
-                read_sites: if needs_sharing && !needs_mutable { 2 } else { 0 },
+                read_sites: if needs_sharing && !needs_mutable {
+                    2
+                } else {
+                    0
+                },
                 mutable_sites,
                 has_escape: false,
                 needs_sharing,
@@ -379,7 +468,10 @@ mod tests {
         let kir = make_kir_with_bindings(vec![binding]);
         let result = greedy_resolve(&kir, &GreedyConfig::default());
         assert_eq!(result.stats.k0080_count, 1);
-        let diag = result.diagnostics.iter().find(|d| d.code == KErrorCode::K0080);
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code == KErrorCode::K0080);
         assert!(diag.is_some());
     }
 
@@ -389,10 +481,15 @@ mod tests {
             .map(|i| make_binding(i, &format!("b{i}"), false, false, false, 0))
             .collect();
         let kir = make_kir_with_bindings(bindings);
-        let mut config = GreedyConfig::default();
-        config.solver_cluster_limit = 20;
+        let config = GreedyConfig {
+            solver_cluster_limit: 20,
+            ..Default::default()
+        };
         let result = greedy_resolve(&kir, &config);
-        let diag = result.diagnostics.iter().find(|d| d.code == KErrorCode::K0081);
+        let diag = result
+            .diagnostics
+            .iter()
+            .find(|d| d.code == KErrorCode::K0081);
         assert!(diag.is_some());
         assert_eq!(result.stats.unresolved_count, 30);
     }

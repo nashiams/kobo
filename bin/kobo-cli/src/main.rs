@@ -18,14 +18,22 @@ pub(crate) enum KoboCommand {
     Check {
         #[arg(value_name = "FILE")]
         file: PathBuf,
-        #[arg(long, conflicts_with = "strict",
-              help = "Check in checked mode — ownership advisory warnings")]
+        #[arg(
+            long,
+            conflicts_with = "strict",
+            help = "Check in checked mode — ownership advisory warnings"
+        )]
         checked: bool,
-        #[arg(long, conflicts_with = "checked",
-              help = "Check in strict mode (v0.9 — not yet implemented)")]
+        #[arg(
+            long,
+            conflicts_with = "checked",
+            help = "Check in strict mode (v0.9 — not yet implemented)"
+        )]
         strict: bool,
-        #[arg(long,
-              help = "Show full solver pipeline diagnostics (constraint graph, clusters, solver outcome)")]
+        #[arg(
+            long,
+            help = "Show full solver pipeline diagnostics (constraint graph, clusters, solver outcome)"
+        )]
         pipeline: bool,
     },
     /// Reformat a .kobo file when the source map proves the edit is lossless.
@@ -37,28 +45,52 @@ pub(crate) enum KoboCommand {
     Run {
         #[arg(value_name = "FILE")]
         file: PathBuf,
-        #[arg(long, conflicts_with = "strict",
-              help = "Run in checked mode — ownership advisory warnings")]
+        #[arg(
+            long,
+            conflicts_with = "strict",
+            help = "Run in checked mode — ownership advisory warnings"
+        )]
         checked: bool,
-        #[arg(long, conflicts_with = "checked",
-              help = "Run in strict mode (v0.9 — not yet implemented)")]
+        #[arg(
+            long,
+            conflicts_with = "checked",
+            help = "Run in strict mode (v0.9 — not yet implemented)"
+        )]
         strict: bool,
+        #[arg(
+            long,
+            help = "Erase lifetime parameters before rustc in script/checked mode"
+        )]
+        erase_lifetimes: bool,
     },
     /// Compile and print the generated .rs to stdout without invoking rustc.
     Inspect {
         #[arg(value_name = "FILE")]
         file: PathBuf,
-        #[arg(long, conflicts_with = "strict",
-              help = "Inspect in checked mode — ownership advisory warnings")]
+        #[arg(
+            long,
+            conflicts_with = "strict",
+            help = "Inspect in checked mode — ownership advisory warnings"
+        )]
         checked: bool,
-        #[arg(long, conflicts_with = "checked",
-              help = "Inspect in strict mode (v0.9 — not yet implemented)")]
+        #[arg(
+            long,
+            conflicts_with = "checked",
+            help = "Inspect in strict mode (v0.9 — not yet implemented)"
+        )]
         strict: bool,
-        #[arg(long,
-              help = "Strip all Kobo wrappers, output standalone Rust")]
+        #[arg(long, help = "Strip all Kobo wrappers, output standalone Rust")]
         clean: bool,
-        #[arg(long, value_name = "DIR",
-              help = "Generate a complete Cargo project to DIR")]
+        #[arg(
+            long,
+            help = "Erase lifetime parameters in script mode (S-21: auto-own references)"
+        )]
+        erase_lifetimes: bool,
+        #[arg(
+            long,
+            value_name = "DIR",
+            help = "Generate a complete Cargo project to DIR"
+        )]
         cargo: Option<PathBuf>,
     },
     /// Run the pipeline through the KIR phase only and print KIR nodes.
@@ -94,6 +126,9 @@ pub(crate) enum KoboCommand {
         /// Show migration patterns (Rc→Arc, clone elimination, etc.)
         #[arg(long)]
         patterns: bool,
+        /// Show error-handling debt (boxed/dynamic error → typed enum opportunities)
+        #[arg(long)]
+        errors: bool,
         /// [v0.5] Watch mode — re-run on file changes.
         #[arg(long, hide = true)]
         watch: bool,
@@ -105,12 +140,24 @@ pub(crate) enum KoboCommand {
         /// Show diff without applying changes (default)
         #[arg(long)]
         dry_run: bool,
-        /// Apply migration changes to the source file
-        #[arg(long)]
+        /// Apply supported safe source rewrites in place
+        #[arg(long, hide = true)]
         apply: bool,
         /// Show dependency graph
         #[arg(long)]
         graph: bool,
+        /// Show candidate review details for non-unique solver outcomes
+        #[arg(long)]
+        review: bool,
+        /// Show decision class/profile summary
+        #[arg(long = "class")]
+        class_view: bool,
+        /// Show solver explanations in dry-run output
+        #[arg(long)]
+        explain: bool,
+        /// Override solver budget in seconds
+        #[arg(long, value_name = "SECONDS")]
+        budget: Option<f64>,
         /// Restrict migration scope to a specific function
         #[arg(long, value_name = "FN_NAME")]
         root: Option<String>,
@@ -126,11 +173,9 @@ pub(crate) enum KoboCommand {
     },
     /// Build all .kobo files in a Kobo project.
     Build {
-        #[arg(long, conflicts_with = "strict",
-              help = "Build in checked mode")]
+        #[arg(long, conflicts_with = "strict", help = "Build in checked mode")]
         checked: bool,
-        #[arg(long, conflicts_with = "checked",
-              help = "Build in strict mode")]
+        #[arg(long, conflicts_with = "checked", help = "Build in strict mode")]
         strict: bool,
     },
     /// Per-function timing report for tick loop functions.
@@ -148,6 +193,9 @@ pub(crate) enum KoboCommand {
         /// Simple mode: save → compile → run (no state persistence)
         #[arg(long)]
         simple: bool,
+        /// Build mode: save → codegen → cargo build (full rebuild cycle)
+        #[arg(long)]
+        build: bool,
     },
 }
 

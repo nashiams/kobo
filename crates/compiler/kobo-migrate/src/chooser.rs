@@ -3,12 +3,12 @@
 //! When the solver has multiple valid solutions, rank them by risk score
 //! and heuristics.  Caps enumeration at 8 candidates to keep output manageable.
 
-use kobo_ir::{OwnershipTier, SolutionMap};
+use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 
 use crate::cluster::Cluster;
 use crate::constraint_extract::ConstraintNode;
 use crate::lattice_solve::LatticeOutcome;
-use crate::solver::SolutionCandidate;
+use crate::solver::{ConstraintKind, SolutionCandidate};
 
 /// Maximum candidates to enumerate.
 pub const MAX_CANDIDATES: usize = 8;
@@ -43,8 +43,8 @@ pub fn choose_best(
                 rank: 1,
             }]
         }
-        LatticeOutcome::Conflict { .. } => {
-            // Lattice conflict — fall through to solver candidates.
+        LatticeOutcome::Conflict { .. } | LatticeOutcome::IterationBudgetExceeded { .. } => {
+            // Lattice conflict or iteration budget exceeded — fall through to solver candidates.
             rank_solver_candidates(candidates, &cluster.nodes)
         }
     }
@@ -70,7 +70,11 @@ fn rank_solver_candidates(
         .collect();
 
     // Re-rank by ascending risk (lower = better).
-    ranked.sort_by(|a, b| a.risk_score.partial_cmp(&b.risk_score).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.sort_by(|a, b| {
+        a.risk_score
+            .total_cmp(&b.risk_score)
+            .then_with(|| a.explanation.cmp(&b.explanation))
+    });
     for (i, r) in ranked.iter_mut().enumerate() {
         r.rank = i + 1;
     }
@@ -128,11 +132,15 @@ pub fn enumerate_candidates(cluster: &Cluster) -> Vec<SolutionCandidate> {
         }
         m
     };
-    candidates.push(SolutionCandidate {
-        solution: base.clone(),
-        explanation: "all-at-floor".to_owned(),
-        risk_score: compute_risk(&base, &cluster.nodes),
-    });
+    push_candidate_if_valid(
+        cluster,
+        &mut candidates,
+        SolutionCandidate {
+            solution: base.clone(),
+            explanation: "all-at-floor".to_owned(),
+            risk_score: compute_risk(&base, &cluster.nodes),
+        },
+    );
 
     // For each node, try the next tier above floor (if within ceiling).
     for node in &cluster.nodes {
@@ -142,22 +150,88 @@ pub fn enumerate_candidates(cluster: &Cluster) -> Vec<SolutionCandidate> {
         if let Some(next_tier) = next_tier(node.floor) {
             let in_ceiling = node
                 .ceiling
-                .map(|c| crate::lattice_solve::tier_rank(next_tier) <= crate::lattice_solve::tier_rank(c))
+                .map(|c| {
+                    crate::lattice_solve::tier_rank(next_tier) <= crate::lattice_solve::tier_rank(c)
+                })
                 .unwrap_or(true);
             if in_ceiling {
                 let mut variant = base.clone();
                 variant.insert(node.id, next_tier);
                 let risk = compute_risk(&variant, &cluster.nodes);
-                candidates.push(SolutionCandidate {
-                    solution: variant,
-                    explanation: format!("{} lifted to {:?}", node.binding_name, next_tier),
-                    risk_score: risk,
-                });
+                push_candidate_if_valid(
+                    cluster,
+                    &mut candidates,
+                    SolutionCandidate {
+                        solution: variant,
+                        explanation: format!("{} lifted to {:?}", node.binding_name, next_tier),
+                        risk_score: risk,
+                    },
+                );
             }
         }
     }
 
     candidates
+}
+
+pub fn append_candidate_if_distinct(
+    cluster: &Cluster,
+    candidates: &mut Vec<SolutionCandidate>,
+    candidate: SolutionCandidate,
+) {
+    push_candidate_if_valid(cluster, candidates, candidate);
+}
+
+fn push_candidate_if_valid(
+    cluster: &Cluster,
+    candidates: &mut Vec<SolutionCandidate>,
+    candidate: SolutionCandidate,
+) {
+    if candidates.len() >= MAX_CANDIDATES
+        || !candidate_satisfies_cluster(cluster, &candidate.solution)
+    {
+        return;
+    }
+
+    let duplicate = candidates.iter().any(|existing| {
+        solution_signature(&existing.solution) == solution_signature(&candidate.solution)
+    });
+    if !duplicate {
+        candidates.push(candidate);
+    }
+}
+
+pub fn candidate_satisfies_cluster(cluster: &Cluster, solution: &SolutionMap) -> bool {
+    cluster.raw_edges.iter().all(|edge| {
+        let source = match solution.get(edge.source) {
+            Some(tier) => tier,
+            None => return false,
+        };
+        let target = match solution.get(edge.target) {
+            Some(tier) => tier,
+            None => return false,
+        };
+        match edge.kind {
+            ConstraintKind::PropagateSharing => !source.is_shared() || target.is_shared(),
+            ConstraintKind::PropagateSend => !source.is_thread_safe() || target.is_thread_safe(),
+            ConstraintKind::MutuallyExclusive => {
+                !(is_mutably_shared(source) && is_mutably_shared(target))
+            }
+        }
+    })
+}
+
+fn solution_signature(solution: &SolutionMap) -> Vec<(KirNodeId, OwnershipTier)> {
+    let mut signature: Vec<_> = solution.iter().collect();
+    signature.sort_by_key(|(node, tier)| (node.0, *tier));
+    signature
+}
+
+fn is_mutably_shared(tier: OwnershipTier) -> bool {
+    matches!(
+        tier,
+        OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
+    )
 }
 
 fn next_tier(tier: OwnershipTier) -> Option<OwnershipTier> {
@@ -167,6 +241,7 @@ fn next_tier(tier: OwnershipTier) -> Option<OwnershipTier> {
         OwnershipTier::RcShared => Some(OwnershipTier::ArcShared),
         OwnershipTier::ArcShared => Some(OwnershipTier::RcMutShared),
         OwnershipTier::RcMutShared => Some(OwnershipTier::ArcMutShared),
+        OwnershipTier::ArcMutShared => Some(OwnershipTier::Scoped),
         _ => None,
     }
 }

@@ -7,8 +7,8 @@ use std::path::Path;
 
 use kobo_codegen::{codegen_file, CodegenOptions};
 use kobo_ir::{
-    FileId, Kir, KoboMode, OwnershipTier, SharedBindingFacts,
-    SolutionMap, TierDecision, TransformBindingFacts,
+    FileId, Kir, KoboMode, OwnershipTier, SharedBindingFacts, SolutionMap, TierDecision,
+    TransformBindingFacts,
 };
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
@@ -93,8 +93,10 @@ pub fn compile_and_inspect(source: &str) -> String {
 
 /// Compile in Script mode specifically (for lifetime erasure tests).
 pub fn compile_and_inspect_script_mode(source: &str) -> String {
-    let mut config = KoboConfig::default();
-    config.mode = KoboMode::Script;
+    let config = KoboConfig {
+        mode: KoboMode::Script,
+        ..Default::default()
+    };
     compile_and_inspect_with_config(source, config)
 }
 

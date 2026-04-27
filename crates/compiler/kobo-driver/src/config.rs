@@ -114,7 +114,7 @@ pub enum ConfigError {
     Parse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("failed to parse TOML: {0}")]
     ParseError(String),
@@ -125,7 +125,7 @@ impl Default for KoboConfig {
         Self {
             mode: KoboMode::Script,
             hot_borrow_threshold: 10_000,
-            solver_cluster_limit: 256,
+            solver_cluster_limit: 2048,
             solver_budget_seconds: 5.0,
             lsp_solver_budget_ms: 200,
             small_struct_clone_threshold_bytes: 128,
@@ -183,7 +183,7 @@ fn read_optional_config(config_path: &Path) -> Result<Option<RawKoboConfig>, Con
         .map(Some)
         .map_err(|source| ConfigError::Parse {
             path: config_path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })
 }
 
@@ -322,7 +322,7 @@ mod tests {
 
         assert_eq!(config.mode, KoboMode::Script);
         assert_eq!(config.hot_borrow_threshold, 10_000);
-        assert_eq!(config.solver_cluster_limit, 256);
+        assert_eq!(config.solver_cluster_limit, 2048);
         assert_eq!(config.small_struct_clone_threshold_bytes, 128);
         assert_eq!(config.output_dir, None);
     }
@@ -422,10 +422,7 @@ external = ["MyPoint", "Color"]
 methods = ["push", "insert", "remove"]
 "#;
         let config = parse_kobo_config(toml).unwrap();
-        assert_eq!(
-            config.mutating_methods,
-            vec!["push", "insert", "remove"]
-        );
+        assert_eq!(config.mutating_methods, vec!["push", "insert", "remove"]);
     }
 
     #[test]

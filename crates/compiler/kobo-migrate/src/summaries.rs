@@ -6,8 +6,6 @@
 
 use kobo_ir::{KirNodeId, OwnershipTier};
 
-
-
 /// A compact summary of one function's ownership behaviour.
 #[derive(Clone, Debug)]
 pub struct FunctionSummary {
@@ -56,10 +54,7 @@ impl SummaryTable {
     }
 
     pub fn get(&self, name: &str) -> Option<&FunctionSummary> {
-        self.entries
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, s)| s)
+        self.entries.iter().find(|(n, _)| n == name).map(|(_, s)| s)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &FunctionSummary)> {

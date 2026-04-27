@@ -132,7 +132,13 @@ impl TransformFactsBuilder<'_> {
             span,
             binding_state.decl_id,
         ));
-        self.record_event(binding_state.decl_id, UseEvent::Moved { span, scope_depth: self.scope_depth });
+        self.record_event(
+            binding_state.decl_id,
+            UseEvent::Moved {
+                span,
+                scope_depth: self.scope_depth,
+            },
+        );
         if let Some(kind) = escape_kind.filter(|kind| {
             !matches!(
                 (kind, binding_state.kind),
@@ -270,6 +276,21 @@ impl TransformFactsBuilder<'_> {
             return;
         };
         self.transform_facts.bindings[index].usage.push_use(event);
+    }
+
+    pub(super) fn mark_expr_needs_send(&mut self, expr: &syn::Expr) -> bool {
+        let Some((binding_state, _)) = self.resolved_binding(expr) else {
+            return false;
+        };
+        self.mark_binding_needs_send(binding_state.decl_id)
+    }
+
+    fn mark_binding_needs_send(&mut self, decl_id: kobo_ir::KirNodeId) -> bool {
+        let Some(index) = self.fact_indices.get(&decl_id).copied() else {
+            return false;
+        };
+        self.transform_facts.bindings[index].shared_facts.needs_send = true;
+        true
     }
 
     #[allow(dead_code)]

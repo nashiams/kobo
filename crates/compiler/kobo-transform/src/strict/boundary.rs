@@ -2,15 +2,13 @@
 ///
 /// Reference: P3 Task 3.3. Contract C05: emit FACTS (StrictBoundaryFact),
 /// never KDiagnostic.
-use kobo_ir::{
-    CaptureSet, StrictBoundaryFact, StrictBoundaryViolation, TransformFacts, Kir,
-};
+use kobo_ir::{CaptureSet, Kir, StrictBoundaryFact, StrictBoundaryViolation, TransformFacts};
 use kobo_parser::KoboBlock;
 
 use super::alias_scan::check_k0041_active_aliases;
 use super::closure_scan::check_k0042_closure_captures;
-use super::move_scan::check_k0043_moved_inside;
 use super::labeled_scan::check_labeled_cross_boundary;
+use super::move_scan::check_k0043_moved_inside;
 use super::span_convert::SpanConvert;
 
 /// Validate @strict boundary safety. Produce StrictBoundaryFact for each
@@ -52,9 +50,7 @@ fn check_k0063_async_context(
     if !block.is_inside_async {
         return;
     }
-    let async_fn_span = block
-        .async_context_span
-        .unwrap_or_else(|| block.span);
+    let async_fn_span = block.async_context_span.unwrap_or(block.span);
     facts.push(StrictBoundaryFact {
         block_span: block.span,
         violation: StrictBoundaryViolation::AsyncContext { async_fn_span },
@@ -63,8 +59,8 @@ fn check_k0063_async_context(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_strict_boundary;
     use super::super::span_convert::SpanConvert;
+    use super::validate_strict_boundary;
     use kobo_ir::{
         BindingUsage, CaptureAccessKind, CaptureSet, CapturedBinding, FileId, Kir, KirNode,
         KirNodeId, KoboAstNodeId, KoboSpan, NodeKind, OwnershipTier, SharedBindingFacts,
@@ -122,7 +118,10 @@ mod tests {
             is_async: false,
             async_shared: false,
             usage: BindingUsage::new(span(0, 4)),
-            shared_facts: SharedBindingFacts { node_id: node, ..Default::default() },
+            shared_facts: SharedBindingFacts {
+                node_id: node,
+                ..Default::default()
+            },
             clone_elision: None,
             elision_fallback: None,
             plain_clone_alias: false,
@@ -187,7 +186,10 @@ mod tests {
             .iter()
             .filter(|f| matches!(f.violation, StrictBoundaryViolation::ActiveAliases { .. }))
             .collect();
-        assert!(k0041_violations.is_empty(), "no aliases should mean no K0041 violation");
+        assert!(
+            k0041_violations.is_empty(),
+            "no aliases should mean no K0041 violation"
+        );
     }
 
     #[test]
@@ -203,7 +205,11 @@ mod tests {
             .iter()
             .filter(|f| matches!(f.violation, StrictBoundaryViolation::ClosureCapture { .. }))
             .collect();
-        assert_eq!(k0042_violations.len(), 1, "should detect closure capture of `data`");
+        assert_eq!(
+            k0042_violations.len(),
+            1,
+            "should detect closure capture of `data`"
+        );
     }
 
     #[test]
@@ -256,7 +262,6 @@ mod tests {
 
     #[test]
     fn test_labeled_break_detected() {
-        let node = node_id(6);
         let facts = make_facts(vec![]);
         let kir = Kir::from_nodes(vec![]);
         let block = make_block("{ break 'outer; }");
@@ -274,10 +279,17 @@ mod tests {
         let labeled_violations: Vec<_> = boundary_facts
             .iter()
             .filter(|f| {
-                matches!(f.violation, StrictBoundaryViolation::LabeledCrossBoundary { .. })
+                matches!(
+                    f.violation,
+                    StrictBoundaryViolation::LabeledCrossBoundary { .. }
+                )
             })
             .collect();
-        assert_eq!(labeled_violations.len(), 1, "labeled break should be detected");
+        assert_eq!(
+            labeled_violations.len(),
+            1,
+            "labeled break should be detected"
+        );
     }
 
     #[test]
@@ -327,6 +339,20 @@ mod tests {
 
     #[test]
     fn test_c05_no_kdiagnostic_in_boundary() {
-        assert!(true);
+        let facts = make_facts(vec![]);
+        let kir = Kir::from_nodes(vec![]);
+        let block = make_block("{ let x = 1; }");
+        let cs = CaptureSet {
+            block_span: span(0, 20),
+            bindings: vec![],
+            has_question_mark: false,
+            has_break: false,
+            has_continue: false,
+            is_inside_loop: false,
+            nested_blocks: vec![],
+        };
+        let sc = test_sc();
+        let boundary_facts = validate_strict_boundary(&block, &cs, &facts, &kir, &[], &sc);
+        assert!(boundary_facts.is_empty());
     }
 }

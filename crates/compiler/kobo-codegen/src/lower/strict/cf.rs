@@ -8,6 +8,7 @@ use quote::quote;
 ///
 /// Emitted once per function when any @strict block uses break or continue.
 /// Placed at the START of the function body (not per-block) per Rebuttal 2-3.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn emit_cf_enum_def() -> TokenStream {
     quote! {
         #[allow(non_camel_case_types, dead_code)]

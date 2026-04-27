@@ -7,10 +7,7 @@
 ///
 /// Contract C03: produces StrictBoundaryViolation::ActiveAliases (never Warning).
 /// Contract C05: produces facts, NOT KDiagnostic.
-use kobo_ir::{
-    CaptureSet, Kir, KirNodeId, KoboSpan,
-    StrictBoundaryFact, StrictBoundaryViolation,
-};
+use kobo_ir::{CaptureSet, Kir, KirNodeId, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;
 

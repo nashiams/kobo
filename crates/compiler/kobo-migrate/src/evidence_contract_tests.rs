@@ -13,6 +13,16 @@ const ORACLE_TIERS: [OwnershipTier; 5] = [
     OwnershipTier::ArcMutShared,
 ];
 
+const CONTRACT_LATTICE_TIERS: [OwnershipTier; 7] = [
+    OwnershipTier::PlainOwned,
+    OwnershipTier::BoxOwned,
+    OwnershipTier::RcShared,
+    OwnershipTier::ArcShared,
+    OwnershipTier::RcMutShared,
+    OwnershipTier::ArcMutShared,
+    OwnershipTier::Scoped,
+];
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum OracleClassification {
     Unique,
@@ -23,11 +33,12 @@ enum OracleClassification {
 fn residual_graph() -> ConstraintGraph {
     ConstraintGraph {
         nodes: vec![KirNodeId(1), KirNodeId(2)],
-        edges: vec![ConstraintEdge {
-            source: KirNodeId(1),
-            target: KirNodeId(2),
-            kind: ConstraintKind::PropagateSharing,
-        }],
+        edges: vec![ConstraintEdge::synthetic(
+            KirNodeId(1),
+            KirNodeId(2),
+            ConstraintKind::PropagateSharing,
+            "test",
+        )],
     }
 }
 
@@ -47,6 +58,27 @@ fn join_by_floor_strength(current: OwnershipTier, incoming: OwnershipTier) -> Ow
         incoming
     } else {
         current
+    }
+}
+
+fn contract_lattice_rank(tier: OwnershipTier) -> u8 {
+    match tier {
+        OwnershipTier::PlainOwned => 0,
+        OwnershipTier::BoxOwned => 1,
+        OwnershipTier::RcShared => 2,
+        OwnershipTier::ArcShared => 3,
+        OwnershipTier::RcMutShared => 4,
+        OwnershipTier::ArcMutShared => 5,
+        OwnershipTier::Scoped => 6,
+        OwnershipTier::Undecided => panic!("Undecided is not part of the solved contract lattice"),
+    }
+}
+
+fn contract_lub(left: OwnershipTier, right: OwnershipTier) -> OwnershipTier {
+    if contract_lattice_rank(left) >= contract_lattice_rank(right) {
+        left
+    } else {
+        right
     }
 }
 
@@ -180,10 +212,128 @@ fn assert_solver_matches_oracle(graph: ConstraintGraph) {
     }
 }
 
+fn candidate_solution_signature(solution: &SolutionMap) -> Vec<(KirNodeId, OwnershipTier)> {
+    let mut signature: Vec<_> = solution.iter().collect();
+    signature.sort_by_key(|(node, tier)| (node.0, *tier));
+    signature
+}
+
 fn graph(nodes: &[u32], edges: Vec<ConstraintEdge>) -> ConstraintGraph {
     ConstraintGraph {
         nodes: nodes.iter().copied().map(KirNodeId).collect(),
         edges,
+    }
+}
+
+#[test]
+fn oracle_seven_tier_lub_matrix_must_match_solver_lattice_contract() {
+    for left in CONTRACT_LATTICE_TIERS {
+        for right in CONTRACT_LATTICE_TIERS {
+            let expected = contract_lub(left, right);
+            let actual = crate::lattice_solve::lattice_lub(left, right);
+
+            assert_eq!(
+                actual, expected,
+                "7-tier contract LUB mismatch for {left:?} and {right:?}"
+            );
+            assert_eq!(
+                actual,
+                crate::lattice_solve::lattice_lub(right, left),
+                "LUB must be commutative for {left:?} and {right:?}"
+            );
+            assert!(
+                contract_lattice_rank(actual) >= contract_lattice_rank(left)
+                    && contract_lattice_rank(actual) >= contract_lattice_rank(right),
+                "LUB({left:?}, {right:?}) returned {actual:?}, which is not an upper bound"
+            );
+        }
+
+        assert_eq!(
+            crate::lattice_solve::lattice_lub(left, left),
+            left,
+            "LUB must be idempotent for {left:?}"
+        );
+    }
+}
+
+#[test]
+fn oracle_candidate_tier_ladder_must_cover_contract_lattice() {
+    let solver_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/solver.rs");
+    let source = fs::read_to_string(&solver_path).expect("solver source should be readable");
+    let executable = strip_line_comments(&source);
+    let candidate_block = executable
+        .split("const CANDIDATE_TIERS")
+        .nth(1)
+        .and_then(|tail| tail.split_once("];").map(|(block, _)| block))
+        .expect("solver must define CANDIDATE_TIERS for oracle checking");
+
+    for tier in CONTRACT_LATTICE_TIERS {
+        let needle = format!("OwnershipTier::{tier:?}");
+        assert!(
+            candidate_block.contains(&needle),
+            "candidate tier ladder omitted contract tier {tier:?}"
+        );
+    }
+}
+
+#[test]
+fn oracle_budget_exceeded_evidence_must_not_collapse_non_empty_graph_to_empty_map() {
+    let graph = residual_graph();
+    let evidence = crate::solve_with_evidence(
+        &graph,
+        SolverBudget {
+            max_cluster_size: 256,
+            budget_seconds: 0.0,
+        },
+    );
+
+    assert_eq!(evidence.outcome_name, "BudgetExceeded");
+    assert_eq!(evidence.node_count, graph.nodes.len());
+    assert!(
+        !evidence.solution.is_empty(),
+        "BudgetExceeded evidence for a non-empty graph must carry partial solver payload, not SolutionMap::new() collapse"
+    );
+}
+
+#[test]
+fn oracle_multisolution_candidates_are_distinct_and_deterministic() {
+    let graph = graph(&[1], Vec::new());
+    let mut first_signature = None;
+
+    for _ in 0..100 {
+        let outcome = solve(&graph, SolverBudget::default());
+        let candidates = match outcome {
+            SolveOutcome::MultiSolution(candidates) => candidates,
+            other => panic!(
+                "ambiguous one-node graph must produce MultiSolution, got {}",
+                outcome_name(&other)
+            ),
+        };
+
+        assert!(
+            candidates.len() >= 2,
+            "MultiSolution must contain real alternatives, not a single picked candidate"
+        );
+
+        let signatures: Vec<_> = candidates
+            .iter()
+            .map(|candidate| candidate_solution_signature(&candidate.solution))
+            .collect();
+        let unique_signatures: std::collections::BTreeSet<_> = signatures.iter().cloned().collect();
+        assert_eq!(
+            unique_signatures.len(),
+            signatures.len(),
+            "MultiSolution candidates must have distinct SolutionMap contents"
+        );
+
+        if let Some(expected) = &first_signature {
+            assert_eq!(
+                &signatures, expected,
+                "candidate order must be byte-stable across repeated solves"
+            );
+        } else {
+            first_signature = Some(signatures);
+        }
     }
 }
 
@@ -207,16 +357,18 @@ fn oracle_generated_small_graphs_must_match_bruteforce_classification() {
         graph(
             &[1, 2, 3],
             vec![
-                ConstraintEdge {
-                    source: KirNodeId(1),
-                    target: KirNodeId(2),
-                    kind: ConstraintKind::PropagateSharing,
-                },
-                ConstraintEdge {
-                    source: KirNodeId(2),
-                    target: KirNodeId(3),
-                    kind: ConstraintKind::PropagateSend,
-                },
+                ConstraintEdge::synthetic(
+                    KirNodeId(1),
+                    KirNodeId(2),
+                    ConstraintKind::PropagateSharing,
+                    "test",
+                ),
+                ConstraintEdge::synthetic(
+                    KirNodeId(2),
+                    KirNodeId(3),
+                    ConstraintKind::PropagateSend,
+                    "test",
+                ),
             ],
         ),
     ];
@@ -335,12 +487,13 @@ fn differential_empty_graph_is_the_only_empty_unique_case() {
 
 #[test]
 fn runtime_outcome_variants_have_distinct_contract_names() {
-    let outcomes = vec![
+    let outcomes = [
         SolveOutcome::Unique(SolutionMap::new()),
         SolveOutcome::MultiSolution(Vec::new()),
         SolveOutcome::NoSolution(ConflictReport {
             conflicting_nodes: vec![KirNodeId(1), KirNodeId(2)],
             conflict_reason: "conflicting ownership floors".to_owned(),
+            provenance: vec![],
         }),
         SolveOutcome::ClusterTooLarge(ClusterReport {
             cluster_size: 257,

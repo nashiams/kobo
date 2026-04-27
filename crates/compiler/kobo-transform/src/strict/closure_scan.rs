@@ -2,8 +2,8 @@
 ///
 /// Contract C05: produces facts, NOT KDiagnostic.
 use kobo_ir::{
-    CaptureSet, ClosureCaptureDetail, ClosureCaptureMode, KirNodeId, KoboSpan,
-    StrictBoundaryFact, StrictBoundaryViolation, TransformFacts,
+    CaptureSet, ClosureCaptureDetail, ClosureCaptureMode, KirNodeId, KoboSpan, StrictBoundaryFact,
+    StrictBoundaryViolation, TransformFacts,
 };
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;

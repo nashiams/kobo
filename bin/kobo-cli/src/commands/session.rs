@@ -10,13 +10,16 @@ use kobo_ir::KoboMode;
 ///
 /// CLI mode overrides Kobo.toml. `config.mode` is finalized before
 /// `CompileSession::new()` so `diag_enabled` is computed from the correct mode.
-pub(super) fn build_session(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Result<CompileSession> {
+pub(super) fn build_session(
+    file: &Path,
+    cli_mode: Option<KoboMode>,
+) -> anyhow::Result<CompileSession> {
     let workspace_root = find_workspace_root(file)?;
     let crate_dir = find_crate_dir(file, &workspace_root);
     let mut config = load_config_for(&crate_dir, &workspace_root)
         .with_context(|| format!("failed to load config for {}", file.display()))?;
     if let Some(mode) = cli_mode {
-        config.mode = mode;  // CLI overrides Kobo.toml [Trap 5]
+        config.mode = mode; // CLI overrides Kobo.toml [Trap 5]
     }
     let mut session = CompileSession::new(config);
     session.cli_mode_override = cli_mode.is_some();
@@ -28,7 +31,10 @@ pub(super) fn render_diagnostics(session: &CompileSession) {
         // G5: suppress Severity::Warning diagnostics inside #[kobo::relax] ranges in checked mode.
         if diagnostic.severity == Severity::Warning
             && session.mode().is_checked()
-            && kobo_driver::is_inside_relaxed_fn(diagnostic.primary.span, &session.relaxed_fn_ranges)
+            && kobo_driver::is_inside_relaxed_fn(
+                diagnostic.primary.span,
+                &session.relaxed_fn_ranges,
+            )
         {
             continue;
         }

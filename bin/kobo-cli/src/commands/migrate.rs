@@ -3,7 +3,6 @@
 /// Subcommands/flags:
 ///   kobo migrate file.kobo           — migrate single file
 ///   kobo migrate --dry-run file.kobo — show diff without applying
-///   kobo migrate --apply file.kobo   — apply changes
 ///   kobo migrate --graph file.kobo   — show dependency graph
 ///   kobo migrate --root fn_name file.kobo — start from specific function
 ///   kobo migrate --actor file.kobo:42     — generate actor scaffold at line
@@ -14,21 +13,32 @@
 ///   @@ -10,3 +10,3 @@
 ///   -    let state = Rc::new(RefCell::new(State::new()));
 ///   +    let state = Arc::new(tokio::sync::RwLock::new(State::new()));
-
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use kobo_driver::run_kir_phase;
-use kobo_migrate::{greedy_resolve, GreedyConfig, GreedyPassResult};
+use kobo_driver::{extract_before_borrow_rewrite, run_kir_phase};
+use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
+use kobo_migrate::decisions_cache::{DecisionsStore, PersistedDecision};
+use kobo_migrate::{
+    build_kir_constraint_graph, graph_fingerprint, query_solve_outcome,
+    solve_modular_with_evidence, GreedyConfig, MigrateCtxt, SolveOutcome, SolverBudget,
+    SolverEvidence,
+};
 
 use super::session::build_session;
 
 /// Execute the migrate command.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn cmd_migrate(
     file: &Path,
     dry_run: bool,
     apply: bool,
     graph: bool,
+    review: bool,
+    class_view: bool,
+    explain: bool,
+    budget_seconds: Option<f64>,
     root: Option<&str>,
     actor: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -41,58 +51,187 @@ pub(super) fn cmd_migrate(
     let (_, kir) = run_kir_phase(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
 
-    let config = GreedyConfig {
-        solver_cluster_limit: session.config.solver_cluster_limit,
-        solver_budget_seconds: session.config.solver_budget_seconds,
+    let budget = SolverBudget {
+        max_cluster_size: session.config.solver_cluster_limit,
+        budget_seconds: budget_seconds.unwrap_or(session.config.solver_budget_seconds),
     };
 
-    let result = greedy_resolve(&kir, &config);
+    let config = GreedyConfig {
+        solver_cluster_limit: budget.max_cluster_size,
+        solver_budget_seconds: budget.budget_seconds,
+        mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
+    };
+    let cache_dir = solver_cache_dir_for(file);
+    let mut migrate_ctxt = MigrateCtxt::new_with_cache_dir(kir, config, cache_dir);
+    let graph_for_cache = build_kir_constraint_graph(migrate_ctxt.kir());
+    let graph_fingerprint_for_cache = graph_fingerprint(&graph_for_cache);
+    let cached_outcome = query_solve_outcome(&mut migrate_ctxt, &budget);
+    let (outcome, solver_evidence) = if matches!(cached_outcome, SolveOutcome::Unique(_)) {
+        let evidence = solver_evidence_from_outcome(
+            &cached_outcome,
+            &graph_fingerprint_for_cache,
+            graph_for_cache.nodes.len(),
+            graph_for_cache.edges.len(),
+            &budget,
+            migrate_ctxt.kir(),
+        );
+        (cached_outcome, evidence)
+    } else {
+        let modular = solve_modular_with_evidence(migrate_ctxt.kir(), &budget);
+        let outcome = modular.outcome.clone();
+        let _ = kobo_migrate::cache::SolverCache::save_unique_outcome(
+            migrate_ctxt
+                .cache_dir()
+                .expect("migrate context has cache dir"),
+            &modular.solver_evidence.graph_fingerprint,
+            &outcome,
+        );
+        (outcome, modular.solver_evidence)
+    };
+    let extract_plan = build_extract_before_borrow_plan(file, migrate_ctxt.kir())?;
+    let decisions_path = decisions_path_for(file);
+    let mut decisions = DecisionsStore::load(&decisions_path);
+    let review_artifact_updates = if review {
+        let updates = ensure_review_decisions(&mut decisions, &outcome);
+        decisions.save(&decisions_path).with_context(|| {
+            format!(
+                "failed to write migration decisions to {}",
+                decisions_path.display()
+            )
+        })?;
+        updates
+    } else {
+        0
+    };
 
     if graph {
-        return print_dependency_graph(&result, root);
+        return print_dependency_graph(migrate_ctxt.kir(), &outcome, &solver_evidence, root);
     }
 
     if dry_run || !apply {
-        return print_dry_run_diff(file, &result, root);
+        return print_dry_run_diff(
+            file,
+            &outcome,
+            &solver_evidence,
+            DryRunDiffOptions {
+                extract_plan: extract_plan.as_ref(),
+                decisions_path: &decisions_path,
+                decisions: &decisions,
+                review_artifact_updates,
+                review,
+                class_view,
+                explain,
+                _root: root,
+            },
+        );
     }
 
     if apply {
-        return apply_migration(file, &result, root);
+        return apply_migration(file, &outcome, root, extract_plan.as_ref());
     }
 
     // Default: dry-run (safe default).
-    print_dry_run_diff(file, &result, root)
+    print_dry_run_diff(
+        file,
+        &outcome,
+        &solver_evidence,
+        DryRunDiffOptions {
+            extract_plan: extract_plan.as_ref(),
+            decisions_path: &decisions_path,
+            decisions: &decisions,
+            review_artifact_updates,
+            review,
+            class_view,
+            explain,
+            _root: root,
+        },
+    )
+}
+
+struct DryRunDiffOptions<'a> {
+    extract_plan: Option<&'a ExtractBeforeBorrowPlan>,
+    decisions_path: &'a Path,
+    decisions: &'a DecisionsStore,
+    review_artifact_updates: usize,
+    review: bool,
+    class_view: bool,
+    explain: bool,
+    _root: Option<&'a str>,
+}
+
+struct ExtractBeforeBorrowPlan {
+    original: String,
+    rewritten: String,
+    applied_sites: usize,
 }
 
 /// Print a unified diff showing proposed migration changes.
 fn print_dry_run_diff(
     file: &Path,
-    result: &GreedyPassResult,
-    _root: Option<&str>,
+    outcome: &SolveOutcome,
+    evidence: &SolverEvidence,
+    options: DryRunDiffOptions<'_>,
 ) -> anyhow::Result<()> {
     let file_name = file.display();
 
-    // Print diagnostics first.
-    for diag in &result.diagnostics {
-        eprintln!(
-            "warning[{}]: {} — {}",
-            diag.code.as_str(),
-            diag.binding_name,
-            diag.message
+    println!("// kobo migrate: dry-run plan");
+    println!(
+        "// solver outcome: {} | fingerprint: {} | nodes: {} | edges: {}",
+        evidence.outcome_name, evidence.graph_fingerprint, evidence.node_count, evidence.edge_count,
+    );
+    println!("// graph fingerprint: {}", evidence.graph_fingerprint);
+    println!(
+        "// solver budget: max_cluster_size={} budget_seconds={:.3}",
+        evidence.budget.max_cluster_size, evidence.budget.budget_seconds
+    );
+    println!("// decisions_file: {}", options.decisions_path.display());
+    println!("// persisted_decisions: {}", options.decisions.len());
+    println!(
+        "// locked_decisions: {}",
+        locked_decision_count(options.decisions)
+    );
+    if options.review {
+        println!(
+            "// review_artifact_updates: {}",
+            options.review_artifact_updates
+        );
+    }
+    println!(
+        "// silent_decisions: {}",
+        count_silent_decisions(outcome, options.decisions)
+    );
+    let locked_conflicts = locked_decision_conflicts(outcome, options.decisions);
+    println!("// locked_decision_conflicts: {}", locked_conflicts.len());
+    for conflict in &locked_conflicts {
+        println!(
+            "// [K0085] locked decision conflict: {} solver={} locked={}",
+            conflict.key,
+            tier_label(conflict.solver_tier),
+            tier_label(conflict.locked_tier)
         );
     }
 
-    // Print stats header.
-    println!("// kobo migrate: dry-run plan");
-    println!(
-        "// {} undecided binding(s), {} resolved, {} unresolved",
-        result.stats.total_undecided,
-        result.stats.resolved_count,
-        result.stats.unresolved_count,
-    );
+    if options.class_view {
+        println!("// decision class: {}", outcome_class(outcome));
+        print_persisted_decision_summary(options.decisions);
+    }
+
+    if options.explain {
+        println!("// explanation: {}", outcome_explanation(outcome));
+    }
     println!();
 
-    if result.resolved.is_empty() {
+    let ownership_change_count = proposed_change_count(outcome);
+    let extract_fix_count = options
+        .extract_plan
+        .map(|plan| plan.applied_sites)
+        .unwrap_or_default();
+
+    if matches!(outcome, SolveOutcome::Unique(_))
+        && ownership_change_count == 0
+        && extract_fix_count == 0
+    {
+        println!("// kobo-pick: none (no ownership changes proposed)");
         println!("// No migration changes needed.");
         return Ok(());
     }
@@ -101,52 +240,154 @@ fn print_dry_run_diff(
     println!("--- a/{}", file_name);
     println!("+++ b/{}", file_name);
 
-    for decision in &result.resolved {
-        let tier_label = match decision.tier {
-            kobo_ir::OwnershipTier::PlainOwned => "T",
-            kobo_ir::OwnershipTier::BoxOwned => "Box<T>",
-            kobo_ir::OwnershipTier::RcShared => "Rc<T>",
-            kobo_ir::OwnershipTier::ArcShared => "Arc<T>",
-            kobo_ir::OwnershipTier::RcMutShared => "Rc<RefCell<T>>",
-            kobo_ir::OwnershipTier::ArcMutShared => "Arc<RwLock<T>>",
-            kobo_ir::OwnershipTier::Scoped => "ScopedHandle<T>",
-            kobo_ir::OwnershipTier::Undecided => "Undecided",
-        };
+    match outcome {
+        SolveOutcome::Unique(map) => print_solution_diff(map, "unique", options.decisions),
+        SolveOutcome::MultiSolution(candidates) => {
+            println!(
+                "// [K0083] {} valid ownership candidate(s); preferred candidate shown below",
+                candidates.len()
+            );
+            if let Some(candidate) = candidates.first() {
+                print_solution_diff(
+                    &candidate.solution,
+                    &candidate.explanation,
+                    options.decisions,
+                );
+            }
+            if options.review {
+                for (idx, candidate) in candidates.iter().enumerate() {
+                    println!(
+                        "// candidate {}: risk {:.3} — {}",
+                        idx + 1,
+                        candidate.risk_score,
+                        candidate.explanation
+                    );
+                    print_solution_diff(&candidate.solution, "review-candidate", options.decisions);
+                }
+            } else {
+                println!("// Use --review to inspect all solver candidates.");
+            }
+        }
+        SolveOutcome::NoSolution(report) => {
+            println!("// [K0080] {}", report.conflict_reason);
+            println!("// conflict nodes: {}", report.conflicting_nodes.len());
+            for provenance in &report.provenance {
+                println!(
+                    "// provenance: {:?} via {} at {}..{}",
+                    provenance.fact_kind,
+                    provenance.rule_name,
+                    provenance.span.start,
+                    provenance.span.end
+                );
+            }
+        }
+        SolveOutcome::ClusterTooLarge(report) => {
+            println!(
+                "// [K0081] cluster too large: {} node(s), limit {}",
+                report.cluster_size, report.limit
+            );
+        }
+        SolveOutcome::BudgetExceeded(report) => {
+            println!(
+                "// [K0082] solver budget exceeded: {}/{} resolved in {:.3}s of {:.3}s",
+                report.resolved_count,
+                report.total_count,
+                report.elapsed_seconds,
+                report.budget_seconds
+            );
+        }
+        SolveOutcome::BoundaryStop(report) => {
+            println!(
+                "// [K0090] boundary stop at node {} crossing {}::{}",
+                report.crossing_node.0, report.external_crate, report.external_function
+            );
+        }
+    }
 
-        let reason_label = format!("{:?}", decision.reason);
-        println!(
-            "@@ node {} — migrate to {} (reason: {}) @@",
-            decision.node.0, tier_label, reason_label,
-        );
+    if let Some(plan) = options.extract_plan {
+        print_extract_before_borrow_diff(file, plan);
     }
 
     println!();
     println!(
-        "// {} change(s) proposed. Use --apply to write changes.",
-        result.resolved.len()
+        "// {} ownership change(s), {} S-17 fix(es) proposed. Use --apply to write S-17 fixes.",
+        ownership_change_count, extract_fix_count,
     );
 
     Ok(())
 }
 
+fn build_extract_before_borrow_plan(
+    file: &Path,
+    kir: &kobo_ir::Kir,
+) -> anyhow::Result<Option<ExtractBeforeBorrowPlan>> {
+    let original =
+        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
+    let (rewritten, applied_sites) = extract_before_borrow_rewrite(&original, kir);
+    if applied_sites == 0 || rewritten == original {
+        return Ok(None);
+    }
+
+    Ok(Some(ExtractBeforeBorrowPlan {
+        original,
+        rewritten,
+        applied_sites,
+    }))
+}
+
+fn print_extract_before_borrow_diff(file: &Path, plan: &ExtractBeforeBorrowPlan) {
+    println!();
+    println!(
+        "// S-17 extract-before-borrow fixes: {} site(s)",
+        plan.applied_sites
+    );
+    println!("--- a/{}", file.display());
+    println!("+++ b/{}", file.display());
+    println!("@@ S-17 extract-before-borrow @@");
+    println!("// before");
+    for line in plan.original.lines() {
+        println!("-{line}");
+    }
+    println!("// after");
+    for line in plan.rewritten.lines() {
+        println!("+{line}");
+    }
+}
+
 /// Print a text dependency graph showing migration constraints.
 fn print_dependency_graph(
-    result: &GreedyPassResult,
+    kir: &kobo_ir::Kir,
+    outcome: &SolveOutcome,
+    evidence: &SolverEvidence,
     _root: Option<&str>,
 ) -> anyhow::Result<()> {
     println!("// kobo migrate: dependency graph");
+    println!(
+        "// solver outcome: {} | fingerprint: {} | nodes: {} | edges: {}",
+        evidence.outcome_name, evidence.graph_fingerprint, evidence.node_count, evidence.edge_count,
+    );
+    println!("// graph fingerprint: {}", evidence.graph_fingerprint);
     println!();
 
-    for decision in &result.resolved {
-        let tier_label = format!("{:?}", decision.tier);
-        println!("  node({}) -> {}", decision.node.0, tier_label);
+    let graph = build_kir_constraint_graph(kir);
+    for edge in &graph.edges {
+        println!(
+            "  node({}) -{:?}/{}-> node({})",
+            edge.source.0, edge.kind, edge.provenance.rule_name, edge.target.0
+        );
     }
 
-    for node_id in &result.unresolved {
-        println!("  node({}) -> Undecided (residual)", node_id.0);
+    match outcome {
+        SolveOutcome::Unique(map) => print_solution_graph(map),
+        SolveOutcome::MultiSolution(candidates) => {
+            if let Some(candidate) = candidates.first() {
+                print_solution_graph(&candidate.solution);
+            }
+        }
+        _ => {}
     }
 
-    if result.resolved.is_empty() && result.unresolved.is_empty() {
+    if graph.nodes.is_empty() && graph.edges.is_empty() {
         println!("  (empty graph — no undecided bindings)");
     }
 
@@ -155,31 +396,265 @@ fn print_dependency_graph(
 
 /// Apply migration changes to the source file.
 fn apply_migration(
-    _file: &Path,
-    result: &GreedyPassResult,
+    file: &Path,
+    outcome: &SolveOutcome,
     _root: Option<&str>,
+    extract_plan: Option<&ExtractBeforeBorrowPlan>,
 ) -> anyhow::Result<()> {
-    if result.resolved.is_empty() {
+    let change_count = proposed_change_count(outcome);
+    if let Some(plan) = extract_plan {
+        fs::write(file, &plan.rewritten)
+            .with_context(|| format!("failed to write {}", file.display()))?;
+        println!(
+            "// Applied S-17 extract-before-borrow fixes: {} site(s)",
+            plan.applied_sites
+        );
+        if change_count > 0 {
+            println!(
+                "// {} ownership migration change(s) remain dry-run only in this build.",
+                change_count
+            );
+        }
+        return Ok(());
+    }
+
+    if change_count == 0 {
         println!("// No migration changes to apply.");
         return Ok(());
     }
 
-    // For now, apply is a preview + confirmation.
-    // Full rewriting requires source-map integration (future work).
-    println!("// kobo migrate: applying {} change(s)...", result.resolved.len());
-    println!("// NOTE: source rewriting not yet implemented — showing plan.");
+    anyhow::bail!(
+        "--apply is not available in this build; use --dry-run to review {} planned change(s)",
+        change_count
+    )
+}
 
-    for decision in &result.resolved {
-        let tier_label = format!("{:?}", decision.tier);
+fn print_solution_diff(solution: &SolutionMap, reason: &str, decisions: &DecisionsStore) {
+    for (node_id, tier) in sorted_solution_entries(solution) {
+        let key = decision_key(node_id);
+        let locked = decisions.get(&key).filter(|decision| decision.locked);
+        let visible_tier = locked.map(|decision| decision.tier).unwrap_or(tier);
+        let source = locked.map(|_| "persisted-decision").unwrap_or(reason);
         println!(
-            "  node({}) -> {} (reason: {:?})",
-            decision.node.0, tier_label, decision.reason,
+            "// kobo-pick: {} -> {} ({})",
+            key,
+            tier_label(visible_tier),
+            source
+        );
+        println!(
+            "@@ node {} — migrate to {} (reason: {}) @@",
+            node_id.0,
+            tier_label(visible_tier),
+            source,
         );
     }
+}
 
-    println!("// {} change(s) planned.", result.resolved.len());
+fn print_solution_graph(solution: &SolutionMap) {
+    for (node_id, tier) in sorted_solution_entries(solution) {
+        println!("  node({}) -> {:?}", node_id.0, tier);
+    }
+}
 
-    Ok(())
+fn decisions_path_for(file: &Path) -> PathBuf {
+    let root = file.parent().unwrap_or_else(|| Path::new("."));
+    root.join(".kobo").join("decisions.toml")
+}
+
+fn solver_cache_dir_for(file: &Path) -> PathBuf {
+    let root = file.parent().unwrap_or_else(|| Path::new("."));
+    root.join(".kobo").join("cache").join("solver-v1")
+}
+
+fn solver_evidence_from_outcome(
+    outcome: &SolveOutcome,
+    fingerprint: &str,
+    node_count: usize,
+    edge_count: usize,
+    budget: &SolverBudget,
+    kir: &kobo_ir::Kir,
+) -> SolverEvidence {
+    let solution = match outcome {
+        SolveOutcome::Unique(map) => map.clone(),
+        SolveOutcome::MultiSolution(candidates) => candidates
+            .first()
+            .map(|candidate| candidate.solution.clone())
+            .unwrap_or_default(),
+        _ => partial_solution_from_kir(kir),
+    };
+    SolverEvidence {
+        outcome_name: kobo_migrate::outcome_name(outcome).to_owned(),
+        graph_fingerprint: fingerprint.to_owned(),
+        node_count,
+        edge_count,
+        budget: budget.clone(),
+        solution,
+    }
+}
+
+fn partial_solution_from_kir(kir: &kobo_ir::Kir) -> SolutionMap {
+    let mut map = SolutionMap::new();
+    for node in kir.iter_decl_nodes() {
+        map.insert(node.id, OwnershipTier::Undecided);
+    }
+    map
+}
+
+fn ensure_review_decisions(decisions: &mut DecisionsStore, outcome: &SolveOutcome) -> usize {
+    let mut updates = 0;
+    for (node_id, tier) in preferred_solution_entries(outcome) {
+        let key = decision_key(node_id);
+        if decisions.get(&key).is_some() {
+            continue;
+        }
+        decisions.set(PersistedDecision {
+            binding_name: key,
+            tier,
+            locked: false,
+            reviewed_by: Some("kobo migrate --review".to_owned()),
+            comment: Some("provisional solver decision; lock after review".to_owned()),
+        });
+        updates += 1;
+    }
+    updates
+}
+
+fn preferred_solution_entries(outcome: &SolveOutcome) -> Vec<(KirNodeId, OwnershipTier)> {
+    match outcome {
+        SolveOutcome::Unique(map) => sorted_solution_entries(map),
+        SolveOutcome::MultiSolution(candidates) => candidates
+            .first()
+            .map(|candidate| sorted_solution_entries(&candidate.solution))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn sorted_solution_entries(solution: &SolutionMap) -> Vec<(KirNodeId, OwnershipTier)> {
+    let mut entries: Vec<_> = solution.iter().collect();
+    entries.sort_by_key(|(node_id, tier)| (node_id.0, *tier));
+    entries
+}
+
+fn decision_key(node_id: KirNodeId) -> String {
+    format!("node_{}", node_id.0)
+}
+
+fn locked_decision_count(decisions: &DecisionsStore) -> usize {
+    decisions
+        .iter()
+        .filter(|(_, decision)| decision.locked)
+        .count()
+}
+
+fn print_persisted_decision_summary(decisions: &DecisionsStore) {
+    if decisions.is_empty() {
+        println!("// persisted decision entries: none");
+        return;
+    }
+    println!("// persisted decision entries:");
+    for (key, decision) in decisions.iter() {
+        println!(
+            "//   {} => {:?} locked={}",
+            key, decision.tier, decision.locked
+        );
+    }
+}
+
+fn proposed_change_count(outcome: &SolveOutcome) -> usize {
+    match outcome {
+        SolveOutcome::Unique(map) => map.len(),
+        SolveOutcome::MultiSolution(candidates) => candidates
+            .first()
+            .map(|candidate| candidate.solution.len())
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn count_silent_decisions(outcome: &SolveOutcome, decisions: &DecisionsStore) -> usize {
+    preferred_solution_entries(outcome)
+        .into_iter()
+        .filter(|(node_id, _)| !decisions.is_locked(&decision_key(*node_id)))
+        .count()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LockedDecisionConflict {
+    key: String,
+    solver_tier: OwnershipTier,
+    locked_tier: OwnershipTier,
+}
+
+fn locked_decision_conflicts(
+    outcome: &SolveOutcome,
+    decisions: &DecisionsStore,
+) -> Vec<LockedDecisionConflict> {
+    preferred_solution_entries(outcome)
+        .into_iter()
+        .filter_map(|(node_id, solver_tier)| {
+            let key = decision_key(node_id);
+            let decision = decisions.get(&key)?;
+            (decision.locked && decision.tier != solver_tier).then_some(LockedDecisionConflict {
+                key,
+                solver_tier,
+                locked_tier: decision.tier,
+            })
+        })
+        .collect()
+}
+
+fn tier_label(tier: kobo_ir::OwnershipTier) -> &'static str {
+    match tier {
+        kobo_ir::OwnershipTier::PlainOwned => "T",
+        kobo_ir::OwnershipTier::BoxOwned => "Box<T>",
+        kobo_ir::OwnershipTier::RcShared => "Rc<T>",
+        kobo_ir::OwnershipTier::ArcShared => "Arc<T>",
+        kobo_ir::OwnershipTier::RcMutShared => "Rc<RefCell<T>>",
+        kobo_ir::OwnershipTier::ArcMutShared => "Arc<RwLock<T>>",
+        kobo_ir::OwnershipTier::Scoped => "ScopedHandle<T>",
+        kobo_ir::OwnershipTier::Undecided => "Undecided",
+    }
+}
+
+fn outcome_class(outcome: &SolveOutcome) -> &'static str {
+    match outcome {
+        SolveOutcome::Unique(_) => "unique",
+        SolveOutcome::MultiSolution(_) => "review-required",
+        SolveOutcome::NoSolution(_) => "conflict",
+        SolveOutcome::ClusterTooLarge(_) => "cluster-too-large",
+        SolveOutcome::BudgetExceeded(_) => "budget-capped",
+        SolveOutcome::BoundaryStop(_) => "boundary-stopped",
+    }
+}
+
+fn outcome_explanation(outcome: &SolveOutcome) -> String {
+    match outcome {
+        SolveOutcome::Unique(map) => {
+            format!("solver produced one assignment for {} node(s)", map.len())
+        }
+        SolveOutcome::MultiSolution(candidates) => {
+            format!(
+                "solver produced {} valid candidate assignments",
+                candidates.len()
+            )
+        }
+        SolveOutcome::NoSolution(report) => report.conflict_reason.clone(),
+        SolveOutcome::ClusterTooLarge(report) => {
+            format!(
+                "cluster has {} nodes; limit is {}",
+                report.cluster_size, report.limit
+            )
+        }
+        SolveOutcome::BudgetExceeded(report) => format!(
+            "resolved {}/{} nodes before budget {:.3}s expired",
+            report.resolved_count, report.total_count, report.budget_seconds
+        ),
+        SolveOutcome::BoundaryStop(report) => format!(
+            "node {} crosses external boundary {}::{}",
+            report.crossing_node.0, report.external_crate, report.external_function
+        ),
+    }
 }
 
 /// Generate actor scaffold at the given line.
@@ -198,11 +673,18 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
 
     // Read the source file to extract context for the actor scaffold.
     let source_path = file.parent().unwrap_or(Path::new(".")).join(actor_file);
-    let source = std::fs::read_to_string(&source_path)
-        .unwrap_or_default();
+    let source = std::fs::read_to_string(&source_path).unwrap_or_default();
 
     // Extract state fields and operations from the targeted region.
     let (state_fields, message_variants) = extract_actor_context(&source, line);
+    let state_field_names: Vec<String> = state_fields
+        .iter()
+        .filter_map(|field| {
+            field
+                .split_once(':')
+                .map(|(name, _)| name.trim().to_owned())
+        })
+        .collect();
 
     println!("// kobo migrate --actor: generating actor scaffold");
     println!("// Source: {}:{}", actor_file, line);
@@ -215,7 +697,6 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     // Message enum from extracted operations.
     println!("enum ActorMessage {{");
     if message_variants.is_empty() {
-        println!("    // TODO: Define your message variants");
         println!("    Ping,");
     } else {
         for variant in &message_variants {
@@ -228,9 +709,7 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     // Actor struct with extracted state fields.
     println!("struct Actor {{");
     println!("    receiver: mpsc::Receiver<ActorMessage>,");
-    if state_fields.is_empty() {
-        println!("    // TODO: Add actor state fields");
-    } else {
+    if !state_fields.is_empty() {
         for field in &state_fields {
             println!("    {},", field);
         }
@@ -239,8 +718,18 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     println!();
 
     println!("impl Actor {{");
-    println!("    fn new(receiver: mpsc::Receiver<ActorMessage>) -> Self {{");
-    println!("        Self {{ receiver }}");
+    let constructor_params = if state_fields.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", state_fields.join(", "))
+    };
+    let constructor_fields = if state_field_names.is_empty() {
+        "receiver".to_owned()
+    } else {
+        format!("receiver, {}", state_field_names.join(", "))
+    };
+    println!("    fn new(receiver: mpsc::Receiver<ActorMessage>{constructor_params}) -> Self {{");
+    println!("        Self {{ {constructor_fields} }}");
     println!("    }}");
     println!();
     println!("    async fn run(mut self) {{");
@@ -256,24 +745,40 @@ fn cmd_migrate_actor(file: &Path, actor_spec: &str) -> anyhow::Result<()> {
     println!("        match msg {{");
     if message_variants.is_empty() {
         println!("            ActorMessage::Ping => {{");
-        println!("                // TODO: Handle message");
+        println!("                // default health-check message");
         println!("            }}");
     } else {
         for variant in &message_variants {
-            let name = variant.split(|c: char| c == '(' || c == ' ').next().unwrap_or(variant);
+            let name = variant.split(['(', ' ']).next().unwrap_or(variant);
+            let handler_name = name.to_ascii_lowercase();
             println!("            ActorMessage::{name} => {{");
-            println!("                // TODO: Handle {name}");
+            println!("                self.handle_{handler_name}_message().await;");
             println!("            }}");
         }
     }
     println!("        }}");
     println!("    }}");
+
+    for variant in &message_variants {
+        let name = variant.split(['(', ' ']).next().unwrap_or(variant);
+        let handler_name = name.to_ascii_lowercase();
+        println!();
+        println!("    async fn handle_{handler_name}_message(&mut self) {{");
+        println!("    }}");
+    }
+
     println!("}}");
     println!();
-    println!("fn spawn_actor() -> mpsc::Sender<ActorMessage> {{");
+    let spawn_params = state_fields.join(", ");
+    let spawn_args = if state_field_names.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", state_field_names.join(", "))
+    };
+    println!("fn spawn_actor({spawn_params}) -> mpsc::Sender<ActorMessage> {{");
     println!("    let (tx, rx) = mpsc::channel(100);");
     println!("    tokio::spawn(async move {{");
-    println!("        let actor = Actor::new(rx);");
+    println!("        let actor = Actor::new(rx{spawn_args});");
     println!("        actor.run().await;");
     println!("    }});");
     println!("    tx");
@@ -301,8 +806,11 @@ fn extract_actor_context(source: &str, target_line: usize) -> (Vec<String>, Vec<
         let trimmed = lines[i].trim();
 
         // Extract struct fields: `name: Type`
-        if trimmed.contains(':') && !trimmed.starts_with("//") && !trimmed.starts_with("fn ")
-            && !trimmed.starts_with("let ") && !trimmed.starts_with("pub fn ")
+        if trimmed.contains(':')
+            && !trimmed.starts_with("//")
+            && !trimmed.starts_with("fn ")
+            && !trimmed.starts_with("let ")
+            && !trimmed.starts_with("pub fn ")
             && !trimmed.contains("->")
         {
             let field = trimmed.trim_end_matches(',');
@@ -311,9 +819,10 @@ fn extract_actor_context(source: &str, target_line: usize) -> (Vec<String>, Vec<
                 if parts.len() == 2 {
                     let name = parts[0].trim().trim_start_matches("pub ");
                     let ty = parts[1].trim();
-                    // Heuristic: looks like a field if name is a simple ident and type is capitalized
-                    if !name.is_empty() && !name.contains(' ')
-                        && ty.chars().next().map_or(false, |c| c.is_uppercase() || c == '&')
+                    // Heuristic: actor state must be owned and named like a type.
+                    if !name.is_empty()
+                        && !name.contains(' ')
+                        && ty.chars().next().is_some_and(|c| c.is_uppercase())
                     {
                         state_fields.push(format!("{name}: {ty}"));
                     }
@@ -328,9 +837,13 @@ fn extract_actor_context(source: &str, target_line: usize) -> (Vec<String>, Vec<
                 if let Some(paren_pos) = after_dot.find('(') {
                     let method = &after_dot[..paren_pos];
                     let method = method.trim();
-                    if !method.is_empty() && method.chars().all(|c| c.is_alphanumeric() || c == '_')
-                        && !["await", "clone", "unwrap", "map", "ok", "err", "into", "as_ref", "len", "is_empty"]
-                            .contains(&method)
+                    if !method.is_empty()
+                        && method.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        && ![
+                            "await", "clone", "unwrap", "map", "ok", "err", "into", "as_ref",
+                            "len", "is_empty",
+                        ]
+                        .contains(&method)
                     {
                         let variant = to_pascal_case(method);
                         if !message_variants.contains(&variant) {
@@ -368,58 +881,101 @@ fn to_pascal_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kobo_ir::{KirNodeId, OwnershipTier, TierDecision, TierReason};
-    use kobo_migrate::{GreedyDiagnostic, GreedyStats};
-    use kobo_ir::{FileId, KoboSpan};
+    use kobo_ir::{KirNodeId, OwnershipTier};
 
-    fn make_test_result(resolved_count: usize) -> GreedyPassResult {
-        let resolved: Vec<TierDecision> = (0..resolved_count)
-            .map(|i| TierDecision {
-                node: KirNodeId(i as u32),
-                tier: OwnershipTier::PlainOwned,
-                reason: TierReason::LocalOnly,
-                annotate: true,
-            })
-            .collect();
-
-        GreedyPassResult {
-            resolved,
-            unresolved: Vec::new(),
-            diagnostics: Vec::new(),
-            stats: GreedyStats {
-                total_undecided: resolved_count,
-                resolved_count,
-                unresolved_count: 0,
-                k0080_count: 0,
-                elapsed_ms: 0,
-            },
+    fn make_solution(resolved_count: usize) -> SolutionMap {
+        let mut solution = SolutionMap::new();
+        for i in 0..resolved_count {
+            solution.insert(KirNodeId(i as u32), OwnershipTier::PlainOwned);
         }
+        solution
+    }
+
+    fn make_evidence(outcome_name: &str, solution: SolutionMap) -> SolverEvidence {
+        SolverEvidence {
+            outcome_name: outcome_name.to_owned(),
+            graph_fingerprint: "0123456789abcdef".to_owned(),
+            node_count: solution.len(),
+            edge_count: 0,
+            budget: SolverBudget::default(),
+            solution,
+        }
+    }
+
+    fn empty_decisions() -> DecisionsStore {
+        DecisionsStore::new()
     }
 
     #[test]
     fn dry_run_diff_contains_headers() {
-        let result = make_test_result(2);
-        // Capture output by calling the diff formatter directly.
+        let solution = make_solution(2);
+        let outcome = SolveOutcome::Unique(solution.clone());
+        let evidence = make_evidence("Unique", solution);
         let file = Path::new("test.kobo");
-
-        // Just verify no panic and basic logic.
-        let out = print_dry_run_diff(file, &result, None);
+        let decisions = empty_decisions();
+        let out = print_dry_run_diff(
+            file,
+            &outcome,
+            &evidence,
+            DryRunDiffOptions {
+                extract_plan: None,
+                decisions_path: Path::new(".kobo/decisions.toml"),
+                decisions: &decisions,
+                review_artifact_updates: 0,
+                review: false,
+                class_view: false,
+                explain: false,
+                _root: None,
+            },
+        );
         assert!(out.is_ok());
     }
 
     #[test]
     fn dry_run_empty_result_no_changes() {
-        let result = make_test_result(0);
+        let solution = make_solution(0);
+        let outcome = SolveOutcome::Unique(solution.clone());
+        let evidence = make_evidence("Unique", solution);
         let file = Path::new("test.kobo");
-        let out = print_dry_run_diff(file, &result, None);
+        let decisions = empty_decisions();
+        let out = print_dry_run_diff(
+            file,
+            &outcome,
+            &evidence,
+            DryRunDiffOptions {
+                extract_plan: None,
+                decisions_path: Path::new(".kobo/decisions.toml"),
+                decisions: &decisions,
+                review_artifact_updates: 0,
+                review: false,
+                class_view: false,
+                explain: false,
+                _root: None,
+            },
+        );
         assert!(out.is_ok());
     }
 
     #[test]
     fn graph_output_shows_nodes() {
-        let result = make_test_result(3);
-        let out = print_dependency_graph(&result, None);
+        let solution = make_solution(3);
+        let outcome = SolveOutcome::Unique(solution.clone());
+        let evidence = make_evidence("Unique", solution);
+        let kir = kobo_ir::Kir::default();
+        let out = print_dependency_graph(&kir, &outcome, &evidence, None);
         assert!(out.is_ok());
+    }
+
+    #[test]
+    fn apply_errors_when_rewrite_is_unavailable() {
+        let outcome = SolveOutcome::Unique(make_solution(2));
+        let file = Path::new("test.kobo");
+        let err = apply_migration(file, &outcome, None, None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("--apply is not available in this build"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -440,16 +996,86 @@ mod tests {
     }
 
     #[test]
-    fn migrate_with_diagnostics() {
-        let mut result = make_test_result(1);
-        result.diagnostics.push(kobo_migrate::GreedyDiagnostic {
-            code: kobo_errors::KErrorCode::K0080,
-            binding_name: "data".to_owned(),
-            span: KoboSpan::new(0, 10, FileId(0)),
-            message: "structural conflict".to_owned(),
+    fn count_silent_decisions_respects_locked_entries() {
+        let mut solution = SolutionMap::new();
+        solution.insert(KirNodeId(1), OwnershipTier::PlainOwned);
+        solution.insert(KirNodeId(2), OwnershipTier::RcShared);
+        let outcome = SolveOutcome::Unique(solution);
+
+        let mut decisions = DecisionsStore::new();
+        decisions.set(PersistedDecision {
+            binding_name: "node_1".to_owned(),
+            tier: OwnershipTier::PlainOwned,
+            locked: true,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("approved".to_owned()),
         });
+        decisions.set(PersistedDecision {
+            binding_name: "node_2".to_owned(),
+            tier: OwnershipTier::RcShared,
+            locked: false,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("provisional".to_owned()),
+        });
+
+        assert_eq!(count_silent_decisions(&outcome, &decisions), 1);
+    }
+
+    #[test]
+    fn locked_decision_conflicts_report_solver_mismatch() {
+        let mut solution = SolutionMap::new();
+        solution.insert(KirNodeId(1), OwnershipTier::RcShared);
+        solution.insert(KirNodeId(2), OwnershipTier::PlainOwned);
+        let outcome = SolveOutcome::Unique(solution);
+
+        let mut decisions = DecisionsStore::new();
+        decisions.set(PersistedDecision {
+            binding_name: "node_1".to_owned(),
+            tier: OwnershipTier::PlainOwned,
+            locked: true,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("approved before graph changed".to_owned()),
+        });
+        decisions.set(PersistedDecision {
+            binding_name: "node_2".to_owned(),
+            tier: OwnershipTier::PlainOwned,
+            locked: true,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("still matches".to_owned()),
+        });
+
+        let conflicts = locked_decision_conflicts(&outcome, &decisions);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].key, "node_1");
+        assert_eq!(conflicts[0].solver_tier, OwnershipTier::RcShared);
+        assert_eq!(conflicts[0].locked_tier, OwnershipTier::PlainOwned);
+    }
+
+    #[test]
+    fn migrate_with_diagnostics() {
+        let outcome = SolveOutcome::NoSolution(kobo_migrate::ConflictReport {
+            conflicting_nodes: vec![KirNodeId(1)],
+            conflict_reason: "structural conflict".to_owned(),
+            provenance: vec![],
+        });
+        let evidence = make_evidence("NoSolution", make_solution(1));
         let file = Path::new("test.kobo");
-        let out = print_dry_run_diff(file, &result, None);
+        let decisions = empty_decisions();
+        let out = print_dry_run_diff(
+            file,
+            &outcome,
+            &evidence,
+            DryRunDiffOptions {
+                extract_plan: None,
+                decisions_path: Path::new(".kobo/decisions.toml"),
+                decisions: &decisions,
+                review_artifact_updates: 0,
+                review: false,
+                class_view: false,
+                explain: true,
+                _root: None,
+            },
+        );
         assert!(out.is_ok());
     }
 }

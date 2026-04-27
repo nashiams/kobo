@@ -1,5 +1,5 @@
-use kobo_ir::KoboMode;
 use crate::mode_parse::{parse_file_mode, ModeParseError};
+use kobo_ir::KoboMode;
 
 /// S-26 Contract: `//! kobo:mode = script` → Script
 #[test]

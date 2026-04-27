@@ -6,7 +6,10 @@ pub enum ModeParseError {
     /// Invalid mode string (not script/checked/strict)
     InvalidMode { line: usize, value: String },
     /// Duplicate mode attribute found
-    DuplicateMode { first_line: usize, second_line: usize },
+    DuplicateMode {
+        first_line: usize,
+        second_line: usize,
+    },
 }
 
 impl std::fmt::Display for ModeParseError {
@@ -53,10 +56,11 @@ pub fn parse_file_mode(source: &str) -> Result<Option<KoboMode>, ModeParseError>
                 let mode_str = mode_str.trim();
                 if let Some(value) = mode_str.strip_prefix('=') {
                     let value = value.trim();
-                    let mode: KoboMode = value.parse().map_err(|_| ModeParseError::InvalidMode {
-                        line: line_num,
-                        value: value.to_owned(),
-                    })?;
+                    let mode: KoboMode =
+                        value.parse().map_err(|_| ModeParseError::InvalidMode {
+                            line: line_num,
+                            value: value.to_owned(),
+                        })?;
 
                     if let Some((first_line, _)) = found {
                         return Err(ModeParseError::DuplicateMode {

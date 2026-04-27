@@ -1,0 +1,228 @@
+// Oracle Gate: Game ECS with tick loop, entity pool, and cross-system references.
+// Systems share a world but operate on different components:
+// - PhysicsSystem: reads positions, writes velocities (exclusive mutable)
+// - RenderSystem: reads positions + sprites (shared read)
+// - NetworkSystem: reads positions, writes to a socket buffer sent to another thread
+// - InputSystem: writes to a command queue read by physics
+//
+// The oracle property: physics and render CANNOT both hold mutable access
+// to position simultaneously (MutuallyExclusive constraint). The solver must
+// either sequence them or error. NetworkSystem's socket buffer must be Send.
+// A solver that assigns mutable shared to both physics and render on the same
+// position data has violated exclusivity.
+
+struct Vec2 {
+    x: f64,
+    y: f64,
+}
+
+impl Vec2 {
+    fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+
+    fn add(&self, other: &Vec2) -> Vec2 {
+        Vec2 {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+
+    fn scale(&self, s: f64) -> Vec2 {
+        Vec2 {
+            x: self.x * s,
+            y: self.y * s,
+        }
+    }
+}
+
+struct Entity {
+    id: u64,
+    position: Vec2,
+    velocity: Vec2,
+    sprite_id: u64,
+    active: bool,
+}
+
+impl Entity {
+    fn new(id: u64, x: f64, y: f64) -> Self {
+        Self {
+            id,
+            position: Vec2::new(x, y),
+            velocity: Vec2::new(0.0, 0.0),
+            sprite_id: 0,
+            active: true,
+        }
+    }
+}
+
+struct EntityPool {
+    entities: Vec<Entity>,
+    next_id: u64,
+}
+
+impl EntityPool {
+    fn new() -> Self {
+        Self {
+            entities: Vec::new(),
+            next_id: 1,
+        }
+    }
+
+    fn spawn(&mut self, x: f64, y: f64) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id + 1;
+        self.entities.push(Entity::new(id, x, y));
+        id
+    }
+
+    fn count_active(&self) -> usize {
+        let mut count = 0;
+        for entity in &self.entities {
+            if entity.active {
+                count = count + 1;
+            }
+        }
+        count
+    }
+}
+
+struct Command {
+    entity_id: u64,
+    force: Vec2,
+}
+
+struct CommandQueue {
+    commands: Vec<Command>,
+}
+
+impl CommandQueue {
+    fn new() -> Self {
+        Self {
+            commands: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, entity_id: u64, fx: f64, fy: f64) {
+        self.commands.push(Command {
+            entity_id,
+            force: Vec2::new(fx, fy),
+        });
+    }
+
+    fn drain(&mut self) -> Vec<Command> {
+        std::mem::replace(&mut self.commands, Vec::new())
+    }
+}
+
+struct NetworkBuffer {
+    packets: Vec<String>,
+}
+
+impl NetworkBuffer {
+    fn new() -> Self {
+        Self {
+            packets: Vec::new(),
+        }
+    }
+
+    fn write_position(&mut self, entity_id: u64, pos: &Vec2) {
+        self.packets
+            .push(format!("pos:{}:{},{}", entity_id, pos.x, pos.y));
+    }
+
+    fn flush_count(&self) -> usize {
+        self.packets.len()
+    }
+}
+
+// Physics system: reads commands + writes velocity/position (exclusive mutable)
+fn physics_tick(pool: &mut EntityPool, commands: &mut CommandQueue, dt: f64) {
+    let cmds = commands.drain();
+    for cmd in &cmds {
+        for entity in &mut pool.entities {
+            if entity.id == cmd.entity_id && entity.active {
+                entity.velocity = entity.velocity.add(&cmd.force.scale(dt));
+            }
+        }
+    }
+    for entity in &mut pool.entities {
+        if entity.active {
+            entity.position = entity.position.add(&entity.velocity.scale(dt));
+        }
+    }
+}
+
+// Render system: reads position + sprite (shared read, must NOT mutate)
+fn render_tick(pool: &EntityPool) -> u64 {
+    let mut rendered = 0;
+    for entity in &pool.entities {
+        if entity.active {
+            // simulate reading position and sprite for rendering
+            let _x = entity.position.x;
+            let _y = entity.position.y;
+            let _sprite = entity.sprite_id;
+            rendered = rendered + 1;
+        }
+    }
+    rendered
+}
+
+// Network system: reads positions, writes to buffer sent cross-thread
+fn network_tick(pool: &EntityPool, net_buf: &mut NetworkBuffer) {
+    for entity in &pool.entities {
+        if entity.active {
+            net_buf.write_position(entity.id, &entity.position);
+        }
+    }
+}
+
+// Input system: writes commands
+fn input_tick(commands: &mut CommandQueue) {
+    commands.push(1, 0.5, 0.0);
+    commands.push(2, 0.0, -0.3);
+}
+
+// Background network send — crosses spawn boundary
+async fn send_packets(net_buf: &mut NetworkBuffer) {
+    // flush network buffer from another thread
+    let count = net_buf.flush_count();
+    println!("sending {} packets", count);
+}
+
+fn game_loop_iteration(
+    pool: &mut EntityPool,
+    commands: &mut CommandQueue,
+    net_buf: &mut NetworkBuffer,
+    dt: f64,
+) {
+    input_tick(commands);
+    physics_tick(pool, commands, dt);
+    let _rendered = render_tick(pool);
+    network_tick(pool, net_buf);
+}
+
+fn main() {
+    let mut pool = EntityPool::new();
+    let mut commands = CommandQueue::new();
+    let mut net_buf = NetworkBuffer::new();
+
+    // Spawn entities
+    pool.spawn(0.0, 0.0);
+    pool.spawn(10.0, 5.0);
+    pool.spawn(-3.0, 8.0);
+    pool.spawn(7.5, -2.0);
+    pool.spawn(1.0, 1.0);
+
+    // Simulate 3 tick iterations
+    let dt = 0.016;
+    game_loop_iteration(&mut pool, &mut commands, &mut net_buf, dt);
+    game_loop_iteration(&mut pool, &mut commands, &mut net_buf, dt);
+    game_loop_iteration(&mut pool, &mut commands, &mut net_buf, dt);
+
+    // Then send packets across spawn boundary
+    send_packets(&mut net_buf);
+
+    println!("active entities: {}", pool.count_active());
+    println!("network packets: {}", net_buf.flush_count());
+}

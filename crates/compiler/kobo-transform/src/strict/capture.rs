@@ -2,9 +2,7 @@
 ///
 /// Reference: P3 Task 3.1. Contract C01: exactly ONE definition of
 /// `analyze_strict_capture_set` in the entire codebase.
-use kobo_ir::{
-    CaptureAccessKind, CaptureSet, CapturedBinding, KoboSpan, Kir, TransformFacts,
-};
+use kobo_ir::{CaptureAccessKind, CaptureSet, CapturedBinding, Kir, KoboSpan, TransformFacts};
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;
 
@@ -45,9 +43,9 @@ fn build_captured_bindings(accesses: Vec<AccessRecord>) -> Vec<CapturedBinding> 
         HashMap::new();
 
     for access in accesses {
-        let entry = by_id.entry(access.binding_id).or_insert_with(|| {
-            (access.name.clone(), AccessKind::Read, Vec::new())
-        });
+        let entry = by_id
+            .entry(access.binding_id)
+            .or_insert_with(|| (access.name.clone(), AccessKind::Read, Vec::new()));
         if access.kind == AccessKind::Write {
             entry.1 = AccessKind::Write;
         }
@@ -77,12 +75,12 @@ fn build_captured_bindings(accesses: Vec<AccessRecord>) -> Vec<CapturedBinding> 
 
 #[cfg(test)]
 mod tests {
-    use super::analyze_strict_capture_set;
     use super::super::span_convert::SpanConvert;
+    use super::analyze_strict_capture_set;
     use kobo_ir::{
-        BindingUsage, CaptureAccessKind, FileId, Kir, KirNode, KirNodeId, KoboAstNodeId,
-        KoboSpan, NodeKind, OwnershipTier, TierDecision, TierReason, TransformBindingFacts,
-        TransformFacts, SharedBindingFacts,
+        BindingUsage, CaptureAccessKind, FileId, Kir, KirNode, KirNodeId, KoboAstNodeId, KoboSpan,
+        NodeKind, OwnershipTier, SharedBindingFacts, TierDecision, TierReason,
+        TransformBindingFacts, TransformFacts,
     };
     use kobo_parser::KoboBlock;
 
@@ -134,7 +132,10 @@ mod tests {
             is_async: false,
             async_shared: false,
             usage: BindingUsage::new(span(0, 4)),
-            shared_facts: SharedBindingFacts { node_id: node, ..Default::default() },
+            shared_facts: SharedBindingFacts {
+                node_id: node,
+                ..Default::default()
+            },
             clone_elision: None,
             elision_fallback: None,
             plain_clone_alias: false,
@@ -237,7 +238,10 @@ mod tests {
         let block = make_block("{ let _x = &handle; }");
         let sc = test_sc();
         let cs = analyze_strict_capture_set(&block, &facts, &kir, &sc);
-        assert!(cs.bindings.is_empty(), "ScopedHandle should not be captured");
+        assert!(
+            cs.bindings.is_empty(),
+            "ScopedHandle should not be captured"
+        );
     }
 
     #[test]
@@ -298,7 +302,7 @@ mod tests {
     #[test]
     fn test_write_escalates_read_in_merge() {
         use super::super::nesting::flatten_nested_strict;
-        use kobo_ir::{CaptureSet, CapturedBinding, NestedStrictBlock};
+        use kobo_ir::{CaptureSet, CapturedBinding};
 
         let n1 = node_id(1);
         let mut outer = CaptureSet {
@@ -354,6 +358,12 @@ mod tests {
 
     #[test]
     fn test_c05_no_kdiagnostic_in_capture() {
-        assert!(true);
+        let node = node_id(10);
+        let facts = make_facts(vec![make_binding(node, "data")]);
+        let kir = make_kir_with_tier(node, OwnershipTier::RcShared);
+        let block = make_block("{ let _x = &data; }");
+        let sc = test_sc();
+        let cs = analyze_strict_capture_set(&block, &facts, &kir, &sc);
+        assert_eq!(cs.bindings[0].name, "data");
     }
 }

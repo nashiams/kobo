@@ -3,7 +3,7 @@ use kobo_ir::{
     TransformBindingFacts, TransformFacts, UseEvent,
 };
 
-use super::extract_borrow::find_extract_before_borrow;
+use super::extract_borrow::{apply_extract_before_borrow_rewrites, find_extract_before_borrow};
 
 fn span(start: u32, end: u32) -> KoboSpan {
     KoboSpan::new(start, end, FileId(0))
@@ -167,10 +167,10 @@ fn no_extraction_for_sequential_reads_only() {
 /// Input: fn main() { let data = vec![1,2,3]; data.len(); data.push(42); }
 #[test]
 fn extract_detected_in_real_kir() {
-    use kobo_ir::{FileId, NodeIdGen};
-    use kobo_parser::parse_file;
     use crate::options::TransformOptions;
     use crate::transform::build_kir;
+    use kobo_ir::{FileId, NodeIdGen};
+    use kobo_parser::parse_file;
 
     let source = r#"
 fn main() {
@@ -198,10 +198,10 @@ fn main() {
 /// S-17 Integration Test: No extraction when no conflict exists
 #[test]
 fn no_extraction_in_real_kir_without_conflict() {
-    use kobo_ir::{FileId, NodeIdGen};
-    use kobo_parser::parse_file;
     use crate::options::TransformOptions;
     use crate::transform::build_kir;
+    use kobo_ir::{FileId, NodeIdGen};
+    use kobo_parser::parse_file;
 
     let source = r#"
 fn main() {
@@ -303,4 +303,34 @@ fn mixed_ref_and_owned_reads_only_owned_triggers() {
         "only the owned-value read should trigger extraction"
     );
     assert_eq!(sites[0].borrow_expr_span, owned_read);
+}
+
+#[test]
+fn source_rewrite_extracts_read_before_mutation() {
+    let source = r#"fn main() {
+    let data = vec![1, 2, 3];
+    let len = data.len();
+    data.push(4);
+    println!("{}", len);
+}
+"#;
+    let read_start = source.find("data.len()").expect("read call should exist") as u32;
+    let read_end = read_start + "data.len()".len() as u32;
+    let mutation_start = source.find("data.push(4)").expect("mutation should exist") as u32;
+    let site = super::extract_borrow::ExtractionSite {
+        binding_id: KirNodeId(1),
+        binding_name: "data".to_owned(),
+        borrow_expr_span: span(read_start, read_end),
+        conflict_span: span(mutation_start, mutation_start + "data.push(4)".len() as u32),
+        temp_name: "__kobo_extract_0".to_owned(),
+    };
+
+    let rewrite = apply_extract_before_borrow_rewrites(source, &[site]);
+
+    assert_eq!(rewrite.applied_sites, 1);
+    assert!(rewrite
+        .source
+        .contains("    let __kobo_extract_0 = data.len();"));
+    assert!(rewrite.source.contains("    let len = __kobo_extract_0;"));
+    assert!(rewrite.source.contains("    data.push(4);"));
 }

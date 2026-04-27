@@ -30,8 +30,8 @@ pub struct CompileSession {
 impl CompileSession {
     pub fn new(config: KoboConfig) -> Self {
         // Mode check before env var — KOBO_DIAG=0 does NOT override checked mode [Trap 1].
-        let diag_enabled = config.mode.diag_always_active()
-            || std::env::var("KOBO_DIAG").as_deref() == Ok("1");
+        let diag_enabled =
+            config.mode.diag_always_active() || std::env::var("KOBO_DIAG").as_deref() == Ok("1");
         Self {
             config,
             file_set_builder: FileSetBuilder::new(),
@@ -77,9 +77,7 @@ impl CompileSession {
 /// `#[kobo::relax]`-annotated functions in checked mode [G5].
 pub fn is_inside_relaxed_fn(span: KoboSpan, relaxed_fn_ranges: &[KoboSpan]) -> bool {
     relaxed_fn_ranges.iter().any(|fn_span| {
-        fn_span.file_id == span.file_id
-            && span.start >= fn_span.start
-            && span.end <= fn_span.end
+        fn_span.file_id == span.file_id && span.start >= fn_span.start && span.end <= fn_span.end
     })
 }
 
@@ -89,8 +87,10 @@ mod tests {
     use crate::config::KoboConfig;
 
     fn session_with_mode(mode: KoboMode) -> CompileSession {
-        let mut config = KoboConfig::default();
-        config.mode = mode;
+        let config = KoboConfig {
+            mode,
+            ..Default::default()
+        };
         // Force KOBO_DIAG to unset for deterministic results
         std::env::remove_var("KOBO_DIAG");
         CompileSession::new(config)
@@ -100,31 +100,44 @@ mod tests {
     fn script_mode_no_env_diag_disabled() {
         std::env::remove_var("KOBO_DIAG");
         let session = session_with_mode(KoboMode::Script);
-        assert!(!session.diag_enabled, "script+no-env must be diag_enabled=false");
+        assert!(
+            !session.diag_enabled,
+            "script+no-env must be diag_enabled=false"
+        );
     }
 
     #[test]
     fn script_mode_kobo_diag_1_enables_diag() {
         std::env::set_var("KOBO_DIAG", "1");
-        let mut config = KoboConfig::default();
-        config.mode = KoboMode::Script;
+        let config = KoboConfig {
+            mode: KoboMode::Script,
+            ..Default::default()
+        };
         let session = CompileSession::new(config);
         std::env::remove_var("KOBO_DIAG");
-        assert!(session.diag_enabled, "script+KOBO_DIAG=1 must be diag_enabled=true");
+        assert!(
+            session.diag_enabled,
+            "script+KOBO_DIAG=1 must be diag_enabled=true"
+        );
     }
 
     #[test]
     fn checked_mode_no_env_diag_enabled() {
         std::env::remove_var("KOBO_DIAG");
         let session = session_with_mode(KoboMode::Checked);
-        assert!(session.diag_enabled, "checked mode must be diag_enabled=true regardless of env");
+        assert!(
+            session.diag_enabled,
+            "checked mode must be diag_enabled=true regardless of env"
+        );
     }
 
     #[test]
     fn checked_mode_kobo_diag_1_still_enabled() {
         std::env::set_var("KOBO_DIAG", "1");
-        let mut config = KoboConfig::default();
-        config.mode = KoboMode::Checked;
+        let config = KoboConfig {
+            mode: KoboMode::Checked,
+            ..Default::default()
+        };
         let session = CompileSession::new(config);
         std::env::remove_var("KOBO_DIAG");
         assert!(session.diag_enabled);
@@ -134,18 +147,26 @@ mod tests {
     fn checked_mode_kobo_diag_0_still_enabled() {
         // KOBO_DIAG=0 must NOT override checked mode [Contract R03 / Trap 1].
         std::env::set_var("KOBO_DIAG", "0");
-        let mut config = KoboConfig::default();
-        config.mode = KoboMode::Checked;
+        let config = KoboConfig {
+            mode: KoboMode::Checked,
+            ..Default::default()
+        };
         let session = CompileSession::new(config);
         std::env::remove_var("KOBO_DIAG");
-        assert!(session.diag_enabled, "checked mode is authoritative — KOBO_DIAG=0 must have no effect");
+        assert!(
+            session.diag_enabled,
+            "checked mode is authoritative — KOBO_DIAG=0 must have no effect"
+        );
     }
 
     #[test]
     fn strict_mode_diag_disabled() {
         std::env::remove_var("KOBO_DIAG");
         let session = session_with_mode(KoboMode::Strict);
-        assert!(!session.diag_enabled, "strict mode has no Rc/RefCell wrappers — no DiagOwner");
+        assert!(
+            !session.diag_enabled,
+            "strict mode has no Rc/RefCell wrappers — no DiagOwner"
+        );
     }
 
     #[test]
@@ -252,7 +273,7 @@ mod test_relax_filter {
     fn test_relax_filter_different_file_id_not_suppressed() {
         // Same byte offsets but different file_id → not inside range.
         let diag_span = other_file_span(10, 20); // FileId(1)
-        let ranges = [fn_range(5, 50)];          // FileId(0)
+        let ranges = [fn_range(5, 50)]; // FileId(0)
         assert!(!is_inside_relaxed_fn(diag_span, &ranges));
     }
 }

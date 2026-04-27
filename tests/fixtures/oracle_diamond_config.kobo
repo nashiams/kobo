@@ -1,0 +1,176 @@
+// Oracle Gate: Diamond dependency — four modules share a Config struct.
+// Module A creates Config, passes it to both B and C. B and C both pass
+// their view of Config to D. This creates a diamond-shaped ownership graph.
+//
+// Oracle property: Config must have a SINGLE consistent tier. If B needs
+// mutable access and C needs read-only, the solver must promote to the
+// least-upper-bound (mutable shared). If the solver assigns different
+// tiers to the same Config instance in B vs C, it has split the identity
+// — a soundness violation that no production solver (C2Rust, Swift) would allow.
+
+struct Config {
+    db_host: String,
+    db_port: u64,
+    cache_ttl: u64,
+    max_connections: u64,
+    debug_mode: bool,
+}
+
+impl Config {
+    fn new() -> Self {
+        Self {
+            db_host: String::from("localhost"),
+            db_port: 5432,
+            cache_ttl: 300,
+            max_connections: 100,
+            debug_mode: false,
+        }
+    }
+
+    fn connection_string(&self) -> String {
+        format!("{}:{}", self.db_host, self.db_port)
+    }
+}
+
+struct DbPool {
+    config_host: String,
+    config_port: u64,
+    active_connections: u64,
+    max_connections: u64,
+}
+
+impl DbPool {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            config_host: config.db_host.clone(),
+            config_port: config.db_port,
+            active_connections: 0,
+            max_connections: config.max_connections,
+        }
+    }
+
+    fn acquire(&mut self) -> bool {
+        if self.active_connections < self.max_connections {
+            self.active_connections = self.active_connections + 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn release(&mut self) {
+        if self.active_connections > 0 {
+            self.active_connections = self.active_connections - 1;
+        }
+    }
+}
+
+struct CacheLayer {
+    ttl: u64,
+    entries: Vec<String>,
+    hit_count: u64,
+    miss_count: u64,
+}
+
+impl CacheLayer {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            ttl: config.cache_ttl,
+            entries: Vec::new(),
+            hit_count: 0,
+            miss_count: 0,
+        }
+    }
+
+    fn get(&mut self, key: &str) -> bool {
+        for entry in &self.entries {
+            if entry.as_str() == key {
+                self.hit_count = self.hit_count + 1;
+                return true;
+            }
+        }
+        self.miss_count = self.miss_count + 1;
+        false
+    }
+
+    fn put(&mut self, key: String) {
+        self.entries.push(key);
+    }
+
+    fn stats(&self) -> String {
+        format!("hits={} misses={}", self.hit_count, self.miss_count)
+    }
+}
+
+struct AppService {
+    db: DbPool,
+    cache: CacheLayer,
+    request_count: u64,
+}
+
+impl AppService {
+    fn new(config: &Config) -> Self {
+        Self {
+            db: DbPool::from_config(config),
+            cache: CacheLayer::from_config(config),
+            request_count: 0,
+        }
+    }
+
+    fn handle_query(&mut self, key: String) -> bool {
+        self.request_count = self.request_count + 1;
+
+        // Try cache first
+        if self.cache.get(key.as_str()) {
+            return true;
+        }
+
+        // Cache miss — go to DB
+        if self.db.acquire() {
+            self.cache.put(key);
+            self.db.release();
+            return true;
+        }
+
+        false
+    }
+}
+
+// Module B: uses config mutably (bumps debug flag based on runtime check)
+fn module_b_init(config: &mut Config) {
+    if config.max_connections > 50 {
+        config.debug_mode = true;
+    }
+}
+
+// Module C: uses config read-only (creates service)
+fn module_c_init(config: &Config) -> AppService {
+    AppService::new(config)
+}
+
+// Module D: receives from both B and C paths — diamond convergence
+fn module_d_run(config: &Config, service: &mut AppService) -> String {
+    let conn = config.connection_string();
+    service.handle_query(String::from("user:1"));
+    service.handle_query(String::from("user:2"));
+    service.handle_query(String::from("user:1")); // cache hit
+    format!("{} requests={}", conn, service.request_count)
+}
+
+fn main() {
+    let mut config = Config::new();
+
+    // Module A creates Config
+    // Module B mutates it
+    module_b_init(&mut config);
+
+    // Module C reads it (but B already mutated — solver must see this dependency)
+    let mut service = module_c_init(&config);
+
+    // Module D uses both config (read) and service (mutable)
+    let result = module_d_run(&config, &mut service);
+
+    println!("{}", result);
+    println!("debug: {}", config.debug_mode);
+    println!("cache: {}", service.cache.stats());
+}

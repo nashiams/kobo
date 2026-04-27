@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 
 use crate::cluster::Cluster;
-use crate::lattice_solve::lattice_lub;
+use crate::lattice_solve::tier_rank;
 use crate::solver::ConstraintKind;
 
 /// A disjunctive constraint: at least one of the alternatives must hold.
@@ -20,11 +20,11 @@ pub struct Disjunction {
     pub label: String,
 }
 
-/// Checkpoint: a snapshot of solver state that can be restored on conflict.
+/// A trail entry recording the previous tier of a node before overwrite.
 #[derive(Clone, Debug)]
-struct Checkpoint {
-    assignments: BTreeMap<KirNodeId, OwnershipTier>,
-    depth: u32,
+struct TrailEntry {
+    node: KirNodeId,
+    previous_tier: OwnershipTier,
 }
 
 /// Backtracking solver state.
@@ -32,7 +32,10 @@ pub struct BacktrackSolver {
     current: BTreeMap<KirNodeId, OwnershipTier>,
     floors: BTreeMap<KirNodeId, OwnershipTier>,
     ceilings: BTreeMap<KirNodeId, Option<OwnershipTier>>,
-    checkpoints: Vec<Checkpoint>,
+    /// Trail of assignment overwrites for O(1) checkpoint/rollback.
+    trail: Vec<TrailEntry>,
+    /// Trail markers: each checkpoint records the trail length at save time.
+    trail_markers: Vec<usize>,
     max_depth: u32,
     nodes_tried: u64,
     node_budget: u64,
@@ -66,7 +69,8 @@ impl BacktrackSolver {
             current,
             floors,
             ceilings,
-            checkpoints: Vec::new(),
+            trail: Vec::new(),
+            trail_markers: Vec::new(),
             max_depth: 64,
             nodes_tried: 0,
             node_budget: 10_000,
@@ -83,18 +87,18 @@ impl BacktrackSolver {
         self.node_budget = budget;
     }
 
-    /// Save a checkpoint.
+    /// Save a checkpoint (trail marker).
     fn checkpoint(&mut self) {
-        self.checkpoints.push(Checkpoint {
-            assignments: self.current.clone(),
-            depth: self.checkpoints.len() as u32,
-        });
+        self.trail_markers.push(self.trail.len());
     }
 
-    /// Rollback to the last checkpoint.
+    /// Rollback to the last checkpoint by replaying trail entries.
     fn rollback(&mut self) -> bool {
-        if let Some(cp) = self.checkpoints.pop() {
-            self.current = cp.assignments;
+        if let Some(marker) = self.trail_markers.pop() {
+            while self.trail.len() > marker {
+                let entry = self.trail.pop().unwrap();
+                self.current.insert(entry.node, entry.previous_tier);
+            }
             true
         } else {
             false
@@ -103,7 +107,11 @@ impl BacktrackSolver {
 
     /// Attempt to assign `tier` to `node`, returning false on conflict.
     fn try_assign(&mut self, node: KirNodeId, tier: OwnershipTier) -> bool {
-        let floor = self.floors.get(&node).copied().unwrap_or(OwnershipTier::PlainOwned);
+        let floor = self
+            .floors
+            .get(&node)
+            .copied()
+            .unwrap_or(OwnershipTier::PlainOwned);
         let ceiling = self.ceilings.get(&node).copied().flatten();
 
         let rank = crate::lattice_solve::tier_rank(tier);
@@ -116,18 +124,24 @@ impl BacktrackSolver {
             }
         }
 
+        // Record previous tier on the trail before overwriting.
+        let previous = self.current.get(&node).copied().unwrap_or(floor);
+        self.trail.push(TrailEntry {
+            node,
+            previous_tier: previous,
+        });
         self.current.insert(node, tier);
         true
     }
 
     /// Run backtracking search with disjunctions.
-    pub fn solve(
-        &mut self,
-        cluster: &Cluster,
-        disjunctions: &[Disjunction],
-    ) -> BacktrackResult {
-        // If no disjunctions, the current assignment (from floors) is the answer.
+    pub fn solve(&mut self, cluster: &Cluster, disjunctions: &[Disjunction]) -> BacktrackResult {
+        // If no disjunctions, the current assignment is only valid when it
+        // already satisfies every cluster constraint.
         if disjunctions.is_empty() {
+            if !self.is_consistent(cluster) {
+                return BacktrackResult::Exhausted;
+            }
             let mut map = SolutionMap::new();
             for (&id, &tier) in &self.current {
                 map.insert(id, tier);
@@ -164,7 +178,7 @@ impl BacktrackSolver {
             }
         }
 
-        if self.checkpoints.len() as u32 >= self.max_depth {
+        if self.trail_markers.len() as u32 >= self.max_depth {
             return BacktrackResult::Exhausted;
         }
 
@@ -198,28 +212,21 @@ impl BacktrackSolver {
             if let (Some(&s), Some(&t)) = (src, tgt) {
                 match &edge.kind {
                     ConstraintKind::PropagateSharing => {
-                        // Both must be at least as high as the LUB.
-                        let lub = lattice_lub(s, t);
-                        if s != lub && t != lub {
-                            // One must dominate the other.
+                        if tier_rank(t) < tier_rank(s) || tier_rank(s) < tier_rank(t) {
+                            return false;
                         }
                     }
                     ConstraintKind::PropagateSend => {
-                        // Both must be thread-safe.
-                        if !s.is_thread_safe() || !t.is_thread_safe() {
+                        if !send_constraint_satisfied(s, t) || !send_constraint_satisfied(t, s) {
                             return false;
                         }
                     }
                     ConstraintKind::MutuallyExclusive => {
                         // Cannot both be mutable-shared wrappers.
-                        let s_mut = matches!(
-                            s,
-                            OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-                        );
-                        let t_mut = matches!(
-                            t,
-                            OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-                        );
+                        let s_mut =
+                            matches!(s, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared);
+                        let t_mut =
+                            matches!(t, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared);
                         if s_mut && t_mut {
                             return false;
                         }
@@ -228,6 +235,18 @@ impl BacktrackSolver {
             }
         }
         true
+    }
+}
+
+fn send_constraint_satisfied(source: OwnershipTier, target: OwnershipTier) -> bool {
+    tier_rank(target) >= tier_rank(send_requirement(source))
+}
+
+fn send_requirement(tier: OwnershipTier) -> OwnershipTier {
+    match tier {
+        OwnershipTier::RcShared => OwnershipTier::ArcShared,
+        OwnershipTier::RcMutShared => OwnershipTier::ArcMutShared,
+        other => other,
     }
 }
 
@@ -262,10 +281,7 @@ mod tests {
 
     #[test]
     fn empty_disjunctions_yields_floor_solution() {
-        let cluster = make_cluster(
-            vec![make_node(1, OwnershipTier::RcShared)],
-            vec![],
-        );
+        let cluster = make_cluster(vec![make_node(1, OwnershipTier::RcShared)], vec![]);
         let mut solver = BacktrackSolver::new(&cluster);
         match solver.solve(&cluster, &[]) {
             BacktrackResult::Solved(map) => {
@@ -277,10 +293,7 @@ mod tests {
 
     #[test]
     fn disjunction_picks_valid_alternative() {
-        let cluster = make_cluster(
-            vec![make_node(1, OwnershipTier::PlainOwned)],
-            vec![],
-        );
+        let cluster = make_cluster(vec![make_node(1, OwnershipTier::PlainOwned)], vec![]);
         let mut solver = BacktrackSolver::new(&cluster);
         let disj = vec![Disjunction {
             node: KirNodeId(1),
@@ -321,10 +334,7 @@ mod tests {
 
     #[test]
     fn budget_exceeded_returns_early() {
-        let cluster = make_cluster(
-            vec![make_node(1, OwnershipTier::PlainOwned)],
-            vec![],
-        );
+        let cluster = make_cluster(vec![make_node(1, OwnershipTier::PlainOwned)], vec![]);
         let mut solver = BacktrackSolver::new(&cluster);
         solver.set_node_budget(0);
         let disj = vec![Disjunction {

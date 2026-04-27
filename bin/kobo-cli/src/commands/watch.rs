@@ -1,21 +1,29 @@
 use std::path::Path;
 use std::time::SystemTime;
 
-use kobo_driver::run_check_pipeline;
 use super::session::{build_session, render_diagnostics};
+use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
 
 /// File-watcher re-run on save.
 ///
 /// In `--simple` mode: polls the file's modification time, and when it changes,
 /// triggers a recompile. This avoids pulling in platform-specific inotify/FSEvents
 /// dependencies — suitable for development workflows.
-pub(super) fn cmd_watch(file: &Path, simple: bool) -> anyhow::Result<()> {
-    if !simple {
-        println!("Use --simple for basic save-and-rerun mode.");
+///
+/// In `--build` mode: runs the full codegen pipeline on each change, producing
+/// generated Rust output — suitable for continuous build feedback (S-29).
+pub(super) fn cmd_watch(file: &Path, simple: bool, build: bool) -> anyhow::Result<()> {
+    if !simple && !build {
+        println!("Use --simple for basic save-and-recheck mode, or --build for codegen+compile.");
         return Ok(());
     }
 
-    println!("Watching {} (simple mode, Ctrl+C to stop)", file.display());
+    let mode_label = if build { "build" } else { "simple" };
+    let run_once = std::env::var_os("KOBO_WATCH_ONCE").is_some();
+    println!(
+        "Watching {} ({mode_label} mode, Ctrl+C to stop)",
+        file.display()
+    );
 
     let mut last_modified = get_mtime(file)?;
 
@@ -29,12 +37,22 @@ pub(super) fn cmd_watch(file: &Path, simple: bool) -> anyhow::Result<()> {
 
         if current != last_modified {
             last_modified = current;
-            println!("[kobo-watch] Change detected in {}, recompiling...", file.display());
-            // In production this would invoke the compiler pipeline.
-            // For now, report the detection.
-            on_file_changed(file);
+            println!(
+                "[kobo-watch] Change detected in {}, recompiling...",
+                file.display()
+            );
+            if build {
+                on_file_changed_build(file);
+            } else {
+                on_file_changed(file);
+            }
+            if run_once {
+                break;
+            }
         }
     }
+
+    Ok(())
 }
 
 /// Get file modification time.
@@ -50,25 +68,46 @@ fn get_mtime(file: &Path) -> anyhow::Result<SystemTime> {
 fn on_file_changed(file: &Path) {
     println!("[kobo-watch] Triggering rebuild for {}", file.display());
     match build_session(file, None) {
-        Ok(mut session) => {
-            match run_check_pipeline(&mut session, file) {
-                Ok(()) => {
-                    render_diagnostics(&session);
-                    if session.diagnostics.is_empty() {
-                        println!("[kobo-watch] OK — no diagnostics");
-                    } else {
-                        println!(
-                            "[kobo-watch] {} diagnostic(s)",
-                            session.diagnostics.len()
-                        );
-                    }
-                }
-                Err(()) => {
-                    render_diagnostics(&session);
-                    eprintln!("[kobo-watch] check failed");
+        Ok(mut session) => match run_check_pipeline(&mut session, file) {
+            Ok(()) => {
+                render_diagnostics(&session);
+                if session.diagnostics.is_empty() {
+                    println!("[kobo-watch] OK — no diagnostics");
+                } else {
+                    println!("[kobo-watch] {} diagnostic(s)", session.diagnostics.len());
                 }
             }
+            Err(()) => {
+                render_diagnostics(&session);
+                eprintln!("[kobo-watch] check failed");
+            }
+        },
+        Err(e) => {
+            eprintln!("[kobo-watch] session error: {e}");
         }
+    }
+}
+
+/// S-29: Called when a file change is detected in --build mode — runs full codegen pipeline.
+fn on_file_changed_build(file: &Path) {
+    println!(
+        "[kobo-watch] Triggering codegen build for {}",
+        file.display()
+    );
+    match build_session(file, None) {
+        Ok(mut session) => match run_codegen_pipeline(&mut session, file) {
+            Ok(artifacts) => {
+                render_diagnostics(&session);
+                println!(
+                    "[kobo-watch] codegen OK — wrote {}",
+                    artifacts.rs_path.display()
+                );
+            }
+            Err(()) => {
+                render_diagnostics(&session);
+                eprintln!("[kobo-watch] codegen failed");
+            }
+        },
         Err(e) => {
             eprintln!("[kobo-watch] session error: {e}");
         }
@@ -77,12 +116,14 @@ fn on_file_changed(file: &Path) {
 
 /// Detect whether a file has been modified since a given timestamp.
 /// Used for testing the watch detection logic without entering the loop.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn detect_change(file: &Path, since: SystemTime) -> anyhow::Result<bool> {
     let current = get_mtime(file)?;
     Ok(current != since)
 }
 
 /// Debounce interval in milliseconds.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const DEBOUNCE_MS: u64 = 200;
 
 #[cfg(test)]
@@ -112,7 +153,8 @@ mod tests {
             .truncate(true)
             .open(&file)
             .unwrap();
-        f.write_all(b"fn main() { println!(\"updated\"); }").unwrap();
+        f.write_all(b"fn main() { println!(\"updated\"); }")
+            .unwrap();
         f.flush().unwrap();
         drop(f);
 

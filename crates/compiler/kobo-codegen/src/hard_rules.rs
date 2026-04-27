@@ -18,7 +18,10 @@ pub enum HardRuleViolation {
     /// Attempted to generate `Arc<Mutex<T>>` — use `Arc<tokio::sync::RwLock<T>>` instead.
     ForbiddenArcMutex { binding_name: String },
     /// Strict mode does not allow any wrapper types.
-    StrictNoWrappers { binding_name: String, tier: OwnershipTier },
+    StrictNoWrappers {
+        binding_name: String,
+        tier: OwnershipTier,
+    },
 }
 
 /// Validate that a tier assignment does not violate hard rules.
@@ -86,42 +89,60 @@ mod tests {
     #[test]
     fn strict_forbids_box_owned() {
         let result = validate_tier("x", OwnershipTier::BoxOwned, true);
-        assert!(matches!(result, Err(HardRuleViolation::StrictNoWrappers { .. })));
+        assert!(matches!(
+            result,
+            Err(HardRuleViolation::StrictNoWrappers { .. })
+        ));
     }
 
     /// Contract: RcShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_rc_shared() {
         let result = validate_tier("x", OwnershipTier::RcShared, true);
-        assert!(matches!(result, Err(HardRuleViolation::StrictNoWrappers { .. })));
+        assert!(matches!(
+            result,
+            Err(HardRuleViolation::StrictNoWrappers { .. })
+        ));
     }
 
     /// Contract: ArcShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_arc_shared() {
         let result = validate_tier("x", OwnershipTier::ArcShared, true);
-        assert!(matches!(result, Err(HardRuleViolation::StrictNoWrappers { .. })));
+        assert!(matches!(
+            result,
+            Err(HardRuleViolation::StrictNoWrappers { .. })
+        ));
     }
 
     /// Contract: RcMutShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_rc_mut_shared() {
         let result = validate_tier("x", OwnershipTier::RcMutShared, true);
-        assert!(matches!(result, Err(HardRuleViolation::StrictNoWrappers { .. })));
+        assert!(matches!(
+            result,
+            Err(HardRuleViolation::StrictNoWrappers { .. })
+        ));
     }
 
     /// Contract: ArcMutShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_arc_mut_shared() {
         let result = validate_tier("x", OwnershipTier::ArcMutShared, true);
-        assert!(matches!(result, Err(HardRuleViolation::StrictNoWrappers { .. })));
+        assert!(matches!(
+            result,
+            Err(HardRuleViolation::StrictNoWrappers { .. })
+        ));
     }
 
     /// Contract: Scoped is forbidden in strict mode.
     #[test]
     fn strict_forbids_scoped() {
         let result = validate_tier("x", OwnershipTier::Scoped, true);
-        assert!(matches!(result, Err(HardRuleViolation::StrictNoWrappers { .. })));
+        assert!(matches!(
+            result,
+            Err(HardRuleViolation::StrictNoWrappers { .. })
+        ));
     }
 
     // --- Non-strict mode allows everything ---

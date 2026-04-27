@@ -1,6 +1,11 @@
-use kobo_errors::{resolve_severity, CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLabel, KDiagnostic};
+use kobo_errors::{
+    render_k0041, render_k0042, render_k0043, render_k0063, render_labeled_cross_boundary,
+};
+use kobo_errors::{
+    resolve_severity, CliSuggestion, DiagDecision, DiagExplanation, DiagHelp, DiagLabel,
+    KDiagnostic,
+};
 use kobo_errors::{KErrorCode, Severity};
-use kobo_errors::{render_k0041, render_k0042, render_k0043, render_k0063, render_labeled_cross_boundary};
 use kobo_ir::{FileSet, Kir, KoboMode, OwnershipTier, StrictBoundaryViolation, TransformFacts};
 
 use crate::ownership_facts::{BorrowFact, BorrowKind, HintConflictFact, MoveFact};
@@ -35,9 +40,13 @@ pub fn facts_to_diagnostics(
     for hint_conflict in &transform_facts.hint_conflicts {
         if let Some(binding) = transform_facts.binding(hint_conflict.node) {
             // K0025 is always Error (constraint conflict, not perf advisory).
-            let severity = resolve_severity(KErrorCode::K0025, mode)
-                .unwrap_or(Severity::Error);
-            diagnostics.push(hint_conflict_diagnostic(hint_conflict, binding, file_set, severity));
+            let severity = resolve_severity(KErrorCode::K0025, mode).unwrap_or(Severity::Error);
+            diagnostics.push(hint_conflict_diagnostic(
+                hint_conflict,
+                binding,
+                file_set,
+                severity,
+            ));
         }
     }
 
@@ -61,7 +70,11 @@ pub fn facts_to_diagnostics(
     diagnostics
 }
 
-fn move_fact_diagnostic(move_fact: &MoveFact, file_set: &FileSet, severity: Severity) -> KDiagnostic {
+fn move_fact_diagnostic(
+    move_fact: &MoveFact,
+    file_set: &FileSet,
+    severity: Severity,
+) -> KDiagnostic {
     KDiagnostic::new(
         KErrorCode::K0001,
         severity,
@@ -91,7 +104,11 @@ fn move_fact_is_rewritten_as_plain_clone(
     })
 }
 
-fn borrow_fact_diagnostic(borrow_fact: &BorrowFact, file_set: &FileSet, severity: Severity) -> KDiagnostic {
+fn borrow_fact_diagnostic(
+    borrow_fact: &BorrowFact,
+    file_set: &FileSet,
+    severity: Severity,
+) -> KDiagnostic {
     KDiagnostic::new(
         KErrorCode::K0002,
         severity,

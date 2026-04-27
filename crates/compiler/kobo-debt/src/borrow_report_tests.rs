@@ -1,6 +1,10 @@
-use kobo_ir::{BindingUsage, BorrowKind, FileId, KirNodeId, KoboSpan, SharedBindingFacts, UseEvent};
+use kobo_ir::{
+    BindingUsage, BorrowKind, FileId, KirNodeId, KoboSpan, SharedBindingFacts, UseEvent,
+};
 
-use crate::borrow_report::{build_borrow_report, BorrowConflictKind, BorrowFixPattern, BorrowReport};
+use crate::borrow_report::{
+    build_borrow_report, BorrowConflictKind, BorrowFixPattern, BorrowReport,
+};
 
 fn span(start: u32, end: u32) -> KoboSpan {
     KoboSpan::new(start, end, FileId(0))
@@ -197,7 +201,13 @@ fn borrow_report_round_trips_through_json() {
     let json = serde_json::to_string_pretty(&report).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-    assert!(parsed.get("schema_version").is_some(), "JSON must contain schema_version");
+    assert!(
+        parsed.get("schema_version").is_some(),
+        "JSON must contain schema_version"
+    );
     assert_eq!(parsed["schema_version"], 1);
-    assert!(parsed.get("overlapping_sites").is_some(), "JSON must contain overlapping_sites");
+    assert!(
+        parsed.get("overlapping_sites").is_some(),
+        "JSON must contain overlapping_sites"
+    );
 }

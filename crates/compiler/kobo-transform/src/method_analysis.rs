@@ -3,12 +3,14 @@ use std::fmt;
 
 /// A type-qualified method path like `Vec::push` or `HashMap::insert`.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[allow(dead_code)]
 pub struct QualifiedPath {
     pub type_name: String,
     pub method_name: String,
 }
 
 impl QualifiedPath {
+    #[allow(dead_code)]
     pub fn new(type_name: impl Into<String>, method_name: impl Into<String>) -> Self {
         Self {
             type_name: type_name.into(),
@@ -108,6 +110,7 @@ impl MethodRegistry {
 
     /// Look up whether a method is mutating using a qualified key first, then bare.
     /// Returns `None` if unknown in both maps.
+    #[allow(dead_code)]
     pub fn is_mutating_qualified(&self, type_name: &str, method_name: &str) -> Option<bool> {
         let qkey = format!("{type_name}::{method_name}");
         self.qualified
@@ -223,8 +226,14 @@ impl Writer {
         let registry = MethodRegistry::from_impl_blocks(&file);
 
         // Qualified lookups should be distinct
-        assert_eq!(registry.is_mutating_qualified("Reader", "touch"), Some(false));
-        assert_eq!(registry.is_mutating_qualified("Writer", "touch"), Some(true));
+        assert_eq!(
+            registry.is_mutating_qualified("Reader", "touch"),
+            Some(false)
+        );
+        assert_eq!(
+            registry.is_mutating_qualified("Writer", "touch"),
+            Some(true)
+        );
 
         // Bare lookup returns conservative (true wins)
         assert_eq!(registry.is_mutating_by_name("touch"), Some(true));
@@ -249,6 +258,9 @@ impl HashMap {
 
         let registry = MethodRegistry::from_impl_blocks(&file);
         assert_eq!(registry.is_mutating_qualified("Vec", "push"), Some(true));
-        assert_eq!(registry.is_mutating_qualified("HashMap", "push"), Some(false));
+        assert_eq!(
+            registry.is_mutating_qualified("HashMap", "push"),
+            Some(false)
+        );
     }
 }

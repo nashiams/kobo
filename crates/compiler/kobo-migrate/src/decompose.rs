@@ -103,13 +103,10 @@ pub fn decompose(cluster: &Cluster, target_size: usize) -> DecomposeResult {
         // Add articulation points that are adjacent to this component.
         let mut extended_set = comp_set.clone();
         for &art in &articulation_points {
-            let adjacent = cluster
-                .raw_edges
-                .iter()
-                .any(|e| {
-                    (e.source == art && comp_set.contains(&e.target))
-                        || (e.target == art && comp_set.contains(&e.source))
-                });
+            let adjacent = cluster.raw_edges.iter().any(|e| {
+                (e.source == art && comp_set.contains(&e.target))
+                    || (e.target == art && comp_set.contains(&e.source))
+            });
             if adjacent {
                 extended_set.insert(art);
             }
@@ -123,13 +120,11 @@ pub fn decompose(cluster: &Cluster, target_size: usize) -> DecomposeResult {
             .edges
             .iter()
             .filter(|e| {
-                extended_set.contains(&e.edge.source)
-                    && extended_set.contains(&e.edge.target)
+                extended_set.contains(&e.edge.source) && extended_set.contains(&e.edge.target)
             })
             .cloned()
             .collect();
-        let raw_edges: Vec<ConstraintEdge> =
-            sub_edges.iter().map(|e| e.edge.clone()).collect();
+        let raw_edges: Vec<ConstraintEdge> = sub_edges.iter().map(|e| e.edge.clone()).collect();
         let size = sub_nodes.len();
 
         sub_clusters.push(Cluster {
@@ -215,7 +210,7 @@ fn find_articulation_points(cluster: &Cluster) -> Vec<KirNodeId> {
                     if !disc.contains_key(&v) {
                         parent.insert(v, Some(u));
                         stack.push((v, false));
-                    } else if Some(Some(v)) != parent.get(&u).map(|p| *p) {
+                    } else if Some(Some(v)) != parent.get(&u).copied() {
                         // Back edge.
                         let dv = disc[&v];
                         let lu = low[&u];
@@ -280,11 +275,12 @@ mod tests {
     }
 
     fn edge(s: u32, t: u32) -> ConstraintEdge {
-        ConstraintEdge {
-            source: KirNodeId(s),
-            target: KirNodeId(t),
-            kind: ConstraintKind::PropagateSharing,
-        }
+        ConstraintEdge::synthetic(
+            KirNodeId(s),
+            KirNodeId(t),
+            ConstraintKind::PropagateSharing,
+            "test",
+        )
     }
 
     #[test]

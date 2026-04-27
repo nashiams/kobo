@@ -1,10 +1,10 @@
-/// Bridge module for cross-crate preprocessing coordination.
-///
-/// When the parser's preprocessor rewrites Kobo keywords into Rust-compatible
-/// syntax, some rewrites produce artifacts that downstream crates need to
-/// interpret. This module provides bridging types that carry preprocessor
-/// decisions forward into transform and codegen without creating direct
-/// cross-crate dependencies on internal preprocessor state.
+//! Bridge module for cross-crate preprocessing coordination.
+//!
+//! When the parser's preprocessor rewrites Kobo keywords into Rust-compatible
+//! syntax, some rewrites produce artifacts that downstream crates need to
+//! interpret. This module provides bridging types that carry preprocessor
+//! decisions forward into transform and codegen without creating direct
+//! cross-crate dependencies on internal preprocessor state.
 
 /// A preprocessor decision that affects downstream passes.
 #[derive(Clone, Debug)]
@@ -37,7 +37,7 @@ pub enum BridgedKeyword {
 /// Called after `preprocess_kobo_keywords` and `preprocess_spawn_blocks`
 /// to produce a summary of all keyword rewrites for downstream passes.
 pub fn collect_bridge_decisions(
-    source: &str,
+    _source: &str,
     strict_offsets: &[(usize, usize)],
     spawn_offsets: &[(usize, usize)],
 ) -> Vec<PreprocessBridge> {

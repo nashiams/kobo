@@ -1,7 +1,3 @@
-// TODO(v0.7): Trap 7 — remap secondary spans ("note: defined here") from rustc.
-// Currently only the primary span is remapped to .kobo coordinates.
-// Secondary spans are dropped. This is a known limitation for v0.6.
-
 use kobo_codegen::{KoboSourceMap, RsSpan};
 use kobo_errors::{
     CliSuggestion, DiagDecision, DiagExplanation, DiagLabel, DiagLabelKind, KDiagnostic,
@@ -58,7 +54,13 @@ fn remap_error(
     source_map: &KoboSourceMap,
     kobo_file_id: FileId,
 ) -> KDiagnostic {
-    remap_diagnostic(error, source_map, kobo_file_id, Severity::Error, KErrorCode::K0099)
+    remap_diagnostic(
+        error,
+        source_map,
+        kobo_file_id,
+        Severity::Error,
+        KErrorCode::K0099,
+    )
 }
 
 /// Re-map a surviving rustc warning to a .kobo-span diagnostic.
@@ -69,7 +71,13 @@ pub(crate) fn remap_warning_diagnostic(
     source_map: &KoboSourceMap,
     kobo_file_id: FileId,
 ) -> KDiagnostic {
-    remap_diagnostic(warning, source_map, kobo_file_id, Severity::Warning, KErrorCode::K0019)
+    remap_diagnostic(
+        warning,
+        source_map,
+        kobo_file_id,
+        Severity::Warning,
+        KErrorCode::K0019,
+    )
 }
 
 /// Core diagnostic re-mapper — shared by error and warning paths.
@@ -416,7 +424,10 @@ mod tests {
             .starts_with("[remapping unavailable]"));
         assert_eq!(diagnostics[0].primary.span, KoboSpan::new(0, 0, FileId(0)));
         assert!(
-            diagnostics[0].primary.text.contains("compiler output could not be remapped"),
+            diagnostics[0]
+                .primary
+                .text
+                .contains("compiler output could not be remapped"),
             "fallback label should mention remapping failure"
         );
         assert!(

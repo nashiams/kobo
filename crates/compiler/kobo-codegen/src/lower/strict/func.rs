@@ -26,9 +26,8 @@ pub fn lower_strict_fn(
 
     // Strip the @strict marker attribute from the fn (Contract C06).
     inner.attrs.retain(|a| {
-        !a.path().is_ident("__kobo_strict")
-            && !(a.path().segments.len() == 1
-                && a.path().segments[0].ident == "__kobo_strict")
+        !(a.path().is_ident("__kobo_strict")
+            || a.path().segments.len() == 1 && a.path().segments[0].ident == "__kobo_strict")
     });
 
     match mode {
@@ -40,7 +39,7 @@ pub fn lower_strict_fn(
                     let wrapped_stmts_ts =
                         lower_strict_block(&inner.block.stmts, cs, counter, _options);
                     if let Ok(wrapped_block) = syn::parse2::<syn::Block>(wrapped_stmts_ts.clone()) {
-                        inner.block = Box::new(wrapped_block);
+                        *inner.block = wrapped_block;
                     } else {
                         let body_stmts = &inner.block.stmts;
                         inner.block = syn::parse_quote! { {
@@ -58,7 +57,7 @@ pub fn lower_strict_fn(
                     let wrapped_stmts_ts =
                         lower_strict_block(&inner.block.stmts, cs, counter, _options);
                     if let Ok(wrapped_block) = syn::parse2::<syn::Block>(wrapped_stmts_ts.clone()) {
-                        inner.block = Box::new(wrapped_block);
+                        *inner.block = wrapped_block;
                     } else {
                         let body_stmts = &inner.block.stmts;
                         inner.block = syn::parse_quote! { {

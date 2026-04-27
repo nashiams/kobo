@@ -1,0 +1,10 @@
+fn borrow_name(name: &str) -> String {
+    let first = name.len();
+    let second = name.len();
+    let _total = first + second;
+    name.to_string()
+}
+
+fn main() {
+    println!("lifetime erasure fixture");
+}

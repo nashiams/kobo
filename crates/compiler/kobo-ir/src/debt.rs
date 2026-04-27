@@ -68,9 +68,7 @@ pub enum WarnEarlyPattern {
     /// K0080-P4: self-referential struct without Rc/Box indirection.
     ///
     /// `struct Chain { next: Chain }` — infinite size without Box/Rc wrapping.
-    SelfReferentialStruct {
-        struct_name: String,
-    },
+    SelfReferentialStruct { struct_name: String },
 }
 
 // --- Debt complexity tiers ---
@@ -276,7 +274,10 @@ mod tests {
     #[test]
     fn debt_report_schema_version_is_one() {
         let report = DebtReport::new();
-        assert_eq!(report.schema_version, 1, "JSON schema version must be 1 in v0.4");
+        assert_eq!(
+            report.schema_version, 1,
+            "JSON schema version must be 1 in v0.4"
+        );
     }
 
     #[test]

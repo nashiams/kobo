@@ -2,7 +2,7 @@
 ///
 /// Walks the block body, records accesses to RcMutShared bindings,
 /// and detects control-flow operators (?, break, continue).
-use kobo_ir::{KoboSpan, TransformFacts, Kir};
+use kobo_ir::{Kir, KoboSpan, TransformFacts};
 use syn::visit::Visit;
 
 use super::span_convert::SpanConvert;

@@ -16,8 +16,14 @@ fn check_k0001_fixture_matches_snapshot() {
     let output = run_kobo_check(&fixture);
 
     // v0.6 [R6-11]: K0001 is SILENT in script mode — check should succeed.
-    assert!(output.status.success(), "K0001 is silent in script mode — check should succeed");
-    assert!(!output.stderr.contains("error[K0001]"), "K0001 must not appear in script mode");
+    assert!(
+        output.status.success(),
+        "K0001 is silent in script mode — check should succeed"
+    );
+    assert!(
+        !output.stderr.contains("error[K0001]"),
+        "K0001 must not appear in script mode"
+    );
     insta::with_settings!({
         prepend_module_to_snapshot => false,
         snapshot_path => "../../../tests/snapshots",
@@ -35,8 +41,14 @@ fn check_k0002_fixture_matches_snapshot() {
     let output = run_kobo_check(&fixture);
 
     // v0.6 [R6-11]: K0002 is SILENT in script mode — check should succeed.
-    assert!(output.status.success(), "K0002 is silent in script mode — check should succeed");
-    assert!(!output.stderr.contains("error[K0002]"), "K0002 must not appear in script mode");
+    assert!(
+        output.status.success(),
+        "K0002 is silent in script mode — check should succeed"
+    );
+    assert!(
+        !output.stderr.contains("error[K0002]"),
+        "K0002 must not appear in script mode"
+    );
     insta::with_settings!({
         prepend_module_to_snapshot => false,
         snapshot_path => "../../../tests/snapshots",
@@ -58,7 +70,10 @@ fn check_k0025_fixture_matches_snapshot() {
         !output.status.success(),
         "K0025 is always error — check should fail"
     );
-    assert!(output.stderr.contains("error[K0025]"), "K0025 must be error, not warning");
+    assert!(
+        output.stderr.contains("error[K0025]"),
+        "K0025 must be error, not warning"
+    );
     insta::with_settings!({
         prepend_module_to_snapshot => false,
         snapshot_path => "../../../tests/snapshots",
@@ -78,8 +93,14 @@ fn run_k0001_fixture_silent_in_script_mode() {
         .join("K0001_use_after_move.kobo");
     let output = run_kobo_command("run", &fixture);
 
-    assert!(!output.status.success(), "run should fail (rustc errors proceed)");
-    assert!(!output.stderr.contains("error[K0001]"), "K0001 must be silent in script mode");
+    assert!(
+        !output.status.success(),
+        "run should fail (rustc errors proceed)"
+    );
+    assert!(
+        !output.stderr.contains("error[K0001]"),
+        "K0001 must be silent in script mode"
+    );
 }
 
 #[test]
@@ -93,7 +114,10 @@ fn run_k0002_fixture_silent_in_script_mode() {
         .join("K0002_mutable_borrow_conflict.kobo");
     let output = run_kobo_command("run", &fixture);
 
-    assert!(!output.stderr.contains("error[K0002]"), "K0002 must be silent in script mode");
+    assert!(
+        !output.stderr.contains("error[K0002]"),
+        "K0002 must be silent in script mode"
+    );
 }
 
 fn run_kobo_check(fixture_path: &Path) -> KoboOutput {
@@ -142,7 +166,10 @@ fn check_k0080_p1_emits_note() {
     let output = run_kobo_check(&fixture);
 
     // K0080-P1 is advisory-only: check succeeds (no error), but note is present.
-    assert!(output.status.success(), "K0080-P1 is note-only, check should succeed");
+    assert!(
+        output.status.success(),
+        "K0080-P1 is note-only, check should succeed"
+    );
     assert!(
         output.stderr.contains("note[K0080-P1]"),
         "stderr must contain note[K0080-P1], got:\n{}",
@@ -173,7 +200,10 @@ fn check_k0080_p1_suppressed_by_known_debt() {
         .join("k0080_p1_suppressed.kobo");
     let output = run_kobo_check(&fixture);
 
-    assert!(output.status.success(), "suppressed K0080-P1 check should succeed");
+    assert!(
+        output.status.success(),
+        "suppressed K0080-P1 check should succeed"
+    );
     assert!(
         !output.stderr.contains("K0080-P1"),
         "suppressed binding must produce zero K0080-P1 notes, got:\n{}",
@@ -189,7 +219,10 @@ fn check_k0080_p2_tree_emits_note() {
         .join("k0080_p2_tree.kobo");
     let output = run_kobo_check(&fixture);
 
-    assert!(output.status.success(), "K0080-P2 is note-only, check should succeed");
+    assert!(
+        output.status.success(),
+        "K0080-P2 is note-only, check should succeed"
+    );
     assert!(
         output.stderr.contains("note[K0080-P2]"),
         "stderr must contain note[K0080-P2], got:\n{}",
@@ -205,7 +238,10 @@ fn check_k0080_p4_self_ref_emits_note() {
         .join("k0080_p4_self_ref.kobo");
     let output = run_kobo_check(&fixture);
 
-    assert!(output.status.success(), "K0080-P4 is note-only, check should succeed");
+    assert!(
+        output.status.success(),
+        "K0080-P4 is note-only, check should succeed"
+    );
     assert!(
         output.stderr.contains("note[K0080-P4]"),
         "stderr must contain note[K0080-P4], got:\n{}",
@@ -223,15 +259,16 @@ fn debt_summary_is_single_line() {
         .join("tests")
         .join("fixtures")
         .join("debt_report_full.kobo");
-    let output = run_kobo_command_with_args(
-        "debt",
-        &fixture,
-        &["--summary"],
-    );
+    let output = run_kobo_command_with_args("debt", &fixture, &["--summary"]);
 
     assert!(output.status.success(), "debt --summary should succeed");
     let lines: Vec<_> = output.stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "debt --summary must output exactly one line, got: {:?}", lines);
+    assert_eq!(
+        lines.len(),
+        1,
+        "debt --summary must output exactly one line, got: {:?}",
+        lines
+    );
 }
 
 #[test]
@@ -240,11 +277,7 @@ fn debt_json_has_schema_version() {
         .join("tests")
         .join("fixtures")
         .join("debt_report_full.kobo");
-    let output = run_kobo_command_with_args(
-        "debt",
-        &fixture,
-        &["--json"],
-    );
+    let output = run_kobo_command_with_args("debt", &fixture, &["--json"]);
 
     assert!(output.status.success(), "debt --json should succeed");
     assert!(
@@ -258,17 +291,24 @@ fn debt_json_has_schema_version() {
     );
 
     // Must be valid JSON that round-trips.
-    let parsed: serde_json::Value = serde_json::from_str(&output.stdout)
-        .expect("debt --json output must be valid JSON");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("debt --json output must be valid JSON");
     assert_eq!(parsed["schema_version"], 1);
 }
 
-fn run_kobo_command_with_args(command: &str, fixture_path: &Path, extra_args: &[&str]) -> KoboOutput {
+fn run_kobo_command_with_args(
+    command: &str,
+    fixture_path: &Path,
+    extra_args: &[&str],
+) -> KoboOutput {
     let workspace_root = workspace_root();
     let relative_fixture = fixture_path
         .strip_prefix(&workspace_root)
         .expect("fixture should live under workspace root");
-    let mut args = vec![command, relative_fixture.to_str().expect("utf8 fixture path")];
+    let mut args = vec![
+        command,
+        relative_fixture.to_str().expect("utf8 fixture path"),
+    ];
     args.extend_from_slice(extra_args);
     let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
         .args(&args)
@@ -378,13 +418,17 @@ fn check_checked_mode_k0001_produces_warning() {
         .join("ui")
         .join("checked_mode_K0001_warning.kobo");
     let relative = fixture
-        .strip_prefix(&workspace_root())
+        .strip_prefix(workspace_root())
         .unwrap()
         .to_str()
         .unwrap();
     let output = run_kobo_raw_args(&["check", "--checked", relative]);
 
-    assert!(output.status.success(), "checked mode must exit 0 — got stderr:\n{}", output.stderr);
+    assert!(
+        output.status.success(),
+        "checked mode must exit 0 — got stderr:\n{}",
+        output.stderr
+    );
     assert!(
         output.stderr.contains("warning[K0001]"),
         "checked mode must emit warning[K0001], got:\n{}",
@@ -404,13 +448,17 @@ fn check_checked_mode_k0002_produces_warning() {
         .join("ui")
         .join("checked_mode_K0002_warning.kobo");
     let relative = fixture
-        .strip_prefix(&workspace_root())
+        .strip_prefix(workspace_root())
         .unwrap()
         .to_str()
         .unwrap();
     let output = run_kobo_raw_args(&["check", "--checked", relative]);
 
-    assert!(output.status.success(), "checked mode must exit 0 — got stderr:\n{}", output.stderr);
+    assert!(
+        output.status.success(),
+        "checked mode must exit 0 — got stderr:\n{}",
+        output.stderr
+    );
     assert!(
         output.stderr.contains("warning[K0002]"),
         "checked mode must emit warning[K0002], got:\n{}",
@@ -426,13 +474,16 @@ fn check_checked_mode_relax_suppresses_warning() {
         .join("ui")
         .join("checked_mode_relax_suppresses.kobo");
     let relative = fixture
-        .strip_prefix(&workspace_root())
+        .strip_prefix(workspace_root())
         .unwrap()
         .to_str()
         .unwrap();
     let output = run_kobo_raw_args(&["check", "--checked", relative]);
 
-    assert!(output.status.success(), "checked mode with relax must exit 0");
+    assert!(
+        output.status.success(),
+        "checked mode with relax must exit 0"
+    );
     // checked_fn emits K0001, relaxed_fn does not.
     assert!(
         output.stderr.contains("warning[K0001]"),
@@ -449,13 +500,16 @@ fn check_script_mode_relax_emits_k0026() {
         .join("ui")
         .join("checked_mode_relax_in_script.kobo");
     let relative = fixture
-        .strip_prefix(&workspace_root())
+        .strip_prefix(workspace_root())
         .unwrap()
         .to_str()
         .unwrap();
     let output = run_kobo_raw_args(&["check", relative]);
 
-    assert!(output.status.success(), "script mode with relax advisory must exit 0");
+    assert!(
+        output.status.success(),
+        "script mode with relax advisory must exit 0"
+    );
     assert!(
         output.stderr.contains("warning[K0026]"),
         "relax in script mode must emit warning[K0026], got:\n{}",
@@ -471,13 +525,16 @@ fn check_checked_mode_hello_world_clean() {
         .join("fixtures")
         .join("checked_hello_world.kobo");
     let relative = fixture
-        .strip_prefix(&workspace_root())
+        .strip_prefix(workspace_root())
         .unwrap()
         .to_str()
         .unwrap();
     let output = run_kobo_raw_args(&["check", "--checked", relative]);
 
-    assert!(output.status.success(), "clean program in checked mode must exit 0");
+    assert!(
+        output.status.success(),
+        "clean program in checked mode must exit 0"
+    );
     assert!(
         !output.stderr.contains("warning["),
         "clean program must produce no warnings, got:\n{}",

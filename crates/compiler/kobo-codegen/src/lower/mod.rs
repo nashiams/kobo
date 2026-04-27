@@ -12,9 +12,9 @@ use std::path::Path;
 use kobo_ir::SolutionMap;
 use kobo_parser::KoboFile;
 
-use crate::CodegenOptions;
 use self::plan::LoweringPlan;
 use self::rewrite::Lowerer;
+use crate::CodegenOptions;
 
 #[cfg(test)]
 pub(crate) use self::anchor::ResolvedAnchor;

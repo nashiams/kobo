@@ -1,0 +1,45 @@
+struct Entry {
+    key: String,
+    value: String,
+}
+
+struct KvStore {
+    memtable: Vec<Entry>,
+    immutable: Vec<Entry>,
+    wal_bytes: u64,
+}
+
+impl KvStore {
+    fn new() -> Self {
+        Self {
+            memtable: Vec::new(),
+            immutable: Vec::new(),
+            wal_bytes: 0,
+        }
+    }
+
+    fn put(&mut self, key: String, value: String) {
+        self.wal_bytes = self.wal_bytes + key.len() as u64 + value.len() as u64;
+        self.memtable.push(Entry { key, value });
+    }
+
+    fn freeze(&mut self) {
+        let old = std::mem::replace(&mut self.memtable, Vec::new());
+        self.immutable = old;
+    }
+
+    fn len(&self) -> usize {
+        self.memtable.len() + self.immutable.len()
+    }
+}
+
+fn compact_level(store: &mut KvStore) {
+    store.freeze();
+}
+
+fn main() {
+    let mut store = KvStore::new();
+    store.put(String::from("a"), String::from("1"));
+    compact_level(&mut store);
+    println!("{}", store.len());
+}

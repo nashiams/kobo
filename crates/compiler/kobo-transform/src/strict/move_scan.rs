@@ -4,10 +4,7 @@
 /// by-value, match scrutinee, return expression.
 ///
 /// Contract C05: produces facts, NOT KDiagnostic.
-use kobo_ir::{
-    CaptureSet, KirNodeId, KoboSpan,
-    StrictBoundaryFact, StrictBoundaryViolation,
-};
+use kobo_ir::{CaptureSet, KirNodeId, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;
 

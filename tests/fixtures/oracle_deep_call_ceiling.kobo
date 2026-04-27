@@ -1,0 +1,152 @@
+// Oracle Gate: Deep call chain with ceiling propagation.
+// Function A calls B calls C calls D calls E. E has a ceiling constraint
+// (engine ceiling = RcShared). But A's caller crosses a spawn boundary,
+// forcing Send. This creates a conflict: the spawn needs Arc but the
+// engine ceiling says Rc max.
+//
+// A production solver MUST detect this as a genuine conflict (K0080) and
+// report the FULL provenance chain (spawn at A → propagation through
+// B→C→D→E → ceiling at E). A solver that silently clamps at the ceiling
+// without reporting the spawn-side violation is hiding a real error.
+
+struct Pipeline {
+    stages: Vec<String>,
+    depth: u64,
+    max_depth: u64,
+}
+
+impl Pipeline {
+    fn new(max_depth: u64) -> Self {
+        Self {
+            stages: Vec::new(),
+            depth: 0,
+            max_depth,
+        }
+    }
+
+    fn push_stage(&mut self, name: String) {
+        self.stages.push(name);
+        self.depth = self.depth + 1;
+    }
+
+    fn current_depth(&self) -> u64 {
+        self.depth
+    }
+}
+
+struct StageResult {
+    stage_name: String,
+    output_bytes: u64,
+    success: bool,
+}
+
+impl StageResult {
+    fn new(name: String, bytes: u64) -> Self {
+        Self {
+            stage_name: name,
+            output_bytes: bytes,
+            success: true,
+        }
+    }
+
+    fn failed(name: String) -> Self {
+        Self {
+            stage_name: name,
+            output_bytes: 0,
+            success: false,
+        }
+    }
+}
+
+struct ResultCollector {
+    results: Vec<StageResult>,
+    total_bytes: u64,
+    failure_count: u64,
+}
+
+impl ResultCollector {
+    fn new() -> Self {
+        Self {
+            results: Vec::new(),
+            total_bytes: 0,
+            failure_count: 0,
+        }
+    }
+
+    fn record(&mut self, result: StageResult) {
+        if result.success {
+            self.total_bytes = self.total_bytes + result.output_bytes;
+        } else {
+            self.failure_count = self.failure_count + 1;
+        }
+        self.results.push(result);
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "stages={} bytes={} failures={}",
+            self.results.len(),
+            self.total_bytes,
+            self.failure_count
+        )
+    }
+}
+
+// Deep call chain: A → B → C → D → E
+fn stage_e(pipeline: &mut Pipeline, collector: &mut ResultCollector) {
+    pipeline.push_stage(String::from("E"));
+    if pipeline.current_depth() > pipeline.max_depth {
+        collector.record(StageResult::failed(String::from("E")));
+    } else {
+        collector.record(StageResult::new(String::from("E"), 64));
+    }
+}
+
+fn stage_d(pipeline: &mut Pipeline, collector: &mut ResultCollector) {
+    pipeline.push_stage(String::from("D"));
+    collector.record(StageResult::new(String::from("D"), 128));
+    stage_e(pipeline, collector);
+}
+
+fn stage_c(pipeline: &mut Pipeline, collector: &mut ResultCollector) {
+    pipeline.push_stage(String::from("C"));
+    collector.record(StageResult::new(String::from("C"), 256));
+    stage_d(pipeline, collector);
+}
+
+fn stage_b(pipeline: &mut Pipeline, collector: &mut ResultCollector) {
+    pipeline.push_stage(String::from("B"));
+    collector.record(StageResult::new(String::from("B"), 512));
+    stage_c(pipeline, collector);
+}
+
+fn stage_a(pipeline: &mut Pipeline, collector: &mut ResultCollector) {
+    pipeline.push_stage(String::from("A"));
+    collector.record(StageResult::new(String::from("A"), 1024));
+    stage_b(pipeline, collector);
+}
+
+// Crosses spawn boundary — forces Send on pipeline and collector
+async fn run_pipeline_background(pipeline: &mut Pipeline, collector: &mut ResultCollector) {
+    stage_a(pipeline, collector);
+}
+
+// Read-only summary from main thread after spawn
+fn report(collector: &ResultCollector) -> String {
+    collector.summary()
+}
+
+fn main() {
+    let mut pipeline = Pipeline::new(10);
+    let mut collector = ResultCollector::new();
+
+    // First run: sequential, no Send needed
+    stage_a(&mut pipeline, &mut collector);
+    println!("sequential: {}", report(&collector));
+
+    // Second run: across spawn boundary — forces Send
+    let mut pipeline2 = Pipeline::new(3);
+    let mut collector2 = ResultCollector::new();
+    run_pipeline_background(&mut pipeline2, &mut collector2);
+    println!("background: {}", report(&collector2));
+}

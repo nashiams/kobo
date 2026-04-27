@@ -60,7 +60,11 @@ impl<'src> StrictItemCollector<'src> {
 
     fn byte_offset(&self, lc: proc_macro2::LineColumn) -> u32 {
         let line_idx = lc.line.saturating_sub(1);
-        let line_start = self.line_starts.get(line_idx).copied().unwrap_or(self.source_len);
+        let line_start = self
+            .line_starts
+            .get(line_idx)
+            .copied()
+            .unwrap_or(self.source_len);
         ((line_start + lc.column).min(self.source_len)) as u32
     }
 
@@ -80,7 +84,7 @@ impl<'src> StrictItemCollector<'src> {
 impl<'ast, 'src> Visit<'ast> for StrictItemCollector<'src> {
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         use syn::spanned::Spanned;
-        if node.attrs.iter().any(|a| is_kobo_strict_attr(a)) {
+        if node.attrs.iter().any(is_kobo_strict_attr) {
             self.strict_fns.push(KoboItemFn {
                 inner: node.clone(),
                 span: self.kobo_span_from(node.span()),
@@ -123,7 +127,7 @@ impl<'ast, 'src> Visit<'ast> for StrictItemCollector<'src> {
 
     fn visit_expr_block(&mut self, node: &'ast syn::ExprBlock) {
         use syn::spanned::Spanned;
-        if node.attrs.iter().any(|a| is_kobo_strict_attr(a)) {
+        if node.attrs.iter().any(is_kobo_strict_attr) {
             self.strict_blocks.push(KoboBlock {
                 body: node.block.clone(),
                 span: self.kobo_span_from(node.block.span()),

@@ -1,16 +1,16 @@
-/// Parse `chan<T>` type and generate channel creation.
-///
-/// Input:
-///   let (tx, rx) = chan<String>();
-///
-/// Output:
-///   let (tx, rx) = tokio::sync::mpsc::channel::<String>(100);
-///
-/// The buffer size default is 100 (configurable via `channel_buffer_size`
-/// in `Kobo.toml`).
-///
-/// Sender cloning into spawn blocks is handled by the auto-clone injector
-/// (Phase 3). This module only rewrites the `chan<T>()` type/constructor.
+//! Parse `chan<T>` type and generate channel creation.
+//!
+//! Input:
+//!   let (tx, rx) = chan<String>();
+//!
+//! Output:
+//!   let (tx, rx) = tokio::sync::mpsc::channel::<String>(100);
+//!
+//! The buffer size default is 100 (configurable via `channel_buffer_size`
+//! in `Kobo.toml`).
+//!
+//! Sender cloning into spawn blocks is handled by the auto-clone injector
+//! (Phase 3). This module only rewrites the `chan<T>()` type/constructor.
 
 /// Information about one `chan<T>()` occurrence found during preprocessing.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,13 +58,11 @@ pub fn validate_channel_dependencies(
     if infos.is_empty() {
         return Vec::new();
     }
-    let has_tokio = dependencies.iter().any(|d| *d == "tokio");
+    let has_tokio = dependencies.contains(&"tokio");
     if has_tokio {
         return Vec::new();
     }
-    vec![ChannelWarning::MissingTokioDependency {
-        count: infos.len(),
-    }]
+    vec![ChannelWarning::MissingTokioDependency { count: infos.len() }]
 }
 
 /// Rewrite all `chan<T>()` occurrences to `tokio::sync::mpsc::channel::<T>(buffer_size)`.
@@ -220,10 +218,7 @@ let (tx2, rx2) = chan<u64>();"#;
     fn chan_nested_type_param() {
         let input = r#"let (tx, rx) = chan<Vec<String>>();"#;
         let (output, infos) = preprocess_chan_type(input, 100);
-        assert!(
-            output.contains("::<Vec<String>>(100)"),
-            "output: {output}"
-        );
+        assert!(output.contains("::<Vec<String>>(100)"), "output: {output}");
         assert_eq!(infos[0].type_param, "Vec<String>");
     }
 
@@ -275,7 +270,10 @@ let (tx2, rx2) = chan<u64>();"#;
     #[test]
     fn chan_with_nested_generics() {
         let (output, infos) = preprocess_chan_type("let (tx, rx) = chan<Vec<i32>>();", 100);
-        assert!(!output.contains("chan<"), "chan< should be rewritten: {output}");
+        assert!(
+            !output.contains("chan<"),
+            "chan< should be rewritten: {output}"
+        );
         assert_eq!(infos.len(), 1);
         assert!(infos[0].type_param.contains("Vec"));
     }
@@ -292,7 +290,10 @@ let (tx2, rx2) = chan<u64>();"#;
     #[test]
     fn chan_without_parens_not_rewritten() {
         let (output, infos) = preprocess_chan_type("type MyChan = chan;", 100);
-        assert!(infos.is_empty(), "bare 'chan' with no angle brackets + parens");
+        assert!(
+            infos.is_empty(),
+            "bare 'chan' with no angle brackets + parens"
+        );
         // Output should contain chan unchanged
         assert!(output.contains("chan"));
     }
@@ -303,8 +304,14 @@ let (tx2, rx2) = chan<u64>();"#;
         let source = "let (a_tx, a_rx) = chan<u8>();\nlet (b_tx, b_rx) = chan<String>();";
         let (output, infos) = preprocess_chan_type(source, 100);
         assert_eq!(infos.len(), 2);
-        assert!(!output.contains("chan<u8>"), "first chan not rewritten: {output}");
-        assert!(!output.contains("chan<String>"), "second chan not rewritten: {output}");
+        assert!(
+            !output.contains("chan<u8>"),
+            "first chan not rewritten: {output}"
+        );
+        assert!(
+            !output.contains("chan<String>"),
+            "second chan not rewritten: {output}"
+        );
     }
 
     /// chan + tokio dep → no warning.
@@ -330,9 +337,21 @@ let (tx2, rx2) = chan<u64>();"#;
     #[test]
     fn multiple_channels_warning_count() {
         let infos = vec![
-            ChannelInfo { type_param: "u8".to_owned(), offset: 0, buffer_size: 10 },
-            ChannelInfo { type_param: "u16".to_owned(), offset: 20, buffer_size: 10 },
-            ChannelInfo { type_param: "u32".to_owned(), offset: 40, buffer_size: 10 },
+            ChannelInfo {
+                type_param: "u8".to_owned(),
+                offset: 0,
+                buffer_size: 10,
+            },
+            ChannelInfo {
+                type_param: "u16".to_owned(),
+                offset: 20,
+                buffer_size: 10,
+            },
+            ChannelInfo {
+                type_param: "u32".to_owned(),
+                offset: 40,
+                buffer_size: 10,
+            },
         ];
         let warnings = validate_channel_dependencies(&infos, &["serde"]);
         assert_eq!(warnings.len(), 1);

@@ -104,16 +104,14 @@ impl CfgBuilder {
 
                     // Check if this is a sibling of an existing scope at the
                     // same parent. If so, don't push a new entry.
-                    let is_sibling = scope_stack
-                        .last()
-                        .map_or(false, |(p, _)| *p == parent);
+                    let is_sibling = scope_stack.last().is_some_and(|(p, _)| *p == parent);
                     if !is_sibling {
                         scope_stack.push((parent, Vec::new()));
                     }
                 }
                 NodeKind::ScopeEnd => {
-                    let next_is_sibling = i + 1 < nodes.len()
-                        && nodes[i + 1].kind == NodeKind::ScopeStart;
+                    let next_is_sibling =
+                        i + 1 < nodes.len() && nodes[i + 1].kind == NodeKind::ScopeStart;
 
                     if let Some(top) = scope_stack.last_mut() {
                         top.1.push(self.current);
@@ -307,7 +305,7 @@ impl BindingLiveness {
     pub fn is_live_at(&self, block: CfgBlockId, decl_id: KirNodeId) -> bool {
         self.live_at_entry
             .get(block)
-            .map_or(false, |s| s.contains(&decl_id))
+            .is_some_and(|s| s.contains(&decl_id))
     }
 
     /// Returns all decl_ids live at entry of `block`.
@@ -315,6 +313,13 @@ impl BindingLiveness {
         static EMPTY: std::sync::LazyLock<HashSet<KirNodeId>> =
             std::sync::LazyLock::new(HashSet::new);
         self.live_at_entry.get(block).unwrap_or(&EMPTY)
+    }
+
+    /// Returns all decl_ids live at exit of `block`.
+    pub fn live_at_exit(&self, block: CfgBlockId) -> &HashSet<KirNodeId> {
+        static EMPTY: std::sync::LazyLock<HashSet<KirNodeId>> =
+            std::sync::LazyLock::new(HashSet::new);
+        self.live_at_exit.get(block).unwrap_or(&EMPTY)
     }
 }
 
@@ -460,13 +465,6 @@ mod tests {
     use crate::transform::build_kir;
     use kobo_ir::{FileId, NodeIdGen};
     use kobo_parser::parse_file;
-
-    fn build_test_cfg(source: &str) -> CfgGraph {
-        let mut id_gen = NodeIdGen::new();
-        let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
-        let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
-        build_cfg(&kir)
-    }
 
     #[test]
     fn test_cfg_basic_function() {

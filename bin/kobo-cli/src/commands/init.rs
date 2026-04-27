@@ -29,8 +29,7 @@ mode = "script"
 [dependencies]
 "#
     );
-    fs::write(project_dir.join("Kobo.toml"), kobo_toml)
-        .context("failed to write Kobo.toml")?;
+    fs::write(project_dir.join("Kobo.toml"), kobo_toml).context("failed to write Kobo.toml")?;
 
     fs::write(
         src_dir.join("main.kobo"),
@@ -38,6 +37,9 @@ mode = "script"
     )
     .context("failed to write src/main.kobo")?;
 
-    eprintln!("Created project '{project_name}' at {}", project_dir.display());
+    eprintln!(
+        "Created project '{project_name}' at {}",
+        project_dir.display()
+    );
     Ok(())
 }

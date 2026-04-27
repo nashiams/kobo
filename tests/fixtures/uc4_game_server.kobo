@@ -1,0 +1,37 @@
+struct Player {
+    id: u64,
+}
+
+struct World {
+    players: Vec<Player>,
+    tick: u64,
+}
+
+impl World {
+    fn new() -> Self {
+        Self {
+            players: Vec::new(),
+            tick: 0,
+        }
+    }
+
+    fn add_player(&mut self, player: Player) {
+        self.players.push(player);
+    }
+
+    fn advance(&mut self) {
+        self.tick = self.tick + 1;
+    }
+}
+
+#[kobo::tick(rate = 20)]
+fn tick_world(world: &mut World) {
+    world.advance();
+}
+
+fn main() {
+    let mut world = World::new();
+    world.add_player(Player { id: 1 });
+    tick_world(&mut world);
+    println!("{}", world.tick);
+}

@@ -6,7 +6,6 @@
 ///   // kobo: lock order: state(1) → cache(2) → metrics(3)
 ///
 /// Only appears in `kobo inspect` output, not in compiled binary.
-
 use kobo_ir::KoboSpan;
 
 /// Kind of lock access.
@@ -71,6 +70,7 @@ pub(crate) fn lock_order_comment(sites: &[LockSite]) -> Option<String> {
     if sites.len() < 2 {
         return None;
     }
+    debug_assert!(sites.iter().all(|site| site.span.start <= site.span.end));
 
     let parts: Vec<String> = sites
         .iter()
@@ -93,15 +93,13 @@ fn extract_lock_binding_name(line: &str) -> Option<String> {
     }
     let after_let = &trimmed[4..];
     // Skip `mut ` if present.
-    let after_mut = if after_let.starts_with("mut ") {
-        &after_let[4..]
+    let after_mut = if let Some(stripped) = after_let.strip_prefix("mut ") {
+        stripped
     } else {
         after_let
     };
     // Extract identifier up to ` =` or `:`.
-    let end = after_mut
-        .find(|c: char| c == ' ' || c == ':' || c == '=')
-        .unwrap_or(after_mut.len());
+    let end = after_mut.find([' ', ':', '=']).unwrap_or(after_mut.len());
     let name = &after_mut[..end];
     if name.is_empty() {
         None
@@ -136,13 +134,21 @@ let cache = app_cache.read().await;
             LockSite {
                 binding_name: "state".to_owned(),
                 lock_kind: LockKind::Write,
-                span: KoboSpan { file_id: kobo_ir::FileId(0), start: 0, end: 0 },
+                span: KoboSpan {
+                    file_id: kobo_ir::FileId(0),
+                    start: 0,
+                    end: 0,
+                },
                 order: 1,
             },
             LockSite {
                 binding_name: "cache".to_owned(),
                 lock_kind: LockKind::Read,
-                span: KoboSpan { file_id: kobo_ir::FileId(0), start: 0, end: 0 },
+                span: KoboSpan {
+                    file_id: kobo_ir::FileId(0),
+                    start: 0,
+                    end: 0,
+                },
                 order: 2,
             },
         ];
@@ -157,7 +163,11 @@ let cache = app_cache.read().await;
         let sites = vec![LockSite {
             binding_name: "state".to_owned(),
             lock_kind: LockKind::Write,
-            span: KoboSpan { file_id: kobo_ir::FileId(0), start: 0, end: 0 },
+            span: KoboSpan {
+                file_id: kobo_ir::FileId(0),
+                start: 0,
+                end: 0,
+            },
             order: 1,
         }];
         assert!(lock_order_comment(&sites).is_none());

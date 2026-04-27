@@ -2,12 +2,19 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::Context;
-use kobo_driver::{run_and_compile, run_codegen_pipeline, run_kir_phase, CodegenArtifacts};
+use kobo_driver::{
+    run_and_compile, run_and_compile_with_lifetime_erasure, run_codegen_pipeline, run_kir_phase,
+    CodegenArtifacts,
+};
 use kobo_ir::KoboMode;
 
 use super::session::{build_session, line_number_for_offset, render_diagnostics};
 
-pub(super) fn cmd_run(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Result<()> {
+pub(super) fn cmd_run(
+    file: &Path,
+    cli_mode: Option<KoboMode>,
+    erase_lifetimes: bool,
+) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
     if session.mode() == KoboMode::Strict {
         eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
@@ -15,7 +22,12 @@ pub(super) fn cmd_run(file: &Path, cli_mode: Option<KoboMode>) -> anyhow::Result
         std::process::exit(1);
     }
 
-    let binary_path = run_and_compile(&mut session, file).map_err(|()| {
+    let compile_result = if erase_lifetimes {
+        run_and_compile_with_lifetime_erasure(&mut session, file)
+    } else {
+        run_and_compile(&mut session, file)
+    };
+    let binary_path = compile_result.map_err(|()| {
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
@@ -48,6 +60,7 @@ pub(super) fn cmd_inspect(
     file: &Path,
     cli_mode: Option<KoboMode>,
     clean: bool,
+    erase_lifetimes: bool,
     cargo_dir: Option<&Path>,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
@@ -64,6 +77,13 @@ pub(super) fn cmd_inspect(
         })?;
     // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
+
+    // S-21: Apply lifetime erasure when requested (script mode only).
+    let rs_source = if erase_lifetimes {
+        kobo_driver::apply_lifetime_erasure(&rs_source, session.mode())
+    } else {
+        rs_source
+    };
 
     let output = if clean || cargo_dir.is_some() {
         kobo_codegen::clean::strip_kobo_wrappers(&rs_source)

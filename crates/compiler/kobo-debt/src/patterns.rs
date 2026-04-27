@@ -7,8 +7,7 @@
 /// 4. Lifetime insertion — "This clone can be replaced with &'a T"
 /// 5. Arc de-escalation — "This Arc is only used in single-threaded context"
 /// 6. Box→PlainOwned — "This Box is unnecessary; value fits on stack"
-
-use kobo_ir::{Kir, KoboSpan, OwnershipTier, TierDecision, NodeKind};
+use kobo_ir::{Kir, KoboSpan, NodeKind, OwnershipTier, TierDecision};
 use serde::Serialize;
 
 /// A detected migration pattern for a specific binding.
@@ -163,8 +162,7 @@ pub fn detect_migration_patterns(kir: &Kir, decisions: &[TierDecision]) -> Vec<M
                         binding_name: binding_name.clone(),
                         current_tier: OwnershipTier::BoxOwned,
                         suggested_tier: OwnershipTier::PlainOwned,
-                        explanation:
-                            "This Box is unnecessary; value fits on stack".to_owned(),
+                        explanation: "This Box is unnecessary; value fits on stack".to_owned(),
                         risk: PatternRisk::Safe,
                         span: node.span,
                     });
@@ -183,7 +181,10 @@ pub fn format_patterns(patterns: &[MigrationPattern]) -> String {
     }
 
     let mut output = String::new();
-    output.push_str(&format!("{} migration pattern(s) detected:\n\n", patterns.len()));
+    output.push_str(&format!(
+        "{} migration pattern(s) detected:\n\n",
+        patterns.len()
+    ));
 
     for (i, pattern) in patterns.iter().enumerate() {
         let risk_label = match pattern.risk {
@@ -210,8 +211,8 @@ pub fn format_patterns(patterns: &[MigrationPattern]) -> String {
 mod tests {
     use super::*;
     use kobo_ir::{
-        BindingUsage, FileId, KirNode, KirNodeId, KoboAstNodeId, KoboSpan,
-        SharedBindingFacts, TierReason, TransformBindingFacts, TransformFacts,
+        BindingUsage, FileId, KirNode, KirNodeId, KoboAstNodeId, KoboSpan, SharedBindingFacts,
+        TierReason, TransformBindingFacts, TransformFacts,
     };
 
     fn make_kir_and_decisions(

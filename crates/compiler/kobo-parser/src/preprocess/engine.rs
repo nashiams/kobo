@@ -6,7 +6,6 @@
 /// - In kobo debt output, engine structs are highlighted
 ///
 /// Engine annotation is stripped in --clean output.
-
 use syn::visit::Visit;
 
 /// Information about a struct annotated with `#[kobo::engine]`.
@@ -22,7 +21,9 @@ pub struct EngineInfo {
 
 /// Scan a parsed syn file for `#[kobo::engine]` attributes.
 pub fn collect_engine_structs(file: &syn::File) -> Vec<EngineInfo> {
-    let mut visitor = EngineVisitor { results: Vec::new() };
+    let mut visitor = EngineVisitor {
+        results: Vec::new(),
+    };
     visitor.visit_file(file);
     visitor.results
 }
@@ -59,16 +60,8 @@ impl<'ast> Visit<'ast> for EngineVisitor {
     fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
         for attr in &item.attrs {
             if is_engine_attribute(attr) {
-                let attr_offset = attr
-                    .pound_token
-                    .span
-                    .byte_range()
-                    .start;
-                let struct_offset = item
-                    .struct_token
-                    .span
-                    .byte_range()
-                    .start;
+                let attr_offset = attr.pound_token.span.byte_range().start;
+                let struct_offset = item.struct_token.span.byte_range().start;
 
                 self.results.push(EngineInfo {
                     struct_name: item.ident.to_string(),

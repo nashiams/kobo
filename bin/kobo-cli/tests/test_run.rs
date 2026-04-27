@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 static CASE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -520,6 +521,53 @@ fn run_tiered_mix_fixture_executes_with_shared_wrappers() {
 }
 
 #[test]
+fn run_erase_lifetimes_compiles_erased_source() {
+    let case = FixtureCase::new("run-lifetime-erasure", "lifetime_erasure.kobo");
+    let output = run_kobo(["run", "--erase-lifetimes"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert_eq!(output.stdout.trim(), "lifetime erasure fixture");
+
+    let generated = fs::read_to_string(case.fixture_path.with_extension("rs"))
+        .expect("run should write generated Rust source");
+    assert!(
+        generated.contains("fn borrow_name(name: String) -> String")
+            || generated.contains("fn borrow_name ( name : String ) -> String"),
+        "generated source must erase the public &str parameter:\n{generated}"
+    );
+    assert!(
+        !generated.contains("fn borrow_name(name: &str)"),
+        "generated source must not keep the public &str signature:\n{generated}"
+    );
+}
+
+#[test]
+fn inspect_checked_erase_lifetimes_hides_public_refs() {
+    let case = FixtureCase::new("inspect-checked-lifetime-erasure", "lifetime_erasure.kobo");
+    let output = run_kobo(
+        ["inspect", "--checked", "--erase-lifetimes"],
+        &case.fixture_path,
+    );
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        output
+            .stdout
+            .contains("fn borrow_name(name: String) -> String")
+            || output
+                .stdout
+                .contains("fn borrow_name ( name : String ) -> String"),
+        "checked inspect output must erase the public &str parameter:\n{}",
+        output.stdout
+    );
+    assert!(
+        !output.stdout.contains("fn borrow_name(name: &str)"),
+        "checked inspect output must not keep the public &str signature:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
 fn run_conditional_mutation_fixture_drops_borrow_before_println() {
     let case = FixtureCase::new("run-conditional-mutation", "conditional_mutation.kobo");
     let output = run_kobo(["run"], &case.fixture_path);
@@ -691,6 +739,121 @@ fn run_kobo<const N: usize>(args: [&str; N], fixture_path: &Path) -> KoboOutput 
     }
 }
 
+fn run_watch_once_after_edit<const N: usize>(
+    args: [&str; N],
+    fixture_path: &Path,
+    edited_source: &str,
+) -> KoboOutput {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .args(args)
+        .arg(fixture_path)
+        .env("KOBO_WATCH_ONCE", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir(workspace_root())
+        .spawn()
+        .expect("kobo watch should spawn");
+
+    std::thread::sleep(Duration::from_millis(700));
+    fs::write(fixture_path, edited_source).expect("edited watch source should write");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if child
+            .try_wait()
+            .expect("watch status should poll")
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .expect("watch output should collect");
+            return KoboOutput {
+                status: output.status,
+                stdout: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            };
+        }
+
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .expect("timed out watch output should collect");
+            panic!(
+                "kobo watch did not exit after file change\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn watch_simple_reruns_check_after_file_change() {
+    let case = FixtureCase::new("watch-simple-rerun", "hello.kobo");
+    fs::write(
+        &case.fixture_path,
+        "fn main() {\n    println!(\"watch before\");\n}\n",
+    )
+    .expect("initial watch source should write");
+    let handler_leak =
+        fs::read_to_string(workspace_root().join("tests/fixtures/handler_leak.kobo"))
+            .expect("handler leak fixture should read");
+
+    let output =
+        run_watch_once_after_edit(["watch", "--simple"], &case.fixture_path, &handler_leak);
+    let combined = format!("{}\n{}", output.stdout, output.stderr);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        combined.contains("Change detected") && combined.contains("Triggering rebuild"),
+        "watch --simple must react to the file edit\n{combined}"
+    );
+    assert!(
+        combined.contains("K0067"),
+        "watch --simple must rerun the check pipeline and surface new diagnostics\n{combined}"
+    );
+}
+
+#[test]
+fn watch_build_reruns_codegen_after_file_change() {
+    let case = FixtureCase::new("watch-build-rerun", "hello.kobo");
+    fs::write(
+        &case.fixture_path,
+        "fn main() {\n    println!(\"watch before\");\n}\n",
+    )
+    .expect("initial watch source should write");
+    let edited_source = "fn main() {\n    println!(\"watch after\");\n}\n";
+
+    let output = run_watch_once_after_edit(["watch", "--build"], &case.fixture_path, edited_source);
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(
+        output.stdout.contains("Change detected") && output.stdout.contains("codegen OK"),
+        "watch --build must run codegen after the file edit\n{}",
+        output.stdout
+    );
+
+    let generated = fs::read_to_string(case.fixture_path.with_extension("rs"))
+        .expect("watch build should write generated Rust");
+    assert!(
+        generated.contains("watch after"),
+        "watch --build must regenerate from the edited source\n{generated}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // v0.4 — kobo debt / kobo perf integration tests (BUG-10)
 // ---------------------------------------------------------------------------
@@ -702,9 +865,20 @@ fn debt_summary_output_is_single_line() {
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
     let lines: Vec<&str> = output.stdout.lines().collect();
-    assert_eq!(lines.len(), 1, "summary must be exactly one line, got: {}", output.stdout);
-    assert!(output.stdout.contains("file(s)"), "summary must mention file count");
-    assert!(output.stdout.contains("line(s)"), "summary must mention line count");
+    assert_eq!(
+        lines.len(),
+        1,
+        "summary must be exactly one line, got: {}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("file(s)"),
+        "summary must mention file count"
+    );
+    assert!(
+        output.stdout.contains("line(s)"),
+        "summary must mention line count"
+    );
 }
 
 #[test]
@@ -721,11 +895,32 @@ fn debt_json_has_schema_version() {
 }
 
 #[test]
+fn debt_borrows_reports_lifetime_erasure_clone_debt() {
+    let case = FixtureCase::new("debt-lifetime-erasure", "lifetime_erasure.kobo");
+    let output = run_kobo(["debt", "--borrows"], &case.fixture_path);
+
+    assert!(output.status.success(), "stderr:\n{}", output.stderr);
+    assert!(
+        output.stdout.contains("Lifetime Erasure Clones:"),
+        "debt --borrows must include S-21 lifetime erasure clone debt:\n{}",
+        output.stdout
+    );
+    assert!(
+        output.stdout.contains("name (2 clones)"),
+        "debt --borrows must count non-last erased-param uses:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
 fn perf_no_from_flag_prints_advisory() {
     let case = FixtureCase::new("perf-no-from", "hello.kobo");
     let output = run_kobo(["perf"], &case.fixture_path);
 
-    assert!(output.status.success(), "perf without --from should succeed");
+    assert!(
+        output.status.success(),
+        "perf without --from should succeed"
+    );
     assert!(
         output.stderr.contains("advisory"),
         "stderr must contain 'advisory', got:\n{}",
@@ -764,15 +959,24 @@ fn test_init_creates_project_skeleton() {
         "kobo init failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(project_dir.join("Kobo.toml").exists(), "Kobo.toml should exist");
-    assert!(project_dir.join("src").is_dir(), "src/ should be a directory");
+    assert!(
+        project_dir.join("Kobo.toml").exists(),
+        "Kobo.toml should exist"
+    );
+    assert!(
+        project_dir.join("src").is_dir(),
+        "src/ should be a directory"
+    );
     assert!(
         project_dir.join("src/main.kobo").exists(),
         "src/main.kobo should exist"
     );
     // Verify Kobo.toml content
     let config = fs::read_to_string(project_dir.join("Kobo.toml")).unwrap();
-    assert!(config.contains("[package]"), "Kobo.toml should have [package]");
+    assert!(
+        config.contains("[package]"),
+        "Kobo.toml should have [package]"
+    );
     assert!(
         config.contains("name = \"my_project\""),
         "Kobo.toml should have project name"
@@ -889,7 +1093,10 @@ log = "0.4"
         String::from_utf8_lossy(&output.stderr)
     );
     let cargo_toml = fs::read_to_string(dir.join("target/kobo-gen/Cargo.toml")).unwrap();
-    assert!(cargo_toml.contains("log"), "Cargo.toml should contain dependency 'log'");
+    assert!(
+        cargo_toml.contains("log"),
+        "Cargo.toml should contain dependency 'log'"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -1007,10 +1214,7 @@ fn test_cli_mode_run_strict_rejected_with_message() {
     // kobo run --strict <file> — must exit non-zero with "not yet implemented"
     let case = FixtureCase::new("cli-mode-run-strict", "hello.kobo");
     let output = run_kobo(["run", "--strict"], &case.fixture_path);
-    assert!(
-        !output.status.success(),
-        "run --strict must exit non-zero"
-    );
+    assert!(!output.status.success(), "run --strict must exit non-zero");
     assert!(
         output.stderr.contains("not yet implemented"),
         "stderr must mention 'not yet implemented', got:\n{}",
@@ -1174,10 +1378,16 @@ fn debt_borrows_json_outputs_machine_readable_report() {
     let output = run_kobo(["debt", "--borrows", "--json"], &case.fixture_path);
 
     assert!(output.status.success(), "stderr:\n{}", output.stderr);
-    let value: serde_json::Value = serde_json::from_str(&output.stdout)
-        .expect("debt --borrows --json should emit valid JSON");
-    assert!(value.get("schema_version").is_some(), "JSON borrow report must contain schema_version");
-    assert!(value.get("overlapping_sites").is_some(), "JSON borrow report must contain overlapping_sites");
+    let value: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("debt --borrows --json should emit valid JSON");
+    assert!(
+        value.get("schema_version").is_some(),
+        "JSON borrow report must contain schema_version"
+    );
+    assert!(
+        value.get("overlapping_sites").is_some(),
+        "JSON borrow report must contain overlapping_sites"
+    );
 }
 
 // ===========================================================================
@@ -1371,7 +1581,11 @@ mode = "script"
         output.stdout
     );
 
-    let normalized: String = output.stdout.chars().filter(|c| !c.is_whitespace()).collect();
+    let normalized: String = output
+        .stdout
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     assert!(
         normalized.contains("Arc::new(String::from(\"hello\"))"),
         "read-only async_shared binding should be wrapped with Arc::new(...), got:\n{}",
@@ -1405,7 +1619,9 @@ fn test_inspect_binding_across_functions_escape() {
     // return_escape.kobo has a binding that escapes via return.
     // It should NOT be PlainOwned.
     assert!(
-        output.stdout.contains("Rc") || output.stdout.contains("Box") || output.stdout.contains("Arc"),
+        output.stdout.contains("Rc")
+            || output.stdout.contains("Box")
+            || output.stdout.contains("Arc"),
         "escaped binding should be wrapped, got:\n{}",
         output.stdout
     );
@@ -1501,12 +1717,7 @@ fn hr8_no_todo_or_unimplemented_in_shipped_code() {
                 continue;
             }
             if trimmed.contains("todo!()") || trimmed.contains("unimplemented!()") {
-                violations.push(format!(
-                    "{}:{}: {}",
-                    path.display(),
-                    i + 1,
-                    trimmed
-                ));
+                violations.push(format!("{}:{}: {}", path.display(), i + 1, trimmed));
             }
         }
     });
@@ -1576,8 +1787,16 @@ fn hr4_output_deterministic() {
     let case2 = FixtureCase::new("hr4-determinism-2", "tiered_mix.kobo");
     let output2 = run_kobo(["inspect"], &case2.fixture_path);
 
-    assert!(output1.status.success(), "run 1 stderr:\n{}", output1.stderr);
-    assert!(output2.status.success(), "run 2 stderr:\n{}", output2.stderr);
+    assert!(
+        output1.status.success(),
+        "run 1 stderr:\n{}",
+        output1.stderr
+    );
+    assert!(
+        output2.status.success(),
+        "run 2 stderr:\n{}",
+        output2.stderr
+    );
     assert_eq!(
         output1.stdout, output2.stdout,
         "HR-4: Two runs of inspect must produce identical output"
@@ -1598,7 +1817,11 @@ fn n6_build_without_kobo_toml_uses_defaults() {
         let _ = fs::remove_dir_all(&root);
     }
     fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/main.kobo"), "fn main() { println!(\"hello\"); }").unwrap();
+    fs::write(
+        root.join("src/main.kobo"),
+        "fn main() { println!(\"hello\"); }",
+    )
+    .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
         .args(["build"])
@@ -1647,7 +1870,10 @@ mode = "script"
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success() || stderr.to_lowercase().contains("no") || stderr.to_lowercase().contains("empty") || stderr.to_lowercase().contains("error"),
+        !output.status.success()
+            || stderr.to_lowercase().contains("no")
+            || stderr.to_lowercase().contains("empty")
+            || stderr.to_lowercase().contains("error"),
         "N-7: kobo build with empty src should error, stderr:\n{}",
         stderr
     );
@@ -1666,7 +1892,9 @@ fn n17_syntax_error_in_kobo_file_clear_error() {
 
     // Should fail with a clear parse error.
     assert!(
-        !output.status.success() || output.stderr.contains("error") || output.stderr.contains("parse"),
+        !output.status.success()
+            || output.stderr.contains("error")
+            || output.stderr.contains("parse"),
         "N-17: Syntax error should produce clear error, stderr:\n{}",
         output.stderr
     );
@@ -1701,7 +1929,11 @@ fn n19_per_module_mode_single_file_works() {
     let case = FixtureCase::new("n19-single-file-mode", "hello.kobo");
     // Prepend mode annotation.
     let content = fs::read_to_string(&case.fixture_path).unwrap();
-    fs::write(&case.fixture_path, format!("//! kobo:mode = script\n{}", content)).unwrap();
+    fs::write(
+        &case.fixture_path,
+        format!("//! kobo:mode = script\n{}", content),
+    )
+    .unwrap();
 
     let output = run_kobo(["check"], &case.fixture_path);
 
@@ -1965,11 +2197,7 @@ fn n2_strict_placement_valid() {
     )
     .unwrap();
     // Provide Kobo.toml with tokio so executor detection passes (BUG-5 fix).
-    fs::write(
-        root.join("Kobo.toml"),
-        "[dependencies]\ntokio = \"1\"\n",
-    )
-    .unwrap();
+    fs::write(root.join("Kobo.toml"), "[dependencies]\ntokio = \"1\"\n").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
         .args(["check"])
@@ -1997,7 +2225,11 @@ fn n3_kobo_async_shared_on_function_rejected() {
         let _ = fs::remove_dir_all(&root);
     }
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("Kobo.toml"), "[package]\nname = \"n3\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n").unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        "[package]\nname = \"n3\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n",
+    )
+    .unwrap();
     let file = root.join("main.kobo");
     fs::write(
         &file,
@@ -2037,7 +2269,11 @@ fn n4_kobo_async_shared_on_impl_block_rejected() {
         let _ = fs::remove_dir_all(&root);
     }
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("Kobo.toml"), "[package]\nname = \"n4\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n").unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        "[package]\nname = \"n4\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n",
+    )
+    .unwrap();
     let file = root.join("main.kobo");
     fs::write(
         &file,
@@ -2079,7 +2315,11 @@ fn n5_kobo_async_shared_on_type_alias_rejected() {
         let _ = fs::remove_dir_all(&root);
     }
     fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("Kobo.toml"), "[package]\nname = \"n5\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n").unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        "[package]\nname = \"n5\"\nversion = \"0.1.0\"\n\n[kobo]\nmode = \"script\"\n",
+    )
+    .unwrap();
     let file = root.join("main.kobo");
     fs::write(
         &file,
@@ -2134,7 +2374,10 @@ fn n10_invalid_copy_types_in_kobo_toml() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Invalid TOML config should produce an error
     assert!(
-        !output.status.success() || stderr.to_lowercase().contains("error") || stderr.to_lowercase().contains("invalid") || stderr.to_lowercase().contains("toml"),
+        !output.status.success()
+            || stderr.to_lowercase().contains("error")
+            || stderr.to_lowercase().contains("invalid")
+            || stderr.to_lowercase().contains("toml"),
         "N-10: Invalid copy_types should produce error, stderr:\n{}",
         stderr
     );
@@ -2167,7 +2410,10 @@ fn n11_invalid_mutating_methods_in_kobo_toml() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success() || stderr.to_lowercase().contains("error") || stderr.to_lowercase().contains("invalid") || stderr.to_lowercase().contains("toml"),
+        !output.status.success()
+            || stderr.to_lowercase().contains("error")
+            || stderr.to_lowercase().contains("invalid")
+            || stderr.to_lowercase().contains("toml"),
         "N-11: Invalid mutating_methods should produce error, stderr:\n{}",
         stderr
     );
@@ -2215,7 +2461,11 @@ fn n14_strict_async_with_refcell_k0063() {
         let _ = fs::remove_dir_all(&root);
     }
     fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("Kobo.toml"), "[project]\nname = \"n14-test\"\nmode = \"strict\"\n").unwrap();
+    fs::write(
+        root.join("Kobo.toml"),
+        "[project]\nname = \"n14-test\"\nmode = \"strict\"\n",
+    )
+    .unwrap();
     fs::write(
         root.join("src/main.kobo"),
         r#"
@@ -2259,7 +2509,11 @@ fn n16_nonexistent_crate_cargo_error() {
         "[project]\nname = \"n16-test\"\n\n[dependencies]\nthis_crate_does_not_exist_xyz = \"999.0.0\"\n",
     )
     .unwrap();
-    fs::write(root.join("src/main.kobo"), "fn main() { println!(\"hello\"); }").unwrap();
+    fs::write(
+        root.join("src/main.kobo"),
+        "fn main() { println!(\"hello\"); }",
+    )
+    .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
         .args(["build"])
@@ -2328,7 +2582,11 @@ fn n20_kobo_async_shared_in_strict_mode() {
         inspect.stderr,
     );
     // async_shared forces Arc tier even in checked mode.
-    let normalized: String = inspect.stdout.chars().filter(|c| !c.is_whitespace()).collect();
+    let normalized: String = inspect
+        .stdout
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     assert!(
         normalized.contains("Arc::new("),
         "N-20: async_shared should produce Arc wrapping in checked mode, got:\n{}",
@@ -2535,7 +2793,11 @@ fn hr3_inspect_shows_async_shared_annotation() {
         "HR-3: attribute must be stripped from output, got:\n{}",
         output.stdout,
     );
-    let normalized: String = output.stdout.chars().filter(|c| !c.is_whitespace()).collect();
+    let normalized: String = output
+        .stdout
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     assert!(
         normalized.contains("Arc::new("),
         "HR-3: async_shared binding should be Arc-wrapped in output, got:\n{}",
@@ -2590,9 +2852,9 @@ fn hr9_cargo_clippy_no_errors() {
 
     // Clippy should not produce errors (warnings are acceptable).
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let has_clippy_error = stderr.lines().any(|line| {
-        line.contains("error[") && !line.contains("aborting due to")
-    });
+    let has_clippy_error = stderr
+        .lines()
+        .any(|line| line.contains("error[") && !line.contains("aborting due to"));
     assert!(
         !has_clippy_error,
         "HR-9: cargo clippy should have no errors, stderr:\n{}",
@@ -2611,7 +2873,7 @@ fn visit_rs_files(dir: &Path, visitor: &mut dyn FnMut(&Path, &str)) {
             let path = entry.path();
             if path.is_dir() {
                 visit_rs_files(&path, visitor);
-            } else if path.extension().map_or(false, |e| e == "rs") {
+            } else if path.extension().is_some_and(|e| e == "rs") {
                 if let Ok(content) = fs::read_to_string(&path) {
                     visitor(&path, &content);
                 }

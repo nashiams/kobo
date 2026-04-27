@@ -1,3 +1,7 @@
+pub(crate) mod bridge;
+pub use bridge::{collect_bridge_decisions, BridgedKeyword, PreprocessBridge};
+pub(crate) mod bridge_blocks;
+pub(crate) mod channel;
 /// Kobo keyword pre-processor.
 ///
 /// `syn::parse_file()` rejects `@strict` because `@` is not valid at
@@ -9,26 +13,28 @@
 ///
 /// Design: table-driven so v0.6 can add new keywords without forking the
 /// scanner. Per F-03 in the v0.5 design.
-
 mod collect;
 mod engine;
 mod handler;
 mod postprocess;
 mod rewrite;
-pub(crate) mod bridge;
-pub(crate) mod spawn;
-pub(crate) mod channel;
 pub(crate) mod select;
+pub(crate) mod spawn;
 mod validate;
 
+pub use bridge_blocks::{preprocess_bridge_blocks, BridgeBlockInfo, BridgeKind};
+pub use channel::{
+    preprocess_chan_type, validate_channel_dependencies, ChannelInfo, ChannelWarning,
+};
 pub use collect::collect_strict_items_from_syn;
 pub use engine::{collect_engine_structs, strip_engine_attributes, EngineInfo};
 pub use handler::validate_handler_attributes;
 pub use postprocess::postprocess_strict_markers;
 pub use rewrite::preprocess_kobo_keywords;
-pub use spawn::{preprocess_spawn_blocks, validate_spawn_context, SpawnBlockInfo, SpawnContextError};
-pub use channel::{preprocess_chan_type, validate_channel_dependencies, ChannelInfo, ChannelWarning};
 pub use select::{preprocess_select_blocks, SelectError, SelectInfo, SelectWarning};
+pub use spawn::{
+    preprocess_spawn_blocks, validate_spawn_context, SpawnBlockInfo, SpawnContextError,
+};
 pub use validate::preprocess_strict_reject_invalid;
 
 /// Allowed positions for a Kobo keyword.
@@ -64,9 +70,7 @@ pub struct KeywordMarker {
 pub enum PreprocessError {
     #[error("@strict is not allowed inside a closure body (use it at statement position)")]
     StrictInsideClosure { offset: usize },
-    #[error(
-        "@strict is not allowed as a sub-expression (use it at statement position only)"
-    )]
+    #[error("@strict is not allowed as a sub-expression (use it at statement position only)")]
     StrictSubExpression { offset: usize },
 }
 
@@ -85,4 +89,3 @@ fn is_kobo_strict_attr(attr: &syn::Attribute) -> bool {
         .map(|id| id == "__kobo_strict")
         .unwrap_or(false)
 }
-

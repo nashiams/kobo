@@ -10,6 +10,9 @@ use crate::constraint_extract::extract_constraints;
 use crate::ctxt::MigrateCtxt;
 use crate::greedy::greedy_resolve;
 use crate::lattice_solve::{lattice_solve, LatticeOutcome};
+use crate::modular_pipeline::solve_modular;
+use crate::solver::{build_kir_constraint_graph, graph_fingerprint};
+use crate::solver::{SolveOutcome, SolverBudget};
 use crate::summaries::FunctionSummary;
 
 /// Query: resolve ownership for all bindings.
@@ -44,9 +47,14 @@ pub fn query_solve_all(ctxt: &mut MigrateCtxt) -> SolutionMap {
                     solution.insert(id, tier);
                 }
             }
-            LatticeOutcome::Conflict { node, floor, ceiling } => {
+            LatticeOutcome::Conflict { node, floor, .. } => {
                 // Conflict: fall back to floor.
                 solution.insert(node, floor);
+            }
+            LatticeOutcome::IterationBudgetExceeded { partial_map, .. } => {
+                for (id, tier) in partial_map.iter() {
+                    solution.insert(id, tier);
+                }
             }
         }
     }
@@ -57,8 +65,36 @@ pub fn query_solve_all(ctxt: &mut MigrateCtxt) -> SolutionMap {
     solution
 }
 
+/// Query: resolve ownership while preserving the semantic solver outcome.
+pub fn query_solve_outcome(ctxt: &mut MigrateCtxt, budget: &SolverBudget) -> SolveOutcome {
+    if let Some(cached) = ctxt.cache().get_outcome() {
+        return cached.clone();
+    }
+
+    let graph = build_kir_constraint_graph(&ctxt.kir);
+    let fingerprint = graph_fingerprint(&graph);
+    if let Some(cache_dir) = ctxt.cache_dir() {
+        if let Some(outcome) =
+            crate::cache::SolverCache::load_unique_outcome(cache_dir, &fingerprint)
+        {
+            ctxt.cache_mut().set_outcome(outcome.clone());
+            return outcome;
+        }
+    }
+
+    let outcome = solve_modular(&ctxt.kir, budget);
+    if let Some(cache_dir) = ctxt.cache_dir() {
+        let _ = crate::cache::SolverCache::save_unique_outcome(cache_dir, &fingerprint, &outcome);
+    }
+    ctxt.cache_mut().set_outcome(outcome.clone());
+    outcome
+}
+
 /// Query: get function summary by name.
-pub fn query_function_summary<'a>(ctxt: &'a MigrateCtxt, name: &str) -> Option<&'a FunctionSummary> {
+pub fn query_function_summary<'a>(
+    ctxt: &'a MigrateCtxt,
+    name: &str,
+) -> Option<&'a FunctionSummary> {
     ctxt.summaries().get(name)
 }
 
@@ -77,14 +113,25 @@ mod tests {
     #[test]
     fn query_solve_all_caches_result() {
         let kir = kobo_ir::Kir::default();
-        let config = GreedyConfig {
-            solver_cluster_limit: 256,
-            solver_budget_seconds: 5.0,
-        };
+        let config = GreedyConfig::default();
         let mut ctxt = MigrateCtxt::new(kir, config);
 
         let r1 = query_solve_all(&mut ctxt);
         let r2 = query_solve_all(&mut ctxt);
         assert_eq!(r1.len(), r2.len());
+    }
+
+    #[test]
+    fn query_solve_outcome_caches_without_generation_churn() {
+        let kir = kobo_ir::Kir::default();
+        let config = GreedyConfig::default();
+        let mut ctxt = MigrateCtxt::new(kir, config);
+        let budget = SolverBudget::default();
+
+        let _first = query_solve_outcome(&mut ctxt, &budget);
+        let generation_after_first = ctxt.cache().generation();
+        let _second = query_solve_outcome(&mut ctxt, &budget);
+
+        assert_eq!(ctxt.cache().generation(), generation_after_first);
     }
 }

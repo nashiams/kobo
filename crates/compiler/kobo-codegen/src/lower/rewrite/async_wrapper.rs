@@ -1,21 +1,22 @@
-/// Select the correct Rust wrapper type for async bindings.
-///
-/// Mapping table (v0.8):
-///   OwnershipTier::ArcShared (read-only) → Arc<T>
-///   OwnershipTier::ArcMutShared (mutable) → Arc<tokio::sync::RwLock<T>>
-///   OwnershipTier::ArcMutShared (counter-like) → Arc<AtomicU64>  // v0.9 S-11, stub only
-///
-/// HARD RULES:
-///   - NEVER generate Arc<std::sync::Mutex<T>>
-///   - NEVER generate std::sync::Mutex in async context
-///   - ALWAYS tokio::sync::RwLock when .await may be held
-///
-/// In codegen, ArcMutShared in async context emits:
-///   Arc::new(tokio::sync::RwLock::new(value))
-/// And access patterns emit:
-///   .read().await  (for reads)
-///   .write().await (for writes)
+//! Select the correct Rust wrapper type for async bindings.
+//!
+//! Mapping table (v0.8):
+//!   OwnershipTier::ArcShared (read-only) → Arc<T>
+//!   OwnershipTier::ArcMutShared (mutable) → Arc<tokio::sync::RwLock<T>>
+//!   OwnershipTier::ArcMutShared (counter-like) → Arc<AtomicU64>  // reserved for future specialized lowering
+//!
+//! HARD RULES:
+//!   - NEVER generate Arc<std::sync::Mutex<T>>
+//!   - NEVER generate std::sync::Mutex in async context
+//!   - ALWAYS tokio::sync::RwLock when .await may be held
+//!
+//! In codegen, ArcMutShared in async context emits:
+//!   Arc::new(tokio::sync::RwLock::new(value))
+//! And access patterns emit:
+//!   .read().await  (for reads)
+//!   .write().await (for writes)
 
+#![cfg_attr(not(test), allow(dead_code))]
 use kobo_ir::OwnershipTier;
 
 /// Wrapper kind for async bindings — determines what Rust type is emitted.

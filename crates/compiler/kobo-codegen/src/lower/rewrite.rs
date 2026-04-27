@@ -12,14 +12,14 @@ mod util;
 use kobo_parser::KoboFile;
 use syn::parse_quote;
 
-use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat};
+use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
 use super::plan::{AnnotationNote, LoweringPlan};
-use super::scope::{ScopeStack, type_name_from_syn};
+use super::scope::{type_name_from_syn, ScopeStack};
 use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
-use crate::CodegenOptions;
 use crate::executor::executor_attribute;
+use crate::CodegenOptions;
 
 pub(crate) struct Lowerer<'a> {
     pub(super) ast: &'a KoboFile,
@@ -27,6 +27,7 @@ pub(crate) struct Lowerer<'a> {
     pub(super) kir: &'a kobo_ir::Kir,
     pub(super) options: &'a CodegenOptions,
     pub(super) in_async_context: bool,
+    pub(super) needs_local_set: bool,
     pub(super) strict_counter: StrictGuardCounter,
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
@@ -45,6 +46,7 @@ impl<'a> Lowerer<'a> {
             kir,
             options,
             in_async_context: false,
+            needs_local_set: false,
             strict_counter: StrictGuardCounter::new(),
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
@@ -55,6 +57,12 @@ impl<'a> Lowerer<'a> {
         for item in items {
             self.lower_item(item);
         }
+    }
+
+    /// S-53: Check whether any captured binding has a non-Send ownership tier.
+    /// When true, the spawn block should use `spawn_local` instead of `tokio::spawn`.
+    fn any_captured_non_send(&self, captured: &[clone_inject::CapturedBinding]) -> bool {
+        captured_bindings_need_spawn_local(captured)
     }
 
     pub(crate) fn into_parts(self) -> (Vec<AnnotationNote>, Vec<LoweringAnchor>) {
@@ -68,12 +76,24 @@ impl<'a> Lowerer<'a> {
                 // P5: check if this is an @strict fn (by span matching against ast.strict_fns()).
                 use syn::spanned::Spanned;
                 let fn_span = self.ast.span_from_syn(function.span());
-                if let Some(kfn) = self.ast.strict_fns().iter().find(|f| f.span == fn_span).cloned() {
+                if let Some(kfn) = self
+                    .ast
+                    .strict_fns()
+                    .iter()
+                    .find(|f| f.span == fn_span)
+                    .cloned()
+                {
                     let fn_body_span = self.ast.span_from_syn(function.block.span());
-                    let cap = self.kir.strict_capture_sets().iter()
+                    let cap = self
+                        .kir
+                        .strict_capture_sets()
+                        .iter()
                         .find(|cs| cs.block_span == fn_body_span)
                         .cloned();
-                    let mode = self.kir.strict_fn_modes().get(&kfn.span)
+                    let mode = self
+                        .kir
+                        .strict_fn_modes()
+                        .get(&kfn.span)
                         .copied()
                         .unwrap_or(kobo_ir::StrictFnMode::Full);
                     let ts = super::strict::lower_strict_fn(
@@ -130,17 +150,15 @@ impl<'a> Lowerer<'a> {
         util::strip_kobo_attrs(&mut item_impl.attrs);
 
         // S-20: Detect split-borrow sites and apply destructuring.
-        let items_snapshot: Vec<syn::Item> =
-            vec![syn::Item::Impl(item_impl.clone())];
-        let split_sites =
-            kobo_analysis::split_borrow::detect_split_borrow_sites(&items_snapshot);
+        let items_snapshot: Vec<syn::Item> = vec![syn::Item::Impl(item_impl.clone())];
+        let split_sites = kobo_analysis::split_borrow::detect_split_borrow_sites(&items_snapshot);
 
         for impl_item in &mut item_impl.items {
             if let syn::ImplItem::Fn(method) = impl_item {
                 // Apply split-borrow rewrite if a site was detected for this method.
                 if let Some(site) = split_sites
                     .iter()
-                    .find(|s| s.method_name == method.sig.ident.to_string())
+                    .find(|s| method.sig.ident == s.method_name)
                 {
                     split_borrow::generate_split_borrow(method, site);
                 }
@@ -177,7 +195,7 @@ impl<'a> Lowerer<'a> {
                     let Some(binding) = binding_for_pat(self.ast, &argument.pat) else {
                         continue;
                     };
-                    let tier = self.plan.tier_for_binding(binding);
+                    let tier = fn_arg_lowering_tier(self.plan.tier_for_binding(binding));
                     self.record_binding_anchor(binding, LoweringAnchorKind::Parameter);
                     apply_tier_to_fn_arg_type(argument, tier);
                     scopes.insert(&binding.ident, tier);
@@ -200,7 +218,11 @@ impl<'a> Lowerer<'a> {
             // Make the function async.
             function.sig.asyncness = Some(syn::token::Async::default());
             // Inject the interval loop wrapping the original body.
-            let interval_ms = if rate > 0 { 1000u64 / rate as u64 } else { 1000u64 };
+            let interval_ms = if rate > 0 {
+                1000u64 / rate as u64
+            } else {
+                1000u64
+            };
             let original_stmts = std::mem::take(&mut function.block.stmts);
             let preamble: Vec<syn::Stmt> = syn::parse_quote! {
                 use std::time::Duration;
@@ -220,14 +242,29 @@ impl<'a> Lowerer<'a> {
         // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
         let is_handler = function.attrs.iter().any(|attr| {
             let segments: Vec<_> = attr.path().segments.iter().collect();
-            segments.len() == 2
-                && segments[0].ident == "kobo"
-                && segments[1].ident == "handler"
+            segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
         });
         if is_handler {
-            // Wrap the handler body in catch_unwind for per-request isolation.
-            // The attribute is stripped below by strip_kobo_attrs.
+            // S-56: Per-request isolation — clone Arc params into locals, then wrap in catch_unwind.
             let original_stmts = std::mem::take(&mut function.block.stmts);
+
+            // Generate clone statements for Arc-typed parameters.
+            let mut clone_stmts: Vec<syn::Stmt> = Vec::new();
+            for param in &function.sig.inputs {
+                if let syn::FnArg::Typed(pat_type) = param {
+                    let ty_str = quote::quote!(#pat_type.ty).to_string();
+                    if ty_str.contains("Arc") {
+                        if let syn::Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                            let ident = &pat_ident.ident;
+                            let clone_stmt: syn::Stmt = parse_quote! {
+                                let #ident = #ident.clone();
+                            };
+                            clone_stmts.push(clone_stmt);
+                        }
+                    }
+                }
+            }
+
             let return_ty_is_result = match &function.sig.output {
                 syn::ReturnType::Type(_, ty) => {
                     let ty_str = quote::quote!(#ty).to_string();
@@ -236,7 +273,6 @@ impl<'a> Lowerer<'a> {
                 _ => false,
             };
             if return_ty_is_result {
-                // Handler returning Result: wrap in AssertUnwindSafe + catch_unwind
                 let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
                     let __kobo_handler_result = std::panic::AssertUnwindSafe(async move {
                         #(#original_stmts)*
@@ -249,29 +285,37 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 };
-                function.block.stmts = wrapped;
+                function.block.stmts = clone_stmts;
+                function.block.stmts.extend(wrapped);
             } else {
-                // Handler not returning Result: wrap body in catch_unwind
                 let wrapped: Vec<syn::Stmt> = syn::parse_quote! {
                     let __kobo_handler_body = async move {
                         #(#original_stmts)*
                     };
                     __kobo_handler_body.await
                 };
-                function.block.stmts = wrapped;
+                function.block.stmts = clone_stmts;
+                function.block.stmts.extend(wrapped);
             }
         }
         util::strip_kobo_attrs(&mut function.attrs);
         // Reset guard counter per function (Contract C08 / Trap 16).
         self.strict_counter = StrictGuardCounter::new();
         let prior_async_context = self.in_async_context;
+        let prior_needs_local_set = self.needs_local_set;
         self.in_async_context = function.sig.asyncness.is_some();
+        self.needs_local_set = false;
         let mut scopes = ScopeStack::new();
         scopes.push();
         self.lower_function_params(&mut function.sig.inputs, &mut scopes);
         self.lower_block_statements(&mut function.block, &mut scopes);
         scopes.pop();
+        let needs_local_set = self.needs_local_set;
         self.in_async_context = prior_async_context;
+        self.needs_local_set = prior_needs_local_set;
+        if needs_local_set {
+            wrap_function_body_in_local_set(function);
+        }
     }
 
     fn lower_function_params(
@@ -289,7 +333,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             };
 
-            let tier = self.plan.tier_for_binding(binding);
+            let tier = fn_arg_lowering_tier(self.plan.tier_for_binding(binding));
             self.record_binding_anchor(binding, LoweringAnchorKind::Parameter);
             apply_tier_to_fn_arg_type(argument, tier);
             scopes.insert(&binding.ident, tier);
@@ -318,11 +362,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    pub(super) fn lower_nested_block(
-        &mut self,
-        block: &mut syn::Block,
-        scopes: &mut ScopeStack,
-    ) {
+    pub(super) fn lower_nested_block(&mut self, block: &mut syn::Block, scopes: &mut ScopeStack) {
         scopes.push();
         self.lower_block_statements(block, scopes);
         scopes.pop();
@@ -335,10 +375,16 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Expr(expr, _) => self.lower_expr(expr, scopes),
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
-                if let Some(spawn_expr) = spawn::lower_spawn_macro(&stmt_macro.mac) {
+                // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
+                let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
+                let use_spawn_local = self.any_captured_non_send(&captured);
+                if use_spawn_local {
+                    self.needs_local_set = true;
+                }
+                if let Some(spawn_expr) =
+                    spawn::lower_spawn_macro_with_strategy(&stmt_macro.mac, use_spawn_local)
+                {
                     let semi = stmt_macro.semi_token;
-                    // Auto-clone injection: scan spawn body for captured bindings.
-                    let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
                     if captured.is_empty() {
                         *stmt = syn::Stmt::Expr(spawn_expr, semi);
                     } else {
@@ -348,8 +394,10 @@ impl<'a> Lowerer<'a> {
                             let action = clone_inject::capture_action(cap);
                             if action == clone_inject::CaptureAction::Clone {
                                 let clone_name = clone_inject::clone_var_name(&cap.name);
-                                let clone_ident = syn::Ident::new(&clone_name, proc_macro2::Span::call_site());
-                                let orig_ident = syn::Ident::new(&cap.name, proc_macro2::Span::call_site());
+                                let clone_ident =
+                                    syn::Ident::new(&clone_name, proc_macro2::Span::call_site());
+                                let orig_ident =
+                                    syn::Ident::new(&cap.name, proc_macro2::Span::call_site());
                                 let clone_stmt: syn::Stmt = parse_quote! {
                                     let #clone_ident = #orig_ident.clone();
                                 };
@@ -516,8 +564,20 @@ fn collect_spawn_captures(
     captures
 }
 
+fn captured_bindings_need_spawn_local(captured: &[clone_inject::CapturedBinding]) -> bool {
+    captured.iter().any(|binding| {
+        matches!(
+            binding.tier,
+            kobo_ir::OwnershipTier::RcShared | kobo_ir::OwnershipTier::RcMutShared
+        )
+    })
+}
+
 /// Recursively collect all identifiers from a token stream.
-fn collect_idents_from_tokens(tokens: &proc_macro2::TokenStream, out: &mut std::collections::HashSet<String>) {
+fn collect_idents_from_tokens(
+    tokens: &proc_macro2::TokenStream,
+    out: &mut std::collections::HashSet<String>,
+) {
     for token in tokens.clone() {
         match token {
             proc_macro2::TokenTree::Ident(ident) => {
@@ -538,12 +598,62 @@ fn collect_idents_from_tokens(tokens: &proc_macro2::TokenStream, out: &mut std::
 fn is_rust_keyword(s: &str) -> bool {
     matches!(
         s,
-        "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "dyn" | "else"
-        | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop"
-        | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "Self"
-        | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe" | "use"
-        | "where" | "while" | "yield"
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "yield"
     )
+}
+
+fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {
+    let original_stmts = std::mem::take(&mut function.block.stmts);
+    let local_set_stmt: syn::Stmt = parse_quote! {
+        let __kobo_local = tokio::task::LocalSet::new();
+    };
+    let run_expr: syn::Expr = if function.sig.asyncness.is_some() {
+        parse_quote! {
+            __kobo_local.run_until(async move { #(#original_stmts)* }).await
+        }
+    } else {
+        parse_quote! {
+            tokio::runtime::Handle::current().block_on(__kobo_local.run_until(async move { #(#original_stmts)* }))
+        }
+    };
+    function.block.stmts = vec![local_set_stmt, syn::Stmt::Expr(run_expr, None)];
 }
 
 #[cfg(test)]
@@ -551,8 +661,13 @@ mod tests {
     use quote::ToTokens;
     use syn::parse_quote;
 
-    use super::{executor_main_attr, is_executor_main_attr};
+    use super::{
+        captured_bindings_need_spawn_local, executor_main_attr, is_executor_main_attr,
+        wrap_function_body_in_local_set,
+    };
     use crate::executor::ExecutorChoice;
+    use crate::lower::rewrite::clone_inject::CapturedBinding;
+    use kobo_ir::OwnershipTier;
 
     fn parsed_executor_attr(choice: ExecutorChoice) -> syn::Attribute {
         executor_main_attr(choice, true).expect("executor attribute should exist")
@@ -560,8 +675,12 @@ mod tests {
 
     #[test]
     fn executor_attr_detector_matches_supported_executors() {
-        assert!(is_executor_main_attr(&parsed_executor_attr(ExecutorChoice::Tokio)));
-        assert!(is_executor_main_attr(&parsed_executor_attr(ExecutorChoice::AsyncStd)));
+        assert!(is_executor_main_attr(&parsed_executor_attr(
+            ExecutorChoice::Tokio
+        )));
+        assert!(is_executor_main_attr(&parsed_executor_attr(
+            ExecutorChoice::AsyncStd
+        )));
     }
 
     #[test]
@@ -574,5 +693,65 @@ mod tests {
     fn executor_attr_renders_expected_tokens() {
         let attr = parsed_executor_attr(ExecutorChoice::Tokio);
         assert_eq!(attr.to_token_stream().to_string(), "# [tokio :: main]");
+    }
+
+    #[test]
+    fn local_set_wrapper_for_async_function_uses_run_until_await() {
+        let mut function: syn::ItemFn = parse_quote! {
+            async fn run_local() -> u32 {
+                tokio::task::spawn_local(async move {});
+                7
+            }
+        };
+
+        wrap_function_body_in_local_set(&mut function);
+        let rendered = function.to_token_stream().to_string();
+
+        assert!(rendered.contains("tokio :: task :: LocalSet :: new"));
+        assert!(rendered.contains("run_until"));
+        assert!(rendered.contains(". await"));
+        assert!(rendered.contains("spawn_local"));
+        assert!(rendered.contains("7"));
+    }
+
+    #[test]
+    fn local_set_wrapper_for_sync_function_uses_runtime_handle() {
+        let mut function: syn::ItemFn = parse_quote! {
+            fn run_local() {
+                tokio::task::spawn_local(async move {});
+            }
+        };
+
+        wrap_function_body_in_local_set(&mut function);
+        let rendered = function.to_token_stream().to_string();
+
+        assert!(rendered.contains("tokio :: task :: LocalSet :: new"));
+        assert!(rendered.contains("tokio :: runtime :: Handle :: current"));
+        assert!(rendered.contains("block_on"));
+        assert!(rendered.contains("spawn_local"));
+    }
+
+    #[test]
+    fn captured_rc_tier_requests_spawn_local() {
+        let captured = vec![CapturedBinding {
+            name: "world".to_owned(),
+            tier: OwnershipTier::RcMutShared,
+            is_copy: false,
+            used_after_spawn: true,
+        }];
+
+        assert!(captured_bindings_need_spawn_local(&captured));
+    }
+
+    #[test]
+    fn captured_arc_tier_keeps_tokio_spawn() {
+        let captured = vec![CapturedBinding {
+            name: "state".to_owned(),
+            tier: OwnershipTier::ArcMutShared,
+            is_copy: false,
+            used_after_spawn: true,
+        }];
+
+        assert!(!captured_bindings_need_spawn_local(&captured));
     }
 }

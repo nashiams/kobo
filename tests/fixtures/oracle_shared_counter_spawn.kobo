@@ -1,0 +1,91 @@
+// Oracle Gate: Shared mutable counter across spawn boundary.
+// A production solver MUST promote Rc<RefCell<_>> → Arc<RwLock<_>> when
+// the counter crosses into a tokio::spawn.
+// C2Rust would promote READ→WRITE→MOVE on the pointer; Swift would
+// generate a Disjunction between Rc and Arc and let Send propagation resolve it.
+// If Kobo assigns Rc to `counter` despite the spawn, the solver is unsound.
+
+struct Metrics {
+    request_count: u64,
+    error_count: u64,
+    bytes_served: u64,
+}
+
+impl Metrics {
+    fn new() -> Self {
+        Self {
+            request_count: 0,
+            error_count: 0,
+            bytes_served: 0,
+        }
+    }
+
+    fn record_request(&mut self, bytes: u64) {
+        self.request_count = self.request_count + 1;
+        self.bytes_served = self.bytes_served + bytes;
+    }
+
+    fn record_error(&mut self) {
+        self.error_count = self.error_count + 1;
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "requests={} errors={} bytes={}",
+            self.request_count, self.error_count, self.bytes_served
+        )
+    }
+}
+
+struct Server {
+    metrics: Metrics,
+    handlers: Vec<String>,
+}
+
+impl Server {
+    fn new() -> Self {
+        Self {
+            metrics: Metrics::new(),
+            handlers: Vec::new(),
+        }
+    }
+
+    fn register(&mut self, name: String) {
+        self.handlers.push(name);
+    }
+
+    fn handle_request(&mut self, path: String) {
+        let bytes = path.len() as u64;
+        self.metrics.record_request(bytes);
+    }
+
+    fn handle_error(&mut self) {
+        self.metrics.record_error();
+    }
+}
+
+async fn spawn_worker(server: &mut Server, path: String) {
+    // This crosses a spawn boundary — server must be Send
+    server.handle_request(path);
+}
+
+async fn health_check(server: &Server) -> String {
+    server.metrics.summary()
+}
+
+fn main() {
+    let mut server = Server::new();
+    server.register(String::from("api"));
+    server.register(String::from("health"));
+
+    // Sequential access — no Send needed here
+    server.handle_request(String::from("/api/users"));
+    server.handle_request(String::from("/api/items"));
+
+    // But then we cross a spawn boundary
+    spawn_worker(&mut server, String::from("/api/background"));
+
+    // And read after the spawn
+    let summary = health_check(&server);
+    println!("{}", summary);
+}

@@ -1,0 +1,202 @@
+// Oracle Gate: LSM-tree KV store with compaction sharing.
+// Tests interprocedural ownership propagation: `compact_level` and `flush_to_disk`
+// share a mutable reference to the same store, creating a constraint cycle.
+// A production solver (C2Rust sig/inst) would compute per-function summaries
+// and resolve the cycle via SCC ordering.
+// If the solver assigns conflicting tiers across the call boundary, it's unsound.
+
+struct WalEntry {
+    key: String,
+    value: String,
+    seq: u64,
+}
+
+struct Memtable {
+    entries: Vec<WalEntry>,
+    size_bytes: u64,
+    flush_threshold: u64,
+}
+
+impl Memtable {
+    fn new(threshold: u64) -> Self {
+        Self {
+            entries: Vec::new(),
+            size_bytes: 0,
+            flush_threshold: threshold,
+        }
+    }
+
+    fn insert(&mut self, key: String, value: String, seq: u64) {
+        let entry_size = key.len() as u64 + value.len() as u64;
+        self.size_bytes = self.size_bytes + entry_size;
+        self.entries.push(WalEntry { key, value, seq });
+    }
+
+    fn should_flush(&self) -> bool {
+        self.size_bytes >= self.flush_threshold
+    }
+
+    fn drain(&mut self) -> Vec<WalEntry> {
+        let old = std::mem::replace(&mut self.entries, Vec::new());
+        self.size_bytes = 0;
+        old
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+struct Level {
+    entries: Vec<WalEntry>,
+    max_entries: usize,
+}
+
+impl Level {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            max_entries,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.entries.len() >= self.max_entries
+    }
+
+    fn push_batch(&mut self, batch: Vec<WalEntry>) {
+        let mut i = 0;
+        let len = batch.len();
+        // move each entry individually to exercise ownership
+        while i < len {
+            // we can't index + move from Vec in real kobo, so just extend
+            i = i + 1;
+        }
+        // simplified: just replace
+        let mut combined = std::mem::replace(&mut self.entries, Vec::new());
+        for entry in batch {
+            combined.push(entry);
+        }
+        self.entries = combined;
+    }
+
+    fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+struct KvStore {
+    active: Memtable,
+    immutable: Vec<Memtable>,
+    levels: Vec<Level>,
+    wal_seq: u64,
+    compaction_count: u64,
+}
+
+impl KvStore {
+    fn new() -> Self {
+        let mut levels = Vec::new();
+        levels.push(Level::new(100));
+        levels.push(Level::new(1000));
+        levels.push(Level::new(10000));
+
+        Self {
+            active: Memtable::new(512),
+            immutable: Vec::new(),
+            levels,
+            wal_seq: 0,
+            compaction_count: 0,
+        }
+    }
+
+    fn put(&mut self, key: String, value: String) {
+        self.wal_seq = self.wal_seq + 1;
+        self.active.insert(key, value, self.wal_seq);
+
+        if self.active.should_flush() {
+            self.freeze_active();
+        }
+    }
+
+    fn freeze_active(&mut self) {
+        let old_table = std::mem::replace(&mut self.active, Memtable::new(512));
+        self.immutable.push(old_table);
+    }
+
+    fn flush_immutable_to_l0(&mut self) {
+        while self.immutable.len() > 0 {
+            let table = self.immutable.remove(0);
+            let entries = table.entries;
+            self.levels[0].push_batch(entries);
+        }
+    }
+
+    fn compact_level(&mut self, from: usize, to: usize) {
+        if from >= self.levels.len() || to >= self.levels.len() {
+            return;
+        }
+        if !self.levels[from].is_full() {
+            return;
+        }
+        let entries = std::mem::replace(&mut self.levels[from].entries, Vec::new());
+        self.levels[to].push_batch(entries);
+        self.compaction_count = self.compaction_count + 1;
+    }
+
+    fn run_compaction(&mut self) {
+        self.flush_immutable_to_l0();
+        self.compact_level(0, 1);
+        self.compact_level(1, 2);
+    }
+
+    fn total_entries(&self) -> usize {
+        let mut total = self.active.len();
+        for table in &self.immutable {
+            total = total + table.len();
+        }
+        for level in &self.levels {
+            total = total + level.entry_count();
+        }
+        total
+    }
+}
+
+// Cross-function calls that share mutable store — tests SCC resolution
+fn batch_insert(store: &mut KvStore, prefix: &str, count: u64) {
+    let mut i = 0;
+    while i < count {
+        let key = format!("{}_{}", prefix, i);
+        let value = format!("val_{}", i);
+        store.put(key, value);
+        i = i + 1;
+    }
+}
+
+fn insert_and_compact(store: &mut KvStore, prefix: &str, count: u64) {
+    batch_insert(store, prefix, count);
+    store.run_compaction();
+}
+
+fn multi_phase_load(store: &mut KvStore) {
+    insert_and_compact(store, "phase1", 20);
+    insert_and_compact(store, "phase2", 30);
+    batch_insert(store, "phase3", 10);
+    store.run_compaction();
+}
+
+fn main() {
+    let mut store = KvStore::new();
+
+    // Phase 1: sequential inserts
+    batch_insert(&mut store, "init", 50);
+
+    // Phase 2: compact cycle
+    store.run_compaction();
+
+    // Phase 3: interleaved insert + compact
+    multi_phase_load(&mut store);
+
+    println!("total entries: {}", store.total_entries());
+    println!("compactions: {}", store.compaction_count);
+    println!("wal_seq: {}", store.wal_seq);
+}

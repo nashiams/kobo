@@ -46,7 +46,11 @@ impl TransformFactsBuilder<'_> {
     }
 
     /// Emit a `RelaxAttrError` for each `#[kobo::relax]` found on a non-function item.
-    fn check_relax_on_non_fn_item(&mut self, attrs: &[syn::Attribute], item_span: proc_macro2::Span) {
+    fn check_relax_on_non_fn_item(
+        &mut self,
+        attrs: &[syn::Attribute],
+        item_span: proc_macro2::Span,
+    ) {
         for attr in attrs {
             match parse_relax_attr(attr) {
                 RelaxAttrResult::Valid(attr_span) | RelaxAttrResult::HasArguments(attr_span) => {
@@ -209,7 +213,7 @@ impl TransformFactsBuilder<'_> {
 
         // BUG 7: detect #[kobo::async_shared] on let bindings.
         for attr in &local.attrs {
-            if let AsyncSharedAttrResult::Valid(_) | AsyncSharedAttrResult::HasArguments(_) =
+            if let AsyncSharedAttrResult::Valid | AsyncSharedAttrResult::HasArguments =
                 parse_async_shared_attr(attr)
             {
                 self.pending_async_shared = true;
@@ -338,6 +342,7 @@ impl TransformFactsBuilder<'_> {
     }
 
     fn walk_call(&mut self, call: &syn::ExprCall) {
+        let is_async_local_call = self.is_async_local_function_expr(call.func.as_ref());
         self.walk_expr(call.func.as_ref());
         let escape_kind = if self.is_local_function_expr(call.func.as_ref()) {
             None
@@ -346,9 +351,16 @@ impl TransformFactsBuilder<'_> {
         };
         for argument in &call.args {
             let syn::Expr::Reference(reference) = argument else {
+                if is_async_local_call {
+                    self.mark_expr_needs_send(argument);
+                }
                 self.walk_move_context_expr(argument, escape_kind);
                 continue;
             };
+
+            if is_async_local_call {
+                self.mark_expr_needs_send(reference.expr.as_ref());
+            }
 
             if self.emit_ephemeral_borrow(reference.expr.as_ref(), borrow_kind(reference)) {
                 continue;
@@ -468,11 +480,7 @@ impl TransformFactsBuilder<'_> {
 
     /// Collect `#[kobo::relax]` attributes on a function, pushing ranges and errors [G5].
     /// Returns the count of relax attributes found.
-    fn collect_relax_attrs_on_fn(
-        &mut self,
-        attrs: &[syn::Attribute],
-        fn_span: KoboSpan,
-    ) -> usize {
+    fn collect_relax_attrs_on_fn(&mut self, attrs: &[syn::Attribute], fn_span: KoboSpan) -> usize {
         let mut count = 0usize;
         for attr in attrs {
             match parse_relax_attr(attr) {
@@ -554,7 +562,11 @@ impl TransformFactsBuilder<'_> {
         *count += 1;
         let span = self.ast.span_from_syn(attr_span);
         if *count == 1 {
-            self.migrate_sites.push(MigrateSite { span, target, reason });
+            self.migrate_sites.push(MigrateSite {
+                span,
+                target,
+                reason,
+            });
         } else {
             self.relax_attr_errors.push(RelaxAttrError {
                 span,

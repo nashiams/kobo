@@ -68,7 +68,10 @@ fn dead_borrow_before_move_does_not_force_sharing() {
                 kind: BorrowKind::Immutable,
                 span: span(10),
             },
-            UseEvent::Moved { span: span(20), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(20),
+                scope_depth: 0,
+            },
         ]),
         Some(&CloneElisionDecision::Move),
     );
@@ -85,7 +88,10 @@ fn live_borrow_at_move_requires_sharing() {
                 kind: BorrowKind::Immutable,
                 span: span(10),
             },
-            UseEvent::Moved { span: span(20), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(20),
+                scope_depth: 0,
+            },
             UseEvent::ReadOnly { span: span(30) },
         ]),
         None,
@@ -125,7 +131,10 @@ fn shared_binding_facts_are_a_pure_function_of_usage() {
             kind: BorrowKind::Immutable,
             span: span(10),
         },
-        UseEvent::Moved { span: span(20), scope_depth: 0 },
+        UseEvent::Moved {
+            span: span(20),
+            scope_depth: 0,
+        },
         UseEvent::ReadOnly { span: span(30) },
     ]);
 
@@ -148,7 +157,10 @@ fn derive_transform_facts_populates_schema_for_all_usage_kinds() {
                 kind: EscapeKind::StoredInStruct,
                 span: span(30),
             },
-            UseEvent::Moved { span: span(40), scope_depth: 0 },
+            UseEvent::Moved {
+                span: span(40),
+                scope_depth: 0,
+            },
         ])],
         vec![CloneElisionDecision::Clone],
         vec![HintConflictFact {
@@ -172,15 +184,19 @@ fn derive_transform_facts_populates_schema_for_all_usage_kinds() {
 }
 
 #[test]
-fn priority_orders_floor_strength_not_candidate_ladder() {
-    assert!(OwnershipTier::PlainOwned.priority() < OwnershipTier::RcShared.priority());
+fn priority_orders_canonical_lattice_ladder() {
+    // Canonical: PlainOwned < BoxOwned < RcShared < ArcShared < RcMutShared < ArcMutShared < Scoped
+    assert!(OwnershipTier::PlainOwned.priority() < OwnershipTier::BoxOwned.priority());
+    assert!(OwnershipTier::BoxOwned.priority() < OwnershipTier::RcShared.priority());
     assert!(OwnershipTier::RcShared.priority() < OwnershipTier::ArcShared.priority());
-    assert!(OwnershipTier::ArcShared.priority() < OwnershipTier::BoxOwned.priority());
-    assert!(OwnershipTier::BoxOwned.priority() < OwnershipTier::RcMutShared.priority());
+    assert!(OwnershipTier::ArcShared.priority() < OwnershipTier::RcMutShared.priority());
+    assert!(OwnershipTier::RcMutShared.priority() < OwnershipTier::ArcMutShared.priority());
+    assert!(OwnershipTier::ArcMutShared.priority() < OwnershipTier::Scoped.priority());
 }
 
 #[test]
 fn greedy_priority_orders_the_user_facing_ladder() {
+    // greedy_priority delegates to priority — same canonical order.
     assert!(
         OwnershipTier::PlainOwned.greedy_priority() < OwnershipTier::BoxOwned.greedy_priority()
     );
@@ -191,11 +207,89 @@ fn greedy_priority_orders_the_user_facing_ladder() {
     );
 }
 
+#[test]
+fn seven_tier_lattice_join_is_total_commutative_and_idempotent() {
+    let tiers = OwnershipTier::SOLVED_LATTICE;
+    assert_eq!(tiers.len(), 7);
+    assert!(!tiers.contains(&OwnershipTier::Undecided));
+
+    for left in tiers {
+        assert_eq!(left.lattice_join(left), Some(left));
+
+        for right in tiers {
+            let left_join_right = left.lattice_join(right);
+            let right_join_left = right.lattice_join(left);
+
+            assert!(
+                left_join_right.is_some(),
+                "join must be total for solved tiers: {left:?} join {right:?}"
+            );
+            assert_eq!(
+                left_join_right, right_join_left,
+                "join must be commutative for {left:?} and {right:?}"
+            );
+            assert!(
+                tiers.contains(&left_join_right.unwrap()),
+                "join result must stay inside the solved lattice"
+            );
+        }
+    }
+}
+
+#[test]
+fn seven_tier_lattice_join_is_monotone() {
+    let tiers = OwnershipTier::SOLVED_LATTICE;
+
+    for lower in tiers {
+        for upper in tiers {
+            if !lower.lattice_leq(upper).unwrap() {
+                continue;
+            }
+
+            for context in tiers {
+                let lower_join_context = lower.lattice_join(context).unwrap();
+                let upper_join_context = upper.lattice_join(context).unwrap();
+                assert!(
+                    lower_join_context
+                        .lattice_leq(upper_join_context)
+                        .unwrap(),
+                    "join must be monotone: {lower:?} <= {upper:?}, context {context:?} produced {lower_join_context:?} !<= {upper_join_context:?}"
+                );
+
+                let context_join_lower = context.lattice_join(lower).unwrap();
+                let context_join_upper = context.lattice_join(upper).unwrap();
+                assert!(
+                    context_join_lower
+                        .lattice_leq(context_join_upper)
+                        .unwrap(),
+                    "join must be monotone in the right operand: {lower:?} <= {upper:?}, context {context:?} produced {context_join_lower:?} !<= {context_join_upper:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn undecided_is_outside_the_solved_lattice() {
+    for tier in OwnershipTier::SOLVED_LATTICE {
+        assert_eq!(OwnershipTier::Undecided.lattice_join(tier), None);
+        assert_eq!(tier.lattice_join(OwnershipTier::Undecided), None);
+        assert_eq!(OwnershipTier::Undecided.lattice_leq(tier), None);
+        assert_eq!(tier.lattice_leq(OwnershipTier::Undecided), None);
+    }
+}
+
 // ── BUG-10: ArcMutShared label must say rwlock, not mutex ──
 
 #[test]
 fn arc_mut_shared_label_says_rwlock_not_mutex() {
     let label = OwnershipTier::ArcMutShared.label();
-    assert_eq!(label, "arc_rwlock", "BUG-10: ArcMutShared label must be arc_rwlock, got {label}");
-    assert!(!label.contains("mutex"), "BUG-10: label must not mention mutex");
+    assert_eq!(
+        label, "arc_rwlock",
+        "BUG-10: ArcMutShared label must be arc_rwlock, got {label}"
+    );
+    assert!(
+        !label.contains("mutex"),
+        "BUG-10: label must not mention mutex"
+    );
 }

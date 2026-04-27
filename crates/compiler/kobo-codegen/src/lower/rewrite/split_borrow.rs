@@ -10,10 +10,7 @@ use syn::visit_mut::VisitMut;
 /// Apply split-borrow destructuring to a method based on detected sites.
 ///
 /// Returns `true` if rewriting was applied.
-pub(crate) fn generate_split_borrow(
-    method: &mut syn::ImplItemFn,
-    site: &SplitBorrowSite,
-) -> bool {
+pub(crate) fn generate_split_borrow(method: &mut syn::ImplItemFn, site: &SplitBorrowSite) -> bool {
     // Only &mut self methods get split-borrow.
     if !has_mut_self_receiver(method) {
         return false;
@@ -40,7 +37,7 @@ pub(crate) fn generate_split_borrow(
 
     // Replace all `self.field` with bare `field` in the method body.
     let mut replacer = SelfFieldReplacer {
-        fields: field_kinds.keys().cloned().collect(),
+        field_kinds: field_kinds.clone(),
     };
     replacer.visit_block_mut(&mut method.block);
 
@@ -91,15 +88,29 @@ fn build_destructure_stmt(field_kinds: &HashMap<String, FieldAccessKind>) -> syn
 /// Replaces `self.field` expressions with bare `field` identifiers.
 /// For assignment targets, inserts dereference since destructured fields are `&mut T`.
 struct SelfFieldReplacer {
-    fields: Vec<String>,
+    field_kinds: HashMap<String, FieldAccessKind>,
 }
 
 impl VisitMut for SelfFieldReplacer {
+    fn visit_expr_reference_mut(&mut self, reference: &mut syn::ExprReference) {
+        if let syn::Expr::Field(field_expr) = reference.expr.as_ref() {
+            if let Some(name) = extract_self_field_name(field_expr) {
+                if self.field_kinds.contains_key(&name) {
+                    *reference =
+                        reference_to_destructured_field(&name, reference.mutability.is_some());
+                    return;
+                }
+            }
+        }
+
+        syn::visit_mut::visit_expr_reference_mut(self, reference);
+    }
+
     fn visit_expr_assign_mut(&mut self, assign: &mut syn::ExprAssign) {
         // Handle LHS: `self.field = ...` → `*field = ...`
         if let syn::Expr::Field(field_expr) = assign.left.as_ref() {
             if let Some(name) = extract_self_field_name(field_expr) {
-                if self.fields.contains(&name) {
+                if self.field_kinds.contains_key(&name) {
                     *assign.left = deref_ident(&name);
                 }
             }
@@ -113,23 +124,22 @@ impl VisitMut for SelfFieldReplacer {
         if is_compound_assign(&binary.op) {
             if let syn::Expr::Field(field_expr) = binary.left.as_ref() {
                 if let Some(name) = extract_self_field_name(field_expr) {
-                    if self.fields.contains(&name) {
+                    if self.field_kinds.contains_key(&name) {
                         *binary.left = deref_ident(&name);
                     }
                 }
             }
         } else {
-            // For non-assignment binary ops, replace self.field on LHS as read
-            self.visit_expr_mut(&mut binary.left);
+            self.rewrite_binary_operand(&mut binary.left);
         }
-        self.visit_expr_mut(&mut binary.right);
+        self.rewrite_binary_operand(&mut binary.right);
     }
 
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
         // Check if this is a `self.field` expression for one of our fields.
         if let syn::Expr::Field(field_expr) = expr {
             if let Some(name) = extract_self_field_name(field_expr) {
-                if self.fields.contains(&name) {
+                if self.field_kinds.contains_key(&name) {
                     let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
                     *expr = syn::Expr::Path(syn::ExprPath {
                         attrs: Vec::new(),
@@ -142,6 +152,21 @@ impl VisitMut for SelfFieldReplacer {
         }
         // Default traversal
         syn::visit_mut::visit_expr_mut(self, expr);
+    }
+}
+
+impl SelfFieldReplacer {
+    fn rewrite_binary_operand(&mut self, expr: &mut syn::Expr) {
+        if let syn::Expr::Field(field_expr) = expr {
+            if let Some(name) = extract_self_field_name(field_expr) {
+                if self.field_kinds.contains_key(&name) {
+                    *expr = deref_ident(&name);
+                    return;
+                }
+            }
+        }
+
+        self.visit_expr_mut(expr);
     }
 }
 
@@ -158,6 +183,15 @@ fn deref_ident(name: &str) -> syn::Expr {
         op: syn::UnOp::Deref(syn::token::Star::default()),
         expr: Box::new(ident_expr),
     })
+}
+
+fn reference_to_destructured_field(name: &str, mutable: bool) -> syn::ExprReference {
+    syn::ExprReference {
+        attrs: Vec::new(),
+        and_token: syn::token::And::default(),
+        mutability: mutable.then(syn::token::Mut::default),
+        expr: Box::new(deref_ident(name)),
+    }
 }
 
 /// Returns true if the binary op is a compound assignment (`+=`, `-=`, etc.).

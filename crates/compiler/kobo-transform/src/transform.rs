@@ -5,8 +5,8 @@ use crate::finalize::{
     rewrite_dead_borrow_aliases,
 };
 use crate::options::TransformOptions;
-use crate::strict::{analyze_strict_capture_set, flatten_nested_strict, validate_strict_boundary};
 use crate::strict::span_convert::SpanConvert;
+use crate::strict::{analyze_strict_capture_set, flatten_nested_strict, validate_strict_boundary};
 use crate::tier_validate::validate_tiers;
 use crate::tiered::{apply_decisions, choose_tiers};
 use crate::warn_early::detect_warn_early;
@@ -79,17 +79,13 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
         // (The warning is emitted by the analysis phase, not here.)
 
         for kblock in ast.strict_blocks() {
-            let mut cap =
-                analyze_strict_capture_set(kblock, &transform_facts, &kir, &sc);
+            let mut cap = analyze_strict_capture_set(kblock, &transform_facts, &kir, &sc);
 
             // Collect nested @strict blocks within this block and flatten (R-12).
             let nested: Vec<_> = ast
                 .strict_blocks()
                 .iter()
-                .filter(|nb| {
-                    nb.span.start > kblock.span.start
-                        && nb.span.end < kblock.span.end
-                })
+                .filter(|nb| nb.span.start > kblock.span.start && nb.span.end < kblock.span.end)
                 .map(|nb| analyze_strict_capture_set(nb, &transform_facts, &kir, &sc))
                 .collect();
             flatten_nested_strict(&mut cap, nested);
@@ -138,8 +134,8 @@ fn find_enclosing_fn_stmts(
     block_span: kobo_ir::KoboSpan,
     sc: &SpanConvert,
 ) -> Vec<syn::Stmt> {
-    use syn::Item;
     use syn::spanned::Spanned;
+    use syn::Item;
 
     for item in &file.items {
         if let Item::Fn(item_fn) = item {

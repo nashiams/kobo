@@ -5,31 +5,18 @@
 
 use std::collections::BTreeSet;
 
-use kobo_ir::{FileId, KirNodeId, Kir, KoboSpan, NodeKind, OwnershipTier};
+use kobo_ir::{FileId, Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, TransformBindingFacts};
 
 use crate::greedy::GreedyPassResult;
-use crate::solver::{ConstraintEdge, ConstraintGraph, ConstraintKind};
+use crate::solver::{
+    ConstraintEdge, ConstraintFactKind, ConstraintGraph, ConstraintKind, ConstraintProvenance,
+};
 
 /// Provenance attached to every constraint edge — explains *why* this constraint exists.
-#[derive(Clone, Debug)]
-pub struct ProvenanceRef {
-    pub span: KoboSpan,
-    pub fact_kind: FactKind,
-    pub rule_name: &'static str,
-    pub source_binding: Option<String>,
-}
+pub type ProvenanceRef = ConstraintProvenance;
 
 /// The kind of fact that generated a constraint edge.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FactKind {
-    NeedsSharing,
-    NeedsSend,
-    MutableShared,
-    AliasFlow,
-    EngineCeiling,
-    BoundaryMarker,
-    CoMutation,
-}
+pub type FactKind = ConstraintFactKind;
 
 /// A constraint edge with mandatory provenance.
 #[derive(Clone, Debug)]
@@ -83,6 +70,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
             continue;
         }
         let sf = &binding.shared_facts;
+        let requires_send = binding_requires_send(binding);
 
         let mut floor = OwnershipTier::PlainOwned;
         let mut ceiling: Option<OwnershipTier> = None;
@@ -90,7 +78,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
 
         // Floor: needs_sharing → at least RcShared
         if sf.needs_sharing && !sf.needs_mutable_wrapper {
-            floor = if sf.needs_send {
+            floor = if requires_send {
                 OwnershipTier::ArcShared
             } else {
                 OwnershipTier::RcShared
@@ -99,7 +87,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
 
         // Floor: needs_sharing + mutable → at least RcMutShared
         if sf.needs_sharing && sf.needs_mutable_wrapper {
-            floor = if sf.needs_send {
+            floor = if requires_send {
                 OwnershipTier::ArcMutShared
             } else {
                 OwnershipTier::RcMutShared
@@ -107,7 +95,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
         }
 
         // Floor: needs_send alone → at least ArcShared
-        if sf.needs_send && floor == OwnershipTier::PlainOwned {
+        if requires_send && floor == OwnershipTier::PlainOwned {
             floor = OwnershipTier::ArcShared;
         }
 
@@ -118,9 +106,11 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
         }
 
         // Detect boundary markers.
-        if binding.shared_facts.has_escape && !binding.shared_facts.needs_sharing {
-            // Escape without sharing may indicate external boundary.
-            is_boundary = false; // Conservative — real boundary comes from crate analysis.
+        // A binding that escapes the current scope (passed to opaque call,
+        // stored in struct, etc.) may cross a crate boundary. Mark it so
+        // the pipeline can stop migration at the boundary.
+        if binding.shared_facts.has_escape {
+            is_boundary = true;
         }
 
         nodes.push(ConstraintNode {
@@ -152,8 +142,17 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
         }
     }
 
+    for binding in &facts.bindings {
+        if node_set.contains(&binding.node) {
+            scope_groups
+                .entry(Some(binding.decl_scope_depth as u32))
+                .or_default()
+                .push(binding.node);
+        }
+    }
+
     let mut edge_set = BTreeSet::new();
-    for (_block, decl_ids) in &scope_groups {
+    for decl_ids in scope_groups.values() {
         let unique: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
         let vec: Vec<KirNodeId> = unique.into_iter().collect();
         for i in 0..vec.len() {
@@ -165,18 +164,16 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                 };
                 if edge_set.insert((a, b, "sharing")) {
                     let span = find_binding_span(kir, a);
+                    let provenance =
+                        ProvenanceRef::new(span, FactKind::NeedsSharing, "co-scope-sharing", None);
                     edges.push(ProvenancedEdge {
-                        edge: ConstraintEdge {
-                            source: a,
-                            target: b,
-                            kind: ConstraintKind::PropagateSharing,
-                        },
-                        provenance: ProvenanceRef {
-                            span,
-                            fact_kind: FactKind::NeedsSharing,
-                            rule_name: "co-scope-sharing",
-                            source_binding: None,
-                        },
+                        edge: ConstraintEdge::new(
+                            a,
+                            b,
+                            ConstraintKind::PropagateSharing,
+                            provenance.clone(),
+                        ),
+                        provenance,
                     });
                 }
             }
@@ -190,7 +187,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
         .map(|n| n.id)
         .collect();
 
-    for (_block, decl_ids) in &scope_groups {
+    for decl_ids in scope_groups.values() {
         let unique: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
         for &id in &unique {
             if send_nodes.contains(&id) {
@@ -199,18 +196,20 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                         let (a, b) = if id < other { (id, other) } else { (other, id) };
                         if edge_set.insert((a, b, "send")) {
                             let span = find_binding_span(kir, id);
+                            let provenance = ProvenanceRef::new(
+                                span,
+                                FactKind::NeedsSend,
+                                "send-propagation",
+                                None,
+                            );
                             edges.push(ProvenancedEdge {
-                                edge: ConstraintEdge {
-                                    source: a,
-                                    target: b,
-                                    kind: ConstraintKind::PropagateSend,
-                                },
-                                provenance: ProvenanceRef {
-                                    span,
-                                    fact_kind: FactKind::NeedsSend,
-                                    rule_name: "send-propagation",
-                                    source_binding: None,
-                                },
+                                edge: ConstraintEdge::new(
+                                    a,
+                                    b,
+                                    ConstraintKind::PropagateSend,
+                                    provenance.clone(),
+                                ),
+                                provenance,
                             });
                         }
                     }
@@ -220,7 +219,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
     }
 
     // Mutual exclusion: if two bindings both need mutable wrappers in the same scope.
-    for (_block, decl_ids) in &scope_groups {
+    for decl_ids in scope_groups.values() {
         let unique: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
         let mutable_in_scope: Vec<KirNodeId> = unique
             .iter()
@@ -240,18 +239,60 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                 };
                 if edge_set.insert((a, b, "mutex")) {
                     let span = find_binding_span(kir, a);
+                    let provenance = ProvenanceRef::new(
+                        span,
+                        FactKind::CoMutation,
+                        "co-mutation-exclusion",
+                        None,
+                    );
                     edges.push(ProvenancedEdge {
-                        edge: ConstraintEdge {
-                            source: a,
-                            target: b,
-                            kind: ConstraintKind::MutuallyExclusive,
-                        },
-                        provenance: ProvenanceRef {
-                            span,
-                            fact_kind: FactKind::CoMutation,
-                            rule_name: "co-mutation-exclusion",
-                            source_binding: None,
-                        },
+                        edge: ConstraintEdge::new(
+                            a,
+                            b,
+                            ConstraintKind::MutuallyExclusive,
+                            provenance.clone(),
+                        ),
+                        provenance,
+                    });
+                }
+            }
+        }
+    }
+
+    // Inter-procedural constraint pass: connect unresolved bindings that
+    // escape their scope (is_boundary=true) and need sharing. Escape markers
+    // signal actual cross-function data flow (return values, &mut params,
+    // struct stores). We only create cross-scope edges for escape-marked
+    // bindings to avoid over-constraining independent same-scope bindings.
+    {
+        let escape_sharing_nodes: Vec<KirNodeId> = nodes
+            .iter()
+            .filter(|n| n.floor.is_shared() && n.is_boundary)
+            .map(|n| n.id)
+            .collect();
+        for i in 0..escape_sharing_nodes.len() {
+            for j in (i + 1)..escape_sharing_nodes.len() {
+                let (a, b) = if escape_sharing_nodes[i] < escape_sharing_nodes[j] {
+                    (escape_sharing_nodes[i], escape_sharing_nodes[j])
+                } else {
+                    (escape_sharing_nodes[j], escape_sharing_nodes[i])
+                };
+                if edge_set.insert((a, b, "sharing")) {
+                    let span = find_binding_span(kir, a);
+                    let provenance = ProvenanceRef::new(
+                        span,
+                        FactKind::NeedsSharing,
+                        "cross-scope-sharing",
+                        None,
+                    );
+                    edges.push(ProvenancedEdge {
+                        edge: ConstraintEdge::new(
+                            a,
+                            b,
+                            ConstraintKind::PropagateSharing,
+                            provenance.clone(),
+                        ),
+                        provenance,
                     });
                 }
             }
@@ -277,6 +318,10 @@ fn is_mutable_floor(tier: OwnershipTier) -> bool {
         tier,
         OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
     )
+}
+
+fn binding_requires_send(binding: &TransformBindingFacts) -> bool {
+    binding.shared_facts.needs_send || binding.async_shared || binding.is_async
 }
 
 fn find_binding_span(kir: &Kir, node_id: KirNodeId) -> KoboSpan {

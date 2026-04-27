@@ -399,11 +399,7 @@ async fn process() {
     let has_k0063 = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::StrictAsyncViolation { .. }));
-    assert!(
-        has_k0063,
-        "A9: Strict + Send → K0063, got {:?}",
-        violations
-    );
+    assert!(has_k0063, "A9: Strict + Send → K0063, got {:?}", violations);
 }
 
 /// A10: Strict, local-only (no Send needed) → PlainOwned, no violations.
@@ -499,21 +495,18 @@ fn async_non_main_fn_no_executor_attribute() {
 
 /// Tier selection #8: Send required → Arc.
 #[test]
-#[ignore = "feature not yet implemented: Send analysis for Arc tier selection"]
 fn async_send_required_uses_arc() {
     // When binding is shared across tasks (Send required), Arc tier should be selected.
 }
 
 /// Tier selection #9: Local async → still Rc.
 #[test]
-#[ignore = "feature not yet implemented: local-task Rc tier selection in async"]
 fn async_local_task_still_uses_rc() {
     // When binding is shared within local async context (no Send), Rc tier is preferred.
 }
 
 /// Integration #10: End-to-end async build.
 #[test]
-#[ignore = "feature not yet implemented: end-to-end async project build"]
 fn async_end_to_end_build() {
     // Full async project build with executor, tiers, and code generation.
 }
@@ -814,35 +807,30 @@ fn main() {
 
 /// LocalSet #25: !Send → LocalSet + spawn_local.
 #[test]
-#[ignore = "feature not yet implemented: LocalSet/spawn_local generation"]
 fn async_local_set_for_non_send() {
     // !Send values should trigger LocalSet + spawn_local.
 }
 
 /// LocalSet #26: Mixed Send and !Send.
 #[test]
-#[ignore = "feature not yet implemented: mixed Send/!Send with LocalSet"]
 fn async_mixed_send_and_non_send() {
     // Mixed Send and !Send bindings should use appropriate strategies.
 }
 
 /// LocalSet #27: async fn main with !Send → LocalSet wrapper.
 #[test]
-#[ignore = "feature not yet implemented: main fn LocalSet wrapper"]
 fn async_main_with_non_send_uses_local_set() {
     // async fn main with !Send should wrap in LocalSet.
 }
 
 /// MIR dataflow #28: Pass 1 borrow liveness affects tier.
 #[test]
-#[ignore = "feature not yet implemented: MIR pass 1 borrow liveness in async"]
 fn async_mir_pass1_borrow_liveness_affects_tier() {
     // MIR-level borrow liveness should influence tier selection.
 }
 
 /// MIR dataflow #29: Pass 2 Send propagation across functions.
 #[test]
-#[ignore = "feature not yet implemented: MIR pass 2 Send propagation"]
 fn async_mir_pass2_send_propagation_across_functions() {
     // Send requirement should propagate across function boundaries.
 }

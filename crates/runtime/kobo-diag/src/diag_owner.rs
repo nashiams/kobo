@@ -17,13 +17,16 @@
 // Contract C06: every counter increment uses saturating_add, never +=.
 
 #[cfg(feature = "diag")]
+use std::cell::Cell;
+#[cfg(feature = "diag")]
 use std::cell::Ref;
+use std::cell::RefCell;
 #[cfg(feature = "diag")]
 use std::cell::RefMut;
-use std::cell::{Cell, RefCell};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
+#[cfg(feature = "diag")]
 use crate::thresholds::DiagThreshold;
 
 // ---------------------------------------------------------------------------
@@ -72,7 +75,6 @@ impl DiagCounters {
         let prev = self.active_borrows.get();
         self.active_borrows.set(prev.saturating_add(1));
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -183,10 +185,7 @@ impl<T> DiagOwner<T> {
 impl<V> DiagOwner<Rc<RefCell<V>>> {
     pub fn borrow(&self) -> DiagRef<'_, V> {
         self.counters.increment_active();
-        DiagCounters::saturating_increment(
-            &self.counters.borrow_count,
-            &self.counters.saturated,
-        );
+        DiagCounters::saturating_increment(&self.counters.borrow_count, &self.counters.saturated);
         let active_borrows_ptr: *const Cell<u32> = &self.counters.active_borrows;
         DiagRef {
             inner: self.inner.borrow(),
@@ -293,11 +292,11 @@ impl<T> Drop for DiagOwner<T> {
         eprintln!("  source_location:     {}", self.source_location);
 
         if is_hot {
+            eprintln!("  → hot path detected — mut_borrow_count > threshold ({threshold})");
             eprintln!(
-                "  → hot path detected — mut_borrow_count > threshold ({threshold})"
-            );
-            eprintln!("  → run `kobo perf {loc}` to see K0020 diagnostic",
-                loc = self.source_location
+                "  → run `kobo perf {loc}` to see K0020 diagnostic",
+                loc = self
+                    .source_location
                     .trim_end_matches(|c: char| c.is_ascii_digit())
                     .trim_end_matches(':'),
             );
@@ -307,7 +306,9 @@ impl<T> Drop for DiagOwner<T> {
             eprintln!(
                 "  → aliasing detected — borrow_mut called while immutable borrow was live ({contention_count} times)"
             );
-            eprintln!("  → note: contention here means RefCell aliasing conflict, not thread contention");
+            eprintln!(
+                "  → note: contention here means RefCell aliasing conflict, not thread contention"
+            );
         }
 
         if saturated {
@@ -333,7 +334,10 @@ pub struct DiagOwner<T> {
 #[cfg(not(feature = "diag"))]
 impl<T> DiagOwner<T> {
     pub fn new(inner: T, source_location: &'static str) -> Self {
-        Self { inner, source_location }
+        Self {
+            inner,
+            source_location,
+        }
     }
 
     pub fn inner(&self) -> &T {
@@ -385,7 +389,7 @@ impl<T> DerefMut for DiagOwner<T> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-use std::rc::Rc;
+    use std::rc::Rc;
 
     // Helper: create a DiagOwner<Rc<RefCell<i32>>> for testing.
     fn make_owner(value: i32) -> DiagOwner<Rc<RefCell<i32>>> {
@@ -430,7 +434,10 @@ use std::rc::Rc;
             // One more borrow saturates
             let _ = owner.borrow();
             assert_eq!(owner.counters().borrow_count.get(), u64::MAX);
-            assert!(owner.counters().saturated.get(), "saturated must be true at u64::MAX");
+            assert!(
+                owner.counters().saturated.get(),
+                "saturated must be true at u64::MAX"
+            );
             // Additional borrow must not wrap to 0
             let _ = owner.borrow();
             assert_eq!(
@@ -456,8 +463,15 @@ use std::rc::Rc;
                 "contention_count must be 1 when borrow_mut is attempted while a borrow is live"
             );
             // active_borrows was NOT incremented (borrow_mut failed before that).
-            assert_eq!(owner.counters().active_borrows.get(), 1, "active_borrows must still be 1");
-            assert!(result.is_err(), "borrow_mut must panic with active immutable borrow");
+            assert_eq!(
+                owner.counters().active_borrows.get(),
+                1,
+                "active_borrows must still be 1"
+            );
+            assert!(
+                result.is_err(),
+                "borrow_mut must panic with active immutable borrow"
+            );
             drop(guard); // clean up
             assert_eq!(owner.counters().active_borrows.get(), 0);
         }
@@ -529,7 +543,10 @@ use std::rc::Rc;
         fn threshold_env_invalid_falls_back_to_default() {
             // When KOBO_DIAG_THRESHOLD is not set, default is 10_000.
             let threshold = DiagThreshold::parse_threshold_str("abc");
-            assert_eq!(threshold, 10_000, "invalid string must fall back to 10_000 default");
+            assert_eq!(
+                threshold, 10_000,
+                "invalid string must fall back to 10_000 default"
+            );
         }
     }
 }

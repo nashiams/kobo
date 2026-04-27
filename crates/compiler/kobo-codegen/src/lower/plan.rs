@@ -12,9 +12,9 @@ use kobo_ir::{
 };
 use kobo_parser::{KoboBinding, KoboFile};
 
-use crate::CodegenOptions;
-use super::binding::binding_for_pat;
+use super::binding::{binding_for_pat, fn_arg_lowering_tier};
 use super::support::support_items;
+use crate::CodegenOptions;
 
 pub(crate) struct LoweringPlan {
     nodes_by_ast: HashMap<KoboAstNodeId, KirNodeId>,
@@ -108,9 +108,14 @@ impl LoweringPlan {
             HashMap::new()
         };
 
-        let support_item_count =
-            support_items(needs_rc, needs_refcell, needs_arc, needs_scoped_handle, needs_diag_owner)
-                .len();
+        let support_item_count = support_items(
+            needs_rc,
+            needs_refcell,
+            needs_arc,
+            needs_scoped_handle,
+            needs_diag_owner,
+        )
+        .len();
 
         // Mark annotation sites that will be wrapped in DiagOwner.
         if options.diag_mode {
@@ -129,7 +134,11 @@ impl LoweringPlan {
         let mutation_required_bindings: HashSet<KoboAstNodeId> = nodes_by_ast
             .iter()
             .filter_map(|(&ast_id, &kir_id)| {
-                let tf = kir.transform_facts().bindings.iter().find(|b| b.node == kir_id)?;
+                let tf = kir
+                    .transform_facts()
+                    .bindings
+                    .iter()
+                    .find(|b| b.node == kir_id)?;
                 if tf.shared_facts.mutation_required {
                     Some(ast_id)
                 } else {
@@ -247,11 +256,11 @@ fn build_function_param_tiers(
             .filter_map(|input| match input {
                 syn::FnArg::Typed(argument) => {
                     let binding = binding_for_pat(ast, &argument.pat)?;
-                    Some(
+                    Some(fn_arg_lowering_tier(
                         *tiers_by_ast
                             .get(&binding.id)
                             .unwrap_or(&OwnershipTier::PlainOwned),
-                    )
+                    ))
                 }
                 syn::FnArg::Receiver(_) => None,
             })

@@ -1,0 +1,23 @@
+struct Slot {
+    value: Option<String>,
+}
+
+impl Slot {
+    fn new(value: String) -> Self {
+        Self { value: Some(value) }
+    }
+
+    fn replace(&mut self, value: String) -> Option<String> {
+        let old = self.value.take();
+        self.value = Some(value);
+        old
+    }
+}
+
+fn main() {
+    let mut slot = Slot::new(String::from("a"));
+    let old = slot.replace(String::from("b"));
+    if let Some(value) = old {
+        println!("{}", value);
+    }
+}

@@ -1,0 +1,7 @@
+fn main() {
+    let prefix = String::from("job");
+    let render = |id: u64| -> String {
+        format!("{}-{}", prefix, id)
+    };
+    println!("{}", render(9));
+}

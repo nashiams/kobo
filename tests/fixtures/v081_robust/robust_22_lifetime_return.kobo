@@ -1,0 +1,13 @@
+fn choose<'a>(left: &'a str, right: &'a str, take_left: bool) -> &'a str {
+    if take_left {
+        left
+    } else {
+        right
+    }
+}
+
+fn main() {
+    let left = String::from("left");
+    let right = String::from("right");
+    println!("{}", choose(&left, &right, false));
+}

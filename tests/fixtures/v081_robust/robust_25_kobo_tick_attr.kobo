@@ -1,0 +1,14 @@
+struct Clock {
+    tick: u64,
+}
+
+#[kobo::tick(rate = 60)]
+fn advance(clock: &mut Clock) {
+    clock.tick = clock.tick + 1;
+}
+
+fn main() {
+    let mut clock = Clock { tick: 0 };
+    advance(&mut clock);
+    println!("{}", clock.tick);
+}

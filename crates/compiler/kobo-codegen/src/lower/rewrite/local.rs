@@ -13,7 +13,7 @@ impl super::Lowerer<'_> {
             return;
         };
 
-        let tier = self.plan.tier_for_binding(binding);
+        let tier = effective_local_tier(local, self.plan.tier_for_binding(binding));
         let inferred_type_name = binding
             .ty
             .as_ref()
@@ -72,5 +72,70 @@ impl super::Lowerer<'_> {
 
         self.lower_expr(init.expr.as_mut(), scopes);
         false
+    }
+}
+
+fn effective_local_tier(local: &syn::Local, tier: OwnershipTier) -> OwnershipTier {
+    if local_init_is_closure(local)
+        && matches!(
+            tier,
+            OwnershipTier::BoxOwned
+                | OwnershipTier::RcShared
+                | OwnershipTier::ArcShared
+                | OwnershipTier::RcMutShared
+                | OwnershipTier::ArcMutShared
+                | OwnershipTier::Scoped
+        )
+    {
+        OwnershipTier::PlainOwned
+    } else {
+        tier
+    }
+}
+
+fn local_init_is_closure(local: &syn::Local) -> bool {
+    matches!(
+        local.init.as_ref().map(|init| init.expr.as_ref()),
+        Some(syn::Expr::Closure(_))
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_local(stmt: syn::Stmt) -> syn::Local {
+        match stmt {
+            syn::Stmt::Local(local) => local,
+            _ => panic!("expected local statement"),
+        }
+    }
+
+    #[test]
+    fn closure_bindings_remain_plain_owned() {
+        let local = parse_local(parse_quote! {
+            let mut add = |value: i32| { total = total + value; };
+        });
+
+        assert_eq!(
+            effective_local_tier(&local, OwnershipTier::RcShared),
+            OwnershipTier::PlainOwned
+        );
+        assert_eq!(
+            effective_local_tier(&local, OwnershipTier::RcMutShared),
+            OwnershipTier::PlainOwned
+        );
+    }
+
+    #[test]
+    fn non_closure_bindings_keep_solver_tier() {
+        let local = parse_local(parse_quote! {
+            let value = String::from("kobo");
+        });
+
+        assert_eq!(
+            effective_local_tier(&local, OwnershipTier::RcShared),
+            OwnershipTier::RcShared
+        );
     }
 }

@@ -1,0 +1,12 @@
+use std::collections::BTreeMap;
+
+fn consume_map(map: BTreeMap<String, usize>) -> usize {
+    map.len()
+}
+
+fn main() {
+    let mut map = BTreeMap::new();
+    map.insert(String::from("a"), 1);
+    map.insert(String::from("b"), 2);
+    println!("{}", consume_map(map));
+}

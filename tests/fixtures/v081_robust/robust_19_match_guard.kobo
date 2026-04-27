@@ -1,0 +1,11 @@
+fn classify(value: i32) -> String {
+    match value {
+        n if n < 0 => String::from("negative"),
+        0 => String::from("zero"),
+        _ => String::from("positive"),
+    }
+}
+
+fn main() {
+    println!("{}", classify(7));
+}

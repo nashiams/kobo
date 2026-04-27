@@ -1,0 +1,22 @@
+struct Packet {
+    id: u64,
+    body: String,
+}
+
+fn checksum(packet: &Packet) -> usize {
+    packet.body.len() + packet.id as usize
+}
+
+fn consume(packet: Packet) -> usize {
+    packet.body.len()
+}
+
+fn main() {
+    let packet = Packet {
+        id: 7,
+        body: String::from("payload"),
+    };
+    let seen = checksum(&packet);
+    let moved = consume(packet);
+    println!("{}", seen + moved);
+}

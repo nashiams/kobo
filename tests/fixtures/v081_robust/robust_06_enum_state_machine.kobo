@@ -1,0 +1,22 @@
+enum JobState {
+    Ready,
+    Running(u64),
+    Finished(String),
+}
+
+fn advance(state: JobState) -> JobState {
+    match state {
+        JobState::Ready => JobState::Running(1),
+        JobState::Running(id) => JobState::Finished(format!("job-{}", id)),
+        JobState::Finished(name) => JobState::Finished(name),
+    }
+}
+
+fn main() {
+    let state = advance(JobState::Ready);
+    let state = advance(state);
+    match state {
+        JobState::Finished(name) => println!("{}", name),
+        _ => println!("pending"),
+    }
+}

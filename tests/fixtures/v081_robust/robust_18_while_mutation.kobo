@@ -1,0 +1,9 @@
+fn main() {
+    let mut cursor = 0;
+    let mut total = 0;
+    while cursor < 5 {
+        total = total + cursor;
+        cursor = cursor + 1;
+    }
+    println!("{}", total);
+}

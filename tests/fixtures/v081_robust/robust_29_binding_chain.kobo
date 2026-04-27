@@ -1,0 +1,8 @@
+fn main() {
+    let a = String::from("a");
+    let b = format!("{}b", a);
+    let c = format!("{}c", b);
+    let d = format!("{}d", c);
+    let e = format!("{}e", d);
+    println!("{}", e);
+}

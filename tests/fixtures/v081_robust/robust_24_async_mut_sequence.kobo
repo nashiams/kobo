@@ -1,0 +1,17 @@
+struct State {
+    hits: u64,
+}
+
+async fn record(state: &mut State) {
+    state.hits = state.hits + 1;
+}
+
+async fn handle(state: &mut State) {
+    record(state).await;
+    record(state).await;
+}
+
+fn main() {
+    let state = State { hits: 0 };
+    println!("{}", state.hits);
+}

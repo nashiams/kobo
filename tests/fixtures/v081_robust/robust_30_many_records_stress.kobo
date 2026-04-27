@@ -1,0 +1,63 @@
+struct Record {
+    id: u64,
+    name: String,
+}
+
+struct Ledger {
+    records: Vec<Record>,
+    total_name_bytes: usize,
+}
+
+impl Ledger {
+    fn new() -> Self {
+        Self {
+            records: Vec::new(),
+            total_name_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, record: Record) {
+        self.total_name_bytes = self.total_name_bytes + record.name.len();
+        self.records.push(record);
+    }
+
+    fn summarize(&self) -> usize {
+        let mut total = self.total_name_bytes;
+        for record in &self.records {
+            total = total + record.id as usize;
+        }
+        total
+    }
+}
+
+fn build_record(id: u64) -> Record {
+    Record {
+        id,
+        name: format!("record-{}", id),
+    }
+}
+
+fn main() {
+    let mut ledger = Ledger::new();
+    ledger.push(build_record(1));
+    ledger.push(build_record(2));
+    ledger.push(build_record(3));
+    ledger.push(build_record(4));
+    ledger.push(build_record(5));
+    ledger.push(build_record(6));
+    ledger.push(build_record(7));
+    ledger.push(build_record(8));
+    ledger.push(build_record(9));
+    ledger.push(build_record(10));
+    ledger.push(build_record(11));
+    ledger.push(build_record(12));
+    ledger.push(build_record(13));
+    ledger.push(build_record(14));
+    ledger.push(build_record(15));
+    ledger.push(build_record(16));
+    ledger.push(build_record(17));
+    ledger.push(build_record(18));
+    ledger.push(build_record(19));
+    ledger.push(build_record(20));
+    println!("{}", ledger.summarize());
+}

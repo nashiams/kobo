@@ -18,8 +18,8 @@ impl super::Lowerer<'_> {
                 }
             }
             syn::Expr::Binary(binary) => {
-                self.lower_expr(binary.left.as_mut(), scopes);
-                self.lower_expr(binary.right.as_mut(), scopes);
+                self.lower_binary_operand(binary.left.as_mut(), scopes);
+                self.lower_binary_operand(binary.right.as_mut(), scopes);
             }
             syn::Expr::Block(block) => {
                 // P5: detect @strict blocks by span-matching against ast.strict_blocks().
@@ -155,6 +155,45 @@ impl super::Lowerer<'_> {
             }
             _ => None,
         }
+    }
+
+    fn lower_binary_operand(&mut self, expr: &mut syn::Expr, scopes: &mut ScopeStack) {
+        if !self.lower_owned_value_expr(expr, scopes) {
+            self.lower_expr(expr, scopes);
+        }
+    }
+
+    pub(super) fn lower_owned_value_expr(
+        &mut self,
+        expr: &mut syn::Expr,
+        scopes: &mut ScopeStack,
+    ) -> bool {
+        let syn::Expr::Path(path) = expr else {
+            return false;
+        };
+        let Some((ident, tier)) = wrapper_binding_from_expr(&syn::Expr::Path(path.clone()), scopes)
+        else {
+            return false;
+        };
+
+        *expr = match tier {
+            OwnershipTier::RcMutShared => parse_quote!({
+                let __kobo_owned_value = (*#ident.borrow()).clone();
+                __kobo_owned_value
+            }),
+            OwnershipTier::ArcMutShared if self.in_async_context => {
+                parse_quote!({
+                    let __kobo_owned_value = (*#ident.read().await).clone();
+                    __kobo_owned_value
+                })
+            }
+            OwnershipTier::ArcMutShared => parse_quote!({
+                let __kobo_owned_value = (*#ident.blocking_read()).clone();
+                __kobo_owned_value
+            }),
+            _ => return false,
+        };
+        true
     }
 
     fn lower_call_expr(&mut self, call: &mut syn::ExprCall, scopes: &mut ScopeStack) {
@@ -293,7 +332,9 @@ impl super::Lowerer<'_> {
 
     fn lower_return_expr(&mut self, return_expr: &mut syn::ExprReturn, scopes: &mut ScopeStack) {
         if let Some(inner) = &mut return_expr.expr {
-            self.lower_expr(inner.as_mut(), scopes);
+            if !self.lower_owned_value_expr(inner.as_mut(), scopes) {
+                self.lower_expr(inner.as_mut(), scopes);
+            }
         }
     }
 

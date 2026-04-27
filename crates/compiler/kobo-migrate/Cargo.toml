@@ -9,3 +9,7 @@ kobo-errors = { path = "../kobo-errors" }
 
 [dev-dependencies]
 proptest = "1"
+
+[[bench]]
+name = "scale"
+harness = false

@@ -28,13 +28,24 @@ pub enum CargoGenError {
 }
 
 /// Minimal Kobo project config for cargo generation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct KoboProjectConfig {
     pub name: String,
     pub version: String,
     pub edition: String,
     /// Non-kobo dependencies as `(name, version_req)` pairs.
     pub dependencies: Vec<(String, String)>,
+}
+
+impl Default for KoboProjectConfig {
+    fn default() -> Self {
+        Self {
+            name: "my-project".to_owned(),
+            version: "0.1.0".to_owned(),
+            edition: "2021".to_owned(),
+            dependencies: Vec::new(),
+        }
+    }
 }
 
 impl KoboProjectConfig {
@@ -96,12 +107,14 @@ pub fn generate_cargo_project(
     source_files: &[(PathBuf, String)], // (kobo path, clean source)
     output_dir: &Path,
 ) -> Result<(), CargoGenError> {
+    let config = config_with_inferred_dependencies(config, source_files);
+
     // Create output directory structure.
     let src_dir = output_dir.join("src");
     fs::create_dir_all(&src_dir)?;
 
     // Generate Cargo.toml.
-    let cargo_toml = generate_cargo_toml(config);
+    let cargo_toml = generate_cargo_toml(&config);
     fs::write(output_dir.join("Cargo.toml"), cargo_toml)?;
 
     // Generate .gitignore.
@@ -109,10 +122,14 @@ pub fn generate_cargo_project(
 
     // Write source files.
     for (kobo_path, clean_source) in source_files {
-        let rs_name = kobo_path
-            .file_stem()
-            .map(|s| format!("{}.rs", s.to_string_lossy()))
-            .unwrap_or_else(|| "main.rs".to_owned());
+        let rs_name = if source_files.len() == 1 {
+            "main.rs".to_owned()
+        } else {
+            kobo_path
+                .file_stem()
+                .map(|s| format!("{}.rs", s.to_string_lossy()))
+                .unwrap_or_else(|| "main.rs".to_owned())
+        };
         fs::write(src_dir.join(rs_name), clean_source)?;
     }
 
@@ -130,11 +147,39 @@ fn generate_cargo_toml(config: &KoboProjectConfig) -> String {
     if !config.dependencies.is_empty() {
         toml.push_str("[dependencies]\n");
         for (dep_name, dep_version) in &config.dependencies {
-            toml.push_str(&format!("{dep_name} = \"{dep_version}\"\n"));
+            if dep_version.trim_start().starts_with('{') {
+                toml.push_str(&format!("{dep_name} = {dep_version}\n"));
+            } else {
+                toml.push_str(&format!("{dep_name} = \"{dep_version}\"\n"));
+            }
         }
+        toml.push('\n');
     }
 
+    toml.push_str("[workspace]\n");
+
     toml
+}
+
+fn config_with_inferred_dependencies(
+    config: &KoboProjectConfig,
+    source_files: &[(PathBuf, String)],
+) -> KoboProjectConfig {
+    let mut config = config.clone();
+    let needs_tokio = source_files
+        .iter()
+        .any(|(_, source)| source.contains("tokio::"));
+    let has_tokio = config.dependencies.iter().any(|(name, _)| name == "tokio");
+
+    if needs_tokio && !has_tokio {
+        config.dependencies.push((
+            "tokio".to_owned(),
+            "{ version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\", \"time\"] }"
+                .to_owned(),
+        ));
+    }
+
+    config
 }
 
 #[cfg(test)]
@@ -164,6 +209,7 @@ mod tests {
 
         let cargo_toml = fs::read_to_string(temp.path().join("Cargo.toml")).unwrap();
         assert!(cargo_toml.contains("test-project"));
+        assert!(cargo_toml.contains("[workspace]"));
         assert!(!cargo_toml.contains("kobo"));
     }
 
@@ -182,6 +228,63 @@ mod tests {
         let toml = generate_cargo_toml(&config);
         assert!(toml.contains("tokio = \"1\""));
         assert!(toml.contains("serde = \"1\""));
+    }
+
+    #[test]
+    fn raw_dependency_specs_are_not_quoted() {
+        let config = KoboProjectConfig {
+            name: "raw-deps".to_owned(),
+            version: "0.1.0".to_owned(),
+            edition: "2021".to_owned(),
+            dependencies: vec![(
+                "tokio".to_owned(),
+                "{ version = \"1\", features = [\"time\"] }".to_owned(),
+            )],
+        };
+
+        let toml = generate_cargo_toml(&config);
+        assert!(toml.contains("tokio = { version = \"1\", features = [\"time\"] }"));
+    }
+
+    #[test]
+    fn cargo_generation_infers_tokio_dependency_from_generated_source() {
+        let config = KoboProjectConfig::default();
+        let sources = vec![(
+            PathBuf::from("src/main.kobo"),
+            "fn main() { let _ = tokio::time::interval; }".to_owned(),
+        )];
+
+        let temp = tempfile::tempdir().unwrap();
+        generate_cargo_project(&config, &sources, temp.path()).unwrap();
+
+        let cargo_toml = fs::read_to_string(temp.path().join("Cargo.toml")).unwrap();
+        assert!(cargo_toml.contains("tokio = { version = \"1\""));
+        assert!(cargo_toml.contains("\"time\""));
+    }
+
+    #[test]
+    fn default_config_generates_valid_package_metadata() {
+        let config = KoboProjectConfig::default();
+        let cargo_toml = generate_cargo_toml(&config);
+
+        assert!(cargo_toml.contains("name = \"my-project\""));
+        assert!(cargo_toml.contains("version = \"0.1.0\""));
+        assert!(cargo_toml.contains("edition = \"2021\""));
+    }
+
+    #[test]
+    fn single_source_project_uses_main_rs_entrypoint() {
+        let config = KoboProjectConfig::default();
+        let sources = vec![(
+            PathBuf::from("fixtures/uc1_video_pipeline.kobo"),
+            "fn main() {}".to_owned(),
+        )];
+
+        let temp = tempfile::tempdir().unwrap();
+        generate_cargo_project(&config, &sources, temp.path()).unwrap();
+
+        assert!(temp.path().join("src/main.rs").exists());
+        assert!(!temp.path().join("src/uc1_video_pipeline.rs").exists());
     }
 
     #[test]

@@ -125,7 +125,7 @@ impl Default for KoboConfig {
         Self {
             mode: KoboMode::Script,
             hot_borrow_threshold: 10_000,
-            solver_cluster_limit: 256,
+            solver_cluster_limit: 2048,
             solver_budget_seconds: 5.0,
             lsp_solver_budget_ms: 200,
             small_struct_clone_threshold_bytes: 128,
@@ -322,7 +322,7 @@ mod tests {
 
         assert_eq!(config.mode, KoboMode::Script);
         assert_eq!(config.hot_borrow_threshold, 10_000);
-        assert_eq!(config.solver_cluster_limit, 256);
+        assert_eq!(config.solver_cluster_limit, 2048);
         assert_eq!(config.small_struct_clone_threshold_bytes, 128);
         assert_eq!(config.output_dir, None);
     }

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use kobo_ir::{Kir, KirNodeId, OwnershipTier, SolutionMap};
 use kobo_migrate::cluster::{Cluster, ClusterId};
@@ -76,11 +77,7 @@ fn parallel_solver_handles_many_independent_clusters_without_losing_nodes() {
 #[test]
 fn query_solve_outcome_reuses_disk_cache_for_matching_graph_fingerprint() {
     let cache_dir = stress_cache_dir("query-cache");
-    let config = GreedyConfig {
-        solver_cluster_limit: 256,
-        solver_budget_seconds: 5.0,
-        mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
-    };
+    let config = GreedyConfig::default();
 
     let mut first = MigrateCtxt::new_with_cache_dir(Kir::default(), config.clone(), &cache_dir);
     let first_outcome = query_solve_outcome(&mut first, &SolverBudget::default());
@@ -132,5 +129,41 @@ fn unique_outcome_cache_does_not_store_non_unique_results() {
     assert!(
         !cache_dir.exists(),
         "non-unique cache attempt should not create durable state"
+    );
+}
+
+#[test]
+fn solver_budget_default_matches_v081_production_cap() {
+    assert_eq!(SolverBudget::default().max_cluster_size, 2048);
+    assert_eq!(GreedyConfig::default().solver_cluster_limit, 2048);
+}
+
+#[test]
+fn parallel_solver_handles_15k_node_scale_without_losing_assignments() {
+    let cluster_count = 120u32;
+    let nodes_per_cluster = 128u32;
+    let expected_nodes = (cluster_count * nodes_per_cluster) as usize;
+    let clusters: Vec<_> = (0..cluster_count)
+        .map(|cluster_id| make_cluster(cluster_id, nodes_per_cluster))
+        .collect();
+
+    let started = Instant::now();
+    let results = execute_all(&clusters);
+    let elapsed = started.elapsed();
+
+    assert_eq!(results.len(), cluster_count as usize);
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "15k-node solve-unit stress exceeded the production sanity budget: {elapsed:?}"
+    );
+
+    let merged = merge_results(&results);
+    assert_eq!(merged.len(), expected_nodes);
+    assert_eq!(merged.get(KirNodeId(0)), Some(OwnershipTier::ArcShared));
+    assert_eq!(
+        merged.get(KirNodeId(
+            (cluster_count - 1) * 10_000 + nodes_per_cluster - 1
+        )),
+        Some(OwnershipTier::PlainOwned)
     );
 }

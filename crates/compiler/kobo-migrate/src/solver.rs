@@ -118,7 +118,7 @@ pub struct SolverBudget {
 impl Default for SolverBudget {
     fn default() -> Self {
         Self {
-            max_cluster_size: 256,
+            max_cluster_size: 2048,
             budget_seconds: 5.0,
         }
     }
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn solver_limits_have_defaults() {
         let budget = SolverBudget::default();
-        assert_eq!(budget.max_cluster_size, 256);
+        assert_eq!(budget.max_cluster_size, 2048);
         assert_eq!(budget.budget_seconds, 5.0);
     }
 

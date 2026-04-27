@@ -44,7 +44,7 @@
     "node_count": 3,
     "edge_count": 2,
     "budget": {
-      "max_cluster_size": 256,
+      "max_cluster_size": 2048,
       "budget_seconds": 5.0
     }
   }

@@ -113,11 +113,7 @@ mod tests {
     #[test]
     fn query_solve_all_caches_result() {
         let kir = kobo_ir::Kir::default();
-        let config = GreedyConfig {
-            solver_cluster_limit: 256,
-            solver_budget_seconds: 5.0,
-            mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
-        };
+        let config = GreedyConfig::default();
         let mut ctxt = MigrateCtxt::new(kir, config);
 
         let r1 = query_solve_all(&mut ctxt);
@@ -128,11 +124,7 @@ mod tests {
     #[test]
     fn query_solve_outcome_caches_without_generation_churn() {
         let kir = kobo_ir::Kir::default();
-        let config = GreedyConfig {
-            solver_cluster_limit: 256,
-            solver_budget_seconds: 5.0,
-            mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
-        };
+        let config = GreedyConfig::default();
         let mut ctxt = MigrateCtxt::new(kir, config);
         let budget = SolverBudget::default();
 

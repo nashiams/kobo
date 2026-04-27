@@ -94,11 +94,7 @@ mod tests {
     #[test]
     fn ctxt_creation_with_empty_kir() {
         let kir = Kir::default();
-        let config = GreedyConfig {
-            solver_cluster_limit: 256,
-            solver_budget_seconds: 5.0,
-            mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
-        };
+        let config = GreedyConfig::default();
         let ctxt = MigrateCtxt::new(kir, config);
         assert!(ctxt.summaries().is_empty());
         assert_eq!(ctxt.call_graph().node_count(), 0);

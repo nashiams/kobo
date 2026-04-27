@@ -68,15 +68,40 @@ fn extract_param_names(params: &str) -> Vec<String> {
 
 fn find_spawn_capture(body: &str, binding: &str) -> Option<usize> {
     for marker in ["spawn {", "tokio::spawn", "spawn_local"] {
-        let Some(spawn_pos) = body.find(marker) else {
-            continue;
-        };
-        let spawned_body = &body[spawn_pos..];
-        if contains_ident(spawned_body, binding) {
-            return Some(spawn_pos);
+        let mut search_offset = 0usize;
+        while let Some(found) = body[search_offset..].find(marker) {
+            let spawn_pos = search_offset + found;
+            let spawned_body = spawn_extent(body, spawn_pos, marker)
+                .map(|(start, end)| &body[start..end])
+                .unwrap_or(&body[spawn_pos..]);
+            if contains_ident(spawned_body, binding) {
+                return Some(spawn_pos);
+            }
+            search_offset = spawn_pos + marker.len();
         }
     }
     None
+}
+
+fn spawn_extent(body: &str, spawn_pos: usize, marker: &str) -> Option<(usize, usize)> {
+    if marker == "spawn {" {
+        let brace_pos = body[spawn_pos..].find('{')? + spawn_pos;
+        let close = find_matching_delimiter(body, brace_pos, '{', '}')?;
+        return Some((spawn_pos, close + 1));
+    }
+
+    let after_marker = spawn_pos + marker.len();
+    let delimiter_rel = body[after_marker..]
+        .char_indices()
+        .find(|(_, ch)| *ch == '(' || *ch == '{')?;
+    let delimiter_pos = after_marker + delimiter_rel.0;
+    let delimiter = delimiter_rel.1;
+    let close = match delimiter {
+        '(' => find_matching_delimiter(body, delimiter_pos, '(', ')')?,
+        '{' => find_matching_delimiter(body, delimiter_pos, '{', '}')?,
+        _ => return None,
+    };
+    Some((spawn_pos, close + 1))
 }
 
 fn contains_ident(source: &str, ident: &str) -> bool {
@@ -142,6 +167,43 @@ async fn handle(req: Request) {
     spawn {
         println!("background");
     }
+}
+"#;
+
+        let warnings = scan_source_handler_leaks(source);
+
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn detects_capture_in_later_spawn() {
+        let source = r#"
+#[kobo::handler]
+async fn handle(req: Request) {
+    spawn {
+        println!("background");
+    }
+    tokio::spawn(async move {
+        println!("{}", req.path);
+    });
+}
+"#;
+
+        let warnings = scan_source_handler_leaks(source);
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].binding_name, "req");
+    }
+
+    #[test]
+    fn ignores_binding_after_spawn_expression() {
+        let source = r#"
+#[kobo::handler]
+async fn handle(req: Request) {
+    tokio::spawn(async move {
+        println!("background");
+    });
+    println!("{}", req.path);
 }
 "#;
 

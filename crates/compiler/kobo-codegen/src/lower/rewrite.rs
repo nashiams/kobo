@@ -12,7 +12,7 @@ mod util;
 use kobo_parser::KoboFile;
 use syn::parse_quote;
 
-use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat};
+use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
 use super::plan::{AnnotationNote, LoweringPlan};
 use super::scope::{type_name_from_syn, ScopeStack};
@@ -195,7 +195,7 @@ impl<'a> Lowerer<'a> {
                     let Some(binding) = binding_for_pat(self.ast, &argument.pat) else {
                         continue;
                     };
-                    let tier = self.plan.tier_for_binding(binding);
+                    let tier = fn_arg_lowering_tier(self.plan.tier_for_binding(binding));
                     self.record_binding_anchor(binding, LoweringAnchorKind::Parameter);
                     apply_tier_to_fn_arg_type(argument, tier);
                     scopes.insert(&binding.ident, tier);
@@ -333,7 +333,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             };
 
-            let tier = self.plan.tier_for_binding(binding);
+            let tier = fn_arg_lowering_tier(self.plan.tier_for_binding(binding));
             self.record_binding_anchor(binding, LoweringAnchorKind::Parameter);
             apply_tier_to_fn_arg_type(argument, tier);
             scopes.insert(&binding.ident, tier);

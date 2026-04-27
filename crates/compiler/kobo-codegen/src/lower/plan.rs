@@ -12,7 +12,7 @@ use kobo_ir::{
 };
 use kobo_parser::{KoboBinding, KoboFile};
 
-use super::binding::binding_for_pat;
+use super::binding::{binding_for_pat, fn_arg_lowering_tier};
 use super::support::support_items;
 use crate::CodegenOptions;
 
@@ -256,11 +256,11 @@ fn build_function_param_tiers(
             .filter_map(|input| match input {
                 syn::FnArg::Typed(argument) => {
                     let binding = binding_for_pat(ast, &argument.pat)?;
-                    Some(
+                    Some(fn_arg_lowering_tier(
                         *tiers_by_ast
                             .get(&binding.id)
                             .unwrap_or(&OwnershipTier::PlainOwned),
-                    )
+                    ))
                 }
                 syn::FnArg::Receiver(_) => None,
             })

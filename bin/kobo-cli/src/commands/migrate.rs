@@ -179,6 +179,7 @@ fn print_dry_run_diff(
         "// solver outcome: {} | fingerprint: {} | nodes: {} | edges: {}",
         evidence.outcome_name, evidence.graph_fingerprint, evidence.node_count, evidence.edge_count,
     );
+    println!("// graph fingerprint: {}", evidence.graph_fingerprint);
     println!(
         "// solver budget: max_cluster_size={} budget_seconds={:.3}",
         evidence.budget.max_cluster_size, evidence.budget.budget_seconds
@@ -199,6 +200,16 @@ fn print_dry_run_diff(
         "// silent_decisions: {}",
         count_silent_decisions(outcome, options.decisions)
     );
+    let locked_conflicts = locked_decision_conflicts(outcome, options.decisions);
+    println!("// locked_decision_conflicts: {}", locked_conflicts.len());
+    for conflict in &locked_conflicts {
+        println!(
+            "// [K0085] locked decision conflict: {} solver={} locked={}",
+            conflict.key,
+            tier_label(conflict.solver_tier),
+            tier_label(conflict.locked_tier)
+        );
+    }
 
     if options.class_view {
         println!("// decision class: {}", outcome_class(outcome));
@@ -355,6 +366,7 @@ fn print_dependency_graph(
         "// solver outcome: {} | fingerprint: {} | nodes: {} | edges: {}",
         evidence.outcome_name, evidence.graph_fingerprint, evidence.node_count, evidence.edge_count,
     );
+    println!("// graph fingerprint: {}", evidence.graph_fingerprint);
     println!();
 
     let graph = build_kir_constraint_graph(kir);
@@ -565,6 +577,31 @@ fn count_silent_decisions(outcome: &SolveOutcome, decisions: &DecisionsStore) ->
         .into_iter()
         .filter(|(node_id, _)| !decisions.is_locked(&decision_key(*node_id)))
         .count()
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LockedDecisionConflict {
+    key: String,
+    solver_tier: OwnershipTier,
+    locked_tier: OwnershipTier,
+}
+
+fn locked_decision_conflicts(
+    outcome: &SolveOutcome,
+    decisions: &DecisionsStore,
+) -> Vec<LockedDecisionConflict> {
+    preferred_solution_entries(outcome)
+        .into_iter()
+        .filter_map(|(node_id, solver_tier)| {
+            let key = decision_key(node_id);
+            let decision = decisions.get(&key)?;
+            (decision.locked && decision.tier != solver_tier).then_some(LockedDecisionConflict {
+                key,
+                solver_tier,
+                locked_tier: decision.tier,
+            })
+        })
+        .collect()
 }
 
 fn tier_label(tier: kobo_ir::OwnershipTier) -> &'static str {
@@ -954,6 +991,36 @@ mod tests {
         });
 
         assert_eq!(count_silent_decisions(&outcome, &decisions), 1);
+    }
+
+    #[test]
+    fn locked_decision_conflicts_report_solver_mismatch() {
+        let mut solution = SolutionMap::new();
+        solution.insert(KirNodeId(1), OwnershipTier::RcShared);
+        solution.insert(KirNodeId(2), OwnershipTier::PlainOwned);
+        let outcome = SolveOutcome::Unique(solution);
+
+        let mut decisions = DecisionsStore::new();
+        decisions.set(PersistedDecision {
+            binding_name: "node_1".to_owned(),
+            tier: OwnershipTier::PlainOwned,
+            locked: true,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("approved before graph changed".to_owned()),
+        });
+        decisions.set(PersistedDecision {
+            binding_name: "node_2".to_owned(),
+            tier: OwnershipTier::PlainOwned,
+            locked: true,
+            reviewed_by: Some("reviewer".to_owned()),
+            comment: Some("still matches".to_owned()),
+        });
+
+        let conflicts = locked_decision_conflicts(&outcome, &decisions);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].key, "node_1");
+        assert_eq!(conflicts[0].solver_tier, OwnershipTier::RcShared);
+        assert_eq!(conflicts[0].locked_tier, OwnershipTier::PlainOwned);
     }
 
     #[test]

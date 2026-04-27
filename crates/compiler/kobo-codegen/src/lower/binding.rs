@@ -73,8 +73,16 @@ pub(crate) fn apply_tier_to_local(
 }
 
 pub(crate) fn apply_tier_to_fn_arg_type(argument: &mut syn::PatType, tier: OwnershipTier) {
+    let tier = fn_arg_lowering_tier(tier);
     let original_ty = (*argument.ty).clone();
     *argument.ty = wrap_owned_type(original_ty, tier);
+}
+
+pub(crate) fn fn_arg_lowering_tier(tier: OwnershipTier) -> OwnershipTier {
+    match tier {
+        OwnershipTier::RcShared | OwnershipTier::ArcShared => OwnershipTier::PlainOwned,
+        _ => tier,
+    }
 }
 
 pub(crate) fn binding_tier_from_expr(

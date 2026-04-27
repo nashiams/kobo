@@ -28,7 +28,7 @@ pub struct GreedyConfig {
 impl Default for GreedyConfig {
     fn default() -> Self {
         Self {
-            solver_cluster_limit: 256,
+            solver_cluster_limit: 2048,
             solver_budget_seconds: 5.0,
             mutable_sites_threshold: 2,
         }

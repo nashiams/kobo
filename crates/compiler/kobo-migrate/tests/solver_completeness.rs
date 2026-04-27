@@ -628,13 +628,16 @@ fn p1_9_evidence_solve_must_not_double_solve() {
         for (id, tier) in outcome_entries {
             let ev_tier = evidence_solution.get(id);
             assert_eq!(
-                Some(tier), ev_tier,
+                Some(tier),
+                ev_tier,
                 "P1-9 FAIL: solve_modular and solve_modular_with_evidence returned \
                  different tiers for node {:?}: {:?} vs {:?}. The evidence function \
                  runs greedy+extract+cluster independently then calls solve_modular \
                  which reruns the pipeline. Production solvers collect evidence \
                  during a single solve pass.",
-                id, tier, ev_tier,
+                id,
+                tier,
+                ev_tier,
             );
         }
     }
@@ -661,9 +664,8 @@ fn p1_10_evidence_counters_must_be_nonzero_for_real_input() {
     // At minimum, greedy should resolve some bindings.
     // But lattice_solved_count should also be > 0 if anything went through
     // the lattice solver.
-    let _total_work = evidence.lattice_solved_count
-        + evidence.backtrack_solved_count
-        + evidence.decomposed_count;
+    let _total_work =
+        evidence.lattice_solved_count + evidence.backtrack_solved_count + evidence.decomposed_count;
 
     // Even if everything resolves greedily, the counters should accurately
     // reflect "0 needed lattice solving" — not be hardcoded to 0.
@@ -951,13 +953,8 @@ fn lattice_must_enforce_mutually_exclusive_constraints() {
         LatticeOutcome::Solved(map) => {
             let t1 = map.get(KirNodeId(1)).unwrap();
             let t2 = map.get(KirNodeId(2)).unwrap();
-            let both_mut = matches!(
-                t1,
-                OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-            ) && matches!(
-                t2,
-                OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-            );
+            let both_mut = matches!(t1, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared)
+                && matches!(t2, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared);
             assert!(
                 !both_mut,
                 "LATTICE EXCLUSIVE FAIL: Both v1={:?} and v2={:?} are mutable-shared \
@@ -965,8 +962,7 @@ fn lattice_must_enforce_mutually_exclusive_constraints() {
                  `MutuallyExclusive => continue;` which skips this constraint. \
                  Only backtrack checks it, but backtrack gets empty disjunctions. \
                  This violates Rust's aliasing rules.",
-                t1,
-                t2,
+                t1, t2,
             );
         }
         LatticeOutcome::Conflict { .. } => {
@@ -1402,8 +1398,7 @@ fn lattice_outcome_must_have_iteration_budget_variant() {
     // LatticeOutcome should have a variant for iteration budget exceeded.
     // Currently it only has Solved and Conflict.
     let _variants = [
-        "Solved",
-        "Conflict",
+        "Solved", "Conflict",
         // "IterationBudgetExceeded" should exist but doesn't.
     ];
 
@@ -1515,19 +1510,13 @@ fn solved_map_must_satisfy_all_constraints() {
 
         // Verify MutuallyExclusive: v3 and v4 cannot both be mutable-shared.
         let t4 = map.get(KirNodeId(4)).unwrap();
-        let both_mut = matches!(
-            t3,
-            OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-        ) && matches!(
-            t4,
-            OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
-        );
+        let both_mut = matches!(t3, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared)
+            && matches!(t4, OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared);
         assert!(
             !both_mut,
             "CONSTRAINT VIOLATION: MutuallyExclusive edge 3↔4, but v3={:?} and \
              v4={:?} are both mutable-shared.",
-            t3,
-            t4,
+            t3, t4,
         );
     }
 }

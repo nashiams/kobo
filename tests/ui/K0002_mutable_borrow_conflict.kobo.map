@@ -40,9 +40,9 @@
   ],
   "solver_evidence": {
     "outcome": "Unique",
-    "graph_fingerprint": "2b38375e9b676b8a732d527a7137b0d0",
+    "graph_fingerprint": "1be9a01697f0974b1c40052f6e9efe0d",
     "node_count": 3,
-    "edge_count": 1,
+    "edge_count": 2,
     "budget": {
       "max_cluster_size": 256,
       "budget_seconds": 5.0

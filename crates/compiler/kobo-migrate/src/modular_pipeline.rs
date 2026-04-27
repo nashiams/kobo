@@ -64,6 +64,7 @@ pub fn solve_modular(kir: &Kir, budget: &SolverBudget) -> SolveOutcome {
     let config = GreedyConfig {
         solver_cluster_limit: budget.max_cluster_size,
         solver_budget_seconds: budget.budget_seconds,
+        mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
     };
     let greedy_result = greedy_resolve(kir, &config);
 
@@ -223,7 +224,11 @@ fn solve_single_cluster(
                 ambiguous_clusters.push(candidates);
             }
         }
-        LatticeOutcome::Conflict { node, floor, ceiling } => {
+        LatticeOutcome::Conflict {
+            node,
+            floor,
+            ceiling,
+        } => {
             // Phase 08: Generate disjunctions from the conflict and run backtracking search.
             let disjunctions = generate_disjunctions_from_conflict(*node, *floor, *ceiling);
             let mut bt = BacktrackSolver::new(cluster);
@@ -294,7 +299,11 @@ fn solve_single_cluster_counted(
                 ambiguous_clusters.push(candidates);
             }
         }
-        LatticeOutcome::Conflict { node, floor, ceiling } => {
+        LatticeOutcome::Conflict {
+            node,
+            floor,
+            ceiling,
+        } => {
             let disjunctions = generate_disjunctions_from_conflict(*node, *floor, *ceiling);
             let mut bt = BacktrackSolver::new(cluster);
             match bt.solve(cluster, &disjunctions) {
@@ -382,6 +391,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
     let config = GreedyConfig {
         solver_cluster_limit: budget.max_cluster_size,
         solver_budget_seconds: budget.budget_seconds,
+        mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
     };
     let greedy_result = greedy_resolve(kir, &config);
     let greedy_resolved_count = greedy_result.resolved.len();

@@ -23,9 +23,7 @@ use kobo_migrate::backtrack::{BacktrackResult, BacktrackSolver, Disjunction};
 use kobo_migrate::cluster::{Cluster, ClusterId};
 use kobo_migrate::constraint_extract::ConstraintNode;
 use kobo_migrate::lattice_solve::{lattice_lub, lattice_solve, tier_rank, LatticeOutcome};
-use kobo_migrate::{
-    ConstraintEdge, ConstraintKind, SolveOutcome, SolverBudget,
-};
+use kobo_migrate::{ConstraintEdge, ConstraintKind, SolveOutcome, SolverBudget};
 
 // ─────────────────── Test Helpers ───────────────────
 
@@ -39,11 +37,7 @@ fn mk_node(id: u32, floor: OwnershipTier) -> ConstraintNode {
     }
 }
 
-fn mk_node_bounded(
-    id: u32,
-    floor: OwnershipTier,
-    ceiling: OwnershipTier,
-) -> ConstraintNode {
+fn mk_node_bounded(id: u32, floor: OwnershipTier, ceiling: OwnershipTier) -> ConstraintNode {
     ConstraintNode {
         id: KirNodeId(id),
         floor,
@@ -152,7 +146,8 @@ fn tier_rank_agrees_with_priority_ordering() {
             let rank_order = tier_rank(a).cmp(&tier_rank(b));
             let prio_order = a.priority().cmp(&b.priority());
             assert_eq!(
-                rank_order, prio_order,
+                rank_order,
+                prio_order,
                 "tier_rank vs priority() disagree for {:?} vs {:?}: \
                  tier_rank={} vs {}, priority={} vs {}",
                 a,
@@ -225,12 +220,7 @@ fn lub_is_associative_exhaustive() {
 #[test]
 fn lub_is_idempotent_exhaustive() {
     for &a in &ALL_TIERS {
-        assert_eq!(
-            lattice_lub(a, a),
-            a,
-            "LUB not idempotent for {:?}",
-            a
-        );
+        assert_eq!(lattice_lub(a, a), a, "LUB not idempotent for {:?}", a);
     }
 }
 
@@ -650,7 +640,8 @@ fn backtrack_depth_limit_prevents_stack_overflow() {
     // Should either solve (since no constraints, first assignment works)
     // or hit depth limit. Must NOT stack overflow or hang.
     match result {
-        BacktrackResult::Solved(_) => { /* OK — no constraints means first assignment is valid */ }
+        BacktrackResult::Solved(_) => { /* OK — no constraints means first assignment is valid */
+        }
         BacktrackResult::Exhausted => {
             // Also OK if depth limit prevents exploring all
         }
@@ -689,8 +680,7 @@ fn send_promotes_rc_to_arc_transitively() {
                 "v1 must be promoted to ArcShared via Send"
             );
             assert!(
-                tier_rank(map.get(KirNodeId(2)).unwrap())
-                    >= tier_rank(OwnershipTier::ArcShared),
+                tier_rank(map.get(KirNodeId(2)).unwrap()) >= tier_rank(OwnershipTier::ArcShared),
                 "v2 must be >= ArcShared via transitive propagation"
             );
         }
@@ -849,7 +839,10 @@ fn boundary_nodes_should_be_flagged_in_extraction() {
         LatticeOutcome::Solved(map) => {
             // v1 boundary node should have been flagged or handled differently.
             // For now, just verify it doesn't crash.
-            assert!(map.get(KirNodeId(1)).is_some(), "Boundary node must appear in solution");
+            assert!(
+                map.get(KirNodeId(1)).is_some(),
+                "Boundary node must appear in solution"
+            );
         }
         LatticeOutcome::Conflict { .. } => { /* also acceptable */ }
         LatticeOutcome::IterationBudgetExceeded { iterations, .. } => {
@@ -1277,10 +1270,16 @@ fn greedy_priority_and_tier_rank_agree_on_relative_order() {
             let rank_cmp = tier_rank(a).cmp(&tier_rank(b));
             let greedy_cmp = a.greedy_priority().cmp(&b.greedy_priority());
             assert_eq!(
-                rank_cmp, greedy_cmp,
+                rank_cmp,
+                greedy_cmp,
                 "tier_rank vs greedy_priority disagree: {:?} vs {:?} \
                  (rank: {} vs {}, greedy: {} vs {})",
-                a, b, tier_rank(a), tier_rank(b), a.greedy_priority(), b.greedy_priority()
+                a,
+                b,
+                tier_rank(a),
+                tier_rank(b),
+                a.greedy_priority(),
+                b.greedy_priority()
             );
         }
     }

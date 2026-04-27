@@ -133,6 +133,7 @@ pub(super) fn cmd_debt_patterns(file: &Path, json: bool) -> anyhow::Result<()> {
     let config = GreedyConfig {
         solver_cluster_limit: session.config.solver_cluster_limit,
         solver_budget_seconds: session.config.solver_budget_seconds,
+        mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
     };
     let result = greedy_resolve(&kir, &config);
     let patterns = detect_migration_patterns(&kir, &result.resolved);

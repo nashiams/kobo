@@ -314,9 +314,7 @@ pub fn lattice_solve(cluster: &Cluster) -> LatticeOutcome {
                     return LatticeOutcome::Conflict {
                         node: edge.source,
                         floor: vars[&edge.source].floor,
-                        ceiling: vars[&edge.source]
-                            .ceiling
-                            .unwrap_or(OwnershipTier::Scoped),
+                        ceiling: vars[&edge.source].ceiling.unwrap_or(OwnershipTier::Scoped),
                     };
                 }
             }

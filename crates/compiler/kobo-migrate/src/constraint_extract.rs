@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use kobo_ir::{FileId, Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier};
+use kobo_ir::{FileId, Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, TransformBindingFacts};
 
 use crate::greedy::GreedyPassResult;
 use crate::solver::{
@@ -70,6 +70,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
             continue;
         }
         let sf = &binding.shared_facts;
+        let requires_send = binding_requires_send(binding);
 
         let mut floor = OwnershipTier::PlainOwned;
         let mut ceiling: Option<OwnershipTier> = None;
@@ -77,7 +78,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
 
         // Floor: needs_sharing → at least RcShared
         if sf.needs_sharing && !sf.needs_mutable_wrapper {
-            floor = if sf.needs_send {
+            floor = if requires_send {
                 OwnershipTier::ArcShared
             } else {
                 OwnershipTier::RcShared
@@ -86,7 +87,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
 
         // Floor: needs_sharing + mutable → at least RcMutShared
         if sf.needs_sharing && sf.needs_mutable_wrapper {
-            floor = if sf.needs_send {
+            floor = if requires_send {
                 OwnershipTier::ArcMutShared
             } else {
                 OwnershipTier::RcMutShared
@@ -94,7 +95,7 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
         }
 
         // Floor: needs_send alone → at least ArcShared
-        if sf.needs_send && floor == OwnershipTier::PlainOwned {
+        if requires_send && floor == OwnershipTier::PlainOwned {
             floor = OwnershipTier::ArcShared;
         }
 
@@ -138,6 +139,15 @@ pub fn extract_constraints(kir: &Kir, greedy_result: &GreedyPassResult) -> Extra
                     .or_default()
                     .push(decl_id);
             }
+        }
+    }
+
+    for binding in &facts.bindings {
+        if node_set.contains(&binding.node) {
+            scope_groups
+                .entry(Some(binding.decl_scope_depth as u32))
+                .or_default()
+                .push(binding.node);
         }
     }
 
@@ -308,6 +318,10 @@ fn is_mutable_floor(tier: OwnershipTier) -> bool {
         tier,
         OwnershipTier::RcMutShared | OwnershipTier::ArcMutShared
     )
+}
+
+fn binding_requires_send(binding: &TransformBindingFacts) -> bool {
+    binding.shared_facts.needs_send || binding.async_shared || binding.is_async
 }
 
 fn find_binding_span(kir: &Kir, node_id: KirNodeId) -> KoboSpan {

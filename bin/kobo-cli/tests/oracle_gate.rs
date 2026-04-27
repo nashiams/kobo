@@ -16,7 +16,6 @@
 ///   6. S-17 detection: borrow-after-move must be detected and reportable.
 ///   7. Conflict provenance: K0080 reports must carry the full chain.
 ///   8. Cross-function consistency: same value → same tier across callsites.
-
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -398,10 +397,7 @@ fn oracle_constraint_graph_must_encode_send_edges_for_async() {
     // equivalent edges. If only PropagateSharing exists, the solver is
     // blind to thread-safety requirements.
     let has_send_edges = kinds.iter().any(|k| {
-        k.contains("Send")
-            || k.contains("send")
-            || k.contains("Async")
-            || k.contains("Floor")
+        k.contains("Send") || k.contains("send") || k.contains("Async") || k.contains("Floor")
     });
 
     assert!(
@@ -446,9 +442,9 @@ fn oracle_game_ecs_graph_must_encode_exclusivity() {
     // STRICT: physics_tick takes &mut EntityPool (exclusive mutable) and
     // render_tick takes &EntityPool (shared read). The graph MUST encode
     // this as MutuallyExclusive or equivalent constraint.
-    let has_exclusivity = kinds.iter().any(|k| {
-        k.contains("Exclusive") || k.contains("exclusive") || k.contains("Conflict")
-    });
+    let has_exclusivity = kinds
+        .iter()
+        .any(|k| k.contains("Exclusive") || k.contains("exclusive") || k.contains("Conflict"));
 
     assert!(
         has_exclusivity,
@@ -583,8 +579,7 @@ fn oracle_pool_borrow_move_must_detect_s17() {
         "oracle violation: pool fixture has borrow-then-move pattern.\n\
          The solver must detect S-17 extract-before-borrow.\n\
          stdout:\n{}\nstderr:\n{}",
-        migrate.stdout,
-        migrate.stderr
+        migrate.stdout, migrate.stderr
     );
 }
 
@@ -636,10 +631,7 @@ fn oracle_k0080_reports_include_provenance_chain() {
     if combined.contains("K0080") {
         // Provenance should mention multiple stages (A through E) or at least
         // reference more than one source location.
-        let location_count = combined
-            .lines()
-            .filter(|l| l.contains("-->"))
-            .count();
+        let location_count = combined.lines().filter(|l| l.contains("-->")).count();
         assert!(
             location_count >= 2,
             "oracle violation: K0080 for deep call chain reports only {} location(s).\n\
@@ -676,7 +668,8 @@ fn oracle_diamond_config_must_have_consistent_tier() {
         .lines()
         .filter(|l| {
             let lower = l.to_lowercase();
-            lower.contains("config") && (lower.contains("rc") || lower.contains("arc") || lower.contains("box"))
+            lower.contains("config")
+                && (lower.contains("rc") || lower.contains("arc") || lower.contains("box"))
         })
         .collect();
 
@@ -706,9 +699,7 @@ fn oracle_diamond_config_must_have_consistent_tier() {
                      Line 0: {}\n\
                      Line {}: {}\n\
                      All references to the same Config instance must use the same tier.",
-                    config_lines[0],
-                    i,
-                    line
+                    config_lines[0], i, line
                 );
             }
         }
@@ -736,18 +727,14 @@ fn oracle_diamond_config_must_have_consistent_tier() {
 #[test]
 fn oracle_lsm_compaction_must_solve_without_budget_exceeded() {
     let case = OracleCase::new("oracle-lsm", "oracle_lsm_compaction.kobo");
-    let evidence = parse_migrate_header(&run_kobo(
-        ["migrate", "--dry-run"],
-        &case.fixture_path,
-    ));
+    let evidence = parse_migrate_header(&run_kobo(["migrate", "--dry-run"], &case.fixture_path));
 
     assert_ne!(
         evidence.outcome, "BudgetExceeded",
         "oracle violation: LSM compaction fixture (~180 lines, ~6 functions) \
          exceeded solver budget. A production solver handles this easily.\n\
          nodes={} edges={}",
-        evidence.node_count,
-        evidence.edge_count
+        evidence.node_count, evidence.edge_count
     );
 
     assert_ne!(
@@ -765,10 +752,7 @@ fn oracle_lsm_compaction_must_solve_without_budget_exceeded() {
 #[test]
 fn oracle_lsm_must_have_cross_function_edges() {
     let case = OracleCase::new("oracle-lsm-edges", "oracle_lsm_compaction.kobo");
-    let evidence = parse_migrate_header(&run_kobo(
-        ["migrate", "--dry-run"],
-        &case.fixture_path,
-    ));
+    let evidence = parse_migrate_header(&run_kobo(["migrate", "--dry-run"], &case.fixture_path));
 
     // The LSM fixture has 7+ functions sharing KvStore mutably.
     // With proper interprocedural analysis, edge count should be substantial.
@@ -912,10 +896,8 @@ fn oracle_different_fixtures_have_different_fingerprints() {
 
     for fixture_name in fixtures {
         let case = OracleCase::new("oracle-fingerprint", fixture_name);
-        let evidence = parse_migrate_header(&run_kobo(
-            ["migrate", "--dry-run"],
-            &case.fixture_path,
-        ));
+        let evidence =
+            parse_migrate_header(&run_kobo(["migrate", "--dry-run"], &case.fixture_path));
         fingerprints.push((fixture_name.to_string(), evidence.fingerprint));
     }
 
@@ -926,9 +908,7 @@ fn oracle_different_fixtures_have_different_fingerprints() {
                 fingerprints[i].1, fingerprints[j].1,
                 "oracle violation: {} and {} have identical fingerprint '{}'.\n\
                  Different programs must produce different constraint graph fingerprints.",
-                fingerprints[i].0,
-                fingerprints[j].0,
-                fingerprints[i].1
+                fingerprints[i].0, fingerprints[j].0, fingerprints[i].1
             );
         }
     }

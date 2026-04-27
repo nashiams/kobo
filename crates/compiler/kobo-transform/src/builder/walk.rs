@@ -342,6 +342,7 @@ impl TransformFactsBuilder<'_> {
     }
 
     fn walk_call(&mut self, call: &syn::ExprCall) {
+        let is_async_local_call = self.is_async_local_function_expr(call.func.as_ref());
         self.walk_expr(call.func.as_ref());
         let escape_kind = if self.is_local_function_expr(call.func.as_ref()) {
             None
@@ -350,9 +351,16 @@ impl TransformFactsBuilder<'_> {
         };
         for argument in &call.args {
             let syn::Expr::Reference(reference) = argument else {
+                if is_async_local_call {
+                    self.mark_expr_needs_send(argument);
+                }
                 self.walk_move_context_expr(argument, escape_kind);
                 continue;
             };
+
+            if is_async_local_call {
+                self.mark_expr_needs_send(reference.expr.as_ref());
+            }
 
             if self.emit_ephemeral_borrow(reference.expr.as_ref(), borrow_kind(reference)) {
                 continue;

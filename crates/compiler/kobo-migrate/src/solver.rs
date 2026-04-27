@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
-use kobo_ir::{FileId, Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, SolutionMap};
+use kobo_ir::{
+    FileId, Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, SolutionMap, TransformBindingFacts,
+};
 
 /// Input to the solver: a graph of ownership constraints extracted from KIR.
 pub struct ConstraintGraph {
@@ -274,7 +276,22 @@ pub fn build_kir_constraint_graph(kir: &Kir) -> ConstraintGraph {
         }
     }
 
-    // For bindings used together in the same scope block, add PropagateSharing edges.
+    let facts = kir.transform_facts();
+    for binding in &facts.bindings {
+        if decl_set.contains(&binding.node) {
+            scope_decls
+                .entry(Some(binding.decl_scope_depth as u32))
+                .or_default()
+                .push(binding.node);
+        }
+    }
+
+    let mut fact_by_node = BTreeMap::new();
+    for binding in &facts.bindings {
+        fact_by_node.insert(binding.node, binding);
+    }
+
+    // For bindings used together in the same scope block, add propagation edges.
     let mut edge_set = BTreeSet::new();
     for decl_ids in scope_decls.values() {
         let unique_decls: BTreeSet<KirNodeId> = decl_ids.iter().copied().collect();
@@ -286,18 +303,47 @@ pub fn build_kir_constraint_graph(kir: &Kir) -> ConstraintGraph {
                 } else {
                     (unique_vec[j], unique_vec[i])
                 };
-                if edge_set.insert((a, b)) {
-                    edges.push(ConstraintEdge::new(
+                let left = fact_by_node.get(&a).copied();
+                let right = fact_by_node.get(&b).copied();
+                let needs_send = left.map(binding_requires_send).unwrap_or(false)
+                    || right.map(binding_requires_send).unwrap_or(false);
+                let needs_exclusion = left.map(binding_needs_mutable).unwrap_or(false)
+                    && right.map(binding_needs_mutable).unwrap_or(false);
+                let needs_sharing = left.map(binding_needs_sharing).unwrap_or(true)
+                    || right.map(binding_needs_sharing).unwrap_or(true);
+
+                if needs_sharing {
+                    push_graph_edge(
+                        &mut edges,
+                        &mut edge_set,
                         a,
                         b,
                         ConstraintKind::PropagateSharing,
-                        ConstraintProvenance::new(
-                            KoboSpan::new(0, 0, FileId(0)),
-                            ConstraintFactKind::AliasFlow,
-                            "kir-co-scope-sharing",
-                            None,
-                        ),
-                    ));
+                        ConstraintFactKind::AliasFlow,
+                        "kir-co-scope-sharing",
+                    );
+                }
+                if needs_send {
+                    push_graph_edge(
+                        &mut edges,
+                        &mut edge_set,
+                        a,
+                        b,
+                        ConstraintKind::PropagateSend,
+                        ConstraintFactKind::NeedsSend,
+                        "kir-send-propagation",
+                    );
+                }
+                if needs_exclusion {
+                    push_graph_edge(
+                        &mut edges,
+                        &mut edge_set,
+                        a,
+                        b,
+                        ConstraintKind::MutuallyExclusive,
+                        ConstraintFactKind::CoMutation,
+                        "kir-co-mutation-exclusion",
+                    );
                 }
             }
         }
@@ -307,6 +353,41 @@ pub fn build_kir_constraint_graph(kir: &Kir) -> ConstraintGraph {
         nodes: decl_nodes,
         edges,
     }
+}
+
+fn push_graph_edge(
+    edges: &mut Vec<ConstraintEdge>,
+    edge_set: &mut BTreeSet<(KirNodeId, KirNodeId, &'static str)>,
+    source: KirNodeId,
+    target: KirNodeId,
+    kind: ConstraintKind,
+    fact_kind: ConstraintFactKind,
+    rule_name: &'static str,
+) {
+    let key = (source, target, rule_name);
+    if edge_set.insert(key) {
+        edges.push(ConstraintEdge::new(
+            source,
+            target,
+            kind,
+            ConstraintProvenance::new(KoboSpan::new(0, 0, FileId(0)), fact_kind, rule_name, None),
+        ));
+    }
+}
+
+fn binding_requires_send(binding: &TransformBindingFacts) -> bool {
+    binding.shared_facts.needs_send || binding.async_shared || binding.is_async
+}
+
+fn binding_needs_mutable(binding: &TransformBindingFacts) -> bool {
+    binding.shared_facts.needs_mutable_wrapper || binding.shared_facts.mutable_sites > 0
+}
+
+fn binding_needs_sharing(binding: &TransformBindingFacts) -> bool {
+    binding.shared_facts.needs_sharing
+        || binding.shared_facts.has_escape
+        || binding_needs_mutable(binding)
+        || binding_requires_send(binding)
 }
 
 /// Solves ownership constraints for the given graph within the given budget.

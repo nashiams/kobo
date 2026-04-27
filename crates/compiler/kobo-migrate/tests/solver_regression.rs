@@ -67,7 +67,11 @@ fn test_iteration_cap_does_not_return_solved() {
         if i == 0 {
             nodes.push(mk_node(i, OwnershipTier::ArcMutShared));
         } else if i == n - 1 {
-            nodes.push(mk_node_bounded(i, OwnershipTier::PlainOwned, OwnershipTier::RcShared));
+            nodes.push(mk_node_bounded(
+                i,
+                OwnershipTier::PlainOwned,
+                OwnershipTier::RcShared,
+            ));
         } else {
             nodes.push(mk_node(i, OwnershipTier::PlainOwned));
         }
@@ -265,7 +269,8 @@ fn test_partial_solution_no_fabricated_plain_owned() {
             // If budget exceeded, verify no fabricated PlainOwned.
             for node in &cluster.nodes {
                 if let Some(tier) = partial_map.get(node.id) {
-                    if tier == OwnershipTier::PlainOwned && node.floor != OwnershipTier::PlainOwned {
+                    if tier == OwnershipTier::PlainOwned && node.floor != OwnershipTier::PlainOwned
+                    {
                         panic!(
                             "Regression: node {:?} got PlainOwned but floor is {:?}",
                             node.id, node.floor

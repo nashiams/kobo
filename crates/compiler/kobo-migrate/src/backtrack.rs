@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 
 use crate::cluster::Cluster;
+use crate::lattice_solve::tier_rank;
 use crate::solver::ConstraintKind;
 
 /// A disjunctive constraint: at least one of the alternatives must hold.
@@ -135,8 +136,12 @@ impl BacktrackSolver {
 
     /// Run backtracking search with disjunctions.
     pub fn solve(&mut self, cluster: &Cluster, disjunctions: &[Disjunction]) -> BacktrackResult {
-        // If no disjunctions, the current assignment (from floors) is the answer.
+        // If no disjunctions, the current assignment is only valid when it
+        // already satisfies every cluster constraint.
         if disjunctions.is_empty() {
+            if !self.is_consistent(cluster) {
+                return BacktrackResult::Exhausted;
+            }
             let mut map = SolutionMap::new();
             for (&id, &tier) in &self.current {
                 map.insert(id, tier);
@@ -207,13 +212,12 @@ impl BacktrackSolver {
             if let (Some(&s), Some(&t)) = (src, tgt) {
                 match &edge.kind {
                     ConstraintKind::PropagateSharing => {
-                        if s.is_shared() && !t.is_shared() {
+                        if tier_rank(t) < tier_rank(s) || tier_rank(s) < tier_rank(t) {
                             return false;
                         }
                     }
                     ConstraintKind::PropagateSend => {
-                        // Both must be thread-safe.
-                        if !s.is_thread_safe() || !t.is_thread_safe() {
+                        if !send_constraint_satisfied(s, t) || !send_constraint_satisfied(t, s) {
                             return false;
                         }
                     }
@@ -231,6 +235,18 @@ impl BacktrackSolver {
             }
         }
         true
+    }
+}
+
+fn send_constraint_satisfied(source: OwnershipTier, target: OwnershipTier) -> bool {
+    tier_rank(target) >= tier_rank(send_requirement(source))
+}
+
+fn send_requirement(tier: OwnershipTier) -> OwnershipTier {
+    match tier {
+        OwnershipTier::RcShared => OwnershipTier::ArcShared,
+        OwnershipTier::RcMutShared => OwnershipTier::ArcMutShared,
+        other => other,
     }
 }
 

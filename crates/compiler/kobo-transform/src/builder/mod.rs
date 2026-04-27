@@ -66,6 +66,7 @@ pub(crate) struct TransformFactsBuilder<'a> {
     copy_registry: HashSet<String>,
     method_registry: MethodRegistry,
     function_names: HashSet<String>,
+    async_function_names: HashSet<String>,
     pending_elision_candidates: HashMap<kobo_ir::KoboAstNodeId, AstCloneElisionCandidate>,
     struct_defs: Vec<KirStructDef>,
     /// Byte-offset spans of functions annotated with `#[kobo::relax]` [G5].
@@ -152,6 +153,17 @@ impl<'a> TransformFactsBuilder<'a> {
                         })
                         .collect(),
                     _ => vec![],
+                })
+                .collect(),
+            async_function_names: ast
+                .inner
+                .items
+                .iter()
+                .flat_map(|item| match item {
+                    syn::Item::Fn(function) if function.sig.asyncness.is_some() => {
+                        vec![function.sig.ident.to_string()]
+                    }
+                    _ => Vec::new(),
                 })
                 .collect(),
             pending_elision_candidates: collect_elision_candidate_sites(ast)
@@ -315,21 +327,25 @@ impl<'a> TransformFactsBuilder<'a> {
     }
 
     fn is_local_function_expr(&self, expr: &syn::Expr) -> bool {
+        self.local_function_name(expr)
+            .is_some_and(|name| self.function_names.contains(&name))
+    }
+
+    fn is_async_local_function_expr(&self, expr: &syn::Expr) -> bool {
+        self.local_function_name(expr)
+            .is_some_and(|name| self.async_function_names.contains(&name))
+    }
+
+    fn local_function_name(&self, expr: &syn::Expr) -> Option<String> {
         match expr {
-            syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => {
-                self.function_names.contains(
-                    &path
-                        .path
-                        .segments
-                        .first()
-                        .expect("single segment")
-                        .ident
-                        .to_string(),
-                )
-            }
-            syn::Expr::Paren(paren) => self.is_local_function_expr(paren.expr.as_ref()),
-            syn::Expr::Group(group) => self.is_local_function_expr(group.expr.as_ref()),
-            _ => false,
+            syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => path
+                .path
+                .segments
+                .first()
+                .map(|segment| segment.ident.to_string()),
+            syn::Expr::Paren(paren) => self.local_function_name(paren.expr.as_ref()),
+            syn::Expr::Group(group) => self.local_function_name(group.expr.as_ref()),
+            _ => None,
         }
     }
 

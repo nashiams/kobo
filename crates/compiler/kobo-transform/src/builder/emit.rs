@@ -278,6 +278,21 @@ impl TransformFactsBuilder<'_> {
         self.transform_facts.bindings[index].usage.push_use(event);
     }
 
+    pub(super) fn mark_expr_needs_send(&mut self, expr: &syn::Expr) -> bool {
+        let Some((binding_state, _)) = self.resolved_binding(expr) else {
+            return false;
+        };
+        self.mark_binding_needs_send(binding_state.decl_id)
+    }
+
+    fn mark_binding_needs_send(&mut self, decl_id: kobo_ir::KirNodeId) -> bool {
+        let Some(index) = self.fact_indices.get(&decl_id).copied() else {
+            return false;
+        };
+        self.transform_facts.bindings[index].shared_facts.needs_send = true;
+        true
+    }
+
     #[allow(dead_code)]
     pub(super) fn record_hint_conflict(&mut self, conflict: HintConflictFact) {
         self.hint_conflicts.push(conflict);

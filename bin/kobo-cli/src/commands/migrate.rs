@@ -58,6 +58,7 @@ pub(super) fn cmd_migrate(
     let config = GreedyConfig {
         solver_cluster_limit: budget.max_cluster_size,
         solver_budget_seconds: budget.budget_seconds,
+        mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
     };
     let mut migrate_ctxt = MigrateCtxt::new(kir, config);
     let modular = solve_modular_with_evidence(migrate_ctxt.kir(), &budget);

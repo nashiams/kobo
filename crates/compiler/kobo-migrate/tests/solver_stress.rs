@@ -181,7 +181,11 @@ fn conflicting_floor_ceiling_chain() {
         if i == 0 {
             nodes.push(mk_node(i, OwnershipTier::ArcMutShared));
         } else if i == n - 1 {
-            nodes.push(mk_node_bounded(i, OwnershipTier::PlainOwned, OwnershipTier::RcShared));
+            nodes.push(mk_node_bounded(
+                i,
+                OwnershipTier::PlainOwned,
+                OwnershipTier::RcShared,
+            ));
         } else {
             nodes.push(mk_node(i, OwnershipTier::PlainOwned));
         }
@@ -339,6 +343,9 @@ fn complete_graph_20_nodes_converges_to_max_floor() {
                 );
             }
         }
-        other => panic!("Complete graph with no ceilings should solve, got {:?}", other),
+        other => panic!(
+            "Complete graph with no ceilings should solve, got {:?}",
+            other
+        ),
     }
 }

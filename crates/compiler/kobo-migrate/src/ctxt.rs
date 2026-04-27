@@ -75,6 +75,7 @@ mod tests {
         let config = GreedyConfig {
             solver_cluster_limit: 256,
             solver_budget_seconds: 5.0,
+            mutable_sites_threshold: GreedyConfig::default().mutable_sites_threshold,
         };
         let ctxt = MigrateCtxt::new(kir, config);
         assert!(ctxt.summaries().is_empty());

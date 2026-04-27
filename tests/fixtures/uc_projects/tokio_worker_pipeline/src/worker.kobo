@@ -1,0 +1,7 @@
+use crate::metrics::Metrics;
+use crate::queue::JobRequest;
+
+pub async fn run_worker(metrics: &mut Metrics, job: JobRequest) {
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    metrics.record(job.duration_ms);
+}

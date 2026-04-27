@@ -1,0 +1,22 @@
+use serde_json::json;
+
+use crate::domain::order::Order;
+use crate::domain::pricing::price;
+
+pub fn route_request(path: &str) -> String {
+    if path == "/health" {
+        return json!({ "status": "ok" }).to_string();
+    }
+
+    if path == "/quote" {
+        let order = Order::new("lulus", 4, 1250);
+        let total = price(&order).unwrap_or(0);
+        return json!({
+            "customer": order.customer,
+            "total_cents": total,
+        })
+        .to_string();
+    }
+
+    json!({ "status": "not_found" }).to_string()
+}

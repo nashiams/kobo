@@ -79,15 +79,7 @@ impl KoboProjectConfig {
                 if dep_name.starts_with("kobo") {
                     continue;
                 }
-                let version_str = match dep_val {
-                    toml::Value::String(s) => s.clone(),
-                    toml::Value::Table(t) => t
-                        .get("version")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("*")
-                        .to_owned(),
-                    _ => "*".to_owned(),
-                };
+                let version_str = dependency_manifest_spec(dep_val);
                 dependencies.push((dep_name.clone(), version_str));
             }
         }
@@ -122,18 +114,64 @@ pub fn generate_cargo_project(
 
     // Write source files.
     for (kobo_path, clean_source) in source_files {
-        let rs_name = if source_files.len() == 1 {
-            "main.rs".to_owned()
+        let rs_path = if source_files.len() == 1 {
+            PathBuf::from("main.rs")
         } else {
-            kobo_path
-                .file_stem()
-                .map(|s| format!("{}.rs", s.to_string_lossy()))
-                .unwrap_or_else(|| "main.rs".to_owned())
+            rs_relative_path(kobo_path)
         };
-        fs::write(src_dir.join(rs_name), clean_source)?;
+        let output_path = src_dir.join(rs_path);
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(output_path, clean_source)?;
     }
 
     Ok(())
+}
+
+fn dependency_manifest_spec(dep_val: &toml::Value) -> String {
+    match dep_val {
+        toml::Value::String(s) => s.clone(),
+        toml::Value::Table(table) => format_inline_table(table),
+        other => other.to_string(),
+    }
+}
+
+fn format_inline_table(table: &toml::map::Map<String, toml::Value>) -> String {
+    let entries = table
+        .iter()
+        .map(|(key, value)| format!("{key} = {}", format_toml_value(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{ {entries} }}")
+}
+
+fn format_toml_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        toml::Value::Integer(_)
+        | toml::Value::Float(_)
+        | toml::Value::Boolean(_)
+        | toml::Value::Datetime(_) => value.to_string(),
+        toml::Value::Array(values) => {
+            let inner = values
+                .iter()
+                .map(format_toml_value)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{inner}]")
+        }
+        toml::Value::Table(table) => format_inline_table(table),
+    }
+}
+
+fn rs_relative_path(kobo_path: &Path) -> PathBuf {
+    let mut rel = kobo_path
+        .strip_prefix("src")
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| kobo_path.to_path_buf());
+    rel.set_extension("rs");
+    rel
 }
 
 fn generate_cargo_toml(config: &KoboProjectConfig) -> String {
@@ -263,6 +301,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_kobo_toml_preserves_table_dependency_features() {
+        let toml_str = r#"
+[package]
+name = "async-app"
+version = "0.1.0"
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+"#;
+        let config = KoboProjectConfig::from_toml(toml_str).unwrap();
+        let dep = config
+            .dependencies
+            .iter()
+            .find(|(name, _)| name == "tokio")
+            .expect("tokio dependency should be preserved");
+
+        assert!(dep.1.starts_with('{'));
+        assert!(dep.1.contains("version = \"1\""));
+        assert!(dep
+            .1
+            .contains("features = [\"rt\", \"macros\", \"sync\", \"time\"]"));
+    }
+
+    #[test]
     fn default_config_generates_valid_package_metadata() {
         let config = KoboProjectConfig::default();
         let cargo_toml = generate_cargo_toml(&config);
@@ -335,5 +397,28 @@ kobo-runtime = { path = "../kobo-runtime" }
 
         let lib_content = fs::read_to_string(temp.path().join("src/lib.rs")).unwrap();
         assert!(lib_content.contains("pub fn greet()"));
+    }
+
+    #[test]
+    fn multi_source_project_preserves_nested_module_paths() {
+        let config = KoboProjectConfig::default();
+        let sources = vec![
+            (PathBuf::from("src/main.kobo"), "mod domain;".to_owned()),
+            (
+                PathBuf::from("src/domain/mod.kobo"),
+                "pub mod order;".to_owned(),
+            ),
+            (
+                PathBuf::from("src/domain/order.kobo"),
+                "pub struct Order;".to_owned(),
+            ),
+        ];
+
+        let temp = tempfile::tempdir().unwrap();
+        generate_cargo_project(&config, &sources, temp.path()).unwrap();
+
+        assert!(temp.path().join("src/main.rs").exists());
+        assert!(temp.path().join("src/domain/mod.rs").exists());
+        assert!(temp.path().join("src/domain/order.rs").exists());
     }
 }

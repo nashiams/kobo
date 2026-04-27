@@ -1,0 +1,30 @@
+mod metrics;
+mod queue;
+mod worker;
+
+use anyhow::Result;
+use metrics::Metrics;
+use queue::build_queue;
+use worker::run_worker;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+    let jobs = build_queue();
+
+    for job in jobs {
+        sender.send(job).await?;
+    }
+    drop(sender);
+
+    let mut metrics = Metrics::new();
+    while let Some(job) = receiver.recv().await {
+        run_worker(&mut metrics, job).await;
+    }
+
+    println!(
+        "processed={} total_ms={}",
+        metrics.processed, metrics.total_ms
+    );
+    Ok(())
+}

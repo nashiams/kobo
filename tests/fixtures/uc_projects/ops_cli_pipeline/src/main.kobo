@@ -1,0 +1,39 @@
+mod config;
+mod jobs;
+mod report;
+
+use anyhow::Result;
+use clap::{Arg, Command};
+use config::AppConfig;
+use jobs::{select_jobs, Job};
+use report::build_report;
+
+fn main() -> Result<()> {
+    let matches = Command::new("ops-pipeline")
+        .arg(Arg::new("limit").long("limit").default_value("3"))
+        .arg(Arg::new("region").long("region").default_value("ap-south"))
+        .get_matches();
+
+    let limit_text = matches
+        .get_one::<String>("limit")
+        .map(String::as_str)
+        .unwrap_or("3");
+    let limit = limit_text.parse::<usize>().unwrap_or(3);
+    let region = matches
+        .get_one::<String>("region")
+        .map(String::as_str)
+        .unwrap_or("ap-south");
+
+    let config = AppConfig::new(region.to_string(), limit);
+    let jobs = vec![
+        Job::new("ingest", 34),
+        Job::new("transcode", 55),
+        Job::new("publish", 21),
+        Job::new("audit", 89),
+    ];
+    let selected = select_jobs(&jobs, config.limit);
+    let report = build_report(&config, &selected);
+
+    println!("{}", report);
+    Ok(())
+}

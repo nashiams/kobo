@@ -60,16 +60,6 @@ fn mk_node_bounded(id: u32, floor: OwnershipTier, ceiling: OwnershipTier) -> Con
     }
 }
 
-fn mk_boundary_node(id: u32, floor: OwnershipTier) -> ConstraintNode {
-    ConstraintNode {
-        id: KirNodeId(id),
-        floor,
-        ceiling: None,
-        is_boundary: true,
-        binding_name: format!("boundary_v{}", id),
-    }
-}
-
 fn mk_edge(src: u32, tgt: u32, kind: ConstraintKind) -> ConstraintEdge {
     ConstraintEdge::synthetic(KirNodeId(src), KirNodeId(tgt), kind, "completeness-test")
 }
@@ -1639,7 +1629,7 @@ fn stress_deep_chain_500_nodes() {
         LatticeOutcome::Conflict { .. } => {
             panic!("Unexpected conflict in simple 500-node chain");
         }
-        LatticeOutcome::IterationBudgetExceeded { iterations, .. } => {
+        LatticeOutcome::IterationBudgetExceeded { .. } => {
             // Budget exceeded is now an explicit signal — better than a silent partial.
             // The 500-node chain should have budget = 500*64 = 32000 iterations.
             // If it exceeds that, the partial map is returned explicitly.

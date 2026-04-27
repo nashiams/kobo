@@ -1,0 +1,11 @@
+#[derive(Clone, Debug)]
+pub struct AppConfig {
+    pub region: String,
+    pub limit: usize,
+}
+
+impl AppConfig {
+    pub fn new(region: String, limit: usize) -> Self {
+        Self { region, limit }
+    }
+}

@@ -1,0 +1,17 @@
+use thiserror::Error;
+
+use crate::domain::order::Order;
+
+#[derive(Debug, Error)]
+pub enum PricingError {
+    #[error("order has no items")]
+    EmptyOrder,
+}
+
+pub fn price(order: &Order) -> Result<u64, PricingError> {
+    if order.item_count == 0 {
+        return Err(PricingError::EmptyOrder);
+    }
+
+    Ok(order.item_count * order.cents_per_item)
+}

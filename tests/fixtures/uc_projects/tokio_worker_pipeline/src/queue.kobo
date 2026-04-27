@@ -1,0 +1,19 @@
+#[derive(Clone, Debug)]
+pub struct JobRequest {
+    pub id: u64,
+    pub duration_ms: u64,
+}
+
+impl JobRequest {
+    pub fn new(id: u64, duration_ms: u64) -> Self {
+        Self { id, duration_ms }
+    }
+}
+
+pub fn build_queue() -> Vec<JobRequest> {
+    vec![
+        JobRequest::new(100, 11),
+        JobRequest::new(101, 17),
+        JobRequest::new(102, 23),
+    ]
+}

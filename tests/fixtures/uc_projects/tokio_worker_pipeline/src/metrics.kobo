@@ -1,0 +1,19 @@
+#[derive(Clone, Debug)]
+pub struct Metrics {
+    pub processed: u64,
+    pub total_ms: u64,
+}
+
+impl Metrics {
+    pub fn new() -> Self {
+        Self {
+            processed: 0,
+            total_ms: 0,
+        }
+    }
+
+    pub fn record(&mut self, duration_ms: u64) {
+        self.processed = self.processed + 1;
+        self.total_ms = self.total_ms + duration_ms;
+    }
+}

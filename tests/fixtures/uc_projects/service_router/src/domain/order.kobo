@@ -1,0 +1,16 @@
+#[derive(Clone, Debug)]
+pub struct Order {
+    pub customer: String,
+    pub item_count: u64,
+    pub cents_per_item: u64,
+}
+
+impl Order {
+    pub fn new(customer: &str, item_count: u64, cents_per_item: u64) -> Self {
+        Self {
+            customer: customer.to_string(),
+            item_count,
+            cents_per_item,
+        }
+    }
+}

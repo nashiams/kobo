@@ -1,0 +1,16 @@
+use serde_json::{json, Value};
+
+use crate::config::AppConfig;
+use crate::jobs::Job;
+
+pub fn build_report(config: &AppConfig, jobs: &[Job]) -> Value {
+    let total_cost: u64 = jobs.iter().map(|job| job.cost).sum();
+    let names: Vec<String> = jobs.iter().map(|job| job.name.clone()).collect();
+
+    json!({
+        "region": config.region.clone(),
+        "selected": names,
+        "total_cost": total_cost,
+        "limit": config.limit,
+    })
+}

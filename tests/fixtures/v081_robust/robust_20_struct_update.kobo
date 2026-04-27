@@ -1,0 +1,16 @@
+struct Settings {
+    retries: u32,
+    label: String,
+}
+
+fn main() {
+    let base = Settings {
+        retries: 3,
+        label: String::from("base"),
+    };
+    let tuned = Settings {
+        retries: 5,
+        ..base
+    };
+    println!("{}", tuned.retries + tuned.label.len() as u32);
+}

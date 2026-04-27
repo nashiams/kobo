@@ -1,0 +1,14 @@
+fn parse_count(raw: &str) -> Result<u64, String> {
+    if raw.len() == 0 {
+        Err(String::from("empty"))
+    } else {
+        Ok(raw.len() as u64)
+    }
+}
+
+fn main() {
+    match parse_count("orders") {
+        Ok(count) => println!("{}", count),
+        Err(error) => println!("{}", error),
+    }
+}

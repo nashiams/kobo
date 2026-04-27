@@ -1,0 +1,9 @@
+fn split(pair: (String, usize)) -> usize {
+    let (name, count) = pair;
+    name.len() + count
+}
+
+fn main() {
+    let total = split((String::from("node"), 4));
+    println!("{}", total);
+}

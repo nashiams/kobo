@@ -1,0 +1,8 @@
+fn sum_first_three(values: &[i32]) -> i32 {
+    values[0] + values[1] + values[2]
+}
+
+fn main() {
+    let values = [1, 2, 3, 4];
+    println!("{}", sum_first_three(&values));
+}

@@ -1,0 +1,10 @@
+fn push_value<T>(target: &mut Vec<T>, value: T) {
+    target.push(value);
+}
+
+fn main() {
+    let mut values = Vec::new();
+    push_value(&mut values, String::from("one"));
+    push_value(&mut values, String::from("two"));
+    println!("{}", values.len());
+}

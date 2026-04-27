@@ -1,0 +1,20 @@
+struct Builder {
+    output: String,
+}
+
+impl Builder {
+    fn new() -> Self {
+        Self { output: String::new() }
+    }
+
+    fn push(&mut self, part: &str) {
+        self.output.push_str(part);
+    }
+}
+
+fn main() {
+    let mut builder = Builder::new();
+    builder.push("ko");
+    builder.push("bo");
+    println!("{}", builder.output);
+}

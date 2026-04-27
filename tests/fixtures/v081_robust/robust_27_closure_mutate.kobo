@@ -1,0 +1,11 @@
+fn main() {
+    let mut total = 0;
+    {
+        let mut add = |value: i32| {
+            total = total + value;
+        };
+        add(1);
+        add(2);
+    }
+    println!("{}", total);
+}

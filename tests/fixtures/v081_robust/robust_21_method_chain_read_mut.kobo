@@ -1,0 +1,25 @@
+struct Log {
+    entries: Vec<String>,
+}
+
+impl Log {
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    fn push(&mut self, value: String) {
+        self.entries.push(value);
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+fn main() {
+    let mut log = Log::new();
+    log.push(String::from("start"));
+    let before = log.len();
+    log.push(String::from("stop"));
+    println!("{}", before + log.len());
+}

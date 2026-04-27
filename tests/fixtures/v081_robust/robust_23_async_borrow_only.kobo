@@ -1,0 +1,20 @@
+struct Request {
+    path: String,
+}
+
+async fn check(req: &Request) -> bool {
+    req.path.len() > 1
+}
+
+async fn handle(req: Request) -> usize {
+    if check(&req).await {
+        req.path.len()
+    } else {
+        0
+    }
+}
+
+fn main() {
+    let req = Request { path: String::from("/status") };
+    println!("{}", req.path.len());
+}

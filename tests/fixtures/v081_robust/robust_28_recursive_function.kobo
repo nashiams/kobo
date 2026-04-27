@@ -1,0 +1,11 @@
+fn factorial(value: u64) -> u64 {
+    if value <= 1 {
+        1
+    } else {
+        value * factorial(value - 1)
+    }
+}
+
+fn main() {
+    println!("{}", factorial(5));
+}

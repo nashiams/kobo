@@ -1,0 +1,12 @@
+struct Point(i32, i32);
+
+fn translate(point: &mut Point, dx: i32, dy: i32) {
+    point.0 = point.0 + dx;
+    point.1 = point.1 + dy;
+}
+
+fn main() {
+    let mut point = Point(1, 2);
+    translate(&mut point, 3, 4);
+    println!("{}", point.0 + point.1);
+}

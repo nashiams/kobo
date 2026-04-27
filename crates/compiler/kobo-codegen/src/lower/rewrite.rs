@@ -372,7 +372,12 @@ impl<'a> Lowerer<'a> {
         match stmt {
             syn::Stmt::Local(local) => self.lower_local(local, scopes),
             syn::Stmt::Item(item) => self.lower_item(item),
-            syn::Stmt::Expr(expr, _) => self.lower_expr(expr, scopes),
+            syn::Stmt::Expr(expr, semi) => {
+                if semi.is_none() && self.lower_owned_value_expr(expr, scopes) {
+                    return;
+                }
+                self.lower_expr(expr, scopes);
+            }
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.

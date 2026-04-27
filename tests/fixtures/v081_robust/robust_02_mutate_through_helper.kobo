@@ -1,0 +1,24 @@
+struct Account {
+    cents: i64,
+}
+
+impl Account {
+    fn new() -> Self {
+        Self { cents: 0 }
+    }
+
+    fn deposit(&mut self, cents: i64) {
+        self.cents = self.cents + cents;
+    }
+}
+
+fn apply_bonus(account: &mut Account) {
+    account.deposit(25);
+}
+
+fn main() {
+    let mut account = Account::new();
+    account.deposit(100);
+    apply_bonus(&mut account);
+    println!("{}", account.cents);
+}

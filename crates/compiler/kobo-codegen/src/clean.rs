@@ -194,10 +194,21 @@ fn remove_kobo_markers(source: &str) -> String {
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            !trimmed.starts_with("__kobo_")
+            !is_kobo_marker_macro_line(trimmed)
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn is_kobo_marker_macro_line(trimmed: &str) -> bool {
+    [
+        "__kobo_spawn_block!",
+        "__kobo_select_block!",
+        "__kobo_select_arm!",
+        "__kobo_chan_type!",
+    ]
+    .iter()
+    .any(|marker| trimmed.starts_with(marker))
 }
 
 fn remove_kobo_attributes(source: &str) -> String {
@@ -274,6 +285,14 @@ mod tests {
         let output = strip_kobo_wrappers(input);
         assert!(!output.contains("__kobo_"));
         assert!(output.contains("let x = 1"));
+    }
+
+    #[test]
+    fn preserve_generated_helper_identifiers() {
+        let input = "let __kobo_local = tokio::task::LocalSet::new();\n__kobo_local.run_until(async move {}).await;";
+        let output = strip_kobo_wrappers(input);
+        assert!(output.contains("let __kobo_local"));
+        assert!(output.contains("__kobo_local.run_until"));
     }
 
     #[test]

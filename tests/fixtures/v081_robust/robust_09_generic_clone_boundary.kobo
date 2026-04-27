@@ -1,0 +1,9 @@
+fn duplicate<T: Clone>(value: &T) -> (T, T) {
+    (value.clone(), value.clone())
+}
+
+fn main() {
+    let name = String::from("cache");
+    let pair = duplicate(&name);
+    println!("{}{}", pair.0, pair.1);
+}

@@ -1,0 +1,10 @@
+fn main() {
+    let mut values = Vec::new();
+    values.push(String::from("a"));
+    {
+        let first = &values[0];
+        println!("{}", first.len());
+    }
+    values.push(String::from("b"));
+    println!("{}", values.len());
+}

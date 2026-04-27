@@ -1,0 +1,10 @@
+fn main() {
+    let label = String::from("outer");
+    println!("{}", label.len());
+
+    let label = String::from("inner");
+    {
+        let label = label.len();
+        println!("{}", label);
+    }
+}

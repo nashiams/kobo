@@ -1,0 +1,28 @@
+struct Matrix {
+    rows: Vec<Vec<i32>>,
+}
+
+impl Matrix {
+    fn new() -> Self {
+        Self { rows: Vec::new() }
+    }
+
+    fn push_row(&mut self, row: Vec<i32>) {
+        self.rows.push(row);
+    }
+
+    fn cell_count(&self) -> usize {
+        let mut total = 0;
+        for row in &self.rows {
+            total = total + row.len();
+        }
+        total
+    }
+}
+
+fn main() {
+    let mut matrix = Matrix::new();
+    matrix.push_row(vec![1, 2]);
+    matrix.push_row(vec![3, 4, 5]);
+    println!("{}", matrix.cell_count());
+}

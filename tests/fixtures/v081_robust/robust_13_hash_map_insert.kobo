@@ -1,0 +1,9 @@
+use std::collections::HashMap;
+
+fn main() {
+    let mut hits = HashMap::new();
+    hits.insert(String::from("/health"), 1u64);
+    hits.insert(String::from("/ready"), 2u64);
+    let total = hits.get("/health").copied().unwrap_or(0) + hits.get("/ready").copied().unwrap_or(0);
+    println!("{}", total);
+}

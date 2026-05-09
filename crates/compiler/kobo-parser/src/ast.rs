@@ -4,6 +4,7 @@ use kobo_ir::{FileId, KoboAstNodeId, KoboSpan};
 use proc_macro2::{LineColumn, Span};
 
 /// A parsed Kobo source file: the `syn::File` AST with stable node identity.
+#[derive(Clone)]
 pub struct KoboFile {
     pub file_id: FileId,
     pub inner: syn::File,
@@ -17,6 +18,25 @@ pub struct KoboFile {
     strict_blocks: Vec<KoboBlock>,
     /// @strict fn items collected before marker-stripping (P3 / v0.5).
     strict_fns: Vec<KoboItemFn>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParseRecovery {
+    pub span: kobo_ir::KoboSpan,
+    pub message: String,
+}
+
+pub struct ParseOutcome {
+    pub file: Option<KoboFile>,
+    pub diagnostics: Vec<kobo_errors::KDiagnostic>,
+    pub poisoned_spans: Vec<kobo_ir::KoboSpan>,
+    pub recoveries: Vec<ParseRecovery>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum RecoveryMode {
+    FailFast,
+    Recover,
 }
 
 /// A Kobo block that may carry `@strict` annotation.
@@ -50,6 +70,7 @@ pub struct KoboItemFn {
 }
 
 /// A top-level item in the Kobo AST, wrapped with a stable ID and source span.
+#[derive(Clone)]
 pub struct KoboAstNode {
     pub id: KoboAstNodeId,
     pub span: KoboSpan,

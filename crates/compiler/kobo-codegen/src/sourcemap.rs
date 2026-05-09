@@ -65,7 +65,10 @@ pub(crate) fn build_source_map_entries(
 
     for site in sites {
         let anchor = anchors.get(site.node).unwrap_or_else(|| {
-            unreachable!("invariant: every lowering site must resolve to an anchor")
+            panic!(
+                "invariant: every lowering site must resolve to an anchor; missing node {:?} binding `{}` span {:?}",
+                site.node, site.binding_name, site.kobo_span
+            )
         });
 
         entries.push(SourceMapEntry {

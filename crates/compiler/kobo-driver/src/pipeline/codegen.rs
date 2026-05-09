@@ -14,6 +14,7 @@ use super::solver::{
     project_solver_diagnostics, resolve_solution,
 };
 
+#[derive(Clone)]
 pub struct CodegenArtifacts {
     pub file_id: FileId,
     pub rs_source: String,

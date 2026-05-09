@@ -3,6 +3,7 @@ mod errors;
 mod filesystem;
 mod multi_file;
 mod pipeline;
+mod query;
 mod rustc;
 mod session;
 pub mod test_utils;
@@ -21,6 +22,11 @@ pub use pipeline::{
     lifetime_erasure_debt_report, run_and_compile, run_and_compile_with_lifetime_erasure,
     run_check_pipeline, run_codegen_pipeline, run_kir_phase, run_pipeline,
     run_pipeline_ordering_check, CodegenArtifacts,
+};
+pub use query::{
+    AnalysisKey, CodegenKey, CodegenOutput as QueryCodegenOutput, DiagnosticOutput, DiagnosticsKey,
+    KirKey, KirOutput, ParseKey, ParsedOutput, PreprocessKey, QueryMetrics, QuerySession,
+    SolverKey, SolverOutput, SourceKey,
 };
 pub use rustc::binary_path_for;
 pub use session::{is_inside_relaxed_fn, CompileSession};

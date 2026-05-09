@@ -33,6 +33,38 @@ pub struct DiagHelp(pub String);
 pub struct CliSuggestion(pub String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticNote {
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticRelatedInfo {
+    pub span: KoboSpan,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextEdit {
+    pub span: KoboSpan,
+    pub replacement: String,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SuggestionApplicability {
+    MachineApplicable,
+    MaybeIncorrect,
+    HasPlaceholders,
+    Unspecified,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticSuggestion {
+    pub message: String,
+    pub applicability: SuggestionApplicability,
+    pub edits: Vec<TextEdit>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KDiagnostic {
     pub code: KErrorCode,
     pub severity: Severity,
@@ -42,6 +74,10 @@ pub struct KDiagnostic {
     pub decision: DiagDecision,
     pub help: Option<DiagHelp>,
     pub run: Option<CliSuggestion>,
+    pub notes: Vec<DiagnosticNote>,
+    pub related: Vec<DiagnosticRelatedInfo>,
+    pub suggestions: Vec<DiagnosticSuggestion>,
+    pub suppressed_by: Option<KoboSpan>,
 }
 
 impl DiagLabel {
@@ -81,6 +117,10 @@ impl KDiagnostic {
             decision: decision.into(),
             help: None,
             run: None,
+            notes: Vec::new(),
+            related: Vec::new(),
+            suggestions: Vec::new(),
+            suppressed_by: None,
         }
     }
 
@@ -98,6 +138,94 @@ impl KDiagnostic {
         self.run = Some(run.into());
         self
     }
+
+    pub fn with_note(mut self, note: DiagnosticNote) -> Self {
+        self.notes.push(note);
+        self
+    }
+
+    pub fn with_related_info(mut self, related: DiagnosticRelatedInfo) -> Self {
+        self.related.push(related);
+        self
+    }
+
+    pub fn with_suggestion(mut self, suggestion: DiagnosticSuggestion) -> Self {
+        self.suggestions.push(suggestion);
+        self
+    }
+
+    pub fn with_suppressed_by(mut self, span: KoboSpan) -> Self {
+        self.suppressed_by = Some(span);
+        self
+    }
+
+    pub fn with_poisoned_related_info_trimmed(mut self, poisoned_spans: &[KoboSpan]) -> Self {
+        let is_poisoned = |span: KoboSpan| {
+            poisoned_spans
+                .iter()
+                .any(|poison| spans_overlap(*poison, span))
+        };
+        self.secondary.retain(|label| !is_poisoned(label.span));
+        self.related.retain(|related| !is_poisoned(related.span));
+        self.suggestions.retain_mut(|suggestion| {
+            suggestion.edits.retain(|edit| !is_poisoned(edit.span));
+            !suggestion.edits.is_empty()
+        });
+        self
+    }
+}
+
+impl DiagnosticNote {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+impl DiagnosticRelatedInfo {
+    pub fn new(span: KoboSpan, message: impl Into<String>) -> Self {
+        Self {
+            span,
+            message: message.into(),
+        }
+    }
+}
+
+impl TextEdit {
+    pub fn replace(span: KoboSpan, replacement: impl Into<String>) -> Self {
+        Self {
+            span,
+            replacement: replacement.into(),
+        }
+    }
+}
+
+impl DiagnosticSuggestion {
+    pub fn new(
+        message: impl Into<String>,
+        applicability: SuggestionApplicability,
+        edits: Vec<TextEdit>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            applicability,
+            edits,
+        }
+    }
+}
+
+impl SuggestionApplicability {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MachineApplicable => "machine-applicable",
+            Self::MaybeIncorrect => "maybe-incorrect",
+            Self::HasPlaceholders => "has-placeholders",
+            Self::Unspecified => "unspecified",
+        }
+    }
+}
+
+fn spans_overlap(left: KoboSpan, right: KoboSpan) -> bool {
+    left.file_id == right.file_id && left.start < right.end && right.start < left.end
 }
 
 impl DiagExplanation {

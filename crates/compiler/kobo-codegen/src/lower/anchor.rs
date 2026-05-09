@@ -56,11 +56,14 @@ impl LoweringAnchorMap {
             FormattedBindingCollector::collect(&parsed, self.support_item_count);
 
         let mut by_node = HashMap::with_capacity(self.anchors.len());
-        for (source_anchor, formatted_anchor) in self.anchors.iter().zip(formatted_anchors) {
-            if source_anchor.kind != formatted_anchor.kind {
-                continue;
+        let mut formatted = formatted_anchors.into_iter();
+        for source_anchor in &self.anchors {
+            for formatted_anchor in formatted.by_ref() {
+                if source_anchor.kind == formatted_anchor.kind {
+                    by_node.insert(source_anchor.node, formatted_anchor.location);
+                    break;
+                }
             }
-            by_node.insert(source_anchor.node, formatted_anchor.location);
         }
 
         ResolvedAnchorMap { by_node }

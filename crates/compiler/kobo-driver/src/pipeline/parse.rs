@@ -1,10 +1,13 @@
 use std::path::Path;
 
+use kobo_errors::{DiagLabel, DiagnosticRelatedInfo, KDiagnostic, TextEdit};
 use kobo_ir::Kir;
+use kobo_ir::KoboSpan;
 use kobo_parser::{
-    collect_strict_items_from_syn, mode_parse::parse_file_mode, parse_file,
-    postprocess_strict_markers, preprocess_kobo_keywords, preprocess_spawn_blocks,
-    preprocess_strict_reject_invalid, v05_keyword_configs, KoboFile,
+    collect_strict_items_from_syn, mode_parse::parse_file_mode, parse_file_recovering,
+    postprocess_strict_markers, preprocess_bridge_blocks_mapped, preprocess_kobo_keywords_mapped,
+    preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid, v05_keyword_configs,
+    KoboFile, PreprocessSourceMap, RecoveryMode,
 };
 use kobo_transform::{build_kir, TransformOptions};
 
@@ -41,20 +44,44 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         eprintln!("kobo: preprocess error: {e}");
         return Err(());
     }
-    let (rewritten, markers) = preprocess_kobo_keywords(&source, &configs);
+    let strict_mapped = preprocess_kobo_keywords_mapped(&source, file_id, &configs);
+    let mut rewritten = strict_mapped.rewritten;
+    let markers = strict_mapped.metadata;
+    let mut preprocess_source_map = strict_mapped.source_map;
 
     // v0.8: rewrite spawn { ... } → __kobo_spawn_block!({ ... }) before syn parse.
-    let (rewritten, _spawn_infos) = preprocess_spawn_blocks(&rewritten, file_id);
+    let spawn_mapped = preprocess_spawn_blocks_mapped(&rewritten, file_id);
+    rewritten = spawn_mapped.rewritten;
+    preprocess_source_map = spawn_mapped.source_map.compose_with(&preprocess_source_map);
 
     // S-57: rewrite sync { } / async { } bridge blocks before syn parse.
-    let (rewritten, _bridge_infos) = kobo_parser::preprocess_bridge_blocks(&rewritten);
+    let bridge_mapped = preprocess_bridge_blocks_mapped(&rewritten, file_id);
+    rewritten = bridge_mapped.rewritten;
+    preprocess_source_map = bridge_mapped
+        .source_map
+        .compose_with(&preprocess_source_map);
 
-    let mut kobo_file = match parse_file(&rewritten, file_id, &mut session.id_gen) {
-        Ok(file) => file,
-        Err(error) => {
-            eprintln!("kobo: parse error: {error}");
-            return Err(());
-        }
+    let recovery_mode = if session.config.enable_parse_recovery {
+        RecoveryMode::Recover
+    } else {
+        RecoveryMode::FailFast
+    };
+    let outcome = parse_file_recovering(&rewritten, file_id, &mut session.id_gen, recovery_mode);
+    let parse_diagnostics = outcome
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| remap_diagnostic_to_original_source(diagnostic, &preprocess_source_map))
+        .collect::<Vec<_>>();
+    let poisoned_spans = outcome
+        .poisoned_spans
+        .into_iter()
+        .map(|span| remap_span_to_original(span, &preprocess_source_map))
+        .collect::<Vec<_>>();
+    session.diagnostics.extend(parse_diagnostics);
+    session.poisoned_spans.extend(poisoned_spans);
+
+    let Some(mut kobo_file) = outcome.file else {
+        return Err(());
     };
 
     // Validate #[kobo::handler] usage (must be async fn).
@@ -107,4 +134,52 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     }
 
     Ok((kobo_file, kir))
+}
+
+fn remap_diagnostic_to_original_source(
+    mut diagnostic: KDiagnostic,
+    source_map: &PreprocessSourceMap,
+) -> KDiagnostic {
+    diagnostic.primary = remap_label(diagnostic.primary, source_map);
+    diagnostic.secondary = diagnostic
+        .secondary
+        .into_iter()
+        .map(|label| remap_label(label, source_map))
+        .collect();
+    diagnostic.related = diagnostic
+        .related
+        .into_iter()
+        .map(|related| DiagnosticRelatedInfo {
+            span: remap_span_to_original(related.span, source_map),
+            message: related.message,
+        })
+        .collect();
+    diagnostic.suggestions = diagnostic
+        .suggestions
+        .into_iter()
+        .map(|mut suggestion| {
+            suggestion.edits = suggestion
+                .edits
+                .into_iter()
+                .map(|edit| TextEdit {
+                    span: remap_span_to_original(edit.span, source_map),
+                    replacement: edit.replacement,
+                })
+                .collect();
+            suggestion
+        })
+        .collect();
+    diagnostic.suppressed_by = diagnostic
+        .suppressed_by
+        .map(|span| remap_span_to_original(span, source_map));
+    diagnostic
+}
+
+fn remap_label(mut label: DiagLabel, source_map: &PreprocessSourceMap) -> DiagLabel {
+    label.span = remap_span_to_original(label.span, source_map);
+    label
+}
+
+fn remap_span_to_original(span: KoboSpan, source_map: &PreprocessSourceMap) -> KoboSpan {
+    source_map.rewritten_span_to_original(span).unwrap_or(span)
 }

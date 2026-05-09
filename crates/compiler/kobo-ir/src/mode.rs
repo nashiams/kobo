@@ -7,7 +7,7 @@ use serde::Deserialize;
 ///
 /// Shared vocabulary used by the pipeline, formatter, and driver.
 /// Single source of truth — do NOT create a parallel enum [Contract R01].
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KoboMode {
     #[default]

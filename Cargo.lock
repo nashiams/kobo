@@ -359,6 +359,8 @@ name = "kobo-errors"
 version = "0.1.0"
 dependencies = [
  "kobo-ir",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -383,6 +385,7 @@ dependencies = [
 name = "kobo-parser"
 version = "0.1.0"
 dependencies = [
+ "kobo-errors",
  "kobo-ir",
  "proc-macro2",
  "syn",

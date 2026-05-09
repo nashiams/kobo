@@ -2,7 +2,7 @@ mod commands;
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use kobo_ir::KoboMode;
 
 #[derive(Parser, Debug)]
@@ -35,6 +35,13 @@ pub(crate) enum KoboCommand {
             help = "Show full solver pipeline diagnostics (constraint graph, clusters, solver outcome)"
         )]
         pipeline: bool,
+        #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
+        error_format: ErrorFormat,
+        #[arg(
+            long,
+            help = "Recover from parser errors and continue trustworthy phases"
+        )]
+        recover_parse: bool,
     },
     /// Reformat a .kobo file when the source map proves the edit is lossless.
     Fmt {
@@ -197,6 +204,17 @@ pub(crate) enum KoboCommand {
         #[arg(long)]
         build: bool,
     },
+    /// Explain a Kobo diagnostic code.
+    Explain {
+        #[arg(value_name = "CODE")]
+        code: String,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ErrorFormat {
+    Human,
+    Json,
 }
 
 /// Resolve CLI mode flags to a KoboMode override.

@@ -34,7 +34,8 @@ pub fn run_pipeline_ordering_check(
     kobo_analysis::check_pipeline_ordering(&kobo_file.inner.items)
 }
 
-pub(super) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()> {
+pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()> {
+    let downstream_diagnostics_start = session.diagnostics.len();
     let facts = run_analysis(kir, session.file_set());
     session.diagnostics.extend(facts_to_diagnostics(
         &facts,
@@ -346,6 +347,8 @@ pub(super) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
         }
         session.diagnostics.extend(handler_diags);
     }
+
+    session.suppress_diagnostics_from(downstream_diagnostics_start);
 
     if session.has_errors() {
         Err(())

@@ -7,6 +7,9 @@
 //! These dissolve function-coloring friction by letting developers mix
 //! sync and async code naturally. The preprocessor detects context (async/sync fn)
 //! and emits the appropriate tokio bridge call.
+use kobo_ir::{FileId, KoboSpan};
+
+use super::source_map::{push_identity_segment, PreprocessSourceMap, PreprocessedSource};
 
 /// Information about a bridge block rewrite.
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +18,16 @@ pub struct BridgeBlockInfo {
     pub offset: usize,
     /// Kind of bridge block.
     pub kind: BridgeKind,
+    /// Byte range of the full bridge block in the ORIGINAL source.
+    pub original_span: (usize, usize),
+    /// Byte range of the copied body in the ORIGINAL source.
+    pub original_body_span: (usize, usize),
+    /// Byte range of the generated call prefix in the REWRITTEN source.
+    pub generated_prefix_span: (usize, usize),
+    /// Byte range of the copied body in the REWRITTEN source.
+    pub generated_body_span: (usize, usize),
+    /// Byte range of the generated call suffix in the REWRITTEN source.
+    pub generated_suffix_span: (usize, usize),
 }
 
 /// Kind of bridge block detected.
@@ -73,12 +86,22 @@ pub fn preprocess_bridge_blocks(source: &str) -> (String, Vec<BridgeBlockInfo>) 
                     // Only rewrite if inside an async fn
                     if is_inside_ranges(pos, &async_fn_ranges) {
                         let body = &source[scan + 1..close];
-                        result.push_str("tokio::task::spawn_blocking(move || {");
+                        let prefix = "tokio::task::spawn_blocking(move || {";
+                        let suffix = "}).await";
+                        let generated_start = result.len();
+                        result.push_str(prefix);
+                        let generated_body_start = result.len();
                         result.push_str(body);
-                        result.push_str("}).await");
+                        let generated_body_end = result.len();
+                        result.push_str(suffix);
                         infos.push(BridgeBlockInfo {
                             offset: pos,
                             kind: BridgeKind::SyncInAsync,
+                            original_span: (pos, close + 1),
+                            original_body_span: (scan + 1, close),
+                            generated_prefix_span: (generated_start, generated_body_start),
+                            generated_body_span: (generated_body_start, generated_body_end),
+                            generated_suffix_span: (generated_body_end, result.len()),
                         });
                         pos = close + 1;
                         continue;
@@ -121,12 +144,22 @@ pub fn preprocess_bridge_blocks(source: &str) -> (String, Vec<BridgeBlockInfo>) 
                         && !is_inside_ranges(pos, &async_fn_ranges)
                     {
                         let body = &source[scan + 1..close];
-                        result.push_str("tokio::runtime::Handle::current().block_on(async {");
+                        let prefix = "tokio::runtime::Handle::current().block_on(async {";
+                        let suffix = "})";
+                        let generated_start = result.len();
+                        result.push_str(prefix);
+                        let generated_body_start = result.len();
                         result.push_str(body);
-                        result.push_str("})");
+                        let generated_body_end = result.len();
+                        result.push_str(suffix);
                         infos.push(BridgeBlockInfo {
                             offset: pos,
                             kind: BridgeKind::AsyncInSync,
+                            original_span: (pos, close + 1),
+                            original_body_span: (scan + 1, close),
+                            generated_prefix_span: (generated_start, generated_body_start),
+                            generated_body_span: (generated_body_start, generated_body_end),
+                            generated_suffix_span: (generated_body_end, result.len()),
                         });
                         pos = close + 1;
                         continue;
@@ -143,6 +176,90 @@ pub fn preprocess_bridge_blocks(source: &str) -> (String, Vec<BridgeBlockInfo>) 
     }
 
     (result, infos)
+}
+
+pub fn preprocess_bridge_blocks_mapped(
+    source: &str,
+    file_id: FileId,
+) -> PreprocessedSource<Vec<BridgeBlockInfo>> {
+    let (rewritten, infos) = preprocess_bridge_blocks(source);
+    if infos.is_empty() {
+        return PreprocessedSource {
+            rewritten,
+            source_map: PreprocessSourceMap::identity_for(source, file_id),
+            metadata: infos,
+        };
+    }
+
+    let mut source_map = PreprocessSourceMap::default();
+    let mut sorted: Vec<&BridgeBlockInfo> = infos.iter().collect();
+    sorted.sort_by_key(|info| info.original_span.0);
+
+    let mut rewritten_cursor = 0usize;
+    let mut original_cursor = 0usize;
+    for info in sorted {
+        push_identity_segment(
+            &mut source_map,
+            file_id,
+            rewritten_cursor,
+            info.generated_prefix_span.0,
+            original_cursor,
+            info.original_span.0,
+        );
+        source_map.push_segment(
+            KoboSpan::new(
+                info.generated_prefix_span.0 as u32,
+                info.generated_prefix_span.1 as u32,
+                file_id,
+            ),
+            KoboSpan::new(
+                info.original_span.0 as u32,
+                (info.original_body_span.0 + 1) as u32,
+                file_id,
+            ),
+        );
+        source_map.push_segment(
+            KoboSpan::new(
+                info.generated_body_span.0 as u32,
+                info.generated_body_span.1 as u32,
+                file_id,
+            ),
+            KoboSpan::new(
+                info.original_body_span.0 as u32,
+                info.original_body_span.1 as u32,
+                file_id,
+            ),
+        );
+        source_map.push_segment(
+            KoboSpan::new(
+                info.generated_suffix_span.0 as u32,
+                info.generated_suffix_span.1 as u32,
+                file_id,
+            ),
+            KoboSpan::new(
+                info.original_span.1.saturating_sub(1) as u32,
+                info.original_span.1 as u32,
+                file_id,
+            ),
+        );
+        rewritten_cursor = info.generated_suffix_span.1;
+        original_cursor = info.original_span.1;
+    }
+
+    push_identity_segment(
+        &mut source_map,
+        file_id,
+        rewritten_cursor,
+        rewritten.len(),
+        original_cursor,
+        source.len(),
+    );
+
+    PreprocessedSource {
+        rewritten,
+        source_map,
+        metadata: infos,
+    }
 }
 
 /// A range (start, end) of byte offsets for a function body.

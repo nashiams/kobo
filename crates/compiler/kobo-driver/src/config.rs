@@ -23,6 +23,7 @@ pub struct KoboConfig {
     pub copy_types: Vec<String>,
     pub mutating_methods: Vec<String>,
     pub src_dir: PathBuf,
+    pub enable_parse_recovery: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -53,12 +54,14 @@ struct RawKoboConfig {
     small_struct_clone_threshold_bytes: Option<usize>,
     channel_buffer_size: Option<usize>,
     output_dir: Option<PathBuf>,
+    enable_parse_recovery: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct RawKoboSection {
     mode: Option<KoboMode>,
     output_dir: Option<PathBuf>,
+    enable_parse_recovery: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -137,6 +140,7 @@ impl Default for KoboConfig {
             copy_types: Vec::new(),
             mutating_methods: Vec::new(),
             src_dir: PathBuf::from("src"),
+            enable_parse_recovery: false,
         }
     }
 }
@@ -225,6 +229,13 @@ impl RawKoboConfig {
 
         if let Some(channel_buffer_size) = self.channel_buffer_size {
             config.channel_buffer_size = channel_buffer_size;
+        }
+
+        if let Some(enable_parse_recovery) = self
+            .enable_parse_recovery
+            .or(self.kobo.enable_parse_recovery)
+        {
+            config.enable_parse_recovery = enable_parse_recovery;
         }
 
         if let Some(output_dir) = self

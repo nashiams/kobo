@@ -2,6 +2,7 @@ mod bench;
 mod build;
 mod check;
 mod debt;
+mod explain;
 mod fmt;
 mod init;
 mod migrate;
@@ -19,7 +20,15 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             checked,
             strict,
             pipeline,
-        } => check::cmd_check(&file, resolve_cli_mode(checked, strict), pipeline),
+            error_format,
+            recover_parse,
+        } => check::cmd_check(
+            &file,
+            resolve_cli_mode(checked, strict),
+            pipeline,
+            error_format,
+            recover_parse,
+        ),
         KoboCommand::Fmt { file } => fmt::cmd_fmt(&file),
         KoboCommand::Run {
             file,
@@ -104,5 +113,6 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             simple,
             build,
         } => watch::cmd_watch(&file, simple, build),
+        KoboCommand::Explain { code } => explain::cmd_explain(&code),
     }
 }

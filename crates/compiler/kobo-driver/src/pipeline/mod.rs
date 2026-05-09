@@ -1,6 +1,6 @@
 #![allow(clippy::result_unit_err)]
 
-mod analysis;
+pub(crate) mod analysis;
 mod codegen;
 mod compile;
 mod parse;

@@ -92,6 +92,15 @@ fn choose_tier_for_binding(
         };
     }
 
+    if method_only_sequential_reads(binding) {
+        return TierDecision {
+            node: binding.node,
+            tier: OwnershipTier::PlainOwned,
+            reason: TierReason::LocalOnly,
+            annotate: true,
+        };
+    }
+
     // S-1: Local-only bindings skip Rc/RefCell wrapping.
     // Mutation on a non-shared, non-escaping local is just `let mut`.
     // Exception: async + box_reason needs special handling (Box is deferred in async).
@@ -165,6 +174,18 @@ fn choose_tier_for_binding(
         annotate: !matches!(reason, TierReason::CopyType),
         reason,
     }
+}
+
+fn method_only_sequential_reads(binding: &TransformBindingFacts) -> bool {
+    binding.shared_facts.sequential_read_only
+        && binding.shared_facts.read_sites > 0
+        && binding.shared_facts.read_sites <= 2
+        && binding.shared_facts.read_sites == binding.method_read_spans.len()
+        && !binding.shared_facts.has_escape
+        && !binding.shared_facts.needs_mutable_wrapper
+        && !binding.shared_facts.needs_send
+        && !binding.shared_facts.live_borrow_at_move
+        && binding.shared_facts.box_reason.is_none()
 }
 
 #[allow(dead_code)]
@@ -413,6 +434,7 @@ mod tests {
             plain_clone_move_span: None,
             elision_skip_reason: None,
             decl_scope_depth: 0,
+            method_read_spans: Vec::new(),
             ref_returning_read_spans: Vec::new(),
         }
     }

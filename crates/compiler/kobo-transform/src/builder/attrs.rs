@@ -1,5 +1,22 @@
 use syn::spanned::Spanned;
 
+pub(super) struct ParsedMustCallAction {
+    pub(super) name: String,
+    pub(super) span: proc_macro2::Span,
+}
+
+pub(super) enum MustCallAttrResult {
+    NotMustCall,
+    Valid {
+        actions: Vec<ParsedMustCallAction>,
+        attr_span: proc_macro2::Span,
+    },
+    Invalid {
+        message: String,
+        attr_span: proc_macro2::Span,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Shared helper
 // ---------------------------------------------------------------------------
@@ -8,6 +25,84 @@ use syn::spanned::Spanned;
 fn is_kobo_path(path: &syn::Path, name: &str) -> bool {
     let segs: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
     segs.len() == 2 && segs[0] == "kobo" && segs[1] == name
+}
+
+pub(super) fn parse_must_call_attr(attr: &syn::Attribute) -> MustCallAttrResult {
+    match &attr.meta {
+        syn::Meta::List(list) if is_kobo_path(&list.path, "must_call") => {
+            parse_must_call_actions(list.tokens.clone(), attr.span())
+        }
+        syn::Meta::Path(path) if is_kobo_path(path, "must_call") => MustCallAttrResult::Invalid {
+            message: "`#[kobo::must_call]` requires an action list".to_owned(),
+            attr_span: attr.span(),
+        },
+        syn::Meta::NameValue(nv) if is_kobo_path(&nv.path, "must_call") => {
+            MustCallAttrResult::Invalid {
+                message: "`#[kobo::must_call]` uses `action | action` syntax".to_owned(),
+                attr_span: attr.span(),
+            }
+        }
+        _ => MustCallAttrResult::NotMustCall,
+    }
+}
+
+fn parse_must_call_actions(
+    tokens: proc_macro2::TokenStream,
+    attr_span: proc_macro2::Span,
+) -> MustCallAttrResult {
+    let mut actions = Vec::new();
+    let mut expect_action = true;
+
+    for token in tokens {
+        if expect_action {
+            match token {
+                proc_macro2::TokenTree::Ident(ident) => {
+                    actions.push(ParsedMustCallAction {
+                        name: ident.to_string(),
+                        span: ident.span(),
+                    });
+                    expect_action = false;
+                }
+                _ => {
+                    return MustCallAttrResult::Invalid {
+                        message: "`#[kobo::must_call]` expects an action name".to_owned(),
+                        attr_span,
+                    };
+                }
+            }
+        } else {
+            match token {
+                proc_macro2::TokenTree::Punct(punct)
+                    if punct.as_char() == '|' && punct.spacing() == proc_macro2::Spacing::Alone =>
+                {
+                    expect_action = true;
+                }
+                _ => {
+                    return MustCallAttrResult::Invalid {
+                        message: "`#[kobo::must_call]` separates alternatives with a single `|`"
+                            .to_owned(),
+                        attr_span,
+                    };
+                }
+            }
+        }
+    }
+
+    if actions.is_empty() {
+        return MustCallAttrResult::Invalid {
+            message: "`#[kobo::must_call]` requires at least one action".to_owned(),
+            attr_span,
+        };
+    }
+
+    if expect_action {
+        return MustCallAttrResult::Invalid {
+            message: "`#[kobo::must_call]` is missing an action after `|`".to_owned(),
+            attr_span,
+        };
+    }
+
+    MustCallAttrResult::Valid { actions, attr_span }
 }
 
 // ---------------------------------------------------------------------------

@@ -29,9 +29,9 @@ fn second() {
     assert!(
         outcome.diagnostics.iter().all(|diag| matches!(
             diag.code,
-            KErrorCode::K0100 | KErrorCode::K0101 | KErrorCode::K0102 | KErrorCode::K0103
+            KErrorCode::K0110 | KErrorCode::K0111 | KErrorCode::K0112 | KErrorCode::K0113
         )),
-        "recovery diagnostics must use parser K010x codes: {:?}",
+        "recovery diagnostics must use parser K011x codes: {:?}",
         outcome.diagnostics
     );
     assert!(

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
-use kobo_ir::FileId;
+use kobo_ir::{FileId, MustCallObligation};
 use kobo_migrate::SolveOutcome;
 
 use crate::filesystem::{map_path_for, output_path_for, write_map_file, write_rs_file};
@@ -21,6 +21,7 @@ pub struct CodegenArtifacts {
     pub rs_path: PathBuf,
     pub map_path: PathBuf,
     pub source_map: KoboSourceMap,
+    pub must_call_obligations: Vec<MustCallObligation>,
 }
 
 pub fn run_codegen_pipeline(
@@ -120,6 +121,7 @@ pub fn run_codegen_pipeline(
         rs_path,
         map_path,
         source_map: injected_map,
+        must_call_obligations: kir.must_call_obligations().to_vec(),
     })
 }
 

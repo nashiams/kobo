@@ -1,6 +1,7 @@
 use kobo_errors::{
-    diagnostic_registry, resolve_severity, DiagnosticNote, DiagnosticRelatedInfo, DiagnosticStatus,
-    DiagnosticSuggestion, KErrorCode, Severity, SuggestionApplicability, TextEdit,
+    diagnostic_registry, resolve_severity, DiagnosticCategory, DiagnosticNote,
+    DiagnosticRelatedInfo, DiagnosticStatus, DiagnosticSuggestion, KErrorCode, MachineEditPolicy,
+    ModeBehavior, Severity, SuggestionApplicability, SuggestionPolicy, TextEdit,
 };
 use kobo_ir::{FileId, FileSetBuilder, KoboMode, KoboSpan};
 
@@ -20,6 +21,143 @@ fn registry_has_metadata_for_active_codes() {
         assert!(!entry.title.trim().is_empty());
         assert!(!entry.summary.trim().is_empty());
         assert!(!entry.explain.trim().is_empty());
+    }
+}
+
+#[test]
+fn registry_contains_public_slug_and_policy_fields() {
+    let registry = diagnostic_registry();
+    for code in [
+        KErrorCode::K0001,
+        KErrorCode::K0061,
+        KErrorCode::K0099,
+        KErrorCode::K0100,
+        KErrorCode::K0101,
+        KErrorCode::K0102,
+        KErrorCode::K0103,
+        KErrorCode::K0104,
+        KErrorCode::K0105,
+        KErrorCode::K0107,
+        KErrorCode::K0108,
+    ] {
+        let entry = registry.get(code).expect("active code must be registered");
+        assert!(!entry.slug.trim().is_empty(), "{code} needs public slug");
+        assert_ne!(
+            entry.slug, entry.code_text,
+            "{code} slug cannot be the code"
+        );
+        assert!(
+            entry
+                .slug
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
+            "{code} slug must be lowercase kebab case: {}",
+            entry.slug
+        );
+        assert!(!entry.title.trim().is_empty(), "{code} needs title");
+        assert!(!entry.summary.trim().is_empty(), "{code} needs summary");
+        assert!(
+            !entry.explain.trim().is_empty(),
+            "{code} needs explain text"
+        );
+        assert_ne!(
+            entry.category,
+            DiagnosticCategory::Parser,
+            "{code} is not parser recovery"
+        );
+        assert_ne!(
+            entry.mode_behavior,
+            ModeBehavior::Unspecified,
+            "{code} needs mode behavior"
+        );
+        assert_ne!(
+            entry.suggestion_policy,
+            SuggestionPolicy::Unspecified,
+            "{code} needs suggestion policy"
+        );
+        assert_ne!(
+            entry.machine_edit_policy,
+            MachineEditPolicy::Unspecified,
+            "{code} needs machine-edit policy"
+        );
+    }
+}
+
+#[test]
+fn source_coverage_k010x_codes_match_registry() {
+    let registry = diagnostic_registry();
+    let expectations = [
+        (
+            KErrorCode::K0100,
+            "liveness-obligation-unresolved",
+            DiagnosticCategory::Liveness,
+            "commit",
+        ),
+        (
+            KErrorCode::K0101,
+            "liveness-obligation-escaped",
+            DiagnosticCategory::Liveness,
+            "escape",
+        ),
+        (
+            KErrorCode::K0102,
+            "raw-nondeterminism-in-scenario",
+            DiagnosticCategory::Nondeterminism,
+            "nondeterminism",
+        ),
+        (
+            KErrorCode::K0103,
+            "malformed-must-call-attribute",
+            DiagnosticCategory::Liveness,
+            "must_call",
+        ),
+        (
+            KErrorCode::K0104,
+            "invalid-kwit-witness-schema",
+            DiagnosticCategory::BoundaryPolicy,
+            "schema_version 0",
+        ),
+        (
+            KErrorCode::K0105,
+            "malformed-scenario-metadata",
+            DiagnosticCategory::Nondeterminism,
+            "scenario",
+        ),
+        (
+            KErrorCode::K0107,
+            "unmodeled-external-boundary",
+            DiagnosticCategory::BoundaryPolicy,
+            "normal Rust crates remain allowed",
+        ),
+        (
+            KErrorCode::K0108,
+            "replay-obligation-suppressed",
+            DiagnosticCategory::BoundaryPolicy,
+            "reviewable evidence",
+        ),
+    ];
+
+    for (code, slug, category, wording) in expectations {
+        let entry = registry.get(code).expect("v0.8.5 K010x code must exist");
+        assert_eq!(entry.slug, slug);
+        assert_eq!(entry.category, category);
+        assert!(
+            entry.summary.contains(wording) || entry.explain.contains(wording),
+            "{code} registry text must contain `{wording}`"
+        );
+    }
+
+    for parser_code in [
+        KErrorCode::K0110,
+        KErrorCode::K0111,
+        KErrorCode::K0112,
+        KErrorCode::K0113,
+    ] {
+        let entry = registry
+            .get(parser_code)
+            .expect("parser recovery code must be registered");
+        assert_eq!(entry.category, DiagnosticCategory::Parser);
+        assert!(entry.code_text.starts_with("K011"));
     }
 }
 
@@ -65,6 +203,14 @@ fn every_emitted_active_code_is_registered_and_marked_active() {
         KErrorCode::K0101,
         KErrorCode::K0102,
         KErrorCode::K0103,
+        KErrorCode::K0104,
+        KErrorCode::K0105,
+        KErrorCode::K0107,
+        KErrorCode::K0108,
+        KErrorCode::K0110,
+        KErrorCode::K0111,
+        KErrorCode::K0112,
+        KErrorCode::K0113,
         KErrorCode::K0107,
         KErrorCode::K0108,
     ];
@@ -96,11 +242,11 @@ fn registry_drives_mode_dependent_severity() {
     );
     assert_eq!(
         resolve_severity(KErrorCode::K0100, KoboMode::Script),
-        Some(Severity::Error)
+        Some(Severity::Warning)
     );
     assert_eq!(
         resolve_severity(KErrorCode::K0100, KoboMode::Checked),
-        Some(Severity::Error)
+        Some(Severity::Warning)
     );
     assert_eq!(
         resolve_severity(KErrorCode::K0100, KoboMode::Strict),
@@ -111,7 +257,7 @@ fn registry_drives_mode_dependent_severity() {
 #[test]
 fn registry_reserves_parser_recovery_codes() {
     let registry = diagnostic_registry();
-    for code_text in ["K0100", "K0101", "K0102", "K0103"] {
+    for code_text in ["K0110", "K0111", "K0112", "K0113"] {
         let entry = registry
             .find_by_code_text(code_text)
             .expect("parser recovery code must be registered");
@@ -213,7 +359,7 @@ fn typed_json_and_lsp_payloads_share_the_same_diagnostic_data() {
     files.add_file("demo.kobo".into(), "fn main() { let x = ; }\n".to_owned());
 
     let diagnostic = kobo_errors::KDiagnostic::new(
-        KErrorCode::K0100,
+        KErrorCode::K0110,
         Severity::Error,
         kobo_errors::DiagLabel::primary(KoboSpan::new(10, 16, FileId(0)), "syntax error"),
         "expected expression",
@@ -235,7 +381,9 @@ fn typed_json_and_lsp_payloads_share_the_same_diagnostic_data() {
     let file_set = files.as_file_set();
     let json = kobo_errors::DiagnosticJson::from_diagnostic(file_set, &diagnostic);
     assert_eq!(json.schema_version, 1);
-    assert_eq!(json.code, "K0100");
+    assert_eq!(json.code, "K0110");
+    assert_eq!(json.slug, "syntax-error-recovered");
+    assert_eq!(json.title, "syntax error recovered");
     assert_eq!(json.primary.file_path.as_deref(), Some("demo.kobo"));
     assert_eq!(json.primary.byte_start, 10);
     assert_eq!(json.primary.byte_end, 16);
@@ -247,13 +395,13 @@ fn typed_json_and_lsp_payloads_share_the_same_diagnostic_data() {
     let lsp = kobo_errors::DiagnosticLspPayload::from_diagnostic(file_set, &diagnostic);
     assert_eq!(lsp.source, "kobo");
     assert_eq!(lsp.uri.as_deref(), Some("demo.kobo"));
-    assert_eq!(lsp.code.as_deref(), Some("K0100"));
+    assert_eq!(lsp.code.as_deref(), Some("K0110"));
     assert_eq!(lsp.range.start.line, 0);
     assert_eq!(lsp.range.start.character, 10);
     assert!(lsp
         .code_description
         .as_deref()
-        .is_some_and(|value| value.contains("K0100")));
+        .is_some_and(|value| value.contains("K0110")));
     assert_eq!(lsp.related_information.len(), 1);
     assert_eq!(
         lsp.data["suggestions"][0]["edits"][0]["replacement"],
@@ -266,7 +414,7 @@ fn no_color_render_contains_plain_default_card() {
     let mut files = FileSetBuilder::new();
     files.add_file("demo.kobo".into(), "fn main() { let x = ; }\n".to_owned());
     let diagnostic = kobo_errors::KDiagnostic::new(
-        KErrorCode::K0100,
+        KErrorCode::K0110,
         Severity::Error,
         kobo_errors::DiagLabel::primary(KoboSpan::new(18, 19, FileId(0)), "expected expression"),
         "expected expression",
@@ -278,7 +426,7 @@ fn no_color_render_contains_plain_default_card() {
         &diagnostic,
         kobo_errors::ColorMode::Never,
     );
-    assert!(rendered.contains("error[K0100]"));
+    assert!(rendered.contains("error[K0110]"));
     assert!(rendered.contains("expected expression"));
     assert!(rendered.contains("--> demo.kobo:1:19"));
     assert!(!rendered.contains("\u{1b}["));

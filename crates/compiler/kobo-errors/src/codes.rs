@@ -143,6 +143,10 @@ define_error_codes! {
     K0106 => "K0106",
     K0107 => "K0107",
     K0108 => "K0108",
+    K0110 => "K0110",
+    K0111 => "K0111",
+    K0112 => "K0112",
+    K0113 => "K0113",
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -204,12 +208,19 @@ impl KErrorCode {
             Self::K0090 => "migration cannot continue - value crosses into external crate",
             Self::K0095 => "ownership of macro-generated value cannot be inferred",
             Self::K0099 => "rustc error remapped to Kobo source",
-            Self::K0100 => "syntax error recovered",
-            Self::K0101 => "unclosed delimiter",
-            Self::K0102 => "invalid item skipped",
-            Self::K0103 => "parser recovery limit reached",
+            Self::K0100 => "liveness obligation may leave without a required call",
+            Self::K0101 => "liveness obligation escapes local analysis",
+            Self::K0102 => "raw nondeterminism appears in a scenario or future replay zone",
+            Self::K0103 => "malformed must_call attribute",
+            Self::K0104 => "invalid kwit witness schema",
+            Self::K0105 => "malformed scenario metadata",
+            Self::K0106 => "invalid field capability view",
             Self::K0107 => "unmodeled external crate boundary",
             Self::K0108 => "replay obligation suppressed",
+            Self::K0110 => "syntax error recovered",
+            Self::K0111 => "unclosed delimiter",
+            Self::K0112 => "invalid item skipped",
+            Self::K0113 => "parser recovery limit reached",
             _ => "reserved diagnostic code",
         }
     }

@@ -66,7 +66,7 @@ fn log(s: String) {
     assert!(
         session.diagnostics.iter().any(|diag| matches!(
             diag.code,
-            KErrorCode::K0100 | KErrorCode::K0101 | KErrorCode::K0102
+            KErrorCode::K0110 | KErrorCode::K0111 | KErrorCode::K0112
         )),
         "expected at least one parser recovery diagnostic"
     );
@@ -86,7 +86,7 @@ fn log(s: String) {
         .filter(|diag| {
             !matches!(
                 diag.code,
-                KErrorCode::K0100 | KErrorCode::K0101 | KErrorCode::K0102 | KErrorCode::K0103
+                KErrorCode::K0110 | KErrorCode::K0111 | KErrorCode::K0112 | KErrorCode::K0113
             )
         })
         .filter(|diag| {

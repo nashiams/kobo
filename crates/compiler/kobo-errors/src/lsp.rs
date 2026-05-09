@@ -10,9 +10,11 @@ pub struct DiagnosticLspPayload {
     pub range: LspRange,
     pub severity: u32,
     pub code: Option<String>,
+    #[serde(rename = "codeDescription")]
     pub code_description: Option<String>,
     pub source: String,
     pub message: String,
+    #[serde(rename = "relatedInformation")]
     pub related_information: Vec<LspRelatedInformation>,
     pub data: Value,
     pub uri: Option<String>,

@@ -42,6 +42,31 @@ pub(crate) enum KoboCommand {
             help = "Recover from parser errors and continue trustworthy phases"
         )]
         recover_parse: bool,
+        #[arg(long, help = "Treat external boundaries as future replay-critical")]
+        replay_critical: bool,
+        #[arg(
+            long,
+            value_name = "N",
+            help = "Limit visible diagnostics in human/editor output"
+        )]
+        max_diagnostics: Option<usize>,
+        #[arg(
+            long,
+            value_name = "START-END",
+            help = "Prioritize diagnostics in a visible line range"
+        )]
+        visible_region: Option<String>,
+        #[arg(long, help = "Keep budgeted diagnostics in machine output")]
+        include_budgeted: bool,
+    },
+    /// Export diagnostics in the LSP diagnostic shape.
+    LspDiagnostics {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        #[arg(long, value_enum, default_value_t = ErrorFormat::Json)]
+        format: ErrorFormat,
+        #[arg(long, help = "Allow diagnostics for a file outside a Kobo project")]
+        no_project_ok: bool,
     },
     /// Reformat a .kobo file when the source map proves the edit is lossless.
     Fmt {
@@ -93,12 +118,33 @@ pub(crate) enum KoboCommand {
             help = "Erase lifetime parameters in script mode (S-21: auto-own references)"
         )]
         erase_lifetimes: bool,
+        #[arg(long, help = "Show indexed scenario metadata")]
+        scenario_metadata: bool,
         #[arg(
             long,
             value_name = "DIR",
             help = "Generate a complete Cargo project to DIR"
         )]
         cargo: Option<PathBuf>,
+        #[arg(
+            long,
+            value_name = "PROFILE",
+            help = "Select an advisory stack profile"
+        )]
+        profile: Option<String>,
+        #[arg(
+            long = "trait-default",
+            value_name = "MODE",
+            help = "Select trait facade lowering default"
+        )]
+        trait_default: Option<String>,
+    },
+    /// Advisory project dependency and profile report.
+    Doctor {
+        #[arg(long, help = "Inspect Cargo dependency shape")]
+        deps: bool,
+        #[arg(long, help = "Emit JSON")]
+        json: bool,
     },
     /// Run the pipeline through the KIR phase only and print KIR nodes.
     Dump {
@@ -116,6 +162,29 @@ pub(crate) enum KoboCommand {
         /// Override display threshold (default: KOBO_DIAG_THRESHOLD env or 10000)
         #[arg(long)]
         threshold: Option<u64>,
+    },
+    /// Simulation and replay evidence helpers.
+    Sim {
+        #[command(subcommand)]
+        command: SimCommand,
+    },
+    /// Validate and summarize a .kwit witness without executing replay.
+    Replay {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        #[arg(long)]
+        roundtrip_metadata: bool,
+    },
+    /// Apply safe machine-applicable codemods.
+    Fix {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Show ownership debt report for a .kobo file.
     Debt {
@@ -136,6 +205,9 @@ pub(crate) enum KoboCommand {
         /// Show error-handling debt (boxed/dynamic error → typed enum opportunities)
         #[arg(long)]
         errors: bool,
+        /// Show must_call liveness debt
+        #[arg(long)]
+        liveness: bool,
         /// [v0.5] Watch mode — re-run on file changes.
         #[arg(long, hide = true)]
         watch: bool,
@@ -208,6 +280,24 @@ pub(crate) enum KoboCommand {
     Explain {
         #[arg(value_name = "CODE")]
         code: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum SimCommand {
+    /// Rank likely first simulation evidence targets.
+    Scout {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        backend_recommendations: bool,
+    },
+    /// List deterministic-testing backend metadata.
+    Backends {
+        #[arg(long)]
+        json: bool,
     },
 }
 

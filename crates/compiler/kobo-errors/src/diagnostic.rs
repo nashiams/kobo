@@ -65,6 +65,18 @@ pub struct DiagnosticSuggestion {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticUpstream {
+    pub tool: String,
+    pub code: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticSuppression {
+    pub span: KoboSpan,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KDiagnostic {
     pub code: KErrorCode,
     pub severity: Severity,
@@ -78,6 +90,8 @@ pub struct KDiagnostic {
     pub related: Vec<DiagnosticRelatedInfo>,
     pub suggestions: Vec<DiagnosticSuggestion>,
     pub suppressed_by: Option<KoboSpan>,
+    pub upstream: Option<DiagnosticUpstream>,
+    pub suppression: Option<DiagnosticSuppression>,
 }
 
 impl DiagLabel {
@@ -121,6 +135,8 @@ impl KDiagnostic {
             related: Vec::new(),
             suggestions: Vec::new(),
             suppressed_by: None,
+            upstream: None,
+            suppression: None,
         }
     }
 
@@ -156,6 +172,17 @@ impl KDiagnostic {
 
     pub fn with_suppressed_by(mut self, span: KoboSpan) -> Self {
         self.suppressed_by = Some(span);
+        self
+    }
+
+    pub fn with_upstream(mut self, upstream: DiagnosticUpstream) -> Self {
+        self.upstream = Some(upstream);
+        self
+    }
+
+    pub fn with_suppression(mut self, suppression: DiagnosticSuppression) -> Self {
+        self.suppressed_by = Some(suppression.span);
+        self.suppression = Some(suppression);
         self
     }
 
@@ -209,6 +236,24 @@ impl DiagnosticSuggestion {
             message: message.into(),
             applicability,
             edits,
+        }
+    }
+}
+
+impl DiagnosticUpstream {
+    pub fn new(tool: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            tool: tool.into(),
+            code: code.into(),
+        }
+    }
+}
+
+impl DiagnosticSuppression {
+    pub fn new(span: KoboSpan, reason: impl Into<String>) -> Self {
+        Self {
+            span,
+            reason: reason.into(),
         }
     }
 }

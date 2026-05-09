@@ -9,6 +9,9 @@ use crate::{DiagLabel, DiagnosticRelatedInfo, KDiagnostic, TextEdit};
 pub struct DiagnosticJson {
     pub schema_version: u32,
     pub code: String,
+    pub slug: String,
+    pub title: String,
+    pub category: String,
     pub severity: String,
     pub message: String,
     pub primary: DiagnosticJsonSpan,
@@ -19,6 +22,8 @@ pub struct DiagnosticJson {
     pub notes: Vec<String>,
     pub suggestions: Vec<DiagnosticJsonSuggestion>,
     pub suppressed_by: Option<DiagnosticJsonSpan>,
+    pub suppression: Option<DiagnosticJsonSuppression>,
+    pub upstream: Option<DiagnosticJsonUpstream>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -60,11 +65,27 @@ pub struct DiagnosticJsonTextEdit {
     pub replacement: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticJsonSuppression {
+    pub span: DiagnosticJsonSpan,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DiagnosticJsonUpstream {
+    pub tool: String,
+    pub code: String,
+}
+
 impl DiagnosticJson {
     pub fn from_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> Self {
+        let metadata = registry_metadata(diagnostic);
         Self {
             schema_version: 1,
             code: diagnostic.code.as_str().to_owned(),
+            slug: metadata.slug,
+            title: metadata.title,
+            category: metadata.category,
             severity: diagnostic.severity.as_str().to_owned(),
             message: diagnostic.primary.text.clone(),
             primary: label_to_json_span(file_set, &diagnostic.primary),
@@ -101,6 +122,19 @@ impl DiagnosticJson {
             suppressed_by: diagnostic
                 .suppressed_by
                 .map(|span| span_to_json_span(file_set, span, None)),
+            suppression: diagnostic.suppression.as_ref().map(|suppression| {
+                DiagnosticJsonSuppression {
+                    span: span_to_json_span(file_set, suppression.span, None),
+                    reason: suppression.reason.clone(),
+                }
+            }),
+            upstream: diagnostic
+                .upstream
+                .as_ref()
+                .map(|upstream| DiagnosticJsonUpstream {
+                    tool: upstream.tool.clone(),
+                    code: upstream.code.clone(),
+                }),
         }
     }
 }
@@ -155,6 +189,29 @@ fn related_to_json(file_set: &FileSet, related: &DiagnosticRelatedInfo) -> Diagn
     DiagnosticJsonRelated {
         span: span_to_json_span(file_set, related.span, Some(related.message.clone())),
         message: related.message.clone(),
+    }
+}
+
+struct DiagnosticJsonMetadata {
+    slug: String,
+    title: String,
+    category: String,
+}
+
+fn registry_metadata(diagnostic: &KDiagnostic) -> DiagnosticJsonMetadata {
+    let registry = crate::diagnostic_registry();
+    if let Some(entry) = registry.get(diagnostic.code) {
+        return DiagnosticJsonMetadata {
+            slug: entry.slug.to_owned(),
+            title: entry.title.to_owned(),
+            category: entry.category.as_str().to_owned(),
+        };
+    }
+
+    DiagnosticJsonMetadata {
+        slug: diagnostic.code.as_str().to_ascii_lowercase(),
+        title: diagnostic.code.metadata().short_description.to_owned(),
+        category: "unknown".to_owned(),
     }
 }
 

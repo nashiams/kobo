@@ -65,6 +65,26 @@ pub struct RelaxAttrError {
     pub is_error: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MustCallAction {
+    pub name: String,
+    pub span: KoboSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MustCallObligation {
+    pub owner_type: String,
+    pub owner_span: KoboSpan,
+    pub attr_span: KoboSpan,
+    pub actions: Vec<MustCallAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MustCallAttrError {
+    pub span: KoboSpan,
+    pub message: String,
+}
+
 /// The target element tagged by `#[kobo::migrate]` [G6 / R05].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MigrateTarget {
@@ -113,6 +133,8 @@ pub struct Kir {
     relax_attr_errors: Vec<RelaxAttrError>,
     /// Sites tagged with `#[kobo::migrate]` — metadata-only, zero codegen effect [G6 / R05].
     migrate_sites: Vec<MigrateSite>,
+    must_call_obligations: Vec<MustCallObligation>,
+    must_call_attr_errors: Vec<MustCallAttrError>,
     /// Method name → `true` if `&mut self`, scanned from impl blocks + config.
     method_mutability: HashMap<String, bool>,
     /// S-3: KIR node IDs whose bindings belong to engine struct types.
@@ -143,6 +165,8 @@ impl Kir {
             relaxed_fn_ranges: Vec::new(),
             relax_attr_errors: Vec::new(),
             migrate_sites: Vec::new(),
+            must_call_obligations: Vec::new(),
+            must_call_attr_errors: Vec::new(),
             method_mutability: HashMap::new(),
             engine_ceiling_nodes: HashSet::new(),
         }
@@ -256,6 +280,22 @@ impl Kir {
 
     pub fn set_migrate_sites(&mut self, sites: Vec<MigrateSite>) {
         self.migrate_sites = sites;
+    }
+
+    pub fn must_call_obligations(&self) -> &[MustCallObligation] {
+        &self.must_call_obligations
+    }
+
+    pub fn set_must_call_obligations(&mut self, obligations: Vec<MustCallObligation>) {
+        self.must_call_obligations = obligations;
+    }
+
+    pub fn must_call_attr_errors(&self) -> &[MustCallAttrError] {
+        &self.must_call_attr_errors
+    }
+
+    pub fn set_must_call_attr_errors(&mut self, errors: Vec<MustCallAttrError>) {
+        self.must_call_attr_errors = errors;
     }
 
     pub fn method_mutability(&self) -> &HashMap<String, bool> {

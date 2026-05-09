@@ -76,6 +76,7 @@ pub(crate) fn finalize_transform_facts(
         shared_facts.node_id = binding.node;
         shared_facts.box_reason = binding.shared_facts.box_reason;
         shared_facts.needs_send = binding.shared_facts.needs_send;
+        downgrade_method_only_reads(binding.method_read_spans.len(), &mut shared_facts);
         if shared_facts.needs_sharing || shared_facts.needs_mutable_wrapper {
             shared_facts.box_reason = None;
         }
@@ -86,6 +87,21 @@ pub(crate) fn finalize_transform_facts(
     }
 
     facts.sync_views();
+}
+
+fn downgrade_method_only_reads(method_read_sites: usize, facts: &mut kobo_ir::SharedBindingFacts) {
+    if facts.sequential_read_only
+        && facts.read_sites > 0
+        && facts.read_sites <= 2
+        && facts.read_sites == method_read_sites
+        && !facts.has_escape
+        && !facts.needs_mutable_wrapper
+        && !facts.needs_send
+        && !facts.live_borrow_at_move
+    {
+        facts.needs_sharing = false;
+        facts.sequential_read_only = false;
+    }
 }
 
 fn materialize_borrow_alias_uses(facts: &mut TransformFacts, borrow_aliases: &[BorrowAlias]) {
@@ -226,6 +242,7 @@ mod tests {
             plain_clone_move_span: None,
             elision_skip_reason: None,
             decl_scope_depth: 0,
+            method_read_spans: Vec::new(),
             ref_returning_read_spans: Vec::new(),
         }
     }

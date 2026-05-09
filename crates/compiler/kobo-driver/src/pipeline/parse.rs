@@ -60,6 +60,7 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     preprocess_source_map = bridge_mapped
         .source_map
         .compose_with(&preprocess_source_map);
+    rewritten = mask_field_capability_views(&rewritten);
 
     let recovery_mode = if session.config.enable_parse_recovery {
         RecoveryMode::Recover
@@ -134,6 +135,21 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     }
 
     Ok((kobo_file, kir))
+}
+
+fn mask_field_capability_views(source: &str) -> String {
+    let mut output = source.to_owned();
+    let mut search_start = 0usize;
+    while let Some(relative) = output[search_start..].find(" using {") {
+        let start = search_start + relative;
+        let Some(close_relative) = output[start..].find('}') else {
+            break;
+        };
+        let end = start + close_relative + 1;
+        output.replace_range(start..end, &" ".repeat(end - start));
+        search_start = end;
+    }
+    output
 }
 
 fn remap_diagnostic_to_original_source(

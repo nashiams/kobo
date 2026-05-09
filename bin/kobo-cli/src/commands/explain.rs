@@ -4,6 +4,6 @@ pub(super) fn cmd_explain(code: &str) -> anyhow::Result<()> {
             println!("{text}");
             Ok(())
         }
-        None => anyhow::bail!("unknown Kobo diagnostic code `{code}`"),
+        None => anyhow::bail!("{}", kobo_errors::unknown_code_message(code)),
     }
 }

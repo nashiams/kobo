@@ -85,6 +85,57 @@ fn tier_for_binding(source: &str, name: &str, occurrence: usize) -> OwnershipTie
 }
 
 #[test]
+fn must_call_metadata_preserves_owner_actions_and_spans() {
+    let source = r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {
+    id: u64,
+}
+"#;
+
+    let mut id_gen = kobo_ir::NodeIdGen::new();
+    let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+    let kir = build_kir(&ast, &mut id_gen, TransformOptions::default());
+    let obligation = kir
+        .must_call_obligations()
+        .first()
+        .expect("must_call obligation should be collected");
+
+    assert_eq!(obligation.owner_type, "Transaction");
+    assert_eq!(
+        obligation
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect::<Vec<_>>(),
+        ["commit", "rollback"]
+    );
+    assert!(obligation.attr_span.end <= obligation.owner_span.end);
+    assert!(obligation
+        .actions
+        .iter()
+        .all(|action| action.span.start < action.span.end));
+    assert!(kir.must_call_attr_errors().is_empty());
+}
+
+#[test]
+fn must_call_malformed_attribute_records_structured_error() {
+    let source = r#"
+#[kobo::must_call(commit || rollback)]
+struct Transaction {
+    id: u64,
+}
+"#;
+
+    let output = raw_builder_output_for(source);
+    assert!(output.must_call_obligations.is_empty());
+    assert_eq!(output.must_call_attr_errors.len(), 1);
+    assert!(output.must_call_attr_errors[0]
+        .message
+        .contains("must_call"));
+}
+
+#[test]
 fn builder_finish_sorts_recorded_use_events() {
     let source = r#"
 fn main() {

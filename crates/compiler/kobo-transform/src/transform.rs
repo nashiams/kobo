@@ -56,6 +56,8 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
 
     // G6: store migrate sites — metadata-only, zero codegen effect [R05].
     kir.set_migrate_sites(built.migrate_sites);
+    kir.set_must_call_obligations(built.must_call_obligations);
+    kir.set_must_call_attr_errors(built.must_call_attr_errors);
 
     // Phase 4: store method mutability map for codegen borrow/borrow_mut selection.
     kir.set_method_mutability(built.method_mutability);

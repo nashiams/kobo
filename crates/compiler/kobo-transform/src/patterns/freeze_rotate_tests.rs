@@ -44,6 +44,7 @@ fn make_binding(
         plain_clone_move_span: None,
         elision_skip_reason: None,
         decl_scope_depth: 0,
+        method_read_spans: Vec::new(),
         ref_returning_read_spans: Vec::new(),
     }
 }
@@ -283,6 +284,7 @@ fn move_rebind_reason_when_sharing_needed() {
         plain_clone_move_span: None,
         elision_skip_reason: None,
         decl_scope_depth: 0,
+        method_read_spans: Vec::new(),
         ref_returning_read_spans: Vec::new(),
     };
 
@@ -340,6 +342,7 @@ fn no_move_rebind_when_used_after_move() {
         plain_clone_move_span: None,
         elision_skip_reason: None,
         decl_scope_depth: 0,
+        method_read_spans: Vec::new(),
         ref_returning_read_spans: Vec::new(),
     };
 

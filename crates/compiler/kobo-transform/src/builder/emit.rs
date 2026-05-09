@@ -99,6 +99,7 @@ impl TransformFactsBuilder<'_> {
             plain_clone_move_span: None,
             elision_skip_reason: None,
             decl_scope_depth: self.scope_depth,
+            method_read_spans: Vec::new(),
             ref_returning_read_spans: Vec::new(),
         });
     }
@@ -177,12 +178,46 @@ impl TransformFactsBuilder<'_> {
         true
     }
 
+    pub(super) fn emit_ident_use(&mut self, ident: &syn::Ident, use_kind: UseKind) -> bool {
+        let Some(binding_state) = self.ctx.lookup(ident) else {
+            return false;
+        };
+        let span = self.ast.span_from_syn(ident.span());
+
+        self.record_spawn_capture(binding_state.decl_id);
+        self.nodes.push(build_binding_event_node(
+            self.id_gen.next_kir_id(),
+            NodeKind::Use(use_kind),
+            span,
+            binding_state.decl_id,
+        ));
+        let event = match use_kind {
+            UseKind::Read => UseEvent::ReadOnly { span },
+            UseKind::Write => UseEvent::Mutated { span },
+        };
+        self.record_event(binding_state.decl_id, event);
+        true
+    }
+
+    pub(super) fn mark_ident_method_read(&mut self, ident: &syn::Ident) {
+        let Some(binding_state) = self.ctx.lookup(ident) else {
+            return;
+        };
+        let Some(&index) = self.fact_indices.get(&binding_state.decl_id) else {
+            return;
+        };
+        let span = self.ast.span_from_syn(ident.span());
+        self.transform_facts.bindings[index]
+            .method_read_spans
+            .push(span);
+    }
+
     /// Like `emit_use` but also records the method name for ref-returning detection.
     pub(super) fn emit_method_use(
         &mut self,
         expr: &syn::Expr,
         use_kind: UseKind,
-        method_name: &str,
+        _method_name: &str,
     ) -> bool {
         let Some((binding_state, span)) = self.resolved_binding(expr) else {
             return false;
@@ -202,14 +237,24 @@ impl TransformFactsBuilder<'_> {
         };
         self.record_event(binding_state.decl_id, event);
 
-        // Track reads from reference-returning methods for BUG-12 extraction filter.
-        if matches!(use_kind, UseKind::Read) && is_ref_returning_method(method_name) {
+        // Method receiver reads are ephemeral borrows; they should not force a
+        // local value into a shared wrapper by themselves.
+        if matches!(use_kind, UseKind::Read) {
+            if let Some(&idx) = self.fact_indices.get(&binding_state.decl_id) {
+                self.transform_facts.bindings[idx]
+                    .method_read_spans
+                    .push(span);
+            }
+        }
+
+        if matches!(use_kind, UseKind::Read) && is_ref_returning_method(_method_name) {
             if let Some(&idx) = self.fact_indices.get(&binding_state.decl_id) {
                 self.transform_facts.bindings[idx]
                     .ref_returning_read_spans
                     .push(span);
             }
         }
+
         true
     }
 

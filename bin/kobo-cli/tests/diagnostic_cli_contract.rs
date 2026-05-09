@@ -56,8 +56,8 @@ fn check_bad_parse_uses_registry_backed_card() {
 
     assert!(!output.status.success());
     assert!(
-        text.contains("error[K010"),
-        "expected parser K-code card, got:\n{text}"
+        text.contains("error[K011"),
+        "expected parser K011x card, got:\n{text}"
     );
     assert!(
         text.contains("-->"),
@@ -89,7 +89,7 @@ fn check_bad_parse_json_uses_typed_schema() {
 
     assert!(!output.status.success());
     assert_eq!(value["schema_version"], 1);
-    assert!(value["code"].as_str().unwrap().starts_with("K010"));
+    assert!(value["code"].as_str().unwrap().starts_with("K011"));
     assert_eq!(value["severity"], "error");
     assert!(value["primary"]["byte_start"].as_u64().is_some());
     assert!(value["primary"]["line_start"].as_u64().is_some());
@@ -163,7 +163,7 @@ fn log(s: String) {
 
     assert!(!output.status.success());
     assert!(
-        text.contains("error[K010"),
+        text.contains("error[K011"),
         "expected parse recovery diagnostic:\n{text}"
     );
     assert!(

@@ -24,7 +24,7 @@ pub fn parse_file_recovering(
             ParseOutcome {
                 file: None,
                 diagnostics: vec![diagnostic_for_error(
-                    KErrorCode::K0100,
+                    KErrorCode::K0110,
                     span,
                     error.to_string(),
                 )],
@@ -53,7 +53,7 @@ fn recover_file(
     if regions.is_empty() {
         let span = normalized_span(first_error.primary_span(), source.len(), file_id);
         diagnostics.push(diagnostic_for_error(
-            KErrorCode::K0100,
+            KErrorCode::K0110,
             span,
             first_error.to_string(),
         ));
@@ -70,9 +70,9 @@ fn recover_file(
             }
 
             let code = if region.unclosed_delimiter {
-                KErrorCode::K0101
+                KErrorCode::K0111
             } else {
-                KErrorCode::K0100
+                KErrorCode::K0110
             };
             let span = KoboSpan::new(region.start as u32, region.end as u32, file_id);
             let message = if region.unclosed_delimiter {
@@ -88,7 +88,7 @@ fn recover_file(
         if regions.len() > RECOVERY_LIMIT {
             let span = KoboSpan::new(0, source.len() as u32, file_id);
             diagnostics.push(diagnostic_for_error(
-                KErrorCode::K0103,
+                KErrorCode::K0113,
                 span,
                 "parser recovery limit reached".to_owned(),
             ));
@@ -167,7 +167,7 @@ fn item_regions(source: &str) -> Vec<ItemRegion> {
             break;
         };
 
-        let Some(end) = item_region_end(source, start) else {
+        let Some(region_end) = item_region_end(source, start) else {
             regions.push(ItemRegion {
                 start,
                 end: source.len(),
@@ -178,10 +178,10 @@ fn item_regions(source: &str) -> Vec<ItemRegion> {
 
         regions.push(ItemRegion {
             start,
-            end,
-            unclosed_delimiter: false,
+            end: region_end.end,
+            unclosed_delimiter: region_end.unclosed_delimiter,
         });
-        pos = end.max(start + 1);
+        pos = region_end.end.max(start + 1);
     }
     regions
 }
@@ -201,16 +201,35 @@ fn find_next_item_start(source: &str, from: usize) -> Option<usize> {
     None
 }
 
-fn item_region_end(source: &str, start: usize) -> Option<usize> {
+#[derive(Copy, Clone, Debug)]
+struct ItemRegionEnd {
+    end: usize,
+    unclosed_delimiter: bool,
+}
+
+fn item_region_end(source: &str, start: usize) -> Option<ItemRegionEnd> {
     let keyword = item_keyword_at(source, start)?;
     if matches!(keyword, "use" | "const" | "static" | "mod") {
         if let Some(semicolon) = find_statement_end(source, start) {
-            return Some(semicolon + 1);
+            return Some(ItemRegionEnd {
+                end: semicolon + 1,
+                unclosed_delimiter: false,
+            });
         }
     }
 
     let open = find_next_top_level_byte(source, start, b'{')?;
-    find_matching_brace(source, open).map(|close| close + 1)
+    if let Some(close) = find_matching_brace(source, open) {
+        return Some(ItemRegionEnd {
+            end: close + 1,
+            unclosed_delimiter: false,
+        });
+    }
+
+    Some(ItemRegionEnd {
+        end: find_next_item_start(source, open + 1).unwrap_or(source.len()),
+        unclosed_delimiter: true,
+    })
 }
 
 fn item_keyword_at(source: &str, pos: usize) -> Option<&'static str> {

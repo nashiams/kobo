@@ -4,7 +4,9 @@ use kobo_analysis::{
     analyze_send_violations, facts_to_diagnostics, run_analysis, scan_source_cancel_safety,
     scan_source_handler_leaks, SpawnSite as AnalysisSpawnSite,
 };
-use kobo_errors::{resolve_severity, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
+use kobo_errors::{
+    resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
+};
 use kobo_ir::{AsyncViolationKind, Kir, RelaxAttrError, UseEvent, WarnEarlyPattern};
 use kobo_transform::{
     strict_async::check_strict_async, strict_async::guard_liveness::detect_guard_across_await,
@@ -34,7 +36,8 @@ pub fn run_pipeline_ordering_check(
     kobo_analysis::check_pipeline_ordering(&kobo_file.inner.items)
 }
 
-pub(super) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()> {
+pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Result<(), ()> {
+    let downstream_diagnostics_start = session.diagnostics.len();
     let facts = run_analysis(kir, session.file_set());
     session.diagnostics.extend(facts_to_diagnostics(
         &facts,
@@ -60,6 +63,23 @@ pub(super) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
             ));
         }
     }
+
+    for error in kir.must_call_attr_errors() {
+        let severity =
+            resolve_severity(KErrorCode::K0103, session.mode()).unwrap_or(Severity::Error);
+        session.diagnostics.push(KDiagnostic::new(
+            KErrorCode::K0103,
+            severity,
+            DiagLabel::primary(error.span, error.message.clone()),
+            error.message.clone(),
+            DiagDecision(
+                "write `#[kobo::must_call(commit | rollback)]` with named actions".to_owned(),
+            ),
+        ));
+    }
+
+    project_scenario_metadata_diagnostics(session);
+    project_nondeterminism_diagnostics(session);
 
     // Emit diagnostics for #[kobo::relax] attribute validation errors/warnings [G5].
     // K0026 error path: structural validation errors use hardcoded Error (AC-19 exception).
@@ -347,6 +367,8 @@ pub(super) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
         session.diagnostics.extend(handler_diags);
     }
 
+    session.suppress_diagnostics_from(downstream_diagnostics_start);
+
     if session.has_errors() {
         Err(())
     } else {
@@ -400,4 +422,133 @@ fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &
             )),
         );
     }
+}
+
+struct NondeterminismPattern {
+    class_name: &'static str,
+    operation: &'static str,
+}
+
+fn project_scenario_metadata_diagnostics(session: &mut CompileSession) {
+    let mut diagnostics = Vec::new();
+    for (file_id, entry) in session.file_set().iter_files() {
+        let source = entry.source();
+        for line in source.lines() {
+            if !line.contains("kobo::scenario") {
+                continue;
+            }
+            if line.contains("name") && line.contains('"') {
+                continue;
+            }
+            let offset = source.find(line.trim()).unwrap_or(0) as u32;
+            let span = kobo_ir::KoboSpan::new(offset, offset + line.trim().len() as u32, file_id);
+            let severity =
+                resolve_severity(KErrorCode::K0105, session.mode()).unwrap_or(Severity::Error);
+            diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0105,
+                severity,
+                DiagLabel::primary(span, "`#[kobo::scenario]` requires a name"),
+                "malformed scenario metadata: `#[kobo::scenario]` requires `name = \"...\"`",
+                DiagDecision("add a scenario name or remove the attribute".to_owned()),
+            ));
+        }
+    }
+    session.diagnostics.extend(diagnostics);
+}
+
+fn project_nondeterminism_diagnostics(session: &mut CompileSession) {
+    let mut diagnostics = Vec::new();
+    for (file_id, entry) in session.file_set().iter_files() {
+        let source = entry.source();
+        if !is_replay_risk_zone(source) {
+            continue;
+        }
+
+        for pattern in nondeterminism_patterns() {
+            let occurrences = source.matches(pattern.operation).count();
+            if occurrences == 0 {
+                continue;
+            }
+            let offset = source.find(pattern.operation).unwrap_or(0) as u32;
+            let span =
+                kobo_ir::KoboSpan::new(offset, offset + pattern.operation.len() as u32, file_id);
+            let severity =
+                resolve_severity(KErrorCode::K0102, session.mode()).unwrap_or(Severity::Warning);
+            diagnostics.push(
+                KDiagnostic::new(
+                    KErrorCode::K0102,
+                    severity,
+                    DiagLabel::primary(
+                        span,
+                        format!("raw {} nondeterminism: {}", pattern.class_name, pattern.operation),
+                    ),
+                    format!(
+                        "raw {} nondeterminism appears in a scenario or future replay zone through `{}`",
+                        pattern.class_name, pattern.operation
+                    ),
+                    DiagDecision(
+                        "wrap this operation behind a modeled policy before claiming replay"
+                            .to_owned(),
+                    ),
+                )
+                .with_note(DiagnosticNote::new(format!(
+                    "occurrences: {occurrences}"
+                ))),
+            );
+        }
+    }
+    session.diagnostics.extend(diagnostics);
+}
+
+fn is_replay_risk_zone(source: &str) -> bool {
+    source.contains("kobo::scenario") || source.contains("replay") || source.contains("ward")
+}
+
+fn nondeterminism_patterns() -> &'static [NondeterminismPattern] {
+    &[
+        NondeterminismPattern {
+            class_name: "time",
+            operation: "SystemTime::now",
+        },
+        NondeterminismPattern {
+            class_name: "time",
+            operation: "Instant::now",
+        },
+        NondeterminismPattern {
+            class_name: "random",
+            operation: "rand::random",
+        },
+        NondeterminismPattern {
+            class_name: "random",
+            operation: "thread_rng",
+        },
+        NondeterminismPattern {
+            class_name: "filesystem",
+            operation: "std::fs::",
+        },
+        NondeterminismPattern {
+            class_name: "scheduler",
+            operation: "tokio::spawn",
+        },
+        NondeterminismPattern {
+            class_name: "scheduler",
+            operation: "select!",
+        },
+        NondeterminismPattern {
+            class_name: "process",
+            operation: "std::process::",
+        },
+        NondeterminismPattern {
+            class_name: "environment",
+            operation: "std::env::",
+        },
+        NondeterminismPattern {
+            class_name: "network",
+            operation: "TcpStream",
+        },
+        NondeterminismPattern {
+            class_name: "network",
+            operation: "reqwest::",
+        },
+    ]
 }

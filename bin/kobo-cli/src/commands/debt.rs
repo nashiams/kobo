@@ -5,6 +5,7 @@ use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
 use kobo_debt::patterns::{detect_migration_patterns, format_patterns};
 use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_driver::{lifetime_erasure_debt_report, run_kir_phase};
+use kobo_ir::MustCallObligation;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 
 use super::session::build_session;
@@ -60,6 +61,354 @@ fn count_files_and_lines(file_set: &kobo_ir::FileSet) -> (usize, usize) {
         line_count += entry.source.lines().count();
     }
     (file_count, line_count)
+}
+
+pub(super) fn cmd_debt_liveness(file: &Path, json: bool) -> anyhow::Result<()> {
+    let mut session = build_session(file, None)?;
+    let (_, kir) = run_kir_phase(&mut session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
+    let source = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+
+    let findings = build_liveness_findings(&source, kir.must_call_obligations());
+    if json {
+        let values = findings
+            .iter()
+            .map(LivenessFinding::to_json_value)
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&values)
+                .context("failed to serialize liveness debt report")?
+        );
+        return Ok(());
+    }
+
+    if findings.is_empty() {
+        println!("Liveness debt: no unresolved must_call obligations.");
+        return Ok(());
+    }
+
+    for finding in findings {
+        println!("{}", finding.render());
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct LivenessFinding {
+    code: &'static str,
+    owner_type: String,
+    actions: Vec<String>,
+    function: String,
+    binding: Option<String>,
+    message: String,
+    reason: Option<String>,
+}
+
+impl LivenessFinding {
+    fn render(&self) -> String {
+        let action_list = self.actions.join(" | ");
+        let binding = self
+            .binding
+            .as_ref()
+            .map(|name| format!(" `{name}`"))
+            .unwrap_or_default();
+        let mut line = format!(
+            "warning[{}]: {}{} in `{}`: {} ({})",
+            self.code, self.owner_type, binding, self.function, self.message, action_list
+        );
+        if let Some(reason) = &self.reason {
+            line.push_str(&format!("; reason: {reason}"));
+        }
+        line
+    }
+
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "code": self.code,
+            "owner_type": self.owner_type,
+            "actions": self.actions,
+            "function": self.function,
+            "binding": self.binding,
+            "message": self.message,
+            "reason": self.reason,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct SourceFunction {
+    name: String,
+    header: String,
+    body: String,
+    attrs: Vec<String>,
+}
+
+#[derive(Debug)]
+struct Suppression {
+    has_k0100: bool,
+    reason: Option<String>,
+}
+
+fn build_liveness_findings(
+    source: &str,
+    obligations: &[MustCallObligation],
+) -> Vec<LivenessFinding> {
+    let functions = collect_source_functions(source);
+    let mut findings = Vec::new();
+
+    for obligation in obligations {
+        let actions = obligation
+            .actions
+            .iter()
+            .map(|action| action.name.clone())
+            .collect::<Vec<_>>();
+        for function in &functions {
+            let suppression = parse_suppression(&function.attrs);
+            if let Some(finding) =
+                escape_finding(function, obligation, &actions, suppression.as_ref())
+            {
+                findings.push(finding);
+                continue;
+            }
+
+            for binding in declared_obligation_bindings(function, obligation) {
+                match suppression.as_ref() {
+                    Some(Suppression {
+                        has_k0100: true,
+                        reason: Some(reason),
+                    }) => {
+                        findings.push(LivenessFinding {
+                            code: "K0108",
+                            owner_type: obligation.owner_type.clone(),
+                            actions: actions.clone(),
+                            function: function.name.clone(),
+                            binding: Some(binding),
+                            message: "must_call liveness obligation suppressed".to_owned(),
+                            reason: Some(reason.clone()),
+                        });
+                    }
+                    Some(Suppression {
+                        has_k0100: true,
+                        reason: None,
+                    }) => {
+                        findings.push(LivenessFinding {
+                            code: "K0100",
+                            owner_type: obligation.owner_type.clone(),
+                            actions: actions.clone(),
+                            function: function.name.clone(),
+                            binding: Some(binding),
+                            message: "`#[kobo::suppress(K0100)]` requires a reason".to_owned(),
+                            reason: None,
+                        });
+                    }
+                    _ if has_unresolved_exit(&function.body, &binding, &actions) => {
+                        findings.push(LivenessFinding {
+                            code: "K0100",
+                            owner_type: obligation.owner_type.clone(),
+                            actions: actions.clone(),
+                            function: function.name.clone(),
+                            binding: Some(binding),
+                            message: "may leave without a required call".to_owned(),
+                            reason: None,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn escape_finding(
+    function: &SourceFunction,
+    obligation: &MustCallObligation,
+    actions: &[String],
+    suppression: Option<&Suppression>,
+) -> Option<LivenessFinding> {
+    if suppression.is_some_and(|suppression| suppression.has_k0100) {
+        return None;
+    }
+
+    if !function
+        .header
+        .contains(&format!("-> {}", obligation.owner_type))
+    {
+        return None;
+    }
+
+    if !function
+        .body
+        .contains(&format!("{} {{", obligation.owner_type))
+    {
+        return None;
+    }
+
+    Some(LivenessFinding {
+        code: "K0101",
+        owner_type: obligation.owner_type.clone(),
+        actions: actions.to_vec(),
+        function: function.name.clone(),
+        binding: None,
+        message: "obligation escapes local analysis through a return value".to_owned(),
+        reason: None,
+    })
+}
+
+fn declared_obligation_bindings(
+    function: &SourceFunction,
+    obligation: &MustCallObligation,
+) -> Vec<String> {
+    function
+        .body
+        .lines()
+        .filter_map(|line| declared_binding_on_line(line, &obligation.owner_type))
+        .collect()
+}
+
+fn declared_binding_on_line(line: &str, owner_type: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("let ")?;
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+    let name = rest
+        .split(|ch: char| ch == ':' || ch == '=' || ch.is_whitespace())
+        .next()?
+        .trim()
+        .to_owned();
+    if name.is_empty() {
+        return None;
+    }
+
+    let typed = rest.contains(&format!(": {owner_type}"));
+    let constructed = rest.contains(&format!("{owner_type} {{"));
+    if typed || constructed {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+fn has_unresolved_exit(body: &str, binding: &str, actions: &[String]) -> bool {
+    let mut seen_binding = false;
+    let mut seen_action = false;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("let {binding} "))
+            || trimmed.starts_with(&format!("let {binding} ="))
+            || trimmed.starts_with(&format!("let mut {binding} "))
+            || trimmed.starts_with(&format!("let mut {binding} ="))
+        {
+            seen_binding = true;
+        }
+
+        if !seen_binding {
+            continue;
+        }
+
+        if actions
+            .iter()
+            .any(|action| trimmed.contains(&format!("{binding}.{action}(")))
+        {
+            seen_action = true;
+        }
+
+        if trimmed.starts_with("return") && !seen_action {
+            return true;
+        }
+    }
+
+    !seen_action
+}
+
+fn parse_suppression(attrs: &[String]) -> Option<Suppression> {
+    let attr = attrs
+        .iter()
+        .find(|attr| attr.contains("kobo::suppress") && attr.contains("K0100"))?;
+    Some(Suppression {
+        has_k0100: true,
+        reason: extract_reason(attr),
+    })
+}
+
+fn extract_reason(attr: &str) -> Option<String> {
+    let marker = "reason";
+    let start = attr.find(marker)?;
+    let after_marker = &attr[start + marker.len()..];
+    let quote_start = after_marker.find('"')?;
+    let rest = &after_marker[quote_start + 1..];
+    let quote_end = rest.find('"')?;
+    Some(rest[..quote_end].to_owned())
+}
+
+fn collect_source_functions(source: &str) -> Vec<SourceFunction> {
+    let mut functions = Vec::new();
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut pending_attrs = Vec::new();
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if trimmed.starts_with("#[") {
+            pending_attrs.push(trimmed.to_owned());
+            index += 1;
+            continue;
+        }
+
+        if is_function_header(trimmed) {
+            let attrs = std::mem::take(&mut pending_attrs);
+            let (function, next_index) = collect_function(&lines, index, attrs);
+            functions.push(function);
+            index = next_index;
+            continue;
+        }
+
+        if !trimmed.is_empty() {
+            pending_attrs.clear();
+        }
+        index += 1;
+    }
+
+    functions
+}
+
+fn collect_function(lines: &[&str], start: usize, attrs: Vec<String>) -> (SourceFunction, usize) {
+    let mut body_lines = Vec::new();
+    let header = lines[start].trim().to_owned();
+    let name = extract_fn_name_from_line(&header);
+    let mut brace_depth = 0i32;
+    let mut index = start;
+
+    while index < lines.len() {
+        let line = lines[index];
+        brace_depth += line.matches('{').count() as i32;
+        brace_depth -= line.matches('}').count() as i32;
+        body_lines.push(line);
+        index += 1;
+        if brace_depth <= 0 && body_lines.iter().any(|line| line.contains('{')) {
+            break;
+        }
+    }
+
+    (
+        SourceFunction {
+            name,
+            header,
+            body: body_lines.join("\n"),
+            attrs,
+        },
+        index,
+    )
+}
+
+fn is_function_header(trimmed: &str) -> bool {
+    trimmed.starts_with("fn ")
+        || trimmed.starts_with("async fn ")
+        || trimmed.starts_with("pub fn ")
+        || trimmed.starts_with("pub async fn ")
 }
 
 pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
@@ -255,7 +604,7 @@ impl ErrorDebtEntry {
     }
 }
 
-fn extract_fn_name_from_line(line: &str) -> String {
+pub(super) fn extract_fn_name_from_line(line: &str) -> String {
     let rest = line
         .strip_prefix("pub async fn ")
         .or_else(|| line.strip_prefix("async fn "))

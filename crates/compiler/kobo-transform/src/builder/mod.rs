@@ -10,7 +10,8 @@ use crate::options::TransformOptions;
 use crate::small_clone::{collect_small_clone_profiles, SmallCloneProfile};
 use kobo_ir::{
     BoxReason, CloneElisionCandidate, ElisionSkipReason, HintConflictFact, KirNode, KirStructDef,
-    KoboSpan, MigrateSite, NodeIdGen, RelaxAttrError, TransformFacts,
+    KoboSpan, MigrateSite, MustCallAttrError, MustCallObligation, NodeIdGen, RelaxAttrError,
+    TransformFacts,
 };
 use kobo_parser::{KoboBinding, KoboFile};
 
@@ -42,6 +43,8 @@ pub(crate) struct BuilderOutput {
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
     /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
     pub(crate) migrate_sites: Vec<MigrateSite>,
+    pub(crate) must_call_obligations: Vec<MustCallObligation>,
+    pub(crate) must_call_attr_errors: Vec<MustCallAttrError>,
     /// Method name → is_mut_self, from impl block scanning + config.
     pub(crate) method_mutability: std::collections::HashMap<String, bool>,
     /// Spawn sites with captured binding info [S-8 / S-9].
@@ -75,6 +78,8 @@ pub(crate) struct TransformFactsBuilder<'a> {
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
     /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
     pub(crate) migrate_sites: Vec<MigrateSite>,
+    pub(crate) must_call_obligations: Vec<MustCallObligation>,
+    pub(crate) must_call_attr_errors: Vec<MustCallAttrError>,
     /// Current nesting depth for scope tracking (0 = function body).
     scope_depth: usize,
     /// Pending `#[kobo::async_shared]` flag for the next binding [BUG 7].
@@ -174,6 +179,8 @@ impl<'a> TransformFactsBuilder<'a> {
             relaxed_fn_ranges: Vec::new(),
             relax_attr_errors: Vec::new(),
             migrate_sites: Vec::new(),
+            must_call_obligations: Vec::new(),
+            must_call_attr_errors: Vec::new(),
             scope_depth: 0,
             pending_async_shared: false,
             spawn_sites: Vec::new(),
@@ -194,6 +201,8 @@ impl<'a> TransformFactsBuilder<'a> {
             relaxed_fn_ranges,
             relax_attr_errors,
             migrate_sites,
+            must_call_obligations,
+            must_call_attr_errors,
             method_registry,
             spawn_sites,
             ..
@@ -229,6 +238,8 @@ impl<'a> TransformFactsBuilder<'a> {
             relaxed_fn_ranges,
             relax_attr_errors,
             migrate_sites,
+            must_call_obligations,
+            must_call_attr_errors,
             method_mutability: method_registry.into_map(),
             spawn_sites,
         }

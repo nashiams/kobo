@@ -1,0 +1,23 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistryEntry {
+    pub code: &'static str,
+    pub slug: &'static str,
+    pub title: &'static str,
+}
+
+const ENTRIES: &[RegistryEntry] = &[
+    RegistryEntry {
+        code: "K0001",
+        slug: "value-used-after-move",
+        title: "value used after move",
+    },
+    RegistryEntry {
+        code: "K0107",
+        slug: "unmodeled-external-boundary",
+        title: "unmodeled external boundary",
+    },
+];
+
+pub fn lookup(code: &str) -> Option<RegistryEntry> {
+    ENTRIES.iter().copied().find(|entry| entry.code == code)
+}

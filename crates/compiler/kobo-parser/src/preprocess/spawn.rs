@@ -9,6 +9,8 @@
 /// and lowered to `tokio::spawn(async move { ... })`.
 use kobo_ir::{FileId, KoboSpan};
 
+use super::source_map::{push_identity_segment, PreprocessSourceMap, PreprocessedSource};
+
 /// Information about one `spawn { ... }` block found during preprocessing.
 #[derive(Clone, Debug)]
 pub struct SpawnBlockInfo {
@@ -16,6 +18,12 @@ pub struct SpawnBlockInfo {
     pub span: KoboSpan,
     /// Span of the body (between braces) in the ORIGINAL source.
     pub body_span: KoboSpan,
+    /// Span of the generated macro name in the REWRITTEN source.
+    pub generated_macro_span: KoboSpan,
+    /// Span of the copied body in the REWRITTEN source.
+    pub generated_body_span: KoboSpan,
+    /// Span of the generated macro close in the REWRITTEN source.
+    pub generated_close_span: KoboSpan,
 }
 
 /// Error when spawn is used outside an async function.
@@ -242,7 +250,7 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
     let mut brace_depth: u32 = 0;
     // Stack of brace depths at which a spawn block opened — when `}` brings
     // us back to this depth we append `)` to close `__kobo_spawn_block!(...)`.
-    let mut spawn_close_depths: Vec<(u32, usize)> = Vec::new(); // (depth_before_open, spawn_start)
+    let mut spawn_close_depths: Vec<(u32, usize)> = Vec::new(); // (depth_before_open, info_index)
 
     while pos < len {
         // Skip string literals.
@@ -315,6 +323,9 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
 
                     // Find closing brace to record the full span info.
                     if let Some(brace_end) = find_matching_brace(source, brace_pos) {
+                        let generated_macro_start = result.len();
+                        let generated_body_start =
+                            generated_macro_start + "__kobo_spawn_block!({".len();
                         infos.push(SpawnBlockInfo {
                             span: KoboSpan::new(
                                 spawn_start as u32,
@@ -322,12 +333,25 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
                                 file_id,
                             ),
                             body_span: KoboSpan::new(body_start as u32, brace_end as u32, file_id),
+                            generated_macro_span: KoboSpan::new(
+                                generated_macro_start as u32,
+                                (generated_macro_start + "__kobo_spawn_block!".len()) as u32,
+                                file_id,
+                            ),
+                            generated_body_span: KoboSpan::new(
+                                generated_body_start as u32,
+                                generated_body_start as u32,
+                                file_id,
+                            ),
+                            generated_close_span: KoboSpan::new(0, 0, file_id),
                         });
                     }
 
                     // Emit macro open and the `{`.
                     result.push_str("__kobo_spawn_block!({");
-                    spawn_close_depths.push((brace_depth, spawn_start));
+                    if !infos.is_empty() {
+                        spawn_close_depths.push((brace_depth, infos.len() - 1));
+                    }
                     brace_depth += 1;
                     pos = body_start;
                     continue;
@@ -345,9 +369,18 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
         if bytes[pos] == b'}' {
             brace_depth = brace_depth.saturating_sub(1);
             // Check if this closes a spawn block.
-            if let Some(&(depth, _)) = spawn_close_depths.last() {
+            if let Some(&(depth, info_index)) = spawn_close_depths.last() {
                 if brace_depth == depth {
                     spawn_close_depths.pop();
+                    let generated_close_start = result.len();
+                    if let Some(info) = infos.get_mut(info_index) {
+                        info.generated_body_span.end = generated_close_start as u32;
+                        info.generated_close_span = KoboSpan::new(
+                            generated_close_start as u32,
+                            (generated_close_start + "})".len()) as u32,
+                            file_id,
+                        );
+                    }
                     result.push_str("})");
                     pos += 1;
                     continue;
@@ -374,6 +407,80 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
     }
 
     (result, infos)
+}
+
+pub fn preprocess_spawn_blocks_mapped(
+    source: &str,
+    file_id: FileId,
+) -> PreprocessedSource<Vec<SpawnBlockInfo>> {
+    let (rewritten, infos) = preprocess_spawn_blocks(source, file_id);
+    let mut source_map = PreprocessSourceMap::default();
+
+    let mut top_level: Vec<&SpawnBlockInfo> = infos
+        .iter()
+        .filter(|candidate| {
+            !infos.iter().any(|other| {
+                other.span != candidate.span
+                    && other.span.start <= candidate.span.start
+                    && candidate.span.end <= other.span.end
+            })
+        })
+        .collect();
+    top_level.sort_by_key(|info| info.span.start);
+
+    let mut rewritten_cursor = 0usize;
+    let mut original_cursor = 0usize;
+    for info in top_level {
+        push_identity_segment(
+            &mut source_map,
+            file_id,
+            rewritten_cursor,
+            info.generated_macro_span.start as usize,
+            original_cursor,
+            info.span.start as usize,
+        );
+        push_spawn_segments(&mut source_map, file_id, info);
+        rewritten_cursor = info.generated_close_span.end as usize;
+        original_cursor = info.span.end as usize;
+    }
+    push_identity_segment(
+        &mut source_map,
+        file_id,
+        rewritten_cursor,
+        rewritten.len(),
+        original_cursor,
+        source.len(),
+    );
+
+    for info in &infos {
+        push_spawn_segments(&mut source_map, file_id, info);
+    }
+
+    PreprocessedSource {
+        rewritten,
+        source_map,
+        metadata: infos,
+    }
+}
+
+fn push_spawn_segments(
+    source_map: &mut PreprocessSourceMap,
+    file_id: FileId,
+    info: &SpawnBlockInfo,
+) {
+    source_map.push_segment(
+        info.generated_macro_span,
+        KoboSpan::new(
+            info.span.start,
+            info.span.start + "spawn".len() as u32,
+            file_id,
+        ),
+    );
+    source_map.push_segment(info.generated_body_span, info.body_span);
+    source_map.push_segment(
+        info.generated_close_span,
+        KoboSpan::new(info.span.end.saturating_sub(1), info.span.end, file_id),
+    );
 }
 
 /// Find the matching closing brace for an opening brace at `start`.

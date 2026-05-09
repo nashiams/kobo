@@ -1,6 +1,7 @@
 use crate::classify::{BindingMetadata, BindingState};
 use kobo_ir::{
-    BindingUsage, EscapeKind, HintConflictFact, NodeKind, TransformBindingFacts, UseEvent, UseKind,
+    BindingUsage, EscapeKind, HintConflictFact, NodeKind, OwnershipHint, TransformBindingFacts,
+    UseEvent, UseKind,
 };
 use kobo_parser::KoboBinding;
 
@@ -49,7 +50,7 @@ impl TransformFactsBuilder<'_> {
         let metadata = self.binding_metadata(binding, init);
         let decl_id = self.id_gen.next_kir_id();
         self.nodes.push(build_decl_node(binding, decl_id, metadata));
-        self.push_binding_fact(binding, decl_id, metadata, hint);
+        self.push_binding_fact(binding, decl_id, metadata, hint, init);
 
         BindingState {
             decl_id,
@@ -67,6 +68,7 @@ impl TransformFactsBuilder<'_> {
         decl_id: kobo_ir::KirNodeId,
         metadata: BindingMetadata,
         hint: Option<PendingHint>,
+        init: Option<&syn::Expr>,
     ) {
         let box_reason = self.detect_box_reason(binding);
         let shared_facts = kobo_ir::SharedBindingFacts {
@@ -81,7 +83,10 @@ impl TransformFactsBuilder<'_> {
             binding_name: binding.ident.to_string(),
             span: binding.span,
             resource_kind: metadata.resource_kind,
-            hint: hint.map(|pending| pending.hint),
+            hint: hint
+                .as_ref()
+                .map(|pending| pending.hint)
+                .or_else(|| kobo_bind_initializer(init).then_some(OwnershipHint::Shared)),
             hint_span: hint.map(|pending| pending.span),
             is_copy_known: metadata.is_copy_known,
             is_generic: metadata.is_generic,
@@ -99,6 +104,7 @@ impl TransformFactsBuilder<'_> {
             plain_clone_move_span: None,
             elision_skip_reason: None,
             decl_scope_depth: self.scope_depth,
+            method_read_spans: Vec::new(),
             ref_returning_read_spans: Vec::new(),
         });
     }
@@ -177,12 +183,46 @@ impl TransformFactsBuilder<'_> {
         true
     }
 
+    pub(super) fn emit_ident_use(&mut self, ident: &syn::Ident, use_kind: UseKind) -> bool {
+        let Some(binding_state) = self.ctx.lookup(ident) else {
+            return false;
+        };
+        let span = self.ast.span_from_syn(ident.span());
+
+        self.record_spawn_capture(binding_state.decl_id);
+        self.nodes.push(build_binding_event_node(
+            self.id_gen.next_kir_id(),
+            NodeKind::Use(use_kind),
+            span,
+            binding_state.decl_id,
+        ));
+        let event = match use_kind {
+            UseKind::Read => UseEvent::ReadOnly { span },
+            UseKind::Write => UseEvent::Mutated { span },
+        };
+        self.record_event(binding_state.decl_id, event);
+        true
+    }
+
+    pub(super) fn mark_ident_method_read(&mut self, ident: &syn::Ident) {
+        let Some(binding_state) = self.ctx.lookup(ident) else {
+            return;
+        };
+        let Some(&index) = self.fact_indices.get(&binding_state.decl_id) else {
+            return;
+        };
+        let span = self.ast.span_from_syn(ident.span());
+        self.transform_facts.bindings[index]
+            .method_read_spans
+            .push(span);
+    }
+
     /// Like `emit_use` but also records the method name for ref-returning detection.
     pub(super) fn emit_method_use(
         &mut self,
         expr: &syn::Expr,
         use_kind: UseKind,
-        method_name: &str,
+        _method_name: &str,
     ) -> bool {
         let Some((binding_state, span)) = self.resolved_binding(expr) else {
             return false;
@@ -202,14 +242,24 @@ impl TransformFactsBuilder<'_> {
         };
         self.record_event(binding_state.decl_id, event);
 
-        // Track reads from reference-returning methods for BUG-12 extraction filter.
-        if matches!(use_kind, UseKind::Read) && is_ref_returning_method(method_name) {
+        // Method receiver reads are ephemeral borrows; they should not force a
+        // local value into a shared wrapper by themselves.
+        if matches!(use_kind, UseKind::Read) {
+            if let Some(&idx) = self.fact_indices.get(&binding_state.decl_id) {
+                self.transform_facts.bindings[idx]
+                    .method_read_spans
+                    .push(span);
+            }
+        }
+
+        if matches!(use_kind, UseKind::Read) && is_ref_returning_method(_method_name) {
             if let Some(&idx) = self.fact_indices.get(&binding_state.decl_id) {
                 self.transform_facts.bindings[idx]
                     .ref_returning_read_spans
                     .push(span);
             }
         }
+
         true
     }
 
@@ -335,6 +385,28 @@ impl TransformFactsBuilder<'_> {
         };
         self.transform_facts.bindings[index].elision_skip_reason = Some(reason);
     }
+}
+
+fn kobo_bind_initializer(init: Option<&syn::Expr>) -> bool {
+    let Some(syn::Expr::Call(call)) = init else {
+        return false;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    let mut segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string());
+    matches!(
+        (
+            segments.next().as_deref(),
+            segments.next().as_deref(),
+            segments.next()
+        ),
+        (Some("kobo"), Some("bind"), None)
+    )
 }
 
 /// Known methods that return references rather than owned values.

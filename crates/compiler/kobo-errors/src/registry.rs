@@ -1,0 +1,1001 @@
+use std::collections::BTreeMap;
+
+use crate::{KErrorCode, Severity};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticRegistry {
+    entries: BTreeMap<&'static str, DiagnosticRegistryEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagnosticRegistryEntry {
+    pub code: KErrorCode,
+    pub code_text: &'static str,
+    pub slug: &'static str,
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub explain: &'static str,
+    pub category: DiagnosticCategory,
+    pub status: DiagnosticStatus,
+    pub default_severity: Severity,
+    pub severity_policy: SeverityPolicy,
+    pub mode_behavior: ModeBehavior,
+    pub suggestion_policy: SuggestionPolicy,
+    pub machine_edit_policy: MachineEditPolicy,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticCategory {
+    Ownership,
+    Performance,
+    StrictBoundary,
+    Async,
+    Solver,
+    Parser,
+    RustcRemap,
+    MigrationBoundary,
+    Liveness,
+    Nondeterminism,
+    BoundaryPolicy,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DiagnosticStatus {
+    Active,
+    Reserved,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SeverityPolicy {
+    Always(Severity),
+    OwnershipModeDependent,
+    AsyncModeDependent,
+    ScriptDebtCheckedWarningStrictError,
+    HiddenUntilActive,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ModeBehavior {
+    Unspecified,
+    NoModeDependency,
+    OwnershipGuaranteeProfile,
+    AsyncGuaranteeProfile,
+    ScriptDebtStrictError,
+    ReplayBoundaryPrompt,
+    ParserRecovery,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SuggestionPolicy {
+    Unspecified,
+    None,
+    HelpOnly,
+    ReviewOnly,
+    BoundaryPolicy,
+    MachineApplicableAllowed,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MachineEditPolicy {
+    Unspecified,
+    NotApplicable,
+    RefuseByDefault,
+    AllowedWhenSuggestionMachineApplicable,
+}
+
+impl DiagnosticCategory {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ownership => "ownership",
+            Self::Performance => "performance",
+            Self::StrictBoundary => "strict-boundary",
+            Self::Async => "async",
+            Self::Solver => "solver",
+            Self::Parser => "parser",
+            Self::RustcRemap => "rustc-remap",
+            Self::MigrationBoundary => "migration-boundary",
+            Self::Liveness => "liveness",
+            Self::Nondeterminism => "nondeterminism",
+            Self::BoundaryPolicy => "boundary-policy",
+        }
+    }
+}
+
+impl DiagnosticStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Reserved => "reserved",
+        }
+    }
+}
+
+impl SeverityPolicy {
+    pub const fn resolve(self, mode: kobo_ir::KoboMode) -> Option<Severity> {
+        match self {
+            Self::Always(severity) => Some(severity),
+            Self::OwnershipModeDependent => match mode {
+                kobo_ir::KoboMode::Script => None,
+                kobo_ir::KoboMode::Checked => Some(Severity::Warning),
+                kobo_ir::KoboMode::Strict => Some(Severity::Error),
+            },
+            Self::AsyncModeDependent => match mode {
+                kobo_ir::KoboMode::Script | kobo_ir::KoboMode::Checked => Some(Severity::Warning),
+                kobo_ir::KoboMode::Strict => Some(Severity::Error),
+            },
+            Self::ScriptDebtCheckedWarningStrictError => match mode {
+                kobo_ir::KoboMode::Script | kobo_ir::KoboMode::Checked => Some(Severity::Warning),
+                kobo_ir::KoboMode::Strict => Some(Severity::Error),
+            },
+            Self::HiddenUntilActive => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Always(Severity::Error) => "always-error",
+            Self::Always(Severity::Warning) => "always-warning",
+            Self::Always(Severity::Note) => "always-note",
+            Self::OwnershipModeDependent => "ownership-mode-dependent",
+            Self::AsyncModeDependent => "async-mode-dependent",
+            Self::ScriptDebtCheckedWarningStrictError => "script-debt-checked-warning-strict-error",
+            Self::HiddenUntilActive => "hidden-until-active",
+        }
+    }
+}
+
+impl ModeBehavior {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::NoModeDependency => "no mode dependency",
+            Self::OwnershipGuaranteeProfile => "ownership guarantee profile",
+            Self::AsyncGuaranteeProfile => "async guarantee profile",
+            Self::ScriptDebtStrictError => "Script debt, Strict error",
+            Self::ReplayBoundaryPrompt => "normal Rust allowed; replay requires boundary policy",
+            Self::ParserRecovery => "parser recovery",
+        }
+    }
+}
+
+impl SuggestionPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::None => "none",
+            Self::HelpOnly => "help-only",
+            Self::ReviewOnly => "review-only",
+            Self::BoundaryPolicy => "boundary-policy",
+            Self::MachineApplicableAllowed => "machine-applicable-allowed",
+        }
+    }
+}
+
+impl MachineEditPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::NotApplicable => "not-applicable",
+            Self::RefuseByDefault => "refuse-by-default",
+            Self::AllowedWhenSuggestionMachineApplicable => {
+                "allowed-when-suggestion-machine-applicable"
+            }
+        }
+    }
+}
+
+impl DiagnosticRegistry {
+    pub fn get(&self, code: KErrorCode) -> Option<&DiagnosticRegistryEntry> {
+        self.find_by_code_text(code.as_str())
+    }
+
+    pub fn find_by_code_text(&self, code_text: &str) -> Option<&DiagnosticRegistryEntry> {
+        let normalized = normalize_code_text(code_text);
+        self.entries.get(normalized.as_str())
+    }
+
+    pub fn nearest_code_text(&self, code_text: &str) -> Option<&'static str> {
+        let target = code_number(&normalize_code_text(code_text))?;
+        self.entries
+            .keys()
+            .filter_map(|code| code_number(code).map(|number| (*code, number.abs_diff(target))))
+            .min_by_key(|(_, distance)| *distance)
+            .map(|(code, _)| code)
+    }
+}
+
+pub fn diagnostic_registry() -> DiagnosticRegistry {
+    let mut entries = BTreeMap::new();
+    for entry in registry_entries() {
+        entries.insert(entry.code_text, entry);
+    }
+    DiagnosticRegistry { entries }
+}
+
+fn registry_entries() -> Vec<DiagnosticRegistryEntry> {
+    let mut entries = Vec::new();
+    entries.extend(ownership_entries());
+    entries.extend(performance_entries());
+    entries.extend(strict_boundary_entries());
+    entries.extend(async_entries());
+    entries.extend(solver_entries());
+    entries.extend(migration_entries());
+    entries.extend(v085_entries());
+    entries.extend(parser_recovery_entries());
+    entries
+}
+
+fn ownership_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::Ownership;
+    use MachineEditPolicy::AllowedWhenSuggestionMachineApplicable;
+    use ModeBehavior::OwnershipGuaranteeProfile;
+    use Severity::Warning;
+    use SeverityPolicy::OwnershipModeDependent;
+    use SuggestionPolicy::MachineApplicableAllowed;
+
+    vec![
+        entry(
+            KErrorCode::K0001,
+            "value-used-after-move",
+            "value used after move",
+            "A value is used after ownership has moved away from it.",
+            "Kobo tracks ownership facts before lowering to Rust. This diagnostic points at the use that would require a value after it has moved.",
+            Ownership,
+            Warning,
+            OwnershipModeDependent,
+            OwnershipGuaranteeProfile,
+            MachineApplicableAllowed,
+            AllowedWhenSuggestionMachineApplicable,
+        ),
+        entry(
+            KErrorCode::K0002,
+            "mutable-borrow-conflict",
+            "cannot borrow as mutable - already borrowed",
+            "A mutable borrow conflicts with an existing borrow.",
+            "Kobo found borrow facts that cannot both be satisfied without changing ownership shape or shortening one borrow.",
+            Ownership,
+            Warning,
+            OwnershipModeDependent,
+            OwnershipGuaranteeProfile,
+            MachineApplicableAllowed,
+            AllowedWhenSuggestionMachineApplicable,
+        ),
+        entry(
+            KErrorCode::K0019,
+            "ownership-diagnostic",
+            "ownership diagnostic",
+            "An ownership condition needs a stronger mode-dependent guarantee.",
+            "K0019 is the compatibility bucket for ownership diagnostics that have not yet been assigned a narrower code.",
+            Ownership,
+            Warning,
+            OwnershipModeDependent,
+            OwnershipGuaranteeProfile,
+            SuggestionPolicy::ReviewOnly,
+            MachineEditPolicy::RefuseByDefault,
+        ),
+    ]
+}
+
+fn performance_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::Performance;
+    use MachineEditPolicy::NotApplicable;
+    use ModeBehavior::NoModeDependency;
+    use Severity::Warning;
+    use SeverityPolicy::Always;
+    use SuggestionPolicy::HelpOnly;
+
+    vec![
+        entry(
+            KErrorCode::K0020,
+            "hot-refcell-borrow-counter",
+            "RefCell accessed >10,000 times in hot path",
+            "A diagnostic owner recorded many dynamic borrow checks in a hot path.",
+            "Kobo records runtime borrow counters so migration work can prioritize expensive shared-mutable paths.",
+            Performance,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0021,
+            "borrow-counter-saturated",
+            "DiagOwner borrow counter saturated - count understated",
+            "A diagnostic owner counter reached its maximum value.",
+            "The program continued, but the reported count is a lower bound because the counter saturated.",
+            Performance,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0026,
+            "relax-attribute-ineffective",
+            "relax attribute has no effect or is malformed",
+            "A relax attribute is ineffective or invalid for the current context.",
+            "Kobo reports relax misuse so mode boundaries stay explicit and reviewable.",
+            Performance,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0031,
+            "engine-owned-capped",
+            "engine-owned binding capped to PlainOwned",
+            "A framework-managed engine binding was prevented from escalating to shared ownership.",
+            "Engine-managed state must stay owned by the framework unless the source explicitly opts into a supported escape path.",
+            Performance,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0032,
+            "live-borrow-at-move",
+            "live borrow at move forces shared ownership",
+            "A borrow remains live when a value moves.",
+            "Kobo uses KIR liveness to keep this move from invalidating a later borrow use.",
+            Performance,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+    ]
+}
+
+fn strict_boundary_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::StrictBoundary;
+    use MachineEditPolicy::RefuseByDefault;
+    use ModeBehavior::NoModeDependency;
+    use Severity::Error;
+    use SeverityPolicy::Always;
+    use SuggestionPolicy::ReviewOnly;
+
+    vec![
+        entry(
+            KErrorCode::K0025,
+            "soft-hint-constraint-conflict",
+            "soft hint ignored - constraint conflict",
+            "A Kobo hint could not be applied because it conflicts with required ownership facts.",
+            "Hints are advisory. Kobo refuses or reports a hint when applying it would violate the current facts.",
+            StrictBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0030,
+            "resource-handle-moved",
+            "resource handle moved - cannot alias file handle",
+            "A resource handle cannot be safely aliased through ownership wrapping.",
+            "Kobo keeps resource ownership explicit because duplicating or aliasing OS-backed handles can change behavior.",
+            StrictBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0041,
+            "aliased-strict-entry",
+            "cannot enter @strict block - value has active aliases",
+            "An @strict block would start while aliases are still active.",
+            "Strict regions need zero-cost ownership guarantees at the boundary, so active aliases must end before entry.",
+            StrictBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0042,
+            "closure-crosses-strict-boundary",
+            "closure captures LocalOwned<T> across @strict boundary",
+            "A closure carries a wrapped local value across a strict boundary.",
+            "Kobo rejects this because strict boundary guards cannot be safely represented inside the closure capture.",
+            StrictBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0043,
+            "moved-inside-strict-block",
+            "value moved inside @strict block - cannot re-wrap on exit",
+            "A value moved inside a strict block cannot be restored to its wrapper on exit.",
+            "Kobo keeps strict boundary exit behavior explicit so generated ownership state remains coherent.",
+            StrictBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0044,
+            "labeled-jump-crosses-strict-boundary",
+            "labeled break or continue crosses @strict boundary",
+            "A labeled control-flow jump would exit an @strict region unsafely.",
+            "Kobo rejects labeled jumps that bypass strict-region guard teardown.",
+            StrictBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+    ]
+}
+
+fn async_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::Async;
+    use MachineEditPolicy::RefuseByDefault;
+    use ModeBehavior::AsyncGuaranteeProfile;
+    use Severity::Warning;
+    use SeverityPolicy::AsyncModeDependent;
+    use SuggestionPolicy::ReviewOnly;
+
+    vec![
+        entry(
+            KErrorCode::K0060,
+            "refcell-borrow-live-at-await",
+            "RefCell borrow is live at suspend point",
+            "A non-Send borrow would remain live across async suspension.",
+            "Kobo reports async ownership hazards before lowering code that would fail executor requirements.",
+            Async,
+            Warning,
+            AsyncModeDependent,
+            AsyncGuaranteeProfile,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0061,
+            "future-send-boundary",
+            "future requires Send but value cannot safely cross thread boundary",
+            "An async future requires Send but a captured value cannot satisfy that boundary.",
+            "Kobo refuses silent Arc<Mutex<T>> insertion.\n\
+Use #[kobo::async_shared] when shared async ownership is intentional.\n\
+Use LocalSet when the task is intentionally single-thread local.\n\
+Narrow guard lifetimes before spawn or await when sharing is accidental.\n\
+Prefer message passing or actor ownership when mutation crosses many tasks.\n\
+Avoid hiding the issue with a generated blocking mutex.\n\
+Check whether the captured value must be Send, Sync, or merely local.\n\
+Use `kobo inspect` to confirm the source-mapped capture site.\n\
+Use `kobo sim scout` when scheduler evidence would help prioritize work.\n\
+Compare the span that creates the value, the capture span, and the await or spawn boundary.\n\
+If the value is read-only, prefer immutable sharing over mutable sharing.\n\
+If mutation is required, make that policy visible in source.\n\
+Keep the short CLI card focused; this explain page carries the longer tradeoff list.\n\
+If this crosses an external runtime boundary, record the boundary tradeoff explicitly.",
+            Async,
+            Warning,
+            AsyncModeDependent,
+            AsyncGuaranteeProfile,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0062,
+            "mutex-guard-across-await",
+            "Mutex guard would live across .await",
+            "A lock guard would cross an async suspension point.",
+            "Holding locks across await can deadlock or make futures non-Send; drop the guard before the await.",
+            Async,
+            Warning,
+            AsyncModeDependent,
+            AsyncGuaranteeProfile,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0063,
+            "strict-block-inside-async",
+            "@strict block inside async fn without @strict async fn",
+            "A strict block appears in an async function without the async-aware strict contract.",
+            "Kobo needs explicit async strict semantics before it can preserve zero-cost guarantees across await boundaries.",
+            Async,
+            Warning,
+            AsyncModeDependent,
+            AsyncGuaranteeProfile,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0064,
+            "strict-guard-live-across-yield",
+            "@strict inside async block - ownership cannot be tracked across yield",
+            "A guard-like value is live across an await point.",
+            "Kobo reports guard liveness because it can produce deadlocks or non-Send futures.",
+            Async,
+            Warning,
+            AsyncModeDependent,
+            AsyncGuaranteeProfile,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0065,
+            "select-branch-cancel-safety",
+            "select branch may not be cancel-safe",
+            "A select branch contains an operation that may lose progress if cancelled.",
+            "Kobo flags non-cancel-safe operations so async control flow stays reviewable before stronger simulation checks arrive.",
+            Async,
+            Warning,
+            AsyncModeDependent,
+            AsyncGuaranteeProfile,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0067,
+            "handler-state-leaks-across-task",
+            "handler request-state leaks across async boundary",
+            "A handler-local request value is captured by a longer-lived async task.",
+            "Request state should not outlive its request unless it is cloned, modeled, or moved into an explicit actor.",
+            Async,
+            Warning,
+            AsyncModeDependent,
+            AsyncGuaranteeProfile,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+    ]
+}
+
+fn solver_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::Solver;
+    use MachineEditPolicy::NotApplicable;
+    use ModeBehavior::NoModeDependency;
+    use Severity::{Error, Note, Warning};
+    use SeverityPolicy::Always;
+    use SuggestionPolicy::{HelpOnly, ReviewOnly};
+
+    vec![
+        entry(
+            KErrorCode::K0080,
+            "structural-ownership-conflict",
+            "structural ownership conflict - no automatic fix possible",
+            "The solver found an ownership structure that requires human design input.",
+            "Kobo reports structural ownership conflicts as debt or review prompts rather than fabricating a silent rewrite.",
+            Solver,
+            Note,
+            Always(Note),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0080P1,
+            "migration-architecture-decision",
+            "ownership pattern will require architectural decision at migration",
+            "A precursor ownership pattern is likely to need human migration design.",
+            "Kobo reports this as advisory debt so it can be handled before stricter migration gates.",
+            Solver,
+            Note,
+            Always(Note),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0080P2,
+            "rc-back-pointer-cycle-risk",
+            "parent-child Rc back-pointer tree - cycle risk",
+            "Parent and child links can create an Rc cycle.",
+            "Use Weak links or a different ownership shape when migrating this structure.",
+            Solver,
+            Note,
+            Always(Note),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0080P3,
+            "shared-mutable-callsite-hotspot",
+            "shared mutable state at 3+ call sites",
+            "A value is mutated through several call sites and may need a design decision.",
+            "Kobo tracks this as migration debt because automatic wrapping may hide an architectural choice.",
+            Solver,
+            Note,
+            Always(Note),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0080P4,
+            "self-referential-struct",
+            "self-referential struct - infinite size without indirection",
+            "A structure refers to itself without an indirection boundary.",
+            "Kobo reports this early because Rust requires an indirection such as Box, Rc, or a redesigned structure.",
+            Solver,
+            Note,
+            Always(Note),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0081,
+            "ownership-cluster-too-large",
+            "ownership cluster too large for automatic solving",
+            "A constraint cluster exceeds the configured automatic solver limit.",
+            "Kobo stops instead of making a silent partial decision when the solver input is too large.",
+            Solver,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0082,
+            "solver-budget-exceeded",
+            "solver exceeded its time budget",
+            "The solver ran out of budget before reaching a complete answer.",
+            "Budget exhaustion is distinct from no-solution so users can decide whether to increase budget or simplify the code.",
+            Solver,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0083,
+            "solver-human-review",
+            "solver decision requires human review",
+            "The solver found more than one valid ownership candidate.",
+            "Kobo may choose a lowest-risk candidate for codegen, but review output must expose the alternatives.",
+            Solver,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0084,
+            "solver-medium-confidence",
+            "solver made a provisional decision with medium confidence",
+            "A solver choice is acceptable but not strong enough to hide from review.",
+            "Kobo reports medium-confidence choices so migration remains auditable.",
+            Solver,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0085,
+            "solver-low-confidence",
+            "solver applied a low-confidence heuristic - verify manually",
+            "A low-confidence ownership choice requires human review.",
+            "Kobo keeps low-confidence picks visible rather than treating them as final migration decisions.",
+            Solver,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            ReviewOnly,
+            NotApplicable,
+        ),
+    ]
+}
+
+fn migration_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::{MigrationBoundary, RustcRemap};
+    use MachineEditPolicy::{NotApplicable, RefuseByDefault};
+    use ModeBehavior::NoModeDependency;
+    use Severity::Error;
+    use SeverityPolicy::Always;
+    use SuggestionPolicy::{HelpOnly, ReviewOnly};
+
+    vec![
+        entry(
+            KErrorCode::K0090,
+            "external-crate-migration-boundary",
+            "migration cannot continue - value crosses into external crate",
+            "Ownership depends on a boundary Kobo cannot currently solve.",
+            "External crate boundaries require an explicit ownership hint, summary, or deferral instead of silent inference.",
+            MigrationBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0095,
+            "macro-generated-ownership-unknown",
+            "ownership of macro-generated value cannot be inferred",
+            "A macro-generated value lacks enough source structure for ownership inference.",
+            "Kobo reports macro boundaries explicitly because generated ownership facts may not map cleanly back to source.",
+            MigrationBoundary,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0099,
+            "rustc-remapped",
+            "rustc error remapped to Kobo source",
+            "Rust reported an error in generated code and Kobo mapped it back to the original source.",
+            "Kobo users should not need to inspect generated Rust for routine errors. K0099 is the bridge diagnostic when rustc remains the source of truth.",
+            RustcRemap,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+    ]
+}
+
+fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::{BoundaryPolicy, Liveness, Nondeterminism};
+    use MachineEditPolicy::{NotApplicable, RefuseByDefault};
+    use ModeBehavior::{NoModeDependency, ReplayBoundaryPrompt, ScriptDebtStrictError};
+    use Severity::{Error, Warning};
+    use SeverityPolicy::{Always, ScriptDebtCheckedWarningStrictError};
+    use SuggestionPolicy::{BoundaryPolicy as BoundarySuggestion, HelpOnly, ReviewOnly};
+
+    vec![
+        entry(
+            KErrorCode::K0100,
+            "liveness-obligation-unresolved",
+            "liveness obligation may leave without a required call",
+            "A local value marked must_call may exit a path before commit, rollback, or another required action.",
+            "Kobo reports this as Script debt so ordinary code can keep running while the obligation remains visible. Add the required call on the exit path or suppress it with a recorded reason.",
+            Liveness,
+            Warning,
+            ScriptDebtCheckedWarningStrictError,
+            ScriptDebtStrictError,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0101,
+            "liveness-obligation-escaped",
+            "liveness obligation escapes local analysis",
+            "A must_call value escapes through a return, task, store, or external call where local analysis cannot prove the required action happens.",
+            "Kobo keeps this as reviewable debt because the obligation may be handled elsewhere, but the local function no longer proves it.",
+            Liveness,
+            Warning,
+            ScriptDebtCheckedWarningStrictError,
+            ScriptDebtStrictError,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0102,
+            "raw-nondeterminism-in-scenario",
+            "raw nondeterminism appears in a scenario or future replay zone",
+            "A scenario or modeled-risk region uses raw nondeterminism such as time, random, spawn, filesystem, network, process, or external I/O.",
+            "Kobo does not claim replay for this code in v0.8.5. Use a policy wrapper, boundary policy, or scout recommendation before asking for deterministic evidence.",
+            Nondeterminism,
+            Warning,
+            Always(Warning),
+            ScriptDebtStrictError,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0103,
+            "malformed-must-call-attribute",
+            "malformed must_call attribute",
+            "A must_call obligation attribute could not be parsed into one or more named actions.",
+            "Use `#[kobo::must_call(commit | rollback)]` with action names separated by a single `|`.",
+            Liveness,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0104,
+            "invalid-kwit-witness-schema",
+            "invalid kwit witness schema",
+            "A .kwit witness is missing required metadata or uses an unsupported schema version.",
+            "Kobo v0.8.5 validates schema_version 0 witnesses but does not execute deterministic replay.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0105,
+            "malformed-scenario-metadata",
+            "malformed scenario metadata",
+            "A scenario attribute is missing required metadata such as its stable scenario name.",
+            "Use `#[kobo::scenario(name = \"case_name\")]` to index metadata without changing runtime behavior.",
+            Nondeterminism,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0106,
+            "witness-shrink-unsafe",
+            "witness shrink is unsafe",
+            "A requested witness shrink would remove replay evidence needed to preserve deterministic or boundary obligations.",
+            "Keep the witness evidence or regenerate a smaller witness through a checked shrink pass that preserves required replay and boundary facts.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0109,
+            "invalid-field-capability-view",
+            "invalid field capability view",
+            "A using field capability list names duplicate or unavailable fields.",
+            "Kobo validates field capability views before lowering so a `using { ... }` list cannot silently claim access to a field that does not exist.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0107,
+            "unmodeled-external-boundary",
+            "unmodeled external crate boundary",
+            "An external crate boundary is usable for normal Rust compatibility but blocks exact replay until a boundary policy is chosen.",
+            "normal Rust crates remain allowed in Kobo. Exact replay cannot cross this boundary until you choose one policy: model, record, stub, outside, opaque, or debt.",
+            BoundaryPolicy,
+            Warning,
+            Always(Warning),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0108,
+            "replay-obligation-suppressed",
+            "replay obligation suppressed",
+            "A replay, liveness, or boundary obligation was suppressed with a recorded reason.",
+            "Kobo records reason-bearing suppression as reviewable evidence instead of pretending the boundary or obligation was modeled.",
+            BoundaryPolicy,
+            Warning,
+            Always(Warning),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+    ]
+}
+
+fn parser_recovery_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::Parser;
+    use MachineEditPolicy::RefuseByDefault;
+    use ModeBehavior::ParserRecovery;
+    use Severity::Error;
+    use SeverityPolicy::Always;
+    use SuggestionPolicy::ReviewOnly;
+
+    vec![
+        entry(
+            KErrorCode::K0110,
+            "syntax-error-recovered",
+            "syntax error recovered",
+            "Kobo recovered from invalid syntax and continued compiling the remaining trustworthy source regions.",
+            "Kobo keeps parsing after localized syntax errors so it can report other independent diagnostics. The poisoned region is skipped by later compiler phases to avoid cascades.",
+            Parser,
+            Error,
+            Always(Error),
+            ParserRecovery,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0111,
+            "unclosed-delimiter",
+            "unclosed delimiter",
+            "A delimiter was opened but not closed before the parser reached a synchronization boundary.",
+            "Kobo recovered by treating the unterminated region as poisoned and resuming at the next safe item or statement boundary.",
+            Parser,
+            Error,
+            Always(Error),
+            ParserRecovery,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0112,
+            "invalid-item-skipped",
+            "invalid item skipped",
+            "Kobo skipped an invalid item while preserving later parseable items.",
+            "The skipped item is not lowered to KIR. Later phases operate only on parseable source regions so follow-on diagnostics stay trustworthy.",
+            Parser,
+            Error,
+            Always(Error),
+            ParserRecovery,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0113,
+            "parser-recovery-limit-reached",
+            "parser recovery limit reached",
+            "Kobo stopped recovery after too many syntax errors to avoid misleading cascades.",
+            "Fix the first reported syntax errors and rerun Kobo. The parser intentionally stops after the recovery budget is exhausted.",
+            Parser,
+            Error,
+            Always(Error),
+            ParserRecovery,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+    ]
+}
+
+fn entry(
+    code: KErrorCode,
+    slug: &'static str,
+    title: &'static str,
+    summary: &'static str,
+    explain: &'static str,
+    category: DiagnosticCategory,
+    default_severity: Severity,
+    severity_policy: SeverityPolicy,
+    mode_behavior: ModeBehavior,
+    suggestion_policy: SuggestionPolicy,
+    machine_edit_policy: MachineEditPolicy,
+) -> DiagnosticRegistryEntry {
+    DiagnosticRegistryEntry {
+        code,
+        code_text: code.as_str(),
+        slug,
+        title,
+        summary,
+        explain,
+        category,
+        status: DiagnosticStatus::Active,
+        default_severity,
+        severity_policy,
+        mode_behavior,
+        suggestion_policy,
+        machine_edit_policy,
+    }
+}
+
+fn normalize_code_text(code_text: &str) -> String {
+    code_text.trim().to_ascii_uppercase()
+}
+
+fn code_number(code_text: &str) -> Option<u32> {
+    let digits = code_text
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}

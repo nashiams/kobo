@@ -19,10 +19,13 @@ mod handler;
 mod postprocess;
 mod rewrite;
 pub(crate) mod select;
+pub mod source_map;
 pub(crate) mod spawn;
 mod validate;
 
-pub use bridge_blocks::{preprocess_bridge_blocks, BridgeBlockInfo, BridgeKind};
+pub use bridge_blocks::{
+    preprocess_bridge_blocks, preprocess_bridge_blocks_mapped, BridgeBlockInfo, BridgeKind,
+};
 pub use channel::{
     preprocess_chan_type, validate_channel_dependencies, ChannelInfo, ChannelWarning,
 };
@@ -30,10 +33,12 @@ pub use collect::collect_strict_items_from_syn;
 pub use engine::{collect_engine_structs, strip_engine_attributes, EngineInfo};
 pub use handler::validate_handler_attributes;
 pub use postprocess::postprocess_strict_markers;
-pub use rewrite::preprocess_kobo_keywords;
+pub use rewrite::{preprocess_kobo_keywords, preprocess_kobo_keywords_mapped};
 pub use select::{preprocess_select_blocks, SelectError, SelectInfo, SelectWarning};
+pub use source_map::{PreprocessMapSegment, PreprocessSourceMap, PreprocessedSource};
 pub use spawn::{
-    preprocess_spawn_blocks, validate_spawn_context, SpawnBlockInfo, SpawnContextError,
+    preprocess_spawn_blocks, preprocess_spawn_blocks_mapped, validate_spawn_context,
+    SpawnBlockInfo, SpawnContextError,
 };
 pub use validate::preprocess_strict_reject_invalid;
 
@@ -63,6 +68,8 @@ pub struct KeywordMarker {
     pub keyword_index: usize,
     /// Byte range `[start, end)` in the ORIGINAL source of the keyword token.
     pub original_span: (usize, usize),
+    /// Byte range `[start, end)` in the REWRITTEN source of the generated marker.
+    pub generated_span: (usize, usize),
 }
 
 /// Errors that can occur during preprocessing.

@@ -7,7 +7,7 @@ use kobo_driver::{
     load_config, run_and_compile, run_and_compile_with_lifetime_erasure, run_codegen_pipeline,
     run_kir_phase, CodegenArtifacts,
 };
-use kobo_ir::KoboMode;
+use kobo_ir::{KoboMode, MustCallObligation};
 
 use super::session::{build_session, line_number_for_offset, render_diagnostics};
 
@@ -62,13 +62,27 @@ pub(super) fn cmd_inspect(
     cli_mode: Option<KoboMode>,
     clean: bool,
     erase_lifetimes: bool,
+    scenario_metadata: bool,
+    sim: bool,
+    harness: bool,
     cargo_dir: Option<&Path>,
+    profile: Option<&str>,
+    trait_default: Option<&str>,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
     if session.mode() == KoboMode::Strict {
         eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
         eprintln!("hint: use --checked for advisory ownership warnings");
         std::process::exit(1);
+    }
+
+    if sim {
+        let source = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        let output = simulation_transparency_output(&source, harness);
+        eprintln!("// effective mode: {}", session.mode());
+        print!("{output}");
+        return Ok(());
     }
 
     if let Some(dir) = cargo_dir {
@@ -86,11 +100,14 @@ pub(super) fn cmd_inspect(
         return Ok(());
     }
 
-    let CodegenArtifacts { rs_source, .. } =
-        run_codegen_pipeline(&mut session, file).map_err(|()| {
-            render_diagnostics(&session);
-            anyhow::anyhow!("compilation failed")
-        })?;
+    let CodegenArtifacts {
+        rs_source,
+        must_call_obligations,
+        ..
+    } = run_codegen_pipeline(&mut session, file).map_err(|()| {
+        render_diagnostics(&session);
+        anyhow::anyhow!("compilation failed")
+    })?;
     // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
 
@@ -101,17 +118,312 @@ pub(super) fn cmd_inspect(
         rs_source
     };
 
-    let output = if clean {
+    let output = if scenario_metadata {
+        let source = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        scenario_metadata_output(&source)
+    } else if clean {
         kobo_codegen::clean::strip_kobo_wrappers(&rs_source)
     } else {
         // Annotate lock acquisition order for inspect output.
         kobo_codegen::annotate_lock_order(&rs_source)
+    };
+    let output = if scenario_metadata {
+        output
+    } else {
+        let source = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        let output = append_must_call_metadata(output, &must_call_obligations);
+        append_trait_facade_code(output, &source, profile, trait_default)
     };
 
     // S-26: Show effective mode so user can verify per-module mode resolution.
     eprintln!("// effective mode: {}", session.mode());
     print!("{output}");
     Ok(())
+}
+
+fn simulation_transparency_output(source: &str, harness: bool) -> String {
+    let command = if harness {
+        "inspect --sim --harness"
+    } else {
+        "inspect --sim"
+    };
+    let mut output = String::new();
+    output.push_str(&format!(
+        "// kobo: {command} metadata-only transparency path for v0.8.5\n"
+    ));
+    output.push_str(
+        "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",
+    );
+    output.push_str("// kobo: backend harness: reserved\n");
+    output.push_str(
+        "// kobo: possible engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n",
+    );
+    if harness {
+        output.push_str("// kobo: no backend harness is generated in v0.8.5\n");
+    } else {
+        output
+            .push_str("// kobo: use --harness to inspect the reserved harness transparency path\n");
+    }
+    if source.contains("kobo::scenario") {
+        output.push_str("// kobo: scenario metadata detected; scout can explain backend fit\n");
+    }
+    output
+}
+
+fn append_scenario_metadata(mut output: String, source: &str) -> String {
+    let scenarios = scenario_metadata_from_source(source);
+    if scenarios.is_empty() {
+        return output;
+    }
+
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    for scenario in scenarios {
+        if scenario.tags.is_empty() {
+            output.push_str(&format!("// kobo: scenario {}\n", scenario.name));
+        } else {
+            output.push_str(&format!(
+                "// kobo: scenario {} tags: {}\n",
+                scenario.name,
+                scenario.tags.join(", ")
+            ));
+        }
+    }
+    output
+}
+
+fn scenario_metadata_output(source: &str) -> String {
+    append_scenario_metadata(String::new(), source)
+}
+
+struct ScenarioMetadata {
+    name: String,
+    tags: Vec<String>,
+}
+
+fn scenario_metadata_from_source(source: &str) -> Vec<ScenarioMetadata> {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.contains("kobo::scenario"))
+        .filter_map(parse_scenario_metadata_line)
+        .collect()
+}
+
+fn parse_scenario_metadata_line(line: &str) -> Option<ScenarioMetadata> {
+    let name = extract_named_string(line, "name")?;
+    let tags = extract_tag_list(line);
+    Some(ScenarioMetadata { name, tags })
+}
+
+fn extract_named_string(line: &str, key: &str) -> Option<String> {
+    let key_start = line.find(key)?;
+    let after_key = &line[key_start + key.len()..];
+    let quote_start = after_key.find('"')?;
+    let rest = &after_key[quote_start + 1..];
+    let quote_end = rest.find('"')?;
+    Some(rest[..quote_end].to_owned())
+}
+
+fn extract_tag_list(line: &str) -> Vec<String> {
+    let Some(tags_start) = line.find("tags") else {
+        return Vec::new();
+    };
+    let after_tags = &line[tags_start..];
+    let Some(list_start) = after_tags.find('[') else {
+        return Vec::new();
+    };
+    let Some(list_end) = after_tags[list_start + 1..].find(']') else {
+        return Vec::new();
+    };
+    after_tags[list_start + 1..list_start + 1 + list_end]
+        .split(',')
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            let first = trimmed.find('"')?;
+            let rest = &trimmed[first + 1..];
+            let second = rest.find('"')?;
+            Some(rest[..second].to_owned())
+        })
+        .collect()
+}
+
+fn append_must_call_metadata(mut output: String, obligations: &[MustCallObligation]) -> String {
+    if obligations.is_empty() {
+        return output;
+    }
+
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    for obligation in obligations {
+        let actions = obligation
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        output.push_str(&format!(
+            "// kobo: must_call {} => {}\n",
+            obligation.owner_type, actions
+        ));
+    }
+    output
+}
+
+fn append_trait_facade_code(
+    mut output: String,
+    source: &str,
+    profile: Option<&str>,
+    trait_default: Option<&str>,
+) -> String {
+    let default = trait_default.unwrap_or_else(|| {
+        if source.contains("kobo::generic") || profile == Some("game-server-core") {
+            "generic"
+        } else {
+            "trait-object-first"
+        }
+    });
+
+    let facade = if default == "generic" || source.contains("kobo::generic") {
+        generic_facade_code(source)
+    } else {
+        trait_object_facade_code(source, profile)
+    };
+    let Some(facade) = facade else {
+        return output;
+    };
+
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str(&facade);
+    output.push('\n');
+    output
+}
+
+fn trait_object_facade_code(source: &str, profile: Option<&str>) -> Option<String> {
+    let target = trait_object_facade_target(source)?;
+    let profile = profile.unwrap_or("script");
+    Some(format!(
+        "#[doc = \"thin facade trait-object-first profile {profile}\"]\n\
+         #[allow(dead_code)]\n\
+         pub fn {name}_thin_facade({param}: Box<dyn {trait_name}>) {return_ty} {{\n\
+             {name}({param})\n\
+         }}",
+        name = target.function,
+        param = target.param,
+        trait_name = target.trait_name,
+        return_ty = target.return_ty.unwrap_or_default()
+    ))
+}
+
+fn generic_facade_code(source: &str) -> Option<String> {
+    let target = generic_facade_target(source)?;
+    Some(format!(
+        "#[doc = \"generic facade\"]\n\
+         #[allow(dead_code)]\n\
+         pub fn {name}_generic_facade<{type_param}: {trait_name}>({param}: {type_param}) {return_ty} {{\n\
+             {name}({param})\n\
+         }}",
+        name = target.function,
+        type_param = target.type_param,
+        trait_name = target.trait_name,
+        param = target.param,
+        return_ty = target.return_ty.unwrap_or_default()
+    ))
+}
+
+struct TraitObjectFacadeTarget {
+    function: String,
+    param: String,
+    trait_name: String,
+    return_ty: Option<String>,
+}
+
+struct GenericFacadeTarget {
+    function: String,
+    type_param: String,
+    trait_name: String,
+    param: String,
+    return_ty: Option<String>,
+}
+
+fn trait_object_facade_target(source: &str) -> Option<TraitObjectFacadeTarget> {
+    source.lines().find_map(|line| {
+        let signature = function_signature(line)?;
+        let open = signature.find('(')?;
+        let close = signature.rfind(')')?;
+        let function = inspect_ident_suffix(&signature[..open])?;
+        let param_text = signature[open + 1..close].split(',').next()?.trim();
+        let (param, ty) = param_text.split_once(':')?;
+        let trait_name = ty.trim().strip_prefix("dyn ")?;
+        Some(TraitObjectFacadeTarget {
+            function,
+            param: inspect_ident_prefix(param)?,
+            trait_name: inspect_ident_prefix(trait_name)?,
+            return_ty: return_type_from_signature(signature),
+        })
+    })
+}
+
+fn generic_facade_target(source: &str) -> Option<GenericFacadeTarget> {
+    source.lines().find_map(|line| {
+        let signature = function_signature(line)?;
+        let open_generics = signature.find('<')?;
+        let close_generics = signature[open_generics + 1..].find('>')? + open_generics + 1;
+        let open_params = signature[close_generics + 1..].find('(')? + close_generics + 1;
+        let close_params = signature.rfind(')')?;
+        let function = inspect_ident_suffix(&signature[..open_generics])?;
+        let generic = signature[open_generics + 1..close_generics].trim();
+        let (type_param, trait_name) = generic.split_once(':')?;
+        let param_text = signature[open_params + 1..close_params]
+            .split(',')
+            .next()?
+            .trim();
+        let (param, _) = param_text.split_once(':')?;
+        Some(GenericFacadeTarget {
+            function,
+            type_param: inspect_ident_prefix(type_param)?,
+            trait_name: inspect_ident_prefix(trait_name.trim())?,
+            param: inspect_ident_prefix(param)?,
+            return_ty: return_type_from_signature(signature),
+        })
+    })
+}
+
+fn function_signature(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let signature = trimmed
+        .strip_prefix("pub fn ")
+        .or_else(|| trimmed.strip_prefix("fn "))?;
+    Some(signature.trim_end_matches('{').trim())
+}
+
+fn return_type_from_signature(signature: &str) -> Option<String> {
+    let arrow = signature.find("->")?;
+    let return_ty = signature[arrow..].trim();
+    (!return_ty.is_empty()).then(|| format!(" {return_ty}"))
+}
+
+fn inspect_ident_prefix(input: &str) -> Option<String> {
+    let ident = input
+        .trim_start()
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect::<String>();
+    (!ident.is_empty()).then_some(ident)
+}
+
+fn inspect_ident_suffix(input: &str) -> Option<String> {
+    input
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|part| !part.is_empty())
+        .next_back()
+        .map(str::to_owned)
 }
 
 struct InspectCargoOutput {

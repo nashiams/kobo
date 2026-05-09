@@ -39,6 +39,7 @@ fn make_binding(
         plain_clone_move_span: None,
         elision_skip_reason: None,
         decl_scope_depth: 0,
+        method_read_spans: Vec::new(),
         ref_returning_read_spans: Vec::new(),
     }
 }
@@ -333,4 +334,39 @@ fn source_rewrite_extracts_read_before_mutation() {
         .contains("    let __kobo_extract_0 = data.len();"));
     assert!(rewrite.source.contains("    let len = __kobo_extract_0;"));
     assert!(rewrite.source.contains("    data.push(4);"));
+}
+
+#[test]
+fn source_rewrite_marks_extracted_mutable_borrow_temp_mutable() {
+    let source = r#"fn main() {
+    let values = Rc::new(RefCell::new(Vec::new()));
+    values.borrow_mut().push(String::from("a"));
+}
+"#;
+    let read_start = source
+        .find("values.borrow_mut()")
+        .expect("borrow_mut call should exist") as u32;
+    let mutation_start = source
+        .find("values.borrow_mut().push")
+        .expect("mutation should exist") as u32;
+    let site = super::extract_borrow::ExtractionSite {
+        binding_id: KirNodeId(1),
+        binding_name: "values".to_owned(),
+        borrow_expr_span: span(read_start, read_start + "values.borrow_mut()".len() as u32),
+        conflict_span: span(
+            mutation_start,
+            mutation_start + "values.borrow_mut().push".len() as u32,
+        ),
+        temp_name: "__kobo_extract_0".to_owned(),
+    };
+
+    let rewrite = apply_extract_before_borrow_rewrites(source, &[site]);
+
+    assert_eq!(rewrite.applied_sites, 1);
+    assert!(rewrite
+        .source
+        .contains("    let mut __kobo_extract_0 = values.borrow_mut();"));
+    assert!(rewrite
+        .source
+        .contains("    __kobo_extract_0.push(String::from(\"a\"));"));
 }

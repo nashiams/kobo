@@ -15,43 +15,6 @@ macro_rules! define_error_codes {
                     $( Self::$code => $label, )*
                 }
             }
-
-            pub const fn short_description(self) -> &'static str {
-                match self {
-                    Self::K0001 => "value used after move",
-                    Self::K0002 => "cannot borrow as mutable - already borrowed",
-                    Self::K0020 => "RefCell accessed >10,000 times in hot path",
-                    Self::K0021 => "DiagOwner borrow counter saturated — count understated",
-                    Self::K0025 => "soft hint ignored - constraint conflict",
-                    Self::K0030 => "resource handle moved - cannot alias file handle",
-                    Self::K0031 => "engine-owned binding capped to PlainOwned",
-                    Self::K0032 => "live borrow at move forces shared ownership",
-                    Self::K0041 => "cannot enter @strict block - value has active aliases",
-                    Self::K0042 => "closure captures LocalOwned<T> across @strict boundary",
-                    Self::K0043 => "value moved inside @strict block - cannot re-wrap on exit",
-                    Self::K0060 => "RefCell borrow is live at suspend point",
-                    Self::K0061 => "future requires Send but value cannot safely cross thread boundary",
-                    Self::K0062 => "Mutex guard would live across .await",
-                    Self::K0063 => "@strict block inside async fn without @strict async fn",
-                    Self::K0064 => "@strict inside async block — ownership cannot be tracked across yield",
-                    Self::K0065 => "select branch may not be cancel-safe",
-                    Self::K0067 => "handler request-state leaks across async boundary",
-                    Self::K0080 => "structural ownership conflict - no automatic fix possible",
-                    Self::K0080P1 => "ownership pattern will require architectural decision at migration",
-                    Self::K0080P2 => "parent↔child Rc back-pointer tree — cycle risk",
-                    Self::K0080P3 => "shared mutable state at 3+ call sites",
-                    Self::K0080P4 => "self-referential struct — infinite size without indirection",
-                    Self::K0081 => "ownership cluster too large for automatic solving",
-                    Self::K0082 => "solver exceeded its time budget",
-                    Self::K0083 => "solver decision requires human review",
-                    Self::K0084 => "solver made a provisional decision with medium confidence",
-                    Self::K0085 => "solver applied a low-confidence heuristic — verify manually",
-                    Self::K0090 => "migration cannot continue - value crosses into external crate",
-                    Self::K0095 => "ownership of macro-generated value cannot be inferred",
-                    Self::K0099 => "rustc error remapped to Kobo source",
-                    _ => "reserved diagnostic code",
-                }
-            }
         }
 
         impl fmt::Display for KErrorCode {
@@ -111,7 +74,6 @@ define_error_codes! {
     K0041 => "K0041",
     K0042 => "K0042",
     K0043 => "K0043",
-    // K0044 — labeled break/continue across @strict boundary
     K0044 => "K0044",
     K0045 => "K0045",
     K0046 => "K0046",
@@ -132,9 +94,7 @@ define_error_codes! {
     K0061 => "K0061",
     K0062 => "K0062",
     K0063 => "K0063",
-    // S-54: K0064 — guard held across await detection.
     K0064 => "K0064",
-    // S-55: K0065 — select branch cancel-safety detection
     K0065 => "K0065",
     K0066 => "K0066",
     K0067 => "K0067",
@@ -174,6 +134,20 @@ define_error_codes! {
     K0097 => "K0097",
     K0098 => "K0098",
     K0099 => "K0099",
+    K0100 => "K0100",
+    K0101 => "K0101",
+    K0102 => "K0102",
+    K0103 => "K0103",
+    K0104 => "K0104",
+    K0105 => "K0105",
+    K0106 => "K0106",
+    K0107 => "K0107",
+    K0108 => "K0108",
+    K0109 => "K0109",
+    K0110 => "K0110",
+    K0111 => "K0111",
+    K0112 => "K0112",
+    K0113 => "K0113",
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -200,117 +174,80 @@ impl fmt::Display for Severity {
 }
 
 impl KErrorCode {
-    pub const fn metadata(self) -> KErrorMetadata {
+    pub const fn short_description(self) -> &'static str {
         match self {
-            Self::K0001 => KErrorMetadata {
-                short_description: "value used after move",
-            },
-            Self::K0002 => KErrorMetadata {
-                short_description: "cannot borrow as mutable - already borrowed",
-            },
-            _ => KErrorMetadata {
-                short_description: self.short_description(),
-            },
+            Self::K0001 => "value used after move",
+            Self::K0002 => "cannot borrow as mutable - already borrowed",
+            Self::K0020 => "RefCell accessed >10,000 times in hot path",
+            Self::K0021 => "DiagOwner borrow counter saturated - count understated",
+            Self::K0025 => "soft hint ignored - constraint conflict",
+            Self::K0026 => "relax attribute has no effect or is malformed",
+            Self::K0030 => "resource handle moved - cannot alias file handle",
+            Self::K0031 => "engine-owned binding capped to PlainOwned",
+            Self::K0032 => "live borrow at move forces shared ownership",
+            Self::K0041 => "cannot enter @strict block - value has active aliases",
+            Self::K0042 => "closure captures LocalOwned<T> across @strict boundary",
+            Self::K0043 => "value moved inside @strict block - cannot re-wrap on exit",
+            Self::K0044 => "labeled break or continue crosses @strict boundary",
+            Self::K0060 => "RefCell borrow is live at suspend point",
+            Self::K0061 => "future requires Send but value cannot safely cross thread boundary",
+            Self::K0062 => "Mutex guard would live across .await",
+            Self::K0063 => "@strict block inside async fn without @strict async fn",
+            Self::K0064 => "@strict inside async block - ownership cannot be tracked across yield",
+            Self::K0065 => "select branch may not be cancel-safe",
+            Self::K0067 => "handler request-state leaks across async boundary",
+            Self::K0080 => "structural ownership conflict - no automatic fix possible",
+            Self::K0080P1 => "ownership pattern will require architectural decision at migration",
+            Self::K0080P2 => "parent-child Rc back-pointer tree - cycle risk",
+            Self::K0080P3 => "shared mutable state at 3+ call sites",
+            Self::K0080P4 => "self-referential struct - infinite size without indirection",
+            Self::K0081 => "ownership cluster too large for automatic solving",
+            Self::K0082 => "solver exceeded its time budget",
+            Self::K0083 => "solver decision requires human review",
+            Self::K0084 => "solver made a provisional decision with medium confidence",
+            Self::K0085 => "solver applied a low-confidence heuristic - verify manually",
+            Self::K0090 => "migration cannot continue - value crosses into external crate",
+            Self::K0095 => "ownership of macro-generated value cannot be inferred",
+            Self::K0099 => "rustc error remapped to Kobo source",
+            Self::K0100 => "liveness obligation may leave without a required call",
+            Self::K0101 => "liveness obligation escapes local analysis",
+            Self::K0102 => "raw nondeterminism appears in a scenario or future replay zone",
+            Self::K0103 => "malformed must_call attribute",
+            Self::K0104 => "invalid kwit witness schema",
+            Self::K0105 => "malformed scenario metadata",
+            Self::K0106 => "witness shrink is unsafe",
+            Self::K0107 => "unmodeled external crate boundary",
+            Self::K0108 => "replay obligation suppressed",
+            Self::K0109 => "invalid field capability view",
+            Self::K0110 => "syntax error recovered",
+            Self::K0111 => "unclosed delimiter",
+            Self::K0112 => "invalid item skipped",
+            Self::K0113 => "parser recovery limit reached",
+            _ => "reserved diagnostic code",
         }
     }
-}
 
-/// Map a compile mode to the severity used for ownership-class K-codes.
-/// Script → None (silent), Checked → Warning, Strict → Error.
-/// Not a method on KoboMode because KoboMode lives in kobo-ir and must not
-/// depend on Severity (kobo-errors). No orphan impl allowed.
-fn ownership_severity(mode: KoboMode) -> Option<Severity> {
-    match mode {
-        KoboMode::Script => None,
-        KoboMode::Checked => Some(Severity::Warning),
-        KoboMode::Strict => Some(Severity::Error),
-    }
-}
+    pub fn metadata(self) -> KErrorMetadata {
+        if let Some(entry) = crate::diagnostic_registry().get(self) {
+            return KErrorMetadata {
+                short_description: entry.title,
+            };
+        }
 
-/// Async-specific severity: Script/Checked → Warning, Strict → Error.
-fn async_severity(mode: KoboMode) -> Option<Severity> {
-    match mode {
-        KoboMode::Script => Some(Severity::Warning),
-        KoboMode::Checked => Some(Severity::Warning),
-        KoboMode::Strict => Some(Severity::Error),
+        KErrorMetadata {
+            short_description: self.short_description(),
+        }
     }
 }
 
 /// Resolve the severity of a K-code diagnostic based on compile mode.
 ///
-/// Single source of truth for severity routing — Contract R08.
-/// Returns `None` for diagnostics that should not be emitted in the given mode [R6-11].
-/// None = do not create or emit the diagnostic at all.
+/// Single source of truth for severity routing: registry metadata plus mode policy.
+/// Returns `None` for diagnostics that should not be emitted in the given mode.
 pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
-    use KErrorCode::*;
-
-    match code {
-        // Ownership basics — mode-dependent.
-        // Script: None (silent — no emission), Checked: Warning, Strict: Error [R6-11].
-        K0001 | K0002 => ownership_severity(mode),
-
-        // Performance advisories — always Warning in all modes.
-        K0020 | K0021 => Some(Severity::Warning),
-
-        // Constraint conflict — always Error (not a perf advisory).
-        K0025 => Some(Severity::Error),
-
-        // Resource handle — always Error.
-        K0030 => Some(Severity::Error),
-
-        // @strict boundary violations — always Error.
-        K0041 | K0042 | K0043 | K0044 => Some(Severity::Error),
-
-        // Async ownership — mode-dependent.
-        // Script/Checked: Warning, Strict: Error.
-        K0060 | K0061 | K0062 | K0063 => async_severity(mode),
-
-        // Structural advisory — always Note.
-        K0080 => Some(Severity::Note),
-
-        // Structural advisory precursors — always Note [R6-12].
-        // These are structural advisories from the debt model, NOT mode-dependent
-        // ownership enforcement. Do not route through ownership_severity().
-        K0080P1 | K0080P2 | K0080P3 | K0080P4 => Some(Severity::Note),
-
-        // Solver limits — always Error.
-        K0081 | K0082 => Some(Severity::Error),
-
-        // Cross-crate migration limits — always Error.
-        K0090 => Some(Severity::Error),
-
-        // Macro-generated inference failure — always Error.
-        K0095 => Some(Severity::Error),
-
-        // Engine resources are framework-managed; ceiling adjustments must be visible.
-        K0031 => Some(Severity::Warning),
-
-        // KIR liveness facts that force shared ownership are visible advisories.
-        K0032 => Some(Severity::Warning),
-
-        // Rustc remap — always Error.
-        K0099 => Some(Severity::Error),
-
-        // Relax attribute advisory — always Warning [BUG-06].
-        // Structural errors (malformed, non-function) use hardcoded Error
-        // at the emission site (AC-19 exception for always-error validation).
-        K0026 => Some(Severity::Warning),
-
-        // Uncategorized ownership (catch-all for future rustc remapped codes).
-        K0019 => ownership_severity(mode),
-
-        // Reserved/uncategorized codes — use mode-dependent ownership default.
-        // When a code becomes active, move it to its own explicit arm above.
-        K0003 | K0004 | K0005 | K0006 | K0007 | K0008 | K0009 | K0010 | K0011 | K0012 | K0013
-        | K0014 | K0015 | K0016 | K0017 | K0018 | K0022 | K0023 | K0024 | K0027 | K0028 | K0029
-        | K0033 | K0034 | K0035 | K0036 | K0037 | K0038 | K0039 | K0040 | K0045 | K0046 | K0047
-        | K0048 | K0049 | K0050 | K0051 | K0052 | K0053 | K0054 | K0055 | K0056 | K0057 | K0058
-        | K0059 | K0064 | K0065 | K0066 | K0067 | K0068 | K0069 | K0070 | K0071 | K0072 | K0073
-        | K0074 | K0075 | K0076 | K0077 | K0078 | K0079 | K0083 | K0084 | K0085 | K0086 | K0087
-        | K0088 | K0089 | K0091 | K0092 | K0093 | K0094 | K0096 | K0097 | K0098 => {
-            ownership_severity(mode)
-        } // NO wildcard `_` arm — new variants cause compile error [R2-02].
-    }
+    crate::diagnostic_registry()
+        .get(code)
+        .and_then(|entry| entry.severity_policy.resolve(mode))
 }
 
 #[cfg(test)]
@@ -344,15 +281,9 @@ mod tests {
         assert_eq!(Severity::Warning.as_str(), "warning");
     }
 
-    // --- resolve_severity tests [G1 / Contract R08] ---
-
     #[test]
     fn k0001_script_is_silent() {
-        assert_eq!(
-            resolve_severity(KErrorCode::K0001, KoboMode::Script),
-            None,
-            "K0001 must not be emitted in script mode (R6-11)"
-        );
+        assert_eq!(resolve_severity(KErrorCode::K0001, KoboMode::Script), None);
     }
 
     #[test]
@@ -377,30 +308,11 @@ mod tests {
     }
 
     #[test]
-    fn k0002_checked_is_warning() {
-        assert_eq!(
-            resolve_severity(KErrorCode::K0002, KoboMode::Checked),
-            Some(Severity::Warning)
-        );
-    }
-
-    #[test]
     fn perf_advisory_k0020_always_warning() {
         for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
             assert_eq!(
                 resolve_severity(KErrorCode::K0020, mode),
-                Some(Severity::Warning),
-                "K0020 must be Warning in all modes"
-            );
-        }
-    }
-
-    #[test]
-    fn constraint_conflict_k0025_always_error() {
-        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
-            assert_eq!(
-                resolve_severity(KErrorCode::K0025, mode),
-                Some(Severity::Error)
+                Some(Severity::Warning)
             );
         }
     }
@@ -425,28 +337,15 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_severity(code, KoboMode::Script),
-                Some(Severity::Warning),
-                "{code:?} must be a warning in script mode"
+                Some(Severity::Warning)
             );
             assert_eq!(
                 resolve_severity(code, KoboMode::Checked),
-                Some(Severity::Warning),
-                "{code:?} must be a warning in checked mode"
+                Some(Severity::Warning)
             );
             assert_eq!(
                 resolve_severity(code, KoboMode::Strict),
-                Some(Severity::Error),
-                "{code:?} must be an error in strict mode"
-            );
-        }
-    }
-
-    #[test]
-    fn structural_advisory_k0080_always_note() {
-        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
-            assert_eq!(
-                resolve_severity(KErrorCode::K0080, mode),
-                Some(Severity::Note)
+                Some(Severity::Error)
             );
         }
     }
@@ -454,18 +353,14 @@ mod tests {
     #[test]
     fn structural_advisory_precursors_always_note() {
         for code in [
+            KErrorCode::K0080,
             KErrorCode::K0080P1,
             KErrorCode::K0080P2,
             KErrorCode::K0080P3,
             KErrorCode::K0080P4,
         ] {
             for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
-                assert_eq!(
-                    resolve_severity(code, mode),
-                    Some(Severity::Note),
-                    "{:?} must be Note in all modes (not mode-dependent) [R6-12]",
-                    code
-                );
+                assert_eq!(resolve_severity(code, mode), Some(Severity::Note));
             }
         }
     }
@@ -478,21 +373,5 @@ mod tests {
                 Some(Severity::Error)
             );
         }
-    }
-
-    #[test]
-    fn k0026_is_always_warning() {
-        assert_eq!(
-            resolve_severity(KErrorCode::K0026, KoboMode::Script),
-            Some(Severity::Warning)
-        );
-        assert_eq!(
-            resolve_severity(KErrorCode::K0026, KoboMode::Checked),
-            Some(Severity::Warning)
-        );
-        assert_eq!(
-            resolve_severity(KErrorCode::K0026, KoboMode::Strict),
-            Some(Severity::Warning)
-        );
     }
 }

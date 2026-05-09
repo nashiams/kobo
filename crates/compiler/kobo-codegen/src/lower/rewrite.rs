@@ -309,6 +309,7 @@ impl<'a> Lowerer<'a> {
         scopes.push();
         self.lower_function_params(&mut function.sig.inputs, &mut scopes);
         self.lower_block_statements(&mut function.block, &mut scopes);
+        self.inject_field_capability_borrows(function);
         scopes.pop();
         let needs_local_set = self.needs_local_set;
         self.in_async_context = prior_async_context;
@@ -316,6 +317,48 @@ impl<'a> Lowerer<'a> {
         if needs_local_set {
             wrap_function_body_in_local_set(function);
         }
+    }
+
+    fn inject_field_capability_borrows(&self, function: &mut syn::ItemFn) {
+        let mut preamble = Vec::new();
+        for view in self
+            .kir
+            .field_capability_views()
+            .iter()
+            .filter(|view| view.function == function.sig.ident.to_string())
+        {
+            let Some(owner) = ident_from_kobo(&view.owner) else {
+                continue;
+            };
+            for field in &view.fields {
+                let Some(field_ident) = ident_from_kobo(&field.name) else {
+                    continue;
+                };
+                let Some(binding) =
+                    ident_from_kobo(&format!("_kobo_using_{}_{}", view.owner, field.name))
+                else {
+                    continue;
+                };
+                let stmt: syn::Stmt = if field.mutable {
+                    parse_quote!({
+                        let #binding = &mut #owner.#field_ident;
+                    })
+                } else {
+                    parse_quote!({
+                        let #binding = &#owner.#field_ident;
+                    })
+                };
+                preamble.push(stmt);
+            }
+        }
+
+        if preamble.is_empty() {
+            return;
+        }
+
+        let original = std::mem::take(&mut function.block.stmts);
+        preamble.extend(original);
+        function.block.stmts = preamble;
     }
 
     fn lower_function_params(
@@ -381,6 +424,11 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
+                if !spawn::is_spawn_block_macro(&stmt_macro.mac) {
+                    self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
+                    return;
+                }
+
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
                 let use_spawn_local = self.any_captured_non_send(&captured);
                 if use_spawn_local {
@@ -422,7 +470,6 @@ impl<'a> Lowerer<'a> {
                     }
                     return;
                 }
-                self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
             }
         }
     }
@@ -642,6 +689,21 @@ fn is_rust_keyword(s: &str) -> bool {
             | "while"
             | "yield"
     )
+}
+
+fn ident_from_kobo(name: &str) -> Option<syn::Ident> {
+    if is_rust_keyword(name) {
+        return None;
+    }
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if chars.any(|ch| !(ch == '_' || ch.is_ascii_alphanumeric())) {
+        return None;
+    }
+    Some(syn::Ident::new(name, proc_macro2::Span::call_site()))
 }
 
 fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {

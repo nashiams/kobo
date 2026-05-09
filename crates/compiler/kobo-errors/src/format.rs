@@ -1,6 +1,8 @@
 use kobo_ir::{FileEntry, FileSet, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
 
-use crate::diagnostic::{CliSuggestion, DiagHelp, DiagLabel, DiagLabelKind, KDiagnostic};
+use crate::diagnostic::{
+    CliSuggestion, DiagHelp, DiagLabel, DiagLabelKind, DiagnosticRelatedInfo, KDiagnostic,
+};
 
 pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
     let mut rendered = String::new();
@@ -28,6 +30,30 @@ pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String
     }
 
     rendered
+}
+
+pub fn render_related_info(file_set: &FileSet, related: &DiagnosticRelatedInfo) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("related: ");
+    rendered.push_str(&render_span_compact(file_set, related.span));
+    if !related.message.is_empty() {
+        rendered.push_str(": ");
+        rendered.push_str(&related.message);
+    }
+    rendered
+}
+
+pub fn render_span_compact(file_set: &FileSet, span: KoboSpan) -> String {
+    let Some(file) = file_set.get(span.file_id) else {
+        return format!("<unknown>:{}..{}", span.start, span.end);
+    };
+
+    if !span.is_valid_for(file) {
+        return format!("{}:{}..{}", file.path.display(), span.start, span.end);
+    }
+
+    let (line, column) = file.line_col(span.start);
+    format!("{}:{line}:{column}", file.path.display())
 }
 
 fn render_label_group(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {

@@ -1,8 +1,13 @@
 use syn::spanned::Spanned;
 
-use kobo_ir::{FieldTypeShape, KirStructDef, KirStructFieldDef};
+use kobo_ir::{
+    FieldTypeShape, KirStructDef, KirStructFieldDef, MustCallAction, MustCallAttrError,
+    MustCallObligation,
+};
 
-use super::attrs::{parse_known_debt_attr, KnownDebtResult};
+use super::attrs::{
+    parse_known_debt_attr, parse_must_call_attr, KnownDebtResult, MustCallAttrResult,
+};
 use super::TransformFactsBuilder;
 
 impl TransformFactsBuilder<'_> {
@@ -14,6 +19,7 @@ impl TransformFactsBuilder<'_> {
     pub(super) fn collect_struct_def(&mut self, item: &syn::ItemStruct) {
         let struct_name = item.ident.to_string();
         let span = self.ast.span_from_syn(item.span());
+        self.collect_must_call_attr(item, &struct_name, span);
 
         // Parse #[kobo::known_debt = "reason"] if present.
         let mut known_debt_reason = None;
@@ -64,6 +70,40 @@ impl TransformFactsBuilder<'_> {
             known_debt_span,
             known_debt_parse_error,
         });
+    }
+
+    fn collect_must_call_attr(
+        &mut self,
+        item: &syn::ItemStruct,
+        struct_name: &str,
+        owner_span: kobo_ir::KoboSpan,
+    ) {
+        for attr in &item.attrs {
+            match parse_must_call_attr(attr) {
+                MustCallAttrResult::Valid { actions, attr_span } => {
+                    let actions = actions
+                        .into_iter()
+                        .map(|action| MustCallAction {
+                            name: action.name,
+                            span: self.ast.span_from_syn(action.span),
+                        })
+                        .collect();
+                    self.must_call_obligations.push(MustCallObligation {
+                        owner_type: struct_name.to_owned(),
+                        owner_span,
+                        attr_span: self.ast.span_from_syn(attr_span),
+                        actions,
+                    });
+                }
+                MustCallAttrResult::Invalid { message, attr_span } => {
+                    self.must_call_attr_errors.push(MustCallAttrError {
+                        span: self.ast.span_from_syn(attr_span),
+                        message,
+                    });
+                }
+                MustCallAttrResult::NotMustCall => {}
+            }
+        }
     }
 }
 

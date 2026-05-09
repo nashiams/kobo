@@ -1,0 +1,27 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KoboSpan {
+    pub file_id: FileId,
+    pub start: u32,
+    pub end: u32,
+}
+
+impl KoboSpan {
+    pub fn new(file_id: FileId, start: u32, end: u32) -> Self {
+        Self {
+            file_id,
+            start,
+            end,
+        }
+    }
+
+    pub fn overlaps(self, other: KoboSpan) -> bool {
+        self.file_id == other.file_id && self.start < other.end && other.start < self.end
+    }
+
+    pub fn len(self) -> u32 {
+        self.end.saturating_sub(self.start)
+    }
+}

@@ -2,8 +2,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_driver::{load_config_for, CompileSession};
-use kobo_errors::{format_diagnostic, Severity};
+use kobo_errors::{
+    diagnostic_to_json_value, ColorMode, DiagnosticOutputFormat, DiagnosticRenderer, Severity,
+};
 use kobo_ir::KoboMode;
+
+use crate::ErrorFormat;
 
 /// Build a CompileSession for the given file, applying an optional CLI mode
 /// override BEFORE constructing the session [Contract R06, Trap 5].
@@ -27,7 +31,18 @@ pub(super) fn build_session(
 }
 
 pub(super) fn render_diagnostics(session: &CompileSession) {
-    for diagnostic in &session.diagnostics {
+    render_diagnostics_with_format(session, ErrorFormat::Human);
+}
+
+pub(super) fn render_diagnostics_with_format(session: &CompileSession, format: ErrorFormat) {
+    let color = if std::env::var_os("NO_COLOR").is_some() {
+        ColorMode::Never
+    } else {
+        ColorMode::Auto
+    };
+    let renderer = DiagnosticRenderer::new(color, DiagnosticOutputFormat::HumanCard);
+
+    for diagnostic in session.visible_diagnostics() {
         // G5: suppress Severity::Warning diagnostics inside #[kobo::relax] ranges in checked mode.
         if diagnostic.severity == Severity::Warning
             && session.mode().is_checked()
@@ -38,7 +53,17 @@ pub(super) fn render_diagnostics(session: &CompileSession) {
         {
             continue;
         }
-        eprintln!("{}", format_diagnostic(session.file_set(), diagnostic));
+
+        match format {
+            ErrorFormat::Human => eprintln!("{}", renderer.render(session.file_set(), diagnostic)),
+            ErrorFormat::Json => {
+                let value = diagnostic_to_json_value(session.file_set(), diagnostic);
+                println!(
+                    "{}",
+                    serde_json::to_string(&value).expect("diagnostic JSON value should serialize")
+                );
+            }
+        }
     }
 }
 
@@ -61,8 +86,18 @@ fn find_workspace_root(file: &Path) -> anyhow::Result<PathBuf> {
         }
     }
 
-    workspace_root
-        .ok_or_else(|| anyhow::anyhow!("could not find workspace root for {}", file.display()))
+    if let Some(workspace_root) = workspace_root {
+        return Ok(workspace_root);
+    }
+
+    let current_dir = std::env::current_dir().context("failed to determine current directory")?;
+    for ancestor in current_dir.ancestors() {
+        if has_workspace_marker(ancestor) {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+
+    Ok(input_directory(file)?)
 }
 
 fn find_crate_dir(file: &Path, workspace_root: &Path) -> PathBuf {

@@ -2,6 +2,7 @@ use syn::spanned::Spanned;
 
 use crate::hint::parse_hint;
 use kobo_ir::{EscapeKind, KoboSpan, MigrateSite, MigrateTarget, RelaxAttrError, UseKind};
+use proc_macro2::{TokenStream, TokenTree};
 
 use super::attrs::{
     parse_async_shared_attr, parse_migrate_attr, parse_relax_attr, AsyncSharedAttrResult,
@@ -440,6 +441,7 @@ impl TransformFactsBuilder<'_> {
             .unwrap_or(false);
 
         if !is_spawn {
+            self.walk_non_spawn_macro(mac);
             return;
         }
 
@@ -464,6 +466,27 @@ impl TransformFactsBuilder<'_> {
                 span,
                 captured_bindings: captured,
             });
+        }
+    }
+
+    fn walk_non_spawn_macro(&mut self, mac: &syn::Macro) {
+        self.walk_macro_tokens(mac.tokens.clone());
+    }
+
+    fn walk_macro_tokens(&mut self, tokens: TokenStream) {
+        let tokens = tokens.into_iter().collect::<Vec<_>>();
+        for (index, token) in tokens.iter().enumerate() {
+            match token {
+                TokenTree::Ident(ident) => {
+                    if self.emit_ident_use(ident, UseKind::Read)
+                        && token_is_dot(tokens.get(index + 1))
+                    {
+                        self.mark_ident_method_read(ident);
+                    }
+                }
+                TokenTree::Group(group) => self.walk_macro_tokens(group.stream()),
+                TokenTree::Punct(_) | TokenTree::Literal(_) => {}
+            }
         }
     }
 
@@ -575,4 +598,8 @@ impl TransformFactsBuilder<'_> {
             });
         }
     }
+}
+
+fn token_is_dot(token: Option<&TokenTree>) -> bool {
+    matches!(token, Some(TokenTree::Punct(punct)) if punct.as_char() == '.')
 }

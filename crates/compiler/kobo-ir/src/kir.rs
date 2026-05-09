@@ -65,6 +65,42 @@ pub struct RelaxAttrError {
     pub is_error: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MustCallAction {
+    pub name: String,
+    pub span: KoboSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MustCallObligation {
+    pub owner_type: String,
+    pub owner_span: KoboSpan,
+    pub attr_span: KoboSpan,
+    pub actions: Vec<MustCallAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MustCallAttrError {
+    pub span: KoboSpan,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FieldCapabilityField {
+    pub name: String,
+    pub mutable: bool,
+    pub span: KoboSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FieldCapabilityView {
+    pub function: String,
+    pub owner: String,
+    pub owner_type: Option<String>,
+    pub using_span: KoboSpan,
+    pub fields: Vec<FieldCapabilityField>,
+}
+
 /// The target element tagged by `#[kobo::migrate]` [G6 / R05].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MigrateTarget {
@@ -113,6 +149,9 @@ pub struct Kir {
     relax_attr_errors: Vec<RelaxAttrError>,
     /// Sites tagged with `#[kobo::migrate]` — metadata-only, zero codegen effect [G6 / R05].
     migrate_sites: Vec<MigrateSite>,
+    must_call_obligations: Vec<MustCallObligation>,
+    must_call_attr_errors: Vec<MustCallAttrError>,
+    field_capability_views: Vec<FieldCapabilityView>,
     /// Method name → `true` if `&mut self`, scanned from impl blocks + config.
     method_mutability: HashMap<String, bool>,
     /// S-3: KIR node IDs whose bindings belong to engine struct types.
@@ -143,6 +182,9 @@ impl Kir {
             relaxed_fn_ranges: Vec::new(),
             relax_attr_errors: Vec::new(),
             migrate_sites: Vec::new(),
+            must_call_obligations: Vec::new(),
+            must_call_attr_errors: Vec::new(),
+            field_capability_views: Vec::new(),
             method_mutability: HashMap::new(),
             engine_ceiling_nodes: HashSet::new(),
         }
@@ -256,6 +298,30 @@ impl Kir {
 
     pub fn set_migrate_sites(&mut self, sites: Vec<MigrateSite>) {
         self.migrate_sites = sites;
+    }
+
+    pub fn must_call_obligations(&self) -> &[MustCallObligation] {
+        &self.must_call_obligations
+    }
+
+    pub fn set_must_call_obligations(&mut self, obligations: Vec<MustCallObligation>) {
+        self.must_call_obligations = obligations;
+    }
+
+    pub fn must_call_attr_errors(&self) -> &[MustCallAttrError] {
+        &self.must_call_attr_errors
+    }
+
+    pub fn set_must_call_attr_errors(&mut self, errors: Vec<MustCallAttrError>) {
+        self.must_call_attr_errors = errors;
+    }
+
+    pub fn field_capability_views(&self) -> &[FieldCapabilityView] {
+        &self.field_capability_views
+    }
+
+    pub fn set_field_capability_views(&mut self, views: Vec<FieldCapabilityView>) {
+        self.field_capability_views = views;
     }
 
     pub fn method_mutability(&self) -> &HashMap<String, bool> {

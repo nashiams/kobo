@@ -1,0 +1,35 @@
+mod span;
+mod diagnostic;
+mod registry;
+mod query;
+
+use diagnostic::{DiagLabel, Diagnostic, Severity};
+use span::{FileId, KoboSpan};
+
+fn main() {
+    let primary_span = KoboSpan::new(FileId(0), 10, 20);
+    let overlap_span = KoboSpan::new(FileId(0), 15, 30);
+    let entry = registry::lookup("K0107").expect("K0107 must exist");
+    let salt = self_host_support::salt();
+
+    let diagnostic = Diagnostic {
+        code: entry.code,
+        severity: Severity::Warning,
+        label: DiagLabel {
+            span: primary_span,
+            message: entry.slug.to_string(),
+        },
+    };
+
+    let first = query::snapshot("fn main() {}", "mode=script");
+    let second = query::snapshot("fn main() { println!(\"changed\"); }", "mode=script");
+
+    println!("self_host_canary=ok");
+    println!("registry={}:{}", entry.code, entry.slug);
+    println!("overlap={}", primary_span.overlaps(overlap_span));
+    println!("span_len={}", primary_span.len());
+    println!("support_salt={}", salt);
+    println!("diagnostic={}", diagnostic.summary());
+    println!("query_changed={}", first.value != second.value);
+    println!("source_hash_changed={}", first.source_hash != second.source_hash);
+}

@@ -10,7 +10,7 @@ use kobo_ir::{
     KirNodeId, KoboAstNodeId, KoboSpan, NodeKind, OwnershipTier, SatisfactionCheck, SolutionMap,
     TierReason,
 };
-use kobo_parser::{KoboBinding, KoboFile};
+use kobo_parser::{KoboBinding, KoboBindingKind, KoboFile};
 
 use super::binding::{binding_for_pat, fn_arg_lowering_tier};
 use super::support::support_items;
@@ -280,6 +280,12 @@ fn build_annotation_sites(
     let mut sites = Vec::new();
 
     for binding in ast.iter_bindings() {
+        if matches!(
+            binding.kind,
+            KoboBindingKind::SelfParam | KoboBindingKind::MutSelfParam
+        ) {
+            continue;
+        }
         let Some(node_id) = kir.kir_for_ast(binding.id) else {
             continue;
         };

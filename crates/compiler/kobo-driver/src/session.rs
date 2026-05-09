@@ -25,6 +25,16 @@ pub struct CompileSession {
     /// Struct names annotated with `#[kobo::engine]` in the source. Used by the
     /// solver to impose PlainOwned ceiling constraints on engine resources [S-3].
     pub engine_struct_names: Vec<String>,
+    /// Parser-recovered source regions skipped by downstream diagnostic phases.
+    pub poisoned_spans: Vec<KoboSpan>,
+    /// Diagnostics hidden because they overlap parser-poisoned source regions.
+    pub suppressed_diagnostics: Vec<KDiagnostic>,
+}
+
+pub enum PoisonStatus {
+    Visible,
+    TrimRelatedPoison,
+    Suppress { poison: Option<KoboSpan> },
 }
 
 impl CompileSession {
@@ -41,6 +51,8 @@ impl CompileSession {
             relaxed_fn_ranges: Vec::new(),
             cli_mode_override: false,
             engine_struct_names: Vec::new(),
+            poisoned_spans: Vec::new(),
+            suppressed_diagnostics: Vec::new(),
         }
     }
 
@@ -60,6 +72,77 @@ impl CompileSession {
     /// Appends a diagnostic to the session accumulator.
     pub fn push_diagnostic(&mut self, d: KDiagnostic) {
         self.diagnostics.push(d);
+    }
+
+    pub fn push_suppressed_diagnostic(&mut self, diagnostic: KDiagnostic) {
+        self.suppressed_diagnostics.push(diagnostic);
+    }
+
+    pub fn visible_diagnostics(&self) -> impl Iterator<Item = &KDiagnostic> {
+        self.diagnostics.iter()
+    }
+
+    pub fn is_poisoned(&self, span: KoboSpan) -> bool {
+        self.poisoned_spans
+            .iter()
+            .any(|poison| poison.overlaps(span))
+    }
+
+    pub fn diagnostic_poison_status(&self, diagnostic: &KDiagnostic) -> PoisonStatus {
+        if self.is_poisoned(diagnostic.primary.span) {
+            return PoisonStatus::Suppress {
+                poison: self
+                    .poisoned_spans
+                    .iter()
+                    .copied()
+                    .find(|poison| poison.overlaps(diagnostic.primary.span)),
+            };
+        }
+
+        let touches_poison = diagnostic
+            .secondary
+            .iter()
+            .any(|label| self.is_poisoned(label.span))
+            || diagnostic
+                .related
+                .iter()
+                .any(|related| self.is_poisoned(related.span))
+            || diagnostic
+                .suggestions
+                .iter()
+                .flat_map(|suggestion| suggestion.edits.iter())
+                .any(|edit| self.is_poisoned(edit.span));
+
+        if touches_poison {
+            PoisonStatus::TrimRelatedPoison
+        } else {
+            PoisonStatus::Visible
+        }
+    }
+
+    pub fn suppress_diagnostics_from(&mut self, visible_start: usize) {
+        if self.poisoned_spans.is_empty() || visible_start >= self.diagnostics.len() {
+            return;
+        }
+
+        let pending = self.diagnostics.split_off(visible_start);
+        for diagnostic in pending {
+            match self.diagnostic_poison_status(&diagnostic) {
+                PoisonStatus::Visible => self.push_diagnostic(diagnostic),
+                PoisonStatus::TrimRelatedPoison => {
+                    let trimmed =
+                        diagnostic.with_poisoned_related_info_trimmed(&self.poisoned_spans);
+                    self.push_diagnostic(trimmed);
+                }
+                PoisonStatus::Suppress { poison } => {
+                    let suppressed = match poison {
+                        Some(span) => diagnostic.with_suppressed_by(span),
+                        None => diagnostic,
+                    };
+                    self.push_suppressed_diagnostic(suppressed);
+                }
+            }
+        }
     }
 
     /// Returns `true` if any `Severity::Error` diagnostic has been accumulated.

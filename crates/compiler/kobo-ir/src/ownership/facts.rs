@@ -88,6 +88,8 @@ pub struct TransformBindingFacts {
     pub elision_skip_reason: Option<ElisionSkipReason>,
     /// Scope depth at which this binding was declared (0 = function body).
     pub decl_scope_depth: usize,
+    /// Read spans from receiver method calls (not eligible for wrapper promotion by themselves).
+    pub method_read_spans: Vec<KoboSpan>,
     /// Read spans from reference-returning methods (not eligible for extraction).
     pub ref_returning_read_spans: Vec<KoboSpan>,
 }

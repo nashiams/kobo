@@ -62,6 +62,14 @@ impl OracleCase {
 
         Self { root, fixture_path }
     }
+
+    fn read_source(&self) -> String {
+        fs::read_to_string(&self.fixture_path).expect("fixture source should read")
+    }
+
+    fn overwrite_source(&self, source: &str) {
+        fs::write(&self.fixture_path, source).expect("fixture source should be writable");
+    }
 }
 
 impl Drop for OracleCase {
@@ -176,6 +184,29 @@ fn parse_migrate_header(output: &KoboOutput) -> MigrateEvidence {
         edge_count: edges,
         ownership_changes: changes,
     }
+}
+
+fn successful_migrate_evidence(case: &OracleCase, label: &str) -> MigrateEvidence {
+    let output = run_kobo(["migrate", "--dry-run"], &case.fixture_path);
+    assert!(
+        output.status.success(),
+        "{label}: migrate --dry-run must succeed\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    parse_migrate_header(&output)
+}
+
+fn insert_after_once(source: &str, needle: &str, insertion: &str) -> String {
+    assert!(
+        source.contains(needle),
+        "source mutation needle must exist: {needle}"
+    );
+    source.replacen(needle, &format!("{needle}\n{insertion}"), 1)
+}
+
+fn combined_output(output: &KoboOutput) -> String {
+    format!("{}\n{}", output.stdout, output.stderr)
 }
 
 // ---------------------------------------------------------------------------
@@ -911,5 +942,120 @@ fn oracle_different_fixtures_have_different_fingerprints() {
                 fingerprints[i].0, fingerprints[j].0, fingerprints[i].1
             );
         }
+    }
+}
+
+// ===========================================================================
+// ORACLE 13: Anti-gaming gates for generated and metamorphic source variants
+// ===========================================================================
+
+/// Comments and whitespace are source changes, but they are not ownership facts.
+/// This gate catches implementations that fake solver evidence from raw text
+/// length, line count, or a full-file hash instead of parsing the program.
+#[test]
+fn oracle_comment_and_whitespace_variants_keep_graph_shape() {
+    let base_case = OracleCase::new("oracle-noop-base", "oracle_shared_counter_spawn.kobo");
+    let variant_case = OracleCase::new("oracle-noop-variant", "oracle_shared_counter_spawn.kobo");
+
+    let original = variant_case.read_source();
+    let nonce = format!(
+        "oracle_noop_{}_{}",
+        std::process::id(),
+        CASE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let variant = insert_after_once(
+        &original,
+        "fn main() {",
+        &format!(
+            "    // {nonce}: comments must not create ownership nodes\n\n    // {nonce}: whitespace-only semantic no-op"
+        ),
+    );
+    assert_ne!(
+        original, variant,
+        "metamorphic fixture variant must modify source text"
+    );
+    variant_case.overwrite_source(&variant);
+
+    let base = successful_migrate_evidence(&base_case, "comment-noop-base");
+    let variant = successful_migrate_evidence(&variant_case, "comment-noop-variant");
+
+    assert_eq!(
+        base.outcome, variant.outcome,
+        "comment-only variants must not alter solver outcome"
+    );
+    assert_eq!(
+        base.node_count, variant.node_count,
+        "comment-only variants must not add or remove constraint nodes"
+    );
+    assert_eq!(
+        base.edge_count, variant.edge_count,
+        "comment-only variants must not add or remove constraint edges"
+    );
+}
+
+/// The same fixture filename is mutated with runtime-unique, semantic source
+/// additions. A filename-keyed stub, canned fixture table, constant fingerprint,
+/// or inspect output that ignores the real source cannot pass this gate.
+#[test]
+fn oracle_same_filename_semantic_variants_drive_evidence_and_codegen() {
+    let base_case = OracleCase::new("oracle-dynamic-base", "oracle_shared_counter_spawn.kobo");
+    let base_evidence = successful_migrate_evidence(&base_case, "semantic-base");
+    let mut fingerprints = HashSet::from([base_evidence.fingerprint.clone()]);
+
+    for extra_registers in [1_usize, 2, 5] {
+        let case = OracleCase::new("oracle-dynamic-variant", "oracle_shared_counter_spawn.kobo");
+        let original = case.read_source();
+        let nonce = format!(
+            "oracle_dynamic_{}_{}_{}",
+            std::process::id(),
+            extra_registers,
+            CASE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let injected_registers = (0..extra_registers)
+            .map(|idx| {
+                format!(
+                    "    let {nonce}_{idx} = String::from(\"{nonce}_{idx}\");\n    server.register({nonce}_{idx});"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let variant = insert_after_once(
+            &original,
+            "    server.register(String::from(\"health\"));",
+            &injected_registers,
+        );
+        assert_ne!(
+            original, variant,
+            "semantic variant must modify the fixture source"
+        );
+        case.overwrite_source(&variant);
+
+        let inspect = run_kobo(["inspect"], &case.fixture_path);
+        assert!(
+            inspect.status.success(),
+            "semantic variant inspect must succeed\nstdout:\n{}\nstderr:\n{}",
+            inspect.stdout,
+            inspect.stderr
+        );
+        let inspect_text = combined_output(&inspect);
+        assert!(
+            inspect_text.contains(&nonce),
+            "inspect output must be source-driven and retain generated identifier `{nonce}`\n{inspect_text}"
+        );
+
+        let evidence = successful_migrate_evidence(&case, "semantic-variant");
+        assert!(
+            fingerprints.insert(evidence.fingerprint.clone()),
+            "semantic variant with same filename produced a duplicate fingerprint `{}`.\n\
+             Fingerprints must be derived from parsed source structure, not fixture names or constants.",
+            evidence.fingerprint
+        );
+        assert!(
+            evidence.node_count > base_evidence.node_count,
+            "semantic variant inserted {extra_registers} real binding(s), but node_count did not increase.\n\
+             base nodes={} variant nodes={}",
+            base_evidence.node_count,
+            evidence.node_count
+        );
     }
 }

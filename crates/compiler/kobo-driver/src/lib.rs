@@ -24,9 +24,8 @@ pub use pipeline::{
     run_pipeline_ordering_check, CodegenArtifacts,
 };
 pub use query::{
-    AnalysisKey, CodegenKey, CodegenOutput as QueryCodegenOutput, DiagnosticOutput, DiagnosticsKey,
-    KirKey, KirOutput, ParseKey, ParsedOutput, PreprocessKey, QueryMetrics, QuerySession,
-    SolverKey, SolverOutput, SourceKey,
+    CodegenOutput as QueryCodegenOutput, DiagnosticOutput, KirOutput, ParsedOutput, QueryMetrics,
+    QuerySession, SolverOutput,
 };
 pub use rustc::binary_path_for;
 pub use session::{is_inside_relaxed_fn, CompileSession};

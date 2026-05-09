@@ -1,6 +1,7 @@
 use crate::classify::{BindingMetadata, BindingState};
 use kobo_ir::{
-    BindingUsage, EscapeKind, HintConflictFact, NodeKind, TransformBindingFacts, UseEvent, UseKind,
+    BindingUsage, EscapeKind, HintConflictFact, NodeKind, OwnershipHint, TransformBindingFacts,
+    UseEvent, UseKind,
 };
 use kobo_parser::KoboBinding;
 
@@ -49,7 +50,7 @@ impl TransformFactsBuilder<'_> {
         let metadata = self.binding_metadata(binding, init);
         let decl_id = self.id_gen.next_kir_id();
         self.nodes.push(build_decl_node(binding, decl_id, metadata));
-        self.push_binding_fact(binding, decl_id, metadata, hint);
+        self.push_binding_fact(binding, decl_id, metadata, hint, init);
 
         BindingState {
             decl_id,
@@ -67,6 +68,7 @@ impl TransformFactsBuilder<'_> {
         decl_id: kobo_ir::KirNodeId,
         metadata: BindingMetadata,
         hint: Option<PendingHint>,
+        init: Option<&syn::Expr>,
     ) {
         let box_reason = self.detect_box_reason(binding);
         let shared_facts = kobo_ir::SharedBindingFacts {
@@ -81,7 +83,10 @@ impl TransformFactsBuilder<'_> {
             binding_name: binding.ident.to_string(),
             span: binding.span,
             resource_kind: metadata.resource_kind,
-            hint: hint.map(|pending| pending.hint),
+            hint: hint
+                .as_ref()
+                .map(|pending| pending.hint)
+                .or_else(|| kobo_bind_initializer(init).then_some(OwnershipHint::Shared)),
             hint_span: hint.map(|pending| pending.span),
             is_copy_known: metadata.is_copy_known,
             is_generic: metadata.is_generic,
@@ -380,6 +385,28 @@ impl TransformFactsBuilder<'_> {
         };
         self.transform_facts.bindings[index].elision_skip_reason = Some(reason);
     }
+}
+
+fn kobo_bind_initializer(init: Option<&syn::Expr>) -> bool {
+    let Some(syn::Expr::Call(call)) = init else {
+        return false;
+    };
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    let mut segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string());
+    matches!(
+        (
+            segments.next().as_deref(),
+            segments.next().as_deref(),
+            segments.next()
+        ),
+        (Some("kobo"), Some("bind"), None)
+    )
 }
 
 /// Known methods that return references rather than owned values.

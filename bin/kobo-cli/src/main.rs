@@ -143,6 +143,8 @@ pub(crate) enum KoboCommand {
     Doctor {
         #[arg(long, help = "Inspect Cargo dependency shape")]
         deps: bool,
+        #[arg(long, help = "Report self-host compatibility readiness")]
+        self_host: bool,
         #[arg(long, help = "Emit JSON")]
         json: bool,
     },

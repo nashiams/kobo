@@ -424,6 +424,11 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
+                if !spawn::is_spawn_block_macro(&stmt_macro.mac) {
+                    self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
+                    return;
+                }
+
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
                 let use_spawn_local = self.any_captured_non_send(&captured);
                 if use_spawn_local {
@@ -465,7 +470,6 @@ impl<'a> Lowerer<'a> {
                     }
                     return;
                 }
-                self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
             }
         }
     }

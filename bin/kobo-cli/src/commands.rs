@@ -74,7 +74,31 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             profile.as_deref(),
             trait_default.as_deref(),
         ),
-        KoboCommand::Doctor { deps, json } => doctor::cmd_doctor(deps, json),
+        KoboCommand::Doctor {
+            deps,
+            self_host,
+            json,
+        } => {
+            let output_format = if json {
+                doctor::DoctorOutputFormat::Json
+            } else {
+                doctor::DoctorOutputFormat::Human
+            };
+            let dependency_inspection = if deps {
+                doctor::DependencyInspection::Requested
+            } else {
+                doctor::DependencyInspection::Default
+            };
+            let mode = if self_host {
+                doctor::DoctorMode::SelfHost
+            } else {
+                doctor::DoctorMode::Dependencies(dependency_inspection)
+            };
+            doctor::cmd_doctor(doctor::DoctorOptions {
+                mode,
+                output_format,
+            })
+        }
         KoboCommand::Dump { file } => run::cmd_dump(&file),
         KoboCommand::Perf {
             file,

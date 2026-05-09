@@ -104,9 +104,14 @@ fn choose_tier_for_binding(
     // S-1: Local-only bindings skip Rc/RefCell wrapping.
     // Mutation on a non-shared, non-escaping local is just `let mut`.
     // Exception: async + box_reason needs special handling (Box is deferred in async).
-    if !(binding.shared_facts.needs_sharing
-        || binding.shared_facts.has_escape
-        || binding.is_async && binding.shared_facts.box_reason.is_some())
+    let hint_requires_shared = matches!(
+        binding.hint,
+        Some(OwnershipHint::Shared | OwnershipHint::Async)
+    );
+    if !hint_requires_shared
+        && !(binding.shared_facts.needs_sharing
+            || binding.shared_facts.has_escape
+            || binding.is_async && binding.shared_facts.box_reason.is_some())
     {
         let tier = if binding.shared_facts.box_reason.is_some() {
             OwnershipTier::BoxOwned
@@ -397,7 +402,8 @@ pub(crate) fn apply_decisions(kir: &mut kobo_ir::Kir, decisions: &[TierDecision]
 mod tests {
     use kobo_ir::{
         BindingUsage, BoxReason, EscapeKind, FileId, KirNodeId, KoboAstNodeId, KoboSpan,
-        OwnershipTier, SharedBindingFacts, TierReason, TransformBindingFacts, UseEvent,
+        OwnershipHint, OwnershipTier, SharedBindingFacts, TierReason, TransformBindingFacts,
+        UseEvent,
     };
     use std::collections::HashSet;
 
@@ -534,6 +540,16 @@ mod tests {
 
         assert_eq!(decision.tier, OwnershipTier::PlainOwned);
         assert_eq!(decision.reason, TierReason::LocalOnly);
+    }
+
+    #[test]
+    fn shared_hint_bypasses_local_only_plain_owned_shortcut() {
+        let mut binding = binding(SharedBindingFacts::default());
+        binding.hint = Some(OwnershipHint::Shared);
+
+        let decision = choose_tier_for_binding(&binding, &empty_set(), &empty_send_reqs());
+
+        assert_eq!(decision.tier, OwnershipTier::RcShared);
     }
 
     #[test]

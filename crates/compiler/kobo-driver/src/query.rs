@@ -9,7 +9,11 @@ use kobo_codegen::KoboSourceMap;
 use kobo_errors::KDiagnostic;
 use kobo_ir::{FileId, KoboSpan};
 use kobo_migrate::{solve_modular_with_evidence, SolverBudget, SolverEvidence};
-use kobo_parser::{KoboFile, PreprocessSourceMap, RecoveryMode};
+use kobo_parser::{
+    preprocess_bridge_blocks_mapped, preprocess_kobo_keywords_mapped,
+    preprocess_spawn_blocks_mapped, v05_keyword_configs, KoboFile, PreprocessSourceMap,
+    RecoveryMode,
+};
 
 use crate::config::KoboConfig;
 use crate::pipeline::analysis::run_analysis_phase;
@@ -19,6 +23,7 @@ use crate::session::CompileSession;
 const PREPROCESS_VERSION: u32 = 1;
 const PARSER_VERSION: u32 = 1;
 
+/// Demand-driven compiler session keyed by source and configuration fingerprints.
 pub struct QuerySession {
     config: KoboConfig,
     cache: QueryCache,
@@ -35,6 +40,7 @@ struct QueryCache {
     codegen: HashMap<CodegenKey, Arc<CodegenOutput>>,
 }
 
+/// Execution counters for query cache contract tests and diagnostics.
 #[derive(Default)]
 pub struct QueryMetrics {
     pub parse_executions: usize,
@@ -46,63 +52,54 @@ pub struct QueryMetrics {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct SourceKey {
-    pub path_identity: String,
-    pub source_hash: u64,
-    pub file_id: FileId,
+struct SourceKey {
+    path_identity: String,
+    source_hash: u64,
+    file_id: FileId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct PreprocessKey {
-    pub source: SourceKey,
-    pub preprocess_version: u32,
-    pub preprocess_config_hash: u64,
-    pub rewritten_hash: u64,
+struct PreprocessKey {
+    source: SourceKey,
+    preprocess_version: u32,
+    preprocess_config_hash: u64,
+    rewritten_hash: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ParseKey {
-    pub preprocess: PreprocessKey,
-    pub parser_version: u32,
-    pub recovery_mode: RecoveryMode,
+struct ParseKey {
+    preprocess: PreprocessKey,
+    parser_version: u32,
+    recovery_mode: RecoveryMode,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct KirKey {
-    pub parse: ParseKey,
-    pub transform_config_hash: u64,
+struct KirKey {
+    parse: ParseKey,
+    transform_config_hash: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct AnalysisKey {
-    pub kir: KirKey,
-    pub mode: kobo_ir::KoboMode,
-    pub diagnostic_config_hash: u64,
+struct AnalysisKey {
+    kir: KirKey,
+    mode: kobo_ir::KoboMode,
+    diagnostic_config_hash: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct SolverKey {
-    pub kir: KirKey,
-    pub constraint_graph_fingerprint: String,
-    pub solver_config_hash: u64,
+struct SolverKey {
+    kir: KirKey,
+    solver_config_hash: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct CodegenKey {
-    pub kir: KirKey,
-    pub solver_evidence_hash: u64,
-    pub codegen_config_hash: u64,
+struct CodegenKey {
+    kir: KirKey,
+    solver_evidence_hash: u64,
+    codegen_config_hash: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct DiagnosticsKey {
-    pub parse: ParseKey,
-    pub analysis: AnalysisKey,
-    pub solver: SolverKey,
-    pub rustc_diagnostics_hash: u64,
-    pub output_policy_hash: u64,
-}
-
+/// Parsed source and parser diagnostics for one query key.
 pub struct ParsedOutput {
     pub file_id: FileId,
     pub file: KoboFile,
@@ -111,6 +108,7 @@ pub struct ParsedOutput {
     pub preprocess_source_map: PreprocessSourceMap,
 }
 
+/// KIR phase output and phase-local diagnostics for one query key.
 pub struct KirOutput {
     pub kir: kobo_ir::Kir,
     pub relaxed_fn_ranges: Vec<KoboSpan>,
@@ -118,16 +116,19 @@ pub struct KirOutput {
     pub diagnostics: Vec<KDiagnostic>,
 }
 
+/// Visible and suppressed diagnostics for an analysis query.
 pub struct DiagnosticOutput {
     pub visible: Vec<KDiagnostic>,
     pub suppressed: Vec<KDiagnostic>,
 }
 
+/// Solver evidence and diagnostics for one solver query.
 pub struct SolverOutput {
     pub evidence: SolverEvidence,
     pub diagnostics: Vec<KDiagnostic>,
 }
 
+/// Codegen artifacts and diagnostics for one codegen query.
 pub struct CodegenOutput {
     pub artifacts: CodegenArtifacts,
     pub source_map: KoboSourceMap,
@@ -290,11 +291,12 @@ impl QuerySession {
             source_hash,
             file_id,
         };
+        let rewritten_hash = preprocessed_source_hash(&source, file_id);
         let preprocess_key = PreprocessKey {
             source: source_key,
             preprocess_version: PREPROCESS_VERSION,
             preprocess_config_hash: preprocess_config_hash(&self.config),
-            rewritten_hash: source_hash,
+            rewritten_hash,
         };
         let recovery_mode = if self.config.enable_parse_recovery {
             RecoveryMode::Recover
@@ -329,7 +331,6 @@ impl QuerySession {
     fn solver_key(&self, kir: KirKey) -> SolverKey {
         SolverKey {
             kir,
-            constraint_graph_fingerprint: "current-kir".to_owned(),
             solver_config_hash: solver_config_hash(&self.config),
         }
     }
@@ -341,6 +342,30 @@ impl QuerySession {
             codegen_config_hash: codegen_config_hash(&self.config),
         }
     }
+}
+
+fn preprocessed_source_hash(source: &str, file_id: FileId) -> u64 {
+    let configs = v05_keyword_configs();
+    let strict_mapped = preprocess_kobo_keywords_mapped(source, file_id, &configs);
+    let spawn_mapped = preprocess_spawn_blocks_mapped(&strict_mapped.rewritten, file_id);
+    let bridge_mapped = preprocess_bridge_blocks_mapped(&spawn_mapped.rewritten, file_id);
+    let parser_source = mask_query_field_capability_views(&bridge_mapped.rewritten);
+    hash_value(&parser_source)
+}
+
+fn mask_query_field_capability_views(source: &str) -> String {
+    let mut output = source.to_owned();
+    let mut search_start = 0usize;
+    while let Some(relative) = output[search_start..].find(" using {") {
+        let start = search_start + relative;
+        let Some(close_relative) = output[start..].find('}') else {
+            break;
+        };
+        let end = start + close_relative + 1;
+        output.replace_range(start..end, &" ".repeat(end - start));
+        search_start = end;
+    }
+    output
 }
 
 fn normalize_path(path: &Path) -> String {

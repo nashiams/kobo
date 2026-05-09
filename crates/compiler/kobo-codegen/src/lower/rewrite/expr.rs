@@ -67,7 +67,11 @@ impl super::Lowerer<'_> {
             }
             syn::Expr::Loop(expr_loop) => self.lower_nested_block(&mut expr_loop.body, scopes),
             syn::Expr::Macro(expr_macro) => {
-                // S-53: Check for spawn block marker macro with strategy selection.
+                if !super::spawn::is_spawn_block_macro(&expr_macro.mac) {
+                    self.lower_macro_tokens(&mut expr_macro.mac.tokens, scopes);
+                    return;
+                }
+
                 let captured = super::collect_spawn_captures(&expr_macro.mac.tokens, scopes);
                 let use_spawn_local = self.any_captured_non_send(&captured);
                 if use_spawn_local {
@@ -79,7 +83,6 @@ impl super::Lowerer<'_> {
                     *expr = replacement;
                     return;
                 }
-                self.lower_macro_tokens(&mut expr_macro.mac.tokens, scopes);
             }
             syn::Expr::Match(expr_match) => self.lower_match_expr(expr_match, scopes),
             syn::Expr::MethodCall(method_call) => self.lower_method_call_expr(method_call, scopes),

@@ -137,7 +137,15 @@ fn rewrite_line_for_site(line: &str, site: &ExtractionSite) -> Option<(String, S
     let paren_end = find_balanced_paren(rest)?;
     let call_expr = &rest[..paren_end + 1];
     let indent = &line[..line.len() - line.trim_start().len()];
-    let extraction = format!("{}let {} = {};", indent, site.temp_name, call_expr);
+    let binding_mode = if call_expr.contains(".borrow_mut(") {
+        "let mut"
+    } else {
+        "let"
+    };
+    let extraction = format!(
+        "{}{} {} = {};",
+        indent, binding_mode, site.temp_name, call_expr
+    );
     let replacement = line.replacen(call_expr, &site.temp_name, 1);
     Some((extraction, replacement))
 }

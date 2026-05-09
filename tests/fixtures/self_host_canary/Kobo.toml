@@ -9,3 +9,6 @@ enable_parse_recovery = true
 
 [dependencies]
 self_host_support = { path = "../../support" }
+
+[copy_types]
+external = ["FileId", "KoboSpan", "RegistryEntry"]

@@ -69,7 +69,13 @@ fn inspect_clean_cargo_canary_is_a_runnable_cargo_project() {
 
     let inspect = run_kobo_in(
         &case.root,
-        &["inspect", "--clean", "--cargo", &out_dir_text, "src/main.kobo"],
+        &[
+            "inspect",
+            "--clean",
+            "--cargo",
+            &out_dir_text,
+            "src/main.kobo",
+        ],
     );
     assert_success(&inspect, "kobo inspect --clean --cargo self-host canary");
 
@@ -82,7 +88,7 @@ fn inspect_clean_cargo_canary_is_a_runnable_cargo_project() {
 }
 
 #[test]
-fn doctor_self_host_reports_readiness_and_blockers_from_real_project_shape() {
+fn doctor_self_host_reports_ready_canary_from_project_shape() {
     let case = CanaryCase::new();
 
     let ready = run_kobo_in(&case.root, &["doctor", "--self-host", "--json"]);
@@ -91,7 +97,10 @@ fn doctor_self_host_reports_readiness_and_blockers_from_real_project_shape() {
     assert_eq!(ready_json["schema_version"], 1);
     assert_eq!(ready_json["command"], "doctor --self-host");
     assert_eq!(ready_json["self_host"]["status"], "compatible");
-    assert_json_array_contains(&ready_json["self_host"]["signals"], "multi-file-kobo-project");
+    assert_json_array_contains(
+        &ready_json["self_host"]["signals"],
+        "multi-file-kobo-project",
+    );
     assert_json_array_contains(&ready_json["self_host"]["signals"], "library-root");
     assert_json_array_contains(&ready_json["self_host"]["signals"], "generated-cargo-build");
     assert!(
@@ -101,7 +110,11 @@ fn doctor_self_host_reports_readiness_and_blockers_from_real_project_shape() {
             .is_empty(),
         "ready canary should not report blockers: {ready_json:#}"
     );
+}
 
+#[test]
+fn doctor_self_host_reports_missing_library_blocker() {
+    let case = CanaryCase::new();
     fs::remove_file(case.root.join("src/lib.kobo")).expect("lib.kobo should be removable");
     let blocked = run_kobo_in(&case.root, &["doctor", "--self-host", "--json"]);
     assert_success(&blocked, "doctor --self-host missing library canary");
@@ -228,7 +241,13 @@ fn assert_generated_shape(generated_dir: &Path) {
 fn assert_generated_rust_has_no_kobo_compiler_deps(generated_dir: &Path) {
     for file in collect_rs_files(generated_dir) {
         let source = fs::read_to_string(&file).expect("generated Rust should read");
-        for forbidden in ["#[kobo::", "Owned<", "kobo_ir", "kobo_driver", "kobo_parser"] {
+        for forbidden in [
+            "#[kobo::",
+            "Owned<",
+            "kobo_ir",
+            "kobo_driver",
+            "kobo_parser",
+        ] {
             assert!(
                 !source.contains(forbidden),
                 "{} must not contain {forbidden:?}\n{source}",

@@ -42,8 +42,9 @@ pub fn lookup(code: &str) -> &'static str {
 
 #[test]
 fn query_source_does_not_use_temporary_solver_fingerprint() {
-    let query_source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/query.rs"))
-        .expect("query source should read");
+    let query_source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/query.rs"))
+            .expect("query source should read");
     assert!(
         !query_source.contains("\"current-kir\""),
         "QuerySession solver keys must use a real KIR or constraint fingerprint"

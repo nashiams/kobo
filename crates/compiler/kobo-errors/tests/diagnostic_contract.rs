@@ -124,6 +124,12 @@ fn source_coverage_k010x_codes_match_registry() {
             "scenario",
         ),
         (
+            KErrorCode::K0106,
+            "witness-shrink-unsafe",
+            DiagnosticCategory::BoundaryPolicy,
+            "witness",
+        ),
+        (
             KErrorCode::K0107,
             "unmodeled-external-boundary",
             DiagnosticCategory::BoundaryPolicy,
@@ -134,6 +140,12 @@ fn source_coverage_k010x_codes_match_registry() {
             "replay-obligation-suppressed",
             DiagnosticCategory::BoundaryPolicy,
             "reviewable evidence",
+        ),
+        (
+            KErrorCode::K0109,
+            "invalid-field-capability-view",
+            DiagnosticCategory::BoundaryPolicy,
+            "field",
         ),
     ];
 
@@ -205,8 +217,10 @@ fn every_emitted_active_code_is_registered_and_marked_active() {
         KErrorCode::K0103,
         KErrorCode::K0104,
         KErrorCode::K0105,
+        KErrorCode::K0106,
         KErrorCode::K0107,
         KErrorCode::K0108,
+        KErrorCode::K0109,
         KErrorCode::K0110,
         KErrorCode::K0111,
         KErrorCode::K0112,

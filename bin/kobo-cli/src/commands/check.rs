@@ -168,7 +168,7 @@ fn emit_field_capability_issue(
     let file_id = files.add_file(file.to_path_buf(), source.to_owned());
     let span = KoboSpan::new(issue.span_start as u32, issue.span_end as u32, file_id);
     let diagnostic = KDiagnostic::new(
-        KErrorCode::K0106,
+        KErrorCode::K0109,
         Severity::Error,
         DiagLabel::primary(span, issue.message),
         issue.explanation,
@@ -272,7 +272,11 @@ fn field_capability_name(part: &str) -> Option<String> {
     } else {
         part
     };
-    ident_prefix(part)
+    let field = part
+        .rsplit_once('.')
+        .map(|(_, field)| field)
+        .unwrap_or(part);
+    ident_prefix(field)
 }
 
 fn field_capability_owner(source: &str, using_start: usize) -> (Option<String>, Option<String>) {

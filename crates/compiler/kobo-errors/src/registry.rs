@@ -753,7 +753,7 @@ fn migration_entries() -> Vec<DiagnosticRegistryEntry> {
 }
 
 fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
-    use DiagnosticCategory::{BoundaryPolicy, Liveness, Nondeterminism, Ownership};
+    use DiagnosticCategory::{BoundaryPolicy, Liveness, Nondeterminism};
     use MachineEditPolicy::{NotApplicable, RefuseByDefault};
     use ModeBehavior::{NoModeDependency, ReplayBoundaryPrompt, ScriptDebtStrictError};
     use Severity::{Error, Warning};
@@ -841,11 +841,24 @@ fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
         ),
         entry(
             KErrorCode::K0106,
+            "witness-shrink-unsafe",
+            "witness shrink is unsafe",
+            "A requested witness shrink would remove replay evidence needed to preserve deterministic or boundary obligations.",
+            "Keep the witness evidence or regenerate a smaller witness through a checked shrink pass that preserves required replay and boundary facts.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0109,
             "invalid-field-capability-view",
             "invalid field capability view",
             "A using field capability list names duplicate or unavailable fields.",
             "Kobo validates field capability views before lowering so a `using { ... }` list cannot silently claim access to a field that does not exist.",
-            Ownership,
+            BoundaryPolicy,
             Error,
             Always(Error),
             NoModeDependency,

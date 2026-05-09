@@ -300,6 +300,7 @@ dependencies = [
  "kobo-ir",
  "kobo-migrate",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

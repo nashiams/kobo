@@ -17,8 +17,8 @@ pub use debt::{
 };
 pub use kir::{BorrowKind, NodeKind, UseKind};
 pub use kir::{
-    Kir, KirNode, MigrateSite, MigrateTarget, MustCallAction, MustCallAttrError,
-    MustCallObligation, RelaxAttrError,
+    FieldCapabilityField, FieldCapabilityView, Kir, KirNode, MigrateSite, MigrateTarget,
+    MustCallAction, MustCallAttrError, MustCallObligation, RelaxAttrError,
 };
 pub use mode::KoboMode;
 pub use node_id::{

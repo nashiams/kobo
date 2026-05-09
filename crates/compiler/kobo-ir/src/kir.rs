@@ -85,6 +85,22 @@ pub struct MustCallAttrError {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FieldCapabilityField {
+    pub name: String,
+    pub mutable: bool,
+    pub span: KoboSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FieldCapabilityView {
+    pub function: String,
+    pub owner: String,
+    pub owner_type: Option<String>,
+    pub using_span: KoboSpan,
+    pub fields: Vec<FieldCapabilityField>,
+}
+
 /// The target element tagged by `#[kobo::migrate]` [G6 / R05].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MigrateTarget {
@@ -135,6 +151,7 @@ pub struct Kir {
     migrate_sites: Vec<MigrateSite>,
     must_call_obligations: Vec<MustCallObligation>,
     must_call_attr_errors: Vec<MustCallAttrError>,
+    field_capability_views: Vec<FieldCapabilityView>,
     /// Method name → `true` if `&mut self`, scanned from impl blocks + config.
     method_mutability: HashMap<String, bool>,
     /// S-3: KIR node IDs whose bindings belong to engine struct types.
@@ -167,6 +184,7 @@ impl Kir {
             migrate_sites: Vec::new(),
             must_call_obligations: Vec::new(),
             must_call_attr_errors: Vec::new(),
+            field_capability_views: Vec::new(),
             method_mutability: HashMap::new(),
             engine_ceiling_nodes: HashSet::new(),
         }
@@ -296,6 +314,14 @@ impl Kir {
 
     pub fn set_must_call_attr_errors(&mut self, errors: Vec<MustCallAttrError>) {
         self.must_call_attr_errors = errors;
+    }
+
+    pub fn field_capability_views(&self) -> &[FieldCapabilityView] {
+        &self.field_capability_views
+    }
+
+    pub fn set_field_capability_views(&mut self, views: Vec<FieldCapabilityView>) {
+        self.field_capability_views = views;
     }
 
     pub fn method_mutability(&self) -> &HashMap<String, bool> {

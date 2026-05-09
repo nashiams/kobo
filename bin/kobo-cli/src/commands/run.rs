@@ -123,8 +123,7 @@ pub(super) fn cmd_inspect(
         let source = std::fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
         let output = append_must_call_metadata(output, &must_call_obligations);
-        let output = append_field_capability_metadata(output, &source);
-        append_trait_default_metadata(output, &source, profile, trait_default)
+        append_trait_facade_code(output, &source, profile, trait_default)
     };
 
     // S-26: Show effective mode so user can verify per-module mode resolution.
@@ -235,27 +234,7 @@ fn append_must_call_metadata(mut output: String, obligations: &[MustCallObligati
     output
 }
 
-fn append_field_capability_metadata(mut output: String, source: &str) -> String {
-    let views = inspect_field_capability_views(source);
-    if views.is_empty() {
-        return output;
-    }
-
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    for view in views {
-        for field in view.fields {
-            output.push_str(&format!(
-                "// kobo: using {} => &{}.{}\n",
-                view.owner, view.owner, field
-            ));
-        }
-    }
-    output
-}
-
-fn append_trait_default_metadata(
+fn append_trait_facade_code(
     mut output: String,
     source: &str,
     profile: Option<&str>,
@@ -269,102 +248,125 @@ fn append_trait_default_metadata(
         }
     });
 
-    let metadata = if default == "generic" || source.contains("kobo::generic") {
-        generic_facade_metadata(source)
+    let facade = if default == "generic" || source.contains("kobo::generic") {
+        generic_facade_code(source)
     } else {
-        trait_object_facade_metadata(source, profile)
+        trait_object_facade_code(source, profile)
     };
-    let Some(metadata) = metadata else {
+    let Some(facade) = facade else {
         return output;
     };
 
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    output.push_str(&metadata);
+    output.push_str(&facade);
     output.push('\n');
     output
 }
 
-fn trait_object_facade_metadata(source: &str, profile: Option<&str>) -> Option<String> {
-    let trait_name = first_trait_name(source)?;
+fn trait_object_facade_code(source: &str, profile: Option<&str>) -> Option<String> {
+    let target = trait_object_facade_target(source)?;
     let profile = profile.unwrap_or("script");
     Some(format!(
-        "// kobo: thin facade trait-object-first Box<dyn {trait_name}> profile {profile}"
+        "#[doc = \"thin facade trait-object-first profile {profile}\"]\n\
+         #[allow(dead_code)]\n\
+         pub fn {name}_thin_facade({param}: Box<dyn {trait_name}>) {return_ty} {{\n\
+             {name}({param})\n\
+         }}",
+        name = target.function,
+        param = target.param,
+        trait_name = target.trait_name,
+        return_ty = target.return_ty.unwrap_or_default()
     ))
 }
 
-fn generic_facade_metadata(source: &str) -> Option<String> {
-    let signature = source.lines().find_map(|line| {
-        let trimmed = line.trim();
-        if trimmed.starts_with("fn ") && trimmed.contains('<') {
-            return Some(trimmed.trim_end_matches('{').trim().to_owned());
-        }
-        if trimmed.starts_with("pub fn ") && trimmed.contains('<') {
-            return Some(trimmed.trim_end_matches('{').trim().to_owned());
-        }
-        None
-    })?;
-    Some(format!("// kobo: generic facade {signature}"))
+fn generic_facade_code(source: &str) -> Option<String> {
+    let target = generic_facade_target(source)?;
+    Some(format!(
+        "#[doc = \"generic facade\"]\n\
+         #[allow(dead_code)]\n\
+         pub fn {name}_generic_facade<{type_param}: {trait_name}>({param}: {type_param}) {return_ty} {{\n\
+             {name}({param})\n\
+         }}",
+        name = target.function,
+        type_param = target.type_param,
+        trait_name = target.trait_name,
+        param = target.param,
+        return_ty = target.return_ty.unwrap_or_default()
+    ))
 }
 
-fn first_trait_name(source: &str) -> Option<String> {
+struct TraitObjectFacadeTarget {
+    function: String,
+    param: String,
+    trait_name: String,
+    return_ty: Option<String>,
+}
+
+struct GenericFacadeTarget {
+    function: String,
+    type_param: String,
+    trait_name: String,
+    param: String,
+    return_ty: Option<String>,
+}
+
+fn trait_object_facade_target(source: &str) -> Option<TraitObjectFacadeTarget> {
     source.lines().find_map(|line| {
-        let trimmed = line.trim();
-        let rest = trimmed.strip_prefix("trait ")?;
-        inspect_ident_prefix(rest)
+        let signature = function_signature(line)?;
+        let open = signature.find('(')?;
+        let close = signature.rfind(')')?;
+        let function = inspect_ident_suffix(&signature[..open])?;
+        let param_text = signature[open + 1..close].split(',').next()?.trim();
+        let (param, ty) = param_text.split_once(':')?;
+        let trait_name = ty.trim().strip_prefix("dyn ")?;
+        Some(TraitObjectFacadeTarget {
+            function,
+            param: inspect_ident_prefix(param)?,
+            trait_name: inspect_ident_prefix(trait_name)?,
+            return_ty: return_type_from_signature(signature),
+        })
     })
 }
 
-struct InspectFieldCapabilityView {
-    owner: String,
-    fields: Vec<String>,
-}
-
-fn inspect_field_capability_views(source: &str) -> Vec<InspectFieldCapabilityView> {
-    let mut views = Vec::new();
-    let mut search_start = 0usize;
-    while let Some(relative) = source[search_start..].find(" using {") {
-        let using_start = search_start + relative;
-        let list_start = using_start + " using {".len();
-        let Some(close_relative) = source[list_start..].find('}') else {
-            break;
-        };
-        let list_end = list_start + close_relative;
-        let owner = inspect_field_capability_owner(source, using_start)
-            .unwrap_or_else(|| "value".to_owned());
-        let fields = source[list_start..list_end]
+fn generic_facade_target(source: &str) -> Option<GenericFacadeTarget> {
+    source.lines().find_map(|line| {
+        let signature = function_signature(line)?;
+        let open_generics = signature.find('<')?;
+        let close_generics = signature[open_generics + 1..].find('>')? + open_generics + 1;
+        let open_params = signature[close_generics + 1..].find('(')? + close_generics + 1;
+        let close_params = signature.rfind(')')?;
+        let function = inspect_ident_suffix(&signature[..open_generics])?;
+        let generic = signature[open_generics + 1..close_generics].trim();
+        let (type_param, trait_name) = generic.split_once(':')?;
+        let param_text = signature[open_params + 1..close_params]
             .split(',')
-            .filter_map(|part| inspect_field_capability_name(part.trim()))
-            .collect::<Vec<_>>();
-        views.push(InspectFieldCapabilityView { owner, fields });
-        search_start = list_end + 1;
-    }
-    views
+            .next()?
+            .trim();
+        let (param, _) = param_text.split_once(':')?;
+        Some(GenericFacadeTarget {
+            function,
+            type_param: inspect_ident_prefix(type_param)?,
+            trait_name: inspect_ident_prefix(trait_name.trim())?,
+            param: inspect_ident_prefix(param)?,
+            return_ty: return_type_from_signature(signature),
+        })
+    })
 }
 
-fn inspect_field_capability_owner(source: &str, using_start: usize) -> Option<String> {
-    let prefix = &source[..using_start];
-    let arg_start = prefix
-        .rfind(|ch| ch == '(' || ch == ',')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let arg = prefix[arg_start..].trim();
-    let name = arg.split_once(':').map(|(name, _)| name).unwrap_or(arg);
-    inspect_ident_suffix(name)
+fn function_signature(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    let signature = trimmed
+        .strip_prefix("pub fn ")
+        .or_else(|| trimmed.strip_prefix("fn "))?;
+    Some(signature.trim_end_matches('{').trim())
 }
 
-fn inspect_field_capability_name(part: &str) -> Option<String> {
-    let part = if let Some(rest) = part.strip_prefix("mut") {
-        if rest.chars().next().is_some_and(char::is_whitespace) {
-            rest.trim_start()
-        } else {
-            part
-        }
-    } else {
-        part
-    };
-    inspect_ident_prefix(part)
+fn return_type_from_signature(signature: &str) -> Option<String> {
+    let arrow = signature.find("->")?;
+    let return_ty = signature[arrow..].trim();
+    (!return_ty.is_empty()).then(|| format!(" {return_ty}"))
 }
 
 fn inspect_ident_prefix(input: &str) -> Option<String> {

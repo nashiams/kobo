@@ -52,6 +52,7 @@ struct SelfHostReport {
 enum SelfHostStatus {
     Compatible,
     Blocked,
+    OutsideScope,
 }
 
 enum SelfHostSignal {
@@ -67,6 +68,7 @@ enum SelfHostBlocker {
     NotEnoughKoboModules,
     MissingLibraryRoot,
     MissingKoboManifest,
+    UnsupportedDependencyForm,
 }
 
 pub(super) fn cmd_doctor(options: DoctorOptions) -> anyhow::Result<()> {
@@ -196,6 +198,7 @@ impl DependencyEvidence {
 impl SelfHostReport {
     fn from_project(root: &Path) -> Self {
         let source_dir = root.join("src");
+        let manifest_path = root.join("Kobo.toml");
         let mut signals = Vec::new();
         let mut blockers = Vec::new();
 
@@ -218,17 +221,23 @@ impl SelfHostReport {
             blockers.push(SelfHostBlocker::MissingLibraryRoot);
         }
 
-        if root.join("Kobo.toml").is_file() {
+        if manifest_path.is_file() {
             signals.push(SelfHostSignal::KoboManifest);
+            if has_unsupported_dependency_form(&manifest_path) {
+                blockers.push(SelfHostBlocker::UnsupportedDependencyForm);
+            }
         } else {
             blockers.push(SelfHostBlocker::MissingKoboManifest);
         }
 
-        if root.join("target/kobo-gen/Cargo.toml").is_file() || root.join("Kobo.toml").is_file() {
+        if root.join("target/kobo-gen/Cargo.toml").is_file() {
             signals.push(SelfHostSignal::GeneratedCargoBuild);
         }
 
-        let status = if blockers.is_empty() {
+        let in_scope = manifest_path.is_file() || !kobo_files.is_empty();
+        let status = if !in_scope {
+            SelfHostStatus::OutsideScope
+        } else if blockers.is_empty() {
             SelfHostStatus::Compatible
         } else {
             SelfHostStatus::Blocked
@@ -256,6 +265,7 @@ impl SelfHostStatus {
         match self {
             Self::Compatible => "compatible",
             Self::Blocked => "blocked",
+            Self::OutsideScope => "outside-scope",
         }
     }
 }
@@ -279,8 +289,25 @@ impl SelfHostBlocker {
             Self::NotEnoughKoboModules => "not-enough-kobo-modules",
             Self::MissingLibraryRoot => "missing-library-root",
             Self::MissingKoboManifest => "missing-kobo-manifest",
+            Self::UnsupportedDependencyForm => "unsupported-dependency-form",
         }
     }
+}
+
+fn has_unsupported_dependency_form(manifest_path: &Path) -> bool {
+    let Ok(manifest) = std::fs::read_to_string(manifest_path) else {
+        return false;
+    };
+    let Ok(parsed) = manifest.parse::<TomlValue>() else {
+        return false;
+    };
+    let Some(dependencies) = parsed.get("dependencies").and_then(TomlValue::as_table) else {
+        return false;
+    };
+
+    dependencies
+        .values()
+        .any(|value| !matches!(value, TomlValue::String(_) | TomlValue::Table(_)))
 }
 
 fn print_dependency_report(

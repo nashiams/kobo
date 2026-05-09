@@ -91,6 +91,9 @@ fn inspect_clean_cargo_canary_is_a_runnable_cargo_project() {
 fn doctor_self_host_reports_ready_canary_from_project_shape() {
     let case = CanaryCase::new();
 
+    let build = run_kobo_in(&case.root, &["build"]);
+    assert_success(&build, "kobo build before doctor readiness check");
+
     let ready = run_kobo_in(&case.root, &["doctor", "--self-host", "--json"]);
     assert_success(&ready, "doctor --self-host ready canary");
     let ready_json = parse_json(&ready.stdout);
@@ -113,6 +116,27 @@ fn doctor_self_host_reports_ready_canary_from_project_shape() {
 }
 
 #[test]
+fn doctor_self_host_generated_cargo_signal_requires_generated_project() {
+    let case = CanaryCase::new();
+
+    let before = run_kobo_in(&case.root, &["doctor", "--self-host", "--json"]);
+    assert_success(&before, "doctor --self-host before generated cargo");
+    let before_json = parse_json(&before.stdout);
+    assert_json_array_does_not_contain(
+        &before_json["self_host"]["signals"],
+        "generated-cargo-build",
+    );
+
+    let build = run_kobo_in(&case.root, &["build"]);
+    assert_success(&build, "kobo build creates generated cargo project");
+
+    let after = run_kobo_in(&case.root, &["doctor", "--self-host", "--json"]);
+    assert_success(&after, "doctor --self-host after generated cargo");
+    let after_json = parse_json(&after.stdout);
+    assert_json_array_contains(&after_json["self_host"]["signals"], "generated-cargo-build");
+}
+
+#[test]
 fn doctor_self_host_reports_missing_library_blocker() {
     let case = CanaryCase::new();
     fs::remove_file(case.root.join("src/lib.kobo")).expect("lib.kobo should be removable");
@@ -123,6 +147,37 @@ fn doctor_self_host_reports_missing_library_blocker() {
     assert_json_array_contains(
         &blocked_json["self_host"]["blockers"],
         "missing-library-root",
+    );
+}
+
+#[test]
+fn doctor_self_host_reports_outside_scope_for_non_kobo_project() {
+    let project = ScratchProject::new("self-host-outside-scope");
+
+    let outside = run_kobo_in(&project.root, &["doctor", "--self-host", "--json"]);
+    assert_success(&outside, "doctor --self-host outside-scope project");
+    let outside_json = parse_json(&outside.stdout);
+    assert_eq!(outside_json["self_host"]["status"], "outside-scope");
+}
+
+#[test]
+fn doctor_self_host_reports_unsupported_dependency_form_blocker() {
+    let case = CanaryCase::new();
+    let manifest_path = case.root.join("Kobo.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace("[copy_types]", "invalid_dependency = true\n\n[copy_types]"),
+    )
+    .expect("manifest should write");
+
+    let blocked = run_kobo_in(&case.root, &["doctor", "--self-host", "--json"]);
+    assert_success(&blocked, "doctor --self-host unsupported dependency form");
+    let blocked_json = parse_json(&blocked.stdout);
+    assert_eq!(blocked_json["self_host"]["status"], "blocked");
+    assert_json_array_contains(
+        &blocked_json["self_host"]["blockers"],
+        "unsupported-dependency-form",
     );
 }
 
@@ -321,6 +376,14 @@ fn assert_json_array_contains(value: &Value, expected: &str) {
     );
 }
 
+fn assert_json_array_does_not_contain(value: &Value, unexpected: &str) {
+    let array = value.as_array().expect("value should be array");
+    assert!(
+        array.iter().all(|item| item.as_str() != Some(unexpected)),
+        "array should not contain {unexpected:?}: {value:#}"
+    );
+}
+
 fn collect_rs_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     collect_rs_files_into(root, &mut files);
@@ -357,4 +420,29 @@ fn workspace_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("workspace root should exist")
+}
+
+struct ScratchProject {
+    root: PathBuf,
+}
+
+impl ScratchProject {
+    fn new(name: &str) -> Self {
+        let workspace = workspace_root();
+        let unique = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = workspace
+            .join("target-test-fixtures")
+            .join(format!("{name}-{}-{unique}", std::process::id()));
+        if root.exists() {
+            let _ = fs::remove_dir_all(&root);
+        }
+        fs::create_dir_all(&root).expect("scratch project root should create");
+        Self { root }
+    }
+}
+
+impl Drop for ScratchProject {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
 }

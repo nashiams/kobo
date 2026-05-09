@@ -1,0 +1,10 @@
+[package]
+name = "service_router"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+
+[dependencies]
+serde_json = "1"
+thiserror = "2"

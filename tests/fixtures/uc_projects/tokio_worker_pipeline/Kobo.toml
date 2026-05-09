@@ -1,0 +1,10 @@
+[package]
+name = "tokio_worker_pipeline"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }

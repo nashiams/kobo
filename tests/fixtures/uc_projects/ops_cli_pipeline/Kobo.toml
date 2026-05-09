@@ -1,0 +1,11 @@
+[package]
+name = "ops_cli_pipeline"
+version = "0.1.0"
+
+[kobo]
+mode = "script"
+
+[dependencies]
+anyhow = "1"
+clap = "4"
+serde_json = "1"

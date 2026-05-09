@@ -1,0 +1,12 @@
+mod domain;
+mod http;
+
+use http::routes::route_request;
+
+fn main() {
+    let health = route_request("/health");
+    let quote = route_request("/quote");
+
+    println!("{}", health);
+    println!("{}", quote);
+}

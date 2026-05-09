@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(outcomes.len(), 6, "SolveOutcome must have 6 variants");
     }
 
-    /// Empty graph → Unique (stub behavior).
+    /// Empty graph has exactly one valid empty solution.
     #[test]
     fn empty_graph_returns_unique() {
         let graph = ConstraintGraph {

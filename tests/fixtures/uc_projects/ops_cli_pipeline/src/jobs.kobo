@@ -1,0 +1,18 @@
+#[derive(Clone, Debug)]
+pub struct Job {
+    pub name: String,
+    pub cost: u64,
+}
+
+impl Job {
+    pub fn new(name: &str, cost: u64) -> Self {
+        Self {
+            name: name.to_string(),
+            cost,
+        }
+    }
+}
+
+pub fn select_jobs(jobs: &[Job], limit: usize) -> Vec<Job> {
+    jobs.iter().take(limit).cloned().collect()
+}

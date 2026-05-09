@@ -6,6 +6,7 @@ use serde_json::json;
 pub(super) fn cmd_sim_scout(
     file: &Path,
     json_output: bool,
+    why: bool,
     backend_recommendations: bool,
 ) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)
@@ -24,7 +25,11 @@ pub(super) fn cmd_sim_scout(
         return Ok(());
     }
 
-    let scout = scout_source(&source, file);
+    let scout = if why {
+        scout_why_source(&source, file)
+    } else {
+        scout_source(&source, file)
+    };
     print_value(scout, json_output)
 }
 
@@ -88,6 +93,21 @@ fn scout_source(source: &str, file: &Path) -> serde_json::Value {
         "reasons": reasons,
         "expected_first_value": "one liveness, nondeterminism, or boundary finding",
         "next_command": format!("kobo sim scout --json {}", file.display()),
+    })
+}
+
+fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
+    let recommendations = backend_recommendations_for(source);
+    let scout = scout_source(source, file);
+
+    json!({
+        "kobo_contract": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
+        "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
+        "backend_choice": "possible engines only; v0.8.5 recommends metadata and does not execute a backend.",
+        "backend_fit": recommendations,
+        "inspect_transparency": "use kobo inspect --sim for metadata-only transparency; harness generation is reserved.",
+        "executed": false,
+        "scout": scout,
     })
 }
 

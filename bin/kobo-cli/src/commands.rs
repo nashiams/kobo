@@ -61,6 +61,8 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             clean,
             erase_lifetimes,
             scenario_metadata,
+            sim,
+            harness,
             cargo,
             profile,
             trait_default,
@@ -70,6 +72,8 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             clean,
             erase_lifetimes,
             scenario_metadata,
+            sim,
+            harness,
             cargo.as_deref(),
             profile.as_deref(),
             trait_default.as_deref(),
@@ -109,8 +113,9 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             SimCommand::Scout {
                 file,
                 json,
+                why,
                 backend_recommendations,
-            } => sim::cmd_sim_scout(&file, json, backend_recommendations),
+            } => sim::cmd_sim_scout(&file, json, why, backend_recommendations),
             SimCommand::Backends { json } => sim::cmd_sim_backends(json),
         },
         KoboCommand::Replay {

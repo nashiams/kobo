@@ -63,6 +63,8 @@ pub(super) fn cmd_inspect(
     clean: bool,
     erase_lifetimes: bool,
     scenario_metadata: bool,
+    sim: bool,
+    harness: bool,
     cargo_dir: Option<&Path>,
     profile: Option<&str>,
     trait_default: Option<&str>,
@@ -72,6 +74,15 @@ pub(super) fn cmd_inspect(
         eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
         eprintln!("hint: use --checked for advisory ownership warnings");
         std::process::exit(1);
+    }
+
+    if sim {
+        let source = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        let output = simulation_transparency_output(&source, harness);
+        eprintln!("// effective mode: {}", session.mode());
+        print!("{output}");
+        return Ok(());
     }
 
     if let Some(dir) = cargo_dir {
@@ -130,6 +141,35 @@ pub(super) fn cmd_inspect(
     eprintln!("// effective mode: {}", session.mode());
     print!("{output}");
     Ok(())
+}
+
+fn simulation_transparency_output(source: &str, harness: bool) -> String {
+    let command = if harness {
+        "inspect --sim --harness"
+    } else {
+        "inspect --sim"
+    };
+    let mut output = String::new();
+    output.push_str(&format!(
+        "// kobo: {command} metadata-only transparency path for v0.8.5\n"
+    ));
+    output.push_str(
+        "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",
+    );
+    output.push_str("// kobo: backend harness: reserved\n");
+    output.push_str(
+        "// kobo: possible engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n",
+    );
+    if harness {
+        output.push_str("// kobo: no backend harness is generated in v0.8.5\n");
+    } else {
+        output
+            .push_str("// kobo: use --harness to inspect the reserved harness transparency path\n");
+    }
+    if source.contains("kobo::scenario") {
+        output.push_str("// kobo: scenario metadata detected; scout can explain backend fit\n");
+    }
+    output
 }
 
 fn append_scenario_metadata(mut output: String, source: &str) -> String {

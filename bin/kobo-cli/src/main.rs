@@ -120,6 +120,14 @@ pub(crate) enum KoboCommand {
         erase_lifetimes: bool,
         #[arg(long, help = "Show indexed scenario metadata")]
         scenario_metadata: bool,
+        #[arg(long, help = "Show simulation transparency metadata")]
+        sim: bool,
+        #[arg(
+            long,
+            requires = "sim",
+            help = "Reserve generated simulation harness transparency output"
+        )]
+        harness: bool,
         #[arg(
             long,
             value_name = "DIR",
@@ -293,6 +301,8 @@ pub(crate) enum SimCommand {
         file: PathBuf,
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        why: bool,
         #[arg(long)]
         backend_recommendations: bool,
     },

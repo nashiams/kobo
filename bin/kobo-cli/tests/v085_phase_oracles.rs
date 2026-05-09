@@ -854,6 +854,93 @@ fn parser_property(input: String) {
 }
 
 #[test]
+fn phase_10_typescript_posture_controls_are_kobo_first_and_reserved() {
+    let service = Fixture::new(
+        "v085-phase10-posture",
+        "service.kobo",
+        r#"
+use axum::Router;
+use reqwest::Client;
+
+#[kobo::scenario(name = "service_retry")]
+async fn service_retry() {
+    let client = Client::new();
+    tokio::spawn(async move {
+        println!("{:?}", client);
+    });
+}
+"#,
+    );
+
+    let why = run_kobo(&args_with_file(
+        &["sim", "scout", "--why", "--json"],
+        &service.file,
+    ));
+    assert_success(&why, "v0.8.5 posture scout --why");
+    assert_contains_all(
+        &why.combined(),
+        &[
+            "Kobo is Rust-shaped and Cargo-native",
+            "possible engines",
+            "backend_fit",
+            "Loom",
+            "Shuttle",
+            "normal Kobo source stays framework-shaped",
+        ],
+        "scout --why must explain backend fit through Kobo concepts",
+    );
+    assert_not_contains(
+        &why.combined(),
+        "shuttle::sync",
+        "scout --why must not tell users to import backend replacement types",
+    );
+    assert_not_contains(
+        &why.combined(),
+        "loom::sync",
+        "scout --why must not tell users to import backend replacement types",
+    );
+
+    let sim = run_kobo(&args_with_file(&["inspect", "--sim"], &service.file));
+    assert_success(&sim, "v0.8.5 posture inspect --sim");
+    assert_contains_all(
+        &sim.combined(),
+        &[
+            "inspect --sim",
+            "metadata-only",
+            "Rust-shaped",
+            "Cargo-native",
+            "backend harness: reserved",
+        ],
+        "inspect --sim must reserve the future transparency path without backend leakage",
+    );
+    assert_not_contains(
+        &sim.combined(),
+        "use loom::",
+        "inspect --sim must not emit backend-native imports in v0.8.5",
+    );
+    assert_not_contains(
+        &sim.combined(),
+        "use shuttle::",
+        "inspect --sim must not emit backend-native imports in v0.8.5",
+    );
+
+    let harness = run_kobo(&args_with_file(
+        &["inspect", "--sim", "--harness"],
+        &service.file,
+    ));
+    assert_success(&harness, "v0.8.5 posture inspect --sim --harness");
+    assert_contains_all(
+        &harness.combined(),
+        &[
+            "inspect --sim --harness",
+            "reserved",
+            "no backend harness is generated in v0.8.5",
+        ],
+        "inspect --sim --harness must reserve the command shape honestly",
+    );
+}
+
+#[test]
 fn phase_11_contextual_suggestions_are_pattern_specific_and_capped() {
     let async_send = Fixture::new(
         "v085-phase11-async",

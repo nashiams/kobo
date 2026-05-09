@@ -1,0 +1,25 @@
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuerySnapshot {
+    pub source_hash: u64,
+    pub config_hash: u64,
+    pub value: String,
+}
+
+pub fn hash_text(text: &str) -> u64 {
+    let mut hash = 1469598103934665603_u64;
+    for byte in text.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    hash
+}
+
+pub fn snapshot(source: &str, config: &str) -> QuerySnapshot {
+    let source_hash = hash_text(source);
+    let config_hash = hash_text(config);
+    QuerySnapshot {
+        source_hash,
+        config_hash,
+        value: format!("{source_hash}:{config_hash}"),
+    }
+}

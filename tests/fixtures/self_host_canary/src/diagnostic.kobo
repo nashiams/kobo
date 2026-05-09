@@ -1,0 +1,27 @@
+use crate::span::KoboSpan;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Severity {
+    Error,
+    Warning,
+    Note,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagLabel {
+    pub span: KoboSpan,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Diagnostic {
+    pub code: &'static str,
+    pub severity: Severity,
+    pub label: DiagLabel,
+}
+
+impl Diagnostic {
+    pub fn summary(&self) -> String {
+        format!("{}:{:?}:{}", self.code, self.severity, self.label.message)
+    }
+}

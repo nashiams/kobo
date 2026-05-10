@@ -1,0 +1,12 @@
+
+
+
+
+#[kobo::must_call(ack | nack)]
+struct __TYPE__ {}
+
+#[kobo::scenario(profile = "async")]
+fn leak_second() {
+    let delivery = __TYPE__ {};
+    let _lost = delivery;
+}

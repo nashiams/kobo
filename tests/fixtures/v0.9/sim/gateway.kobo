@@ -1,0 +1,14 @@
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {
+    id: u64,
+}
+
+async fn handle_request(delivery: Delivery) {
+    let _lost = delivery;
+}
+
+#[kobo::scenario(profile = "async")]
+async fn cancelled_request() {
+    let delivery = Delivery { id: 7 };
+    handle_request(delivery).await;
+}

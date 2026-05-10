@@ -1,0 +1,9 @@
+[guarantees]
+ownership = "strict"
+liveness = "checked"
+replay = "checked"
+boundaries = "strict"
+errors = "explicit"
+
+[paths."src/main.kobo"]
+ownership = "record"

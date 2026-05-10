@@ -39,6 +39,9 @@ fn registry_contains_public_slug_and_policy_fields() {
         KErrorCode::K0105,
         KErrorCode::K0107,
         KErrorCode::K0108,
+        KErrorCode::K0114,
+        KErrorCode::K0115,
+        KErrorCode::K0116,
     ] {
         let entry = registry.get(code).expect("active code must be registered");
         assert!(!entry.slug.trim().is_empty(), "{code} needs public slug");
@@ -89,9 +92,9 @@ fn source_coverage_k010x_codes_match_registry() {
     let expectations = [
         (
             KErrorCode::K0100,
-            "liveness-obligation-unresolved",
+            "checked-runtime-liveness-token-dropped",
             DiagnosticCategory::Liveness,
-            "commit",
+            "liveness token",
         ),
         (
             KErrorCode::K0101,
@@ -101,27 +104,27 @@ fn source_coverage_k010x_codes_match_registry() {
         ),
         (
             KErrorCode::K0102,
-            "raw-nondeterminism-in-scenario",
+            "raw-nondeterminism-on-replay-path",
             DiagnosticCategory::Nondeterminism,
             "nondeterminism",
         ),
         (
             KErrorCode::K0103,
-            "malformed-must-call-attribute",
-            DiagnosticCategory::Liveness,
-            "must_call",
+            "uncontrolled-effect-blocks-replay",
+            DiagnosticCategory::Replay,
+            "uncontrolled",
         ),
         (
             KErrorCode::K0104,
-            "invalid-kwit-witness-schema",
-            DiagnosticCategory::BoundaryPolicy,
-            "schema_version 0",
+            "kwit-replay-diverged",
+            DiagnosticCategory::Replay,
+            "diverge",
         ),
         (
             KErrorCode::K0105,
-            "malformed-scenario-metadata",
-            DiagnosticCategory::Nondeterminism,
-            "scenario",
+            "sim-quick-budget-exceeded",
+            DiagnosticCategory::Simulation,
+            "budget",
         ),
         (
             KErrorCode::K0106,
@@ -146,6 +149,24 @@ fn source_coverage_k010x_codes_match_registry() {
             "invalid-field-capability-view",
             DiagnosticCategory::BoundaryPolicy,
             "field",
+        ),
+        (
+            KErrorCode::K0114,
+            "malformed-must-call-attribute",
+            DiagnosticCategory::Liveness,
+            "must_call",
+        ),
+        (
+            KErrorCode::K0115,
+            "invalid-kwit-witness-schema",
+            DiagnosticCategory::BoundaryPolicy,
+            "schema_version 0",
+        ),
+        (
+            KErrorCode::K0116,
+            "malformed-scenario-metadata",
+            DiagnosticCategory::Nondeterminism,
+            "scenario",
         ),
     ];
 
@@ -225,6 +246,9 @@ fn every_emitted_active_code_is_registered_and_marked_active() {
         KErrorCode::K0111,
         KErrorCode::K0112,
         KErrorCode::K0113,
+        KErrorCode::K0114,
+        KErrorCode::K0115,
+        KErrorCode::K0116,
         KErrorCode::K0107,
         KErrorCode::K0108,
     ];

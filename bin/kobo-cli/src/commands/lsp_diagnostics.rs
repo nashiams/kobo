@@ -1,30 +1,32 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kobo_driver::run_check_pipeline;
-use kobo_errors::DiagnosticLspPayload;
-use kobo_ir::KoboMode;
+use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
+use kobo_ir::{KoboMode, KoboSpan};
+use serde_json::json;
 
 use crate::ErrorFormat;
 
 use super::session::build_session;
+use super::sim_model::{self, ScenarioFailure, SimulationOptions};
 
 pub(super) fn cmd_lsp_diagnostics(
     file: &Path,
     format: ErrorFormat,
     _no_project_ok: bool,
+    include_actions: bool,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, Some(KoboMode::Checked))?;
     let _ = run_check_pipeline(&mut session, file);
+    let extra_diagnostics = v09_lsp_diagnostics(&session, file)?;
 
     match format {
         ErrorFormat::Json => {
             for diagnostic in session.visible_diagnostics() {
-                let payload = DiagnosticLspPayload::from_diagnostic(session.file_set(), diagnostic);
-                println!(
-                    "{}",
-                    serde_json::to_string(&payload)
-                        .expect("LSP diagnostic payload should serialize")
-                );
+                print_lsp_payload(&session, diagnostic, include_actions)?;
+            }
+            for diagnostic in &extra_diagnostics {
+                print_lsp_payload(&session, diagnostic, include_actions)?;
             }
             Ok(())
         }
@@ -32,4 +34,166 @@ pub(super) fn cmd_lsp_diagnostics(
             anyhow::bail!("lsp-diagnostics currently supports --format=json")
         }
     }
+}
+
+fn print_lsp_payload(
+    session: &kobo_driver::CompileSession,
+    diagnostic: &KDiagnostic,
+    include_actions: bool,
+) -> anyhow::Result<()> {
+    let mut value = kobo_lsp::diagnostic_value(session.file_set(), diagnostic, include_actions)?;
+    if let Some(line) = session
+        .file_set()
+        .get(diagnostic.primary.span.file_id)
+        .map(|file| file.line_col(diagnostic.primary.span.start).0)
+    {
+        value["line"] = json!(line);
+    }
+    println!("{}", serde_json::to_string(&value)?);
+    Ok(())
+}
+
+fn v09_lsp_diagnostics(
+    session: &kobo_driver::CompileSession,
+    file: &Path,
+) -> anyhow::Result<Vec<KDiagnostic>> {
+    let Some((file_id, _)) = session.file_set().iter_files().next() else {
+        return Ok(Vec::new());
+    };
+    let document = sim_model::load_document(file)?;
+    if document.scenarios.is_empty() {
+        return Ok(Vec::new());
+    }
+    let run = sim_model::run_quick(
+        &document,
+        SimulationOptions {
+            profile: "checked",
+            seed: 0,
+            inject: None,
+            event_budget: None,
+        },
+    );
+
+    let witness_path = witness_path_for_scenario(&run.scenario.name);
+    Ok(run
+        .failure
+        .iter()
+        .map(|failure| {
+            diagnostic_from_sim_failure(
+                file_id,
+                &document.source,
+                failure,
+                &run.scenario.name,
+                witness_path.as_deref(),
+            )
+        })
+        .collect())
+}
+
+fn diagnostic_from_sim_failure(
+    file_id: kobo_ir::FileId,
+    source: &str,
+    failure: &ScenarioFailure,
+    scenario_name: &str,
+    witness_path: Option<&Path>,
+) -> KDiagnostic {
+    let start = failure.primary_start.min(source.len()) as u32;
+    let mut end = failure.primary_end.min(source.len()) as u32;
+    if end < start {
+        end = start;
+    }
+    let span = KoboSpan::new(start, end, file_id);
+    let mut diagnostic = KDiagnostic::new(
+        failure.code,
+        Severity::Error,
+        DiagLabel::primary(span, label_for_sim_failure(failure.code)),
+        explanation_for_sim_failure(failure, scenario_name, witness_path),
+        decision_for_sim_failure(failure.code),
+    );
+    diagnostic = match failure.code {
+        KErrorCode::K0100 => {
+            let command = witness_path
+                .map(|path| format!("kobo replay {}", path.display()))
+                .unwrap_or_else(|| {
+                    format!(
+                        "kobo replay .kobo/witnesses/{}-0.kwit",
+                        sanitize_witness_name(scenario_name)
+                    )
+                });
+            diagnostic.with_run(command)
+        }
+        KErrorCode::K0107 => diagnostic.with_run("kobo test --sim quick"),
+        _ => diagnostic.with_run("kobo test --sim quick"),
+    };
+    diagnostic
+}
+
+fn label_for_sim_failure(code: KErrorCode) -> &'static str {
+    match code {
+        KErrorCode::K0100 => "must_call liveness token can be dropped",
+        KErrorCode::K0102 => "raw nondeterminism appears on replay path",
+        KErrorCode::K0105 => "simulation event budget exceeded",
+        KErrorCode::K0107 => "external replay boundary requires policy",
+        _ => "simulation contract failed",
+    }
+}
+
+fn explanation_for_sim_failure(
+    failure: &ScenarioFailure,
+    scenario_name: &str,
+    witness_path: Option<&Path>,
+) -> String {
+    match failure.code {
+        KErrorCode::K0100 => {
+            let witness = witness_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        ".kobo/witnesses/{}-0.kwit",
+                        sanitize_witness_name(scenario_name)
+                    )
+                });
+            format!("{}; witness {witness}", failure.message)
+        }
+        _ => failure.message.clone(),
+    }
+}
+
+fn decision_for_sim_failure(code: KErrorCode) -> DiagDecision {
+    let decision = match code {
+        KErrorCode::K0100 => "discharge the must_call action or replay the .kwit witness",
+        KErrorCode::K0102 => "route time/random through the deterministic scenario ward",
+        KErrorCode::K0105 => "raise the event budget or remove the unbounded scenario loop",
+        KErrorCode::K0107 => "select a boundary policy before exact replay",
+        _ => "run kobo test --sim quick for the scenario failure",
+    };
+    DiagDecision(decision.to_owned())
+}
+
+fn witness_path_for_scenario(scenario_name: &str) -> Option<PathBuf> {
+    let witness_dir = std::env::current_dir()
+        .ok()?
+        .join(".kobo")
+        .join("witnesses");
+    let prefix = format!("{}-", sanitize_witness_name(scenario_name));
+    let mut candidates = std::fs::read_dir(witness_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("kwit"))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn sanitize_witness_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
 }

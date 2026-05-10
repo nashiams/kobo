@@ -1,0 +1,6 @@
+#[kobo::scenario(profile = "async")]
+fn deterministic_case() {
+    let when = ward.time.now();
+    let pick = ward.random.u64();
+    println!("{} {}", when, pick);
+}

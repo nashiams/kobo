@@ -1210,19 +1210,19 @@ fn test_cli_mode_run_checked_accepted() {
 }
 
 #[test]
-fn test_cli_mode_run_strict_rejected_with_message() {
-    // kobo run --strict <file> — must exit non-zero with "not yet implemented"
+fn test_cli_mode_run_strict_accepted() {
+    // kobo run --strict <file> — v0.9 treats this as release/strict execution.
     let case = FixtureCase::new("cli-mode-run-strict", "hello.kobo");
     let output = run_kobo(["run", "--strict"], &case.fixture_path);
-    assert!(!output.status.success(), "run --strict must exit non-zero");
     assert!(
-        output.stderr.contains("not yet implemented"),
-        "stderr must mention 'not yet implemented', got:\n{}",
+        output.status.success(),
+        "run --strict should succeed for a well-formed file\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
         output.stderr
     );
     assert!(
-        output.stderr.contains("--checked"),
-        "rejection message must suggest --checked, got:\n{}",
+        !output.stderr.contains("not yet implemented"),
+        "run --strict must not be a placeholder rejection, got:\n{}",
         output.stderr
     );
 }

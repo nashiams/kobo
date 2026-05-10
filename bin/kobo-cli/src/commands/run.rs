@@ -9,7 +9,10 @@ use kobo_driver::{
 };
 use kobo_ir::{KoboMode, MustCallObligation};
 
-use super::session::{build_session, line_number_for_offset, render_diagnostics};
+use super::{
+    ownership_analysis,
+    session::{build_session, line_number_for_offset, render_diagnostics},
+};
 
 pub(super) fn cmd_run(
     file: &Path,
@@ -17,11 +20,6 @@ pub(super) fn cmd_run(
     erase_lifetimes: bool,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
-    if session.mode() == KoboMode::Strict {
-        eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
-        eprintln!("hint: use --checked for advisory ownership warnings");
-        std::process::exit(1);
-    }
 
     let compile_result = if erase_lifetimes {
         run_and_compile_with_lifetime_erasure(&mut session, file)
@@ -68,12 +66,15 @@ pub(super) fn cmd_inspect(
     cargo_dir: Option<&Path>,
     profile: Option<&str>,
     trait_default: Option<&str>,
+    audit: Option<&str>,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
-    if session.mode() == KoboMode::Strict {
-        eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
-        eprintln!("hint: use --checked for advisory ownership warnings");
-        std::process::exit(1);
+
+    if audit == Some("json") {
+        let source = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        print!("{}", audit_json_output(file, &source)?);
+        return Ok(());
     }
 
     if sim {
@@ -143,6 +144,34 @@ pub(super) fn cmd_inspect(
     Ok(())
 }
 
+fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
+    let file_label = cli_relative_path(file)?;
+    let analysis = ownership_analysis::analyze_source(source);
+    let entries = analysis
+        .audit_records
+        .into_iter()
+        .map(|record| {
+            serde_json::json!({
+                "tier": record.tier,
+                "kind": record.kind,
+                "file": file_label,
+                "line": record.line,
+                "span": {
+                    "line": record.line,
+                    "column": record.column,
+                },
+                "evidence": record.evidence,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let value = serde_json::json!({
+        "schema_version": 1,
+        "audit": entries,
+    });
+    Ok(format!("{}\n", serde_json::to_string(&value)?))
+}
+
 fn simulation_transparency_output(source: &str, harness: bool) -> String {
     let command = if harness {
         "inspect --sim --harness"
@@ -151,17 +180,19 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
     };
     let mut output = String::new();
     output.push_str(&format!(
-        "// kobo: {command} metadata-only transparency path for v0.8.5\n"
+        "// kobo: {command} v0.9 checked simulation MVP transparency path\n"
     ));
     output.push_str(
         "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",
     );
-    output.push_str("// kobo: backend harness: reserved\n");
+    output.push_str("// kobo: backend harness: reserved for v0.10 adapter execution\n");
     output.push_str(
         "// kobo: possible engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n",
     );
     if harness {
-        output.push_str("// kobo: no backend harness is generated in v0.8.5\n");
+        output.push_str(
+            "// kobo: no backend harness is generated in the v0.9 checked simulation MVP\n",
+        );
     } else {
         output
             .push_str("// kobo: use --harness to inspect the reserved harness transparency path\n");
@@ -576,6 +607,17 @@ fn absolute_input_path(file: &Path) -> anyhow::Result<PathBuf> {
             .context("failed to determine current directory")?
             .join(file))
     }
+}
+
+fn cli_relative_path(file: &Path) -> anyhow::Result<String> {
+    let absolute = absolute_input_path(file)?;
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let display_path = absolute.strip_prefix(&cwd).unwrap_or(&absolute);
+    Ok(display_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
 }
 
 fn find_nearest_kobo_project_root(file: &Path) -> Option<PathBuf> {

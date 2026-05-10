@@ -11,13 +11,18 @@ use kobo_errors::{
 };
 use kobo_ir::{FileSetBuilder, KoboMode, KoboSpan};
 
-use crate::ErrorFormat;
+use crate::{ErrorFormat, GuaranteeProfileArg, PolicyOutputFormat};
 
-use super::session::{build_session, render_diagnostics_with_format};
+use super::{
+    policy,
+    session::{build_session, render_diagnostics_with_format},
+};
 
 pub(super) fn cmd_check(
     file: &Path,
     cli_mode: Option<KoboMode>,
+    guarantee_profile: Option<GuaranteeProfileArg>,
+    print_policy: Option<PolicyOutputFormat>,
     pipeline: bool,
     error_format: ErrorFormat,
     recover_parse: bool,
@@ -27,6 +32,20 @@ pub(super) fn cmd_check(
     include_budgeted: bool,
 ) -> anyhow::Result<()> {
     reject_invalid_field_capability_views(file, error_format)?;
+    let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
+        let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
+        let loaded = policy::load_effective_policy(Some(file), profile)?;
+        if let Some(downgrade) = loaded.downgrade() {
+            policy::emit_downgrade(downgrade, error_format)?;
+            anyhow::bail!("guarantee policy downgrade requires reason ledger entry");
+        }
+        if print_policy.is_some() {
+            policy::print_policy_json(&loaded)?;
+        }
+        Some(loaded)
+    } else {
+        None
+    };
 
     let mut session = build_session(file, cli_mode)?;
     session.config.enable_parse_recovery = recover_parse;
@@ -70,6 +89,12 @@ pub(super) fn cmd_check(
 
             if emitted_machine_checked_diagnostic {
                 anyhow::bail!("diagnostics emitted");
+            }
+
+            if print_policy.is_none() {
+                if let Some(policy) = guarantee_policy.as_ref() {
+                    policy::emit_policy_summary(policy);
+                }
             }
 
             Ok(())
@@ -423,21 +448,27 @@ fn project_boundary_policy_diagnostics(
     file: &Path,
 ) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)?;
-    if !has_external_boundary(&source) {
+    let boundary = parse_boundary_attr(&source);
+    let Some(boundary_call) =
+        external_replay_boundary(&source).or_else(|| boundary.as_ref()?.as_replay_boundary())
+    else {
         return Ok(());
-    }
+    };
 
     let Some((file_id, _)) = session.file_set().iter_files().next() else {
         return Ok(());
     };
-    let boundary = parse_boundary_attr(&source);
-    let offset = source.find("reqwest").unwrap_or(0) as u32;
-    let span = kobo_ir::KoboSpan::new(offset, offset + "reqwest".len() as u32, file_id);
+    let span = kobo_ir::KoboSpan::new(
+        boundary_call.span_start as u32,
+        boundary_call.span_end as u32,
+        file_id,
+    );
 
     match boundary {
         Some(BoundaryPolicy {
             policy,
             reason: Some(reason),
+            ..
         }) => {
             let severity =
                 resolve_severity(KErrorCode::K0108, session.mode()).unwrap_or(Severity::Warning);
@@ -447,9 +478,15 @@ fn project_boundary_policy_diagnostics(
                     severity,
                     DiagLabel::primary(
                         span,
-                        format!("boundary policy `{policy}` recorded for reqwest"),
+                        format!(
+                            "boundary policy `{policy}` recorded for {}",
+                            boundary_call.crate_name
+                        ),
                     ),
-                    format!("boundary policy `{policy}` recorded for `reqwest`: {reason}"),
+                    format!(
+                        "boundary policy `{policy}` recorded for `{}`: {reason}",
+                        boundary_call.crate_name
+                    ),
                     DiagDecision("review this policy before claiming exact replay".to_owned()),
                 )
                 .with_suppression(DiagnosticSuppression::new(span, reason)),
@@ -458,18 +495,25 @@ fn project_boundary_policy_diagnostics(
         Some(BoundaryPolicy {
             policy,
             reason: None,
+            ..
         }) => {
             push_boundary_prompt(
                 session,
                 span,
-                format!("boundary policy `{policy}` for `reqwest` requires a reason"),
+                format!(
+                    "boundary policy `{policy}` for `{}` requires a reason",
+                    boundary_call.crate_name
+                ),
             );
         }
         None => {
             push_boundary_prompt(
                 session,
                 span,
-                "unmodeled external boundary `reqwest`; choose model, record, stub, outside, opaque, or debt".to_owned(),
+                format!(
+                    "unmodeled external boundary `{}`; choose model, record, stub, outside, opaque, or debt",
+                    boundary_call.crate_name
+                ),
             );
         }
     }
@@ -611,23 +655,111 @@ fn push_boundary_prompt(
 }
 
 struct BoundaryPolicy {
+    crate_name: Option<String>,
     policy: String,
     reason: Option<String>,
+    span_start: usize,
+    span_end: usize,
 }
 
-fn has_external_boundary(source: &str) -> bool {
-    source.contains("reqwest::") || source.contains("use reqwest")
+struct ExternalReplayBoundary {
+    crate_name: String,
+    span_start: usize,
+    span_end: usize,
+}
+
+impl BoundaryPolicy {
+    fn as_replay_boundary(&self) -> Option<ExternalReplayBoundary> {
+        let crate_name = self.crate_name.clone()?;
+        Some(ExternalReplayBoundary {
+            crate_name,
+            span_start: self.span_start,
+            span_end: self.span_end,
+        })
+    }
+}
+
+fn external_replay_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    direct_client_boundary(source).or_else(|| imported_client_boundary(source))
+}
+
+fn direct_client_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        if let Some(separator) = line.find("::Client::new") {
+            let prefix = &line[..separator];
+            let path_start = prefix
+                .char_indices()
+                .rev()
+                .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_' || *ch == ':'))
+                .map(|(index, _)| index + 1)
+                .unwrap_or(0);
+            let path = &prefix[path_start..];
+            let crate_name = path.split("::").next().unwrap_or(path).to_owned();
+            return Some(ExternalReplayBoundary {
+                span_start: line_offset + path_start,
+                span_end: line_offset + path_start + crate_name.len(),
+                crate_name,
+            });
+        }
+        line_offset += line.len() + 1;
+    }
+    None
+}
+
+fn imported_client_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    if !source.contains("Client::new") {
+        return None;
+    }
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("use ") else {
+            line_offset += line.len() + 1;
+            continue;
+        };
+        let Some(separator) = rest.find("::Client") else {
+            line_offset += line.len() + 1;
+            continue;
+        };
+        let path = rest[..separator].trim();
+        let crate_name = path.split("::").next().unwrap_or(path).to_owned();
+        let local_start = line.find(&crate_name).unwrap_or(0);
+        return Some(ExternalReplayBoundary {
+            span_start: line_offset + local_start,
+            span_end: line_offset + local_start + crate_name.len(),
+            crate_name,
+        });
+    }
+    None
 }
 
 fn parse_boundary_attr(source: &str) -> Option<BoundaryPolicy> {
-    let line = source
-        .lines()
-        .map(str::trim)
-        .find(|line| line.contains("kobo::boundary"))?;
-    Some(BoundaryPolicy {
-        policy: extract_named_string(line, "policy").unwrap_or_else(|| "opaque".to_owned()),
-        reason: extract_named_string(line, "reason"),
-    })
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("kobo::boundary") {
+            line_offset += line.len() + 1;
+            continue;
+        }
+        let crate_name = extract_named_string(trimmed, "crate");
+        let local_start = crate_name
+            .as_deref()
+            .and_then(|name| line.find(name))
+            .or_else(|| line.find("kobo::boundary"))
+            .unwrap_or(0);
+        let span_len = crate_name
+            .as_ref()
+            .map(String::len)
+            .unwrap_or("kobo::boundary".len());
+        return Some(BoundaryPolicy {
+            crate_name,
+            policy: extract_named_string(trimmed, "policy").unwrap_or_else(|| "opaque".to_owned()),
+            reason: extract_named_string(trimmed, "reason"),
+            span_start: line_offset + local_start,
+            span_end: line_offset + local_start + span_len,
+        });
+    }
+    None
 }
 
 fn extract_named_string(line: &str, key: &str) -> Option<String> {

@@ -7,7 +7,10 @@ use kobo_analysis::{
 use kobo_errors::{
     resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
 };
-use kobo_ir::{AsyncViolationKind, Kir, RelaxAttrError, UseEvent, WarnEarlyPattern};
+use kobo_ir::{
+    AsyncViolationKind, Kir, KoboSpan, RelaxAttrError, TransformBindingFacts, UseEvent,
+    WarnEarlyPattern,
+};
 use kobo_transform::{
     strict_async::check_strict_async, strict_async::guard_liveness::detect_guard_across_await,
 };
@@ -15,6 +18,11 @@ use kobo_transform::{
 use crate::session::CompileSession;
 
 use super::parse::run_kir_phase;
+
+struct NondeterminismPattern {
+    class_name: &'static str,
+    operation: &'static str,
+}
 
 pub fn run_check_pipeline(session: &mut CompileSession, input: &Path) -> Result<(), ()> {
     let (_, kir) = run_kir_phase(session, input)?;
@@ -47,8 +55,28 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
         session.mode(),
     ));
 
-    // Emit errors for malformed #[kobo::known_debt] attributes (C07).
-    // K0025 malformed attribute is always Error — structural constraint [R6-03].
+    project_known_debt_diagnostics(session, kir);
+    project_must_call_attribute_diagnostics(session, kir);
+    project_scenario_metadata_diagnostics(session);
+    project_nondeterminism_diagnostics(session);
+    project_relax_attribute_diagnostics(session, kir);
+    project_warn_early_diagnostics(session, kir);
+    project_strict_async_diagnostics(session, kir);
+    project_send_root_cause_diagnostics(session, kir);
+    project_guard_liveness_diagnostics(session, kir);
+    project_cancel_safety_diagnostics(session);
+    project_handler_leak_diagnostics(session);
+    session.suppress_diagnostics_from(downstream_diagnostics_start);
+
+    if session.has_errors() {
+        Err(())
+    } else {
+        project_live_borrow_liveness_diagnostics(session, kir);
+        Ok(())
+    }
+}
+
+fn project_known_debt_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for def in kir.struct_defs() {
         if let Some(error_msg) = &def.known_debt_parse_error {
             let span = def.known_debt_span.unwrap_or(def.span);
@@ -63,12 +91,14 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
             ));
         }
     }
+}
 
+fn project_must_call_attribute_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for error in kir.must_call_attr_errors() {
         let severity =
-            resolve_severity(KErrorCode::K0103, session.mode()).unwrap_or(Severity::Error);
+            resolve_severity(KErrorCode::K0114, session.mode()).unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
-            KErrorCode::K0103,
+            KErrorCode::K0114,
             severity,
             DiagLabel::primary(error.span, error.message.clone()),
             error.message.clone(),
@@ -77,13 +107,9 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
             ),
         ));
     }
+}
 
-    project_scenario_metadata_diagnostics(session);
-    project_nondeterminism_diagnostics(session);
-
-    // Emit diagnostics for #[kobo::relax] attribute validation errors/warnings [G5].
-    // K0026 error path: structural validation errors use hardcoded Error (AC-19 exception).
-    // K0026 warning path: use resolve_severity for consistency [BUG-06].
+fn project_relax_attribute_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for RelaxAttrError {
         span,
         message,
@@ -103,9 +129,8 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
             DiagDecision(String::new()),
         ));
     }
-    // Warn when #[kobo::relax] is used in script mode (has no effect).
+
     if session.mode().is_script() && !session.relaxed_fn_ranges.is_empty() {
-        // Emit per-relaxed-fn advisory using the fn span itself.
         let severity =
             resolve_severity(KErrorCode::K0026, session.mode()).unwrap_or(Severity::Warning);
         for &fn_span in &session.relaxed_fn_ranges.clone() {
@@ -118,62 +143,18 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
             ));
         }
     }
+}
 
-    // Emit K0080-P advisory notes for non-suppressed structural patterns.
-    // Contract C08: these are always `note` severity, never `warning` or `error`.
+fn project_warn_early_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for fact in kir.warn_early_facts() {
         if fact.suppressed {
             continue;
         }
-        let (code, label_text, explanation) = match &fact.pattern {
-            WarnEarlyPattern::BidirectionalRcLinks { struct_name, field_pairs } => {
-                let pairs_str = field_pairs
-                    .iter()
-                    .map(|(a, b)| format!("{a}↔{b}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                (
-                    KErrorCode::K0080P1,
-                    format!("bidirectional Rc links in `{struct_name}`"),
-                    format!(
-                        "struct `{struct_name}` has Rc<RefCell<T>> links that form a cycle ({pairs_str})\n   \
-                         = this will leak memory unless Weak references are used"
-                    ),
-                )
-            }
-            WarnEarlyPattern::ParentChildBackPointer { struct_name, children_field, parent_field } => {
-                (
-                    KErrorCode::K0080P2,
-                    format!("parent↔child back-pointer in `{struct_name}`"),
-                    format!(
-                        "struct `{struct_name}` has `{children_field}` (children) and `{parent_field}` (parent) — Rc cycle\n   \
-                         = this will leak unless parent uses Weak references"
-                    ),
-                )
-            }
-            WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } => (
-                KErrorCode::K0080P3,
-                format!("shared mutable state at {site_count} call sites"),
-                format!(
-                    "the binding is mutated from {site_count} distinct call sites\n   \
-                     = migration will require an architectural decision on ownership"
-                ),
-            ),
-            WarnEarlyPattern::SelfReferentialStruct { struct_name } => (
-                KErrorCode::K0080P4,
-                format!("self-referential struct `{struct_name}` without indirection"),
-                format!(
-                    "struct `{struct_name}` contains a direct (non-indirected) field of the same type\n   \
-                     = this would have infinite size; use Box<{struct_name}> or Rc<RefCell<{struct_name}>>"
-                ),
-            ),
-        };
-
-        // K0080P1-P4 structural advisories are always Note — not mode-dependent [R6-12].
-        let advisory_severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Note);
+        let (code, label_text, explanation) = warn_early_diagnostic_parts(&fact.pattern);
+        let severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Note);
         session.diagnostics.push(KDiagnostic::new(
             code,
-            advisory_severity,
+            severity,
             DiagLabel::primary(fact.span, label_text),
             explanation,
             DiagDecision(
@@ -182,45 +163,65 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
             ),
         ));
     }
+}
 
-    // Phase 11: Emit K006x diagnostics for async ownership violations.
-    // BUG-5 fix: detect executor from config dependencies instead of hardcoding true.
+fn warn_early_diagnostic_parts(pattern: &WarnEarlyPattern) -> (KErrorCode, String, String) {
+    match pattern {
+        WarnEarlyPattern::BidirectionalRcLinks {
+            struct_name,
+            field_pairs,
+        } => {
+            let pairs = field_pairs
+                .iter()
+                .map(|(left, right)| format!("{left}↔{right}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            (
+                KErrorCode::K0080P1,
+                format!("bidirectional Rc links in `{struct_name}`"),
+                format!(
+                    "struct `{struct_name}` has Rc<RefCell<T>> links that form a cycle ({pairs})\n   \
+                     = this will leak memory unless Weak references are used"
+                ),
+            )
+        }
+        WarnEarlyPattern::ParentChildBackPointer {
+            struct_name,
+            children_field,
+            parent_field,
+        } => (
+            KErrorCode::K0080P2,
+            format!("parent↔child back-pointer in `{struct_name}`"),
+            format!(
+                "struct `{struct_name}` has `{children_field}` (children) and `{parent_field}` (parent) — Rc cycle\n   \
+                 = this will leak unless parent uses Weak references"
+            ),
+        ),
+        WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } => (
+            KErrorCode::K0080P3,
+            format!("shared mutable state at {site_count} call sites"),
+            format!(
+                "the binding is mutated from {site_count} distinct call sites\n   \
+                 = migration will require an architectural decision on ownership"
+            ),
+        ),
+        WarnEarlyPattern::SelfReferentialStruct { struct_name } => (
+            KErrorCode::K0080P4,
+            format!("self-referential struct `{struct_name}` without indirection"),
+            format!(
+                "struct `{struct_name}` contains a direct (non-indirected) field of the same type\n   \
+                 = this would have infinite size; use Box<{struct_name}> or Rc<RefCell<{struct_name}>>"
+            ),
+        ),
+    }
+}
+
+fn project_strict_async_diagnostics(session: &mut CompileSession, kir: &Kir) {
     let has_executor = kobo_codegen::executor::select_executor(&session.config.dependencies)
         != kobo_codegen::executor::ExecutorChoice::None;
     let async_violations = check_strict_async(kir, session.mode(), has_executor);
     for violation in &async_violations {
-        let (code, label_text, explanation) = match &violation.kind {
-            AsyncViolationKind::NonSendCapture { binding_name, .. } => (
-                KErrorCode::K0060,
-                format!("binding `{binding_name}` is not Send"),
-                format!(
-                    "binding `{binding_name}` would be wrapped in Rc (not Send) but the async context requires Send\n   \
-                     = kobo decision: refused to generate non-Send wrapper in async context"
-                ),
-            ),
-            AsyncViolationKind::NonSyncShared { binding_name, .. } => (
-                KErrorCode::K0061,
-                format!("binding `{binding_name}` is not Sync for shared access"),
-                format!(
-                    "binding `{binding_name}` requires Sync for cross-task sharing but the current wrapper is not Sync\n   \
-                     = kobo decision: consider restructuring with channels or an actor pattern"
-                ),
-            ),
-            AsyncViolationKind::MissingExecutor => (
-                KErrorCode::K0062,
-                "no async executor configured".to_owned(),
-                "async code detected but no executor (tokio/async-std) found in dependencies\n   \
-                 = add tokio or async-std to [dependencies] in Cargo.toml".to_owned(),
-            ),
-            AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
-                KErrorCode::K0063,
-                format!("strict mode: async wrapping not permitted for `{binding_name}`"),
-                format!(
-                    "in @strict mode, binding `{binding_name}` cannot use ownership wrappers in async context\n   \
-                     = kobo decision: @strict requires zero-cost ownership — no Rc, Arc, or RefCell"
-                ),
-            ),
-        };
+        let (code, label_text, explanation) = async_violation_diagnostic_parts(&violation.kind);
         let severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
             code,
@@ -230,168 +231,196 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
             DiagDecision(String::new()),
         ));
     }
+}
 
-    // S-22: Async Send root-cause diagnostics — pinpoint binding + .await causing non-Send.
-    // Build synthetic SpawnSites from bindings with needs_send=true.
-    {
-        let tf = kir.transform_facts();
-        let send_bindings: Vec<_> = tf
-            .bindings
-            .iter()
-            .filter(|b| b.shared_facts.needs_send)
-            .map(|b| b.node)
-            .collect();
-        if !send_bindings.is_empty() {
-            let synthetic_site = AnalysisSpawnSite {
-                span: tf
-                    .bindings
-                    .iter()
-                    .find(|b| b.shared_facts.needs_send)
-                    .map(|b| b.span)
-                    .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0))),
-                captured_bindings: send_bindings,
-                await_points: Vec::new(),
-            };
-            let send_diags = analyze_send_violations(&[synthetic_site], tf, kir);
-            for diag in &send_diags {
-                let severity =
-                    resolve_severity(KErrorCode::K0061, session.mode()).unwrap_or(Severity::Error);
-                session.diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0061,
-                    severity,
-                    DiagLabel::primary(
-                        diag.spawn_span,
-                        format!(
-                            "future requires Send but `{}` uses {}",
-                            diag.binding_name, diag.wrapper_type
-                        ),
-                    ),
-                    format!(
-                        "binding `{}` cannot cross thread boundary — {}\n   = {}",
-                        diag.binding_name, diag.wrapper_type, diag.suggestion
-                    ),
-                    DiagDecision(diag.suggestion.clone()),
-                ));
-            }
-        }
+fn async_violation_diagnostic_parts(kind: &AsyncViolationKind) -> (KErrorCode, String, String) {
+    match kind {
+        AsyncViolationKind::NonSendCapture { binding_name, .. } => (
+            KErrorCode::K0060,
+            format!("binding `{binding_name}` is not Send"),
+            format!(
+                "binding `{binding_name}` would be wrapped in Rc (not Send) but the async context requires Send\n   \
+                 = kobo decision: refused to generate non-Send wrapper in async context"
+            ),
+        ),
+        AsyncViolationKind::NonSyncShared { binding_name, .. } => (
+            KErrorCode::K0061,
+            format!("binding `{binding_name}` is not Sync for shared access"),
+            format!(
+                "binding `{binding_name}` requires Sync for cross-task sharing but the current wrapper is not Sync\n   \
+                 = kobo decision: consider restructuring with channels or an actor pattern"
+            ),
+        ),
+        AsyncViolationKind::MissingExecutor => (
+            KErrorCode::K0062,
+            "no async executor configured".to_owned(),
+            "async code detected but no executor (tokio/async-std) found in dependencies\n   \
+             = add tokio or async-std to [dependencies] in Cargo.toml"
+                .to_owned(),
+        ),
+        AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
+            KErrorCode::K0063,
+            format!("strict mode: async wrapping not permitted for `{binding_name}`"),
+            format!(
+                "in @strict mode, binding `{binding_name}` cannot use ownership wrappers in async context\n   \
+                 = kobo decision: @strict requires zero-cost ownership — no Rc, Arc, or RefCell"
+            ),
+        ),
+    }
+}
+
+fn project_send_root_cause_diagnostics(session: &mut CompileSession, kir: &Kir) {
+    let transform_facts = kir.transform_facts();
+    let send_bindings = transform_facts
+        .bindings
+        .iter()
+        .filter(|binding| binding.shared_facts.needs_send)
+        .map(|binding| binding.node)
+        .collect::<Vec<_>>();
+    if send_bindings.is_empty() {
+        return;
     }
 
-    // S-54: K0064 GuardHeldAcrossAwait — detect guard bindings live across .await points.
-    {
-        let guard_violations = detect_guard_across_await(kir);
-        for gv in &guard_violations {
+    let synthetic_site = AnalysisSpawnSite {
+        span: transform_facts
+            .bindings
+            .iter()
+            .find(|binding| binding.shared_facts.needs_send)
+            .map(|binding| binding.span)
+            .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0))),
+        captured_bindings: send_bindings,
+        await_points: Vec::new(),
+    };
+    let send_diagnostics = analyze_send_violations(&[synthetic_site], transform_facts, kir);
+    for diagnostic in &send_diagnostics {
+        let severity =
+            resolve_severity(KErrorCode::K0061, session.mode()).unwrap_or(Severity::Error);
+        session.diagnostics.push(KDiagnostic::new(
+            KErrorCode::K0061,
+            severity,
+            DiagLabel::primary(
+                diagnostic.spawn_span,
+                format!(
+                    "future requires Send but `{}` uses {}",
+                    diagnostic.binding_name, diagnostic.wrapper_type
+                ),
+            ),
+            format!(
+                "binding `{}` cannot cross thread boundary — {}\n   = {}",
+                diagnostic.binding_name, diagnostic.wrapper_type, diagnostic.suggestion
+            ),
+            DiagDecision(diagnostic.suggestion.clone()),
+        ));
+    }
+}
+
+fn project_guard_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
+    let guard_violations = detect_guard_across_await(kir);
+    for violation in &guard_violations {
+        let severity =
+            resolve_severity(KErrorCode::K0064, session.mode()).unwrap_or(Severity::Warning);
+        let label = format!(
+            "{:?} `{}` held across .await",
+            violation.guard_kind, violation.binding_name
+        );
+        let explanation = format!(
+            "binding `{}` holds a {:?} guard that is live across a suspend point\n   \
+             = this causes runtime deadlocks and `future is not Send` errors",
+            violation.binding_name, violation.guard_kind
+        );
+        session.diagnostics.push(KDiagnostic::new(
+            KErrorCode::K0064,
+            severity,
+            DiagLabel::primary(violation.guard_span, label),
+            explanation,
+            DiagDecision(
+                "drop the guard before .await or restructure with a block scope".to_owned(),
+            ),
+        ));
+    }
+}
+
+fn project_cancel_safety_diagnostics(session: &mut CompileSession) {
+    let mut diagnostics = Vec::new();
+    for (file_id, entry) in session.file_set().iter_files() {
+        let cancel_warnings = scan_source_cancel_safety(entry.source());
+        for warning in &cancel_warnings {
             let severity =
-                resolve_severity(KErrorCode::K0064, session.mode()).unwrap_or(Severity::Warning);
-            let label = format!(
-                "{:?} `{}` held across .await",
-                gv.guard_kind, gv.binding_name
+                resolve_severity(KErrorCode::K0065, session.mode()).unwrap_or(Severity::Warning);
+            let span = kobo_ir::KoboSpan::new(
+                warning.source_offset as u32,
+                (warning.source_offset + warning.method_name.len()) as u32,
+                file_id,
             );
-            let explanation = format!(
-                "binding `{}` holds a {:?} guard that is live across a suspend point\n   \
-                 = this causes runtime deadlocks and `future is not Send` errors",
-                gv.binding_name, gv.guard_kind
-            );
-            session.diagnostics.push(KDiagnostic::new(
-                KErrorCode::K0064,
+            diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0065,
                 severity,
-                DiagLabel::primary(gv.guard_span, label),
-                explanation,
+                DiagLabel::primary(
+                    span,
+                    format!("`.{}()` is not cancel-safe", warning.method_name),
+                ),
+                warning.suggestion.clone(),
                 DiagDecision(
-                    "drop the guard before .await or restructure with a block scope".to_owned(),
+                    "move operation outside select or use a cancel-safe wrapper".to_owned(),
                 ),
             ));
         }
     }
-
-    // S-55: K0065 SelectBranchNotCancelSafe — scan select blocks for non-cancel-safe methods.
-    {
-        let mut cancel_diags = Vec::new();
-        for (fid, entry) in session.file_set().iter_files() {
-            let cancel_warnings = scan_source_cancel_safety(entry.source());
-            for cw in &cancel_warnings {
-                let severity = resolve_severity(KErrorCode::K0065, session.mode())
-                    .unwrap_or(Severity::Warning);
-                let span = kobo_ir::KoboSpan::new(
-                    cw.source_offset as u32,
-                    (cw.source_offset + cw.method_name.len()) as u32,
-                    fid,
-                );
-                cancel_diags.push(KDiagnostic::new(
-                    KErrorCode::K0065,
-                    severity,
-                    DiagLabel::primary(span, format!("`.{}()` is not cancel-safe", cw.method_name)),
-                    cw.suggestion.clone(),
-                    DiagDecision(
-                        "move operation outside select or use a cancel-safe wrapper".to_owned(),
-                    ),
-                ));
-            }
-        }
-        session.diagnostics.extend(cancel_diags);
-    }
-
-    // S-56: K0067 HandlerRequestStateLeak — request parameters must not escape into spawned tasks.
-    {
-        let mut handler_diags = Vec::new();
-        for (fid, entry) in session.file_set().iter_files() {
-            let leak_warnings = scan_source_handler_leaks(entry.source());
-            for leak in &leak_warnings {
-                let severity = resolve_severity(KErrorCode::K0067, session.mode())
-                    .unwrap_or(Severity::Warning);
-                let span = kobo_ir::KoboSpan::new(
-                    leak.source_offset as u32,
-                    (leak.source_offset + leak.binding_name.len()) as u32,
-                    fid,
-                );
-                handler_diags.push(KDiagnostic::new(
-                    KErrorCode::K0067,
-                    severity,
-                    DiagLabel::primary(
-                        span,
-                        format!(
-                            "handler `{}` leaks request state `{}` into a spawned task",
-                            leak.fn_name, leak.binding_name
-                        ),
-                    ),
-                    format!(
-                        "binding `{}` belongs to one handler request but is captured by a spawned async boundary\n   \
-                         = clone request-safe state before spawning or move long-lived state into an actor",
-                        leak.binding_name
-                    ),
-                    DiagDecision(
-                        "clone request-safe state or move background work behind an actor".to_owned(),
-                    ),
-                ));
-            }
-        }
-        session.diagnostics.extend(handler_diags);
-    }
-
-    session.suppress_diagnostics_from(downstream_diagnostics_start);
-
-    if session.has_errors() {
-        Err(())
-    } else {
-        project_live_borrow_liveness_diagnostics(session, kir);
-        Ok(())
-    }
+    session.diagnostics.extend(diagnostics);
 }
 
+fn project_handler_leak_diagnostics(session: &mut CompileSession) {
+    let mut diagnostics = Vec::new();
+    for (file_id, entry) in session.file_set().iter_files() {
+        let leak_warnings = scan_source_handler_leaks(entry.source());
+        for leak in &leak_warnings {
+            let severity =
+                resolve_severity(KErrorCode::K0067, session.mode()).unwrap_or(Severity::Warning);
+            let span = kobo_ir::KoboSpan::new(
+                leak.source_offset as u32,
+                (leak.source_offset + leak.binding_name.len()) as u32,
+                file_id,
+            );
+            diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0067,
+                severity,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "handler `{}` leaks request state `{}` into a spawned task",
+                        leak.fn_name, leak.binding_name
+                    ),
+                ),
+                format!(
+                    "binding `{}` belongs to one handler request but is captured by a spawned async boundary\n   \
+                     = clone request-safe state before spawning or move long-lived state into an actor",
+                    leak.binding_name
+                ),
+                DiagDecision(
+                    "clone request-safe state or move background work behind an actor".to_owned(),
+                ),
+            ));
+        }
+    }
+    session.diagnostics.extend(diagnostics);
+}
 fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for binding in kir.transform_facts().iter_bindings() {
         if !binding.shared_facts.live_borrow_at_move {
             continue;
         }
 
-        let move_span = binding
-            .usage
-            .uses
-            .iter()
-            .find_map(|event| match event {
-                UseEvent::Moved { span, .. } => Some(*span),
-                _ => None,
-            })
-            .unwrap_or(binding.span);
+        let move_span = source_move_span_for_binding(session, binding).unwrap_or_else(|| {
+            binding
+                .usage
+                .uses
+                .iter()
+                .find_map(|event| match event {
+                    UseEvent::Moved { span, .. } => Some(*span),
+                    _ => None,
+                })
+                .unwrap_or(binding.span)
+        });
         let borrow_span = binding
             .shared_facts
             .borrow_sites
@@ -424,9 +453,48 @@ fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &
     }
 }
 
-struct NondeterminismPattern {
-    class_name: &'static str,
-    operation: &'static str,
+fn source_move_span_for_binding(
+    session: &CompileSession,
+    binding: &TransformBindingFacts,
+) -> Option<KoboSpan> {
+    let file_id = binding
+        .usage
+        .uses
+        .iter()
+        .find_map(|event| match event {
+            UseEvent::Moved { span, .. } => Some(span.file_id),
+            _ => None,
+        })
+        .or_else(|| {
+            binding
+                .shared_facts
+                .borrow_sites
+                .first()
+                .map(|span| span.file_id)
+        })
+        .unwrap_or(binding.span.file_id);
+    let entry = session.file_set().get(file_id)?;
+    let source = entry.source();
+    let needle = binding.binding_name.as_str();
+    let mut offset = 0usize;
+
+    for line in source.lines() {
+        if let Some(index) = line.find(needle) {
+            let before = &line[..index];
+            let after = &line[index + needle.len()..];
+            if before.trim_end().ends_with('=')
+                && !before.trim_end().ends_with("&=")
+                && !before.trim_end().ends_with('&')
+                && after.trim_start().starts_with(';')
+            {
+                let start = (offset + index) as u32;
+                return Some(KoboSpan::new(start, start + needle.len() as u32, file_id));
+            }
+        }
+        offset += line.len() + 1;
+    }
+
+    None
 }
 
 fn project_scenario_metadata_diagnostics(session: &mut CompileSession) {
@@ -443,9 +511,9 @@ fn project_scenario_metadata_diagnostics(session: &mut CompileSession) {
             let offset = source.find(line.trim()).unwrap_or(0) as u32;
             let span = kobo_ir::KoboSpan::new(offset, offset + line.trim().len() as u32, file_id);
             let severity =
-                resolve_severity(KErrorCode::K0105, session.mode()).unwrap_or(Severity::Error);
+                resolve_severity(KErrorCode::K0116, session.mode()).unwrap_or(Severity::Error);
             diagnostics.push(KDiagnostic::new(
-                KErrorCode::K0105,
+                KErrorCode::K0116,
                 severity,
                 DiagLabel::primary(span, "`#[kobo::scenario]` requires a name"),
                 "malformed scenario metadata: `#[kobo::scenario]` requires `name = \"...\"`",

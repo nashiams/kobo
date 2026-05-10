@@ -1,0 +1,7 @@
+async fn __NEIGHBOR__() {
+    println!("neighbor");
+}
+
+async fn __SELECTED__() {
+    println!("selected");
+}

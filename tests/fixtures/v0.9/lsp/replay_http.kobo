@@ -1,0 +1,4 @@
+#[kobo::scenario(profile = "async")]
+async fn replay_http() {
+    let _ = reqwest::Client::new();
+}

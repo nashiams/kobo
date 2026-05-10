@@ -1,0 +1,10 @@
+[profiles.release.guarantees]
+ownership = "strict"
+liveness = "checked"
+replay = "checked"
+boundaries = "strict"
+errors = "explicit"
+
+[paths."src/payment/**"]
+ownership = "record"
+reason = "legacy checkout migration"

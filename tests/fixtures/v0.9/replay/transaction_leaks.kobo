@@ -1,0 +1,10 @@
+#[kobo::must_call(commit | rollback)]
+struct Transaction {
+    id: u64,
+}
+
+#[kobo::scenario(profile = "async")]
+fn transaction_leaks() {
+    let tx = Transaction { id: 11 };
+    let _lost = tx;
+}

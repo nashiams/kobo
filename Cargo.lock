@@ -298,6 +298,7 @@ dependencies = [
  "kobo-driver",
  "kobo-errors",
  "kobo-ir",
+ "kobo-lsp",
  "kobo-migrate",
  "serde_json",
  "toml",
@@ -371,6 +372,16 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "serde",
+]
+
+[[package]]
+name = "kobo-lsp"
+version = "0.1.0"
+dependencies = [
+ "kobo-errors",
+ "kobo-ir",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,12 @@
+struct Session {
+    shared_count: u64,
+    immutable_name: String,
+}
+
+fn bump(session: &mut Session) {
+    session.shared_count += 1;
+}
+
+fn read_name(session: &Session) {
+    println!("{}", session.immutable_name);
+}

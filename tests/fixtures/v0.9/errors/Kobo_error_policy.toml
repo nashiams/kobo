@@ -1,0 +1,8 @@
+[profiles.dev.guarantees]
+errors = "ergonomic"
+
+[profiles.checked.guarantees]
+errors = "typed"
+
+[profiles.release.guarantees]
+errors = "explicit"

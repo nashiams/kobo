@@ -1,5 +1,11 @@
-pub(super) fn cmd_explain(code: &str) -> anyhow::Result<()> {
-    match kobo_errors::explain_code(code) {
+pub(super) fn cmd_explain(code: &str, verbose: bool) -> anyhow::Result<()> {
+    let detail = if verbose {
+        kobo_errors::ExplainDetail::Verbose
+    } else {
+        kobo_errors::ExplainDetail::Human
+    };
+
+    match kobo_errors::explain_code_with_detail(code, detail) {
         Some(text) => {
             println!("{text}");
             Ok(())

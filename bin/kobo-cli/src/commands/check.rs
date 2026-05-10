@@ -88,7 +88,7 @@ pub(super) fn cmd_check(
             }
 
             if emitted_machine_checked_diagnostic {
-                anyhow::bail!("diagnostics emitted");
+                return Err(super::diagnostics_emitted());
             }
 
             if print_policy.is_none() {
@@ -112,7 +112,7 @@ pub(super) fn cmd_check(
                 visible_region,
                 include_budgeted,
             )?;
-            anyhow::bail!("analysis failed");
+            Err(super::diagnostics_emitted())
         }
     }
 }

@@ -342,6 +342,8 @@ pub(crate) enum KoboCommand {
     Explain {
         #[arg(value_name = "CODE")]
         code: String,
+        #[arg(long, help = "Show registry metadata and machine policy details")]
+        verbose: bool,
     },
 }
 
@@ -435,7 +437,14 @@ pub(crate) fn resolve_cli_mode(
     resolve_guarantee_profile(checked, strict, profile).map(GuaranteeProfileArg::mode)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
     let args = Args::parse();
-    commands::dispatch(args.command)
+    match commands::dispatch(args.command) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) if commands::is_diagnostic_exit(&error) => std::process::ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }

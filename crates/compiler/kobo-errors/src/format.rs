@@ -14,12 +14,8 @@ pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String
     ));
     rendered.push('\n');
     rendered.push_str(&render_label_group(file_set, diagnostic));
-    rendered.push('\n');
-    rendered.push_str("   = ");
-    rendered.push_str(&diagnostic.explanation.0);
-    rendered.push('\n');
-    rendered.push_str("   = kobo decision: ");
-    rendered.push_str(&diagnostic.decision.0);
+    push_named_line(&mut rendered, "why", &diagnostic.explanation.0);
+    push_named_line(&mut rendered, "fix", &diagnostic.decision.0);
 
     if let Some(help) = diagnostic.help.as_ref() {
         push_help(&mut rendered, help);
@@ -48,7 +44,7 @@ pub fn render_span_compact(file_set: &FileSet, span: KoboSpan) -> String {
         return format!("<unknown>:{}..{}", span.start, span.end);
     };
 
-    if !span.is_valid_for(file) {
+    if !can_render_span_start(file, span) {
         return format!("{}:{}..{}", file.path.display(), span.start, span.end);
     }
 
@@ -63,7 +59,8 @@ fn render_label_group(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
 
     let labels = ordered_labels(diagnostic);
     if labels.iter().any(|label| {
-        label.span.file_id != diagnostic.primary.span.file_id || !label.span.is_valid_for(file)
+        label.span.file_id != diagnostic.primary.span.file_id
+            || !can_render_span_start(file, label.span)
     }) {
         return render_individual_blocks(file_set, diagnostic);
     }
@@ -137,7 +134,7 @@ fn render_label_block(file_set: &FileSet, label: &DiagLabel, include_label_text:
         return render_fallback(label, "<unknown>");
     };
 
-    if !label.span.is_valid_for(file) {
+    if !can_render_span_start(file, label.span) {
         return render_fallback(label, &file.path.display().to_string());
     }
 
@@ -177,6 +174,12 @@ fn render_fallback(label: &DiagLabel, path: &str) -> String {
     )
 }
 
+fn can_render_span_start(file: &FileEntry, span: KoboSpan) -> bool {
+    span.start <= span.end
+        && (span.start as usize) <= file.source().len()
+        && file.line_text(file.line_col(span.start).0).is_some()
+}
+
 fn marker_for_kind(kind: DiagLabelKind) -> &'static str {
     match kind {
         DiagLabelKind::Primary => "^",
@@ -192,12 +195,31 @@ fn marker_width(file: &kobo_ir::FileEntry, label: &DiagLabel) -> usize {
     }
 
     let (line, column_start) = file.line_col(label.span.start);
-    let (_, column_end) = file.line_col(label.span.end.saturating_sub(1));
+    let (end_line, column_end) = file.line_col(label.span.end.saturating_sub(1));
     if let Some(line_text) = file.line_text(line) {
+        if end_line != line {
+            return line_text
+                .len()
+                .saturating_sub(column_start.saturating_sub(1))
+                .max(1);
+        }
+
         return (column_end.saturating_sub(column_start) + 1).min(line_text.len().max(1));
     }
 
     1
+}
+
+fn push_named_line(rendered: &mut String, label: &str, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+
+    rendered.push('\n');
+    rendered.push_str(label);
+    rendered.push_str(": ");
+    rendered.push_str(value);
 }
 
 fn push_help(rendered: &mut String, help: &DiagHelp) {
@@ -268,8 +290,7 @@ pub fn render_k0020(stats: &DiagOwnerStats, file_set: &FileSet) -> KDiagnostic {
 
     let est = stats.estimated_total_ms();
     let explanation = format!(
-        "`{}` is Rc<RefCell<T>> accessed inside a tight loop\n   \
-         = estimated overhead: ~14ns/access (x86-64 ref) → ~{}ms total last run",
+        "`{}` uses shared mutable ownership inside a tight loop; estimated overhead is about 14ns per access on the x86-64 reference machine, or about {}ms in the last run",
         stats.binding_name, est
     );
 
@@ -314,7 +335,7 @@ pub fn render_k0021(stats: &DiagOwnerStats) -> KDiagnostic {
         Severity::Warning,
         primary,
         explanation,
-        "advisory only — program continues to run correctly",
+        "advisory only; program continues to run correctly",
     )
 }
 
@@ -337,8 +358,8 @@ pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let alias_count = alias_sites.len();
     let explanation = format!(
-        "value has {alias_count} active Rc alias{} at the point of entering @strict; \
-         all aliases must be dropped before the @strict block is entered",
+        "value has {alias_count} active alias{} when the @strict block starts; \
+         all aliases must end before the boundary is entered",
         if alias_count == 1 { "" } else { "es" }
     );
 
@@ -371,12 +392,12 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let primary = DiagLabel::primary(
         closure_span,
-        "closure captures Rc<RefCell<T>> binding across @strict boundary",
+        "closure captures a shared mutable binding across @strict boundary",
     );
 
-    let explanation = "a closure defined inside an @strict block captures a wrapped binding; \
-         borrowing through Rc<RefCell<T>> inside a closure may panic if the @strict \
-         guard is still active when the closure is called";
+    let explanation =
+        "a closure defined inside an @strict block captures a shared mutable binding; \
+         calling the closure later could keep strict boundary guards alive for too long";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0042,
@@ -384,7 +405,7 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
         primary,
         explanation,
         "extract the closure outside the @strict block, or refactor to avoid capturing \
-         the wrapped value",
+         the guarded value",
     );
 
     diag.secondary
@@ -405,9 +426,8 @@ pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let primary = DiagLabel::primary(move_site, "value moved here");
 
-    let explanation = "a binding is moved inside an @strict block; the borrow guard is dropped \
-         on exit from the block and the now-moved value cannot be re-wrapped with \
-         Rc<RefCell<T>>; this would leave the handle in an inconsistent state";
+    let explanation = "a binding is moved inside an @strict block; the boundary guard is dropped \
+         on exit from the block and the moved value cannot be restored to its outer ownership shape";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0043,
@@ -435,12 +455,12 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let primary = DiagLabel::primary(
         fact.block_span,
-        "@strict block inside async fn — borrow guards cannot cross .await",
+        "@strict block inside async fn; borrow guards cannot cross .await",
     );
 
-    let explanation = "@strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped \
-         before any .await point; placing an @strict block directly inside an async \
-         fn makes this invariant unenforceable at compile time";
+    let explanation = "@strict blocks create boundary guards that must be dropped before any \
+         .await point; placing an @strict block directly inside an async fn makes \
+         that rule ambiguous";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0063,

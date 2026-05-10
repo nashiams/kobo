@@ -1,25 +1,23 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
-assertion_line: 350
+assertion_line: 390
 expression: output.stderr
 ---
 error[K0063]: @strict block inside async fn without @strict async fn
-  --> tests\ui\strict_k0063_async_context.kobo
-   |
-   | [bytes 85..127] @strict block inside async fn — borrow guards cannot cross .await
-
-  --> tests\ui\strict_k0063_async_context.kobo
-   |
-   | [bytes 0..129] async fn defined here
-   = @strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped before any .await point; placing an @strict block directly inside an async fn makes this invariant unenforceable at compile time
-   = kobo decision: annotate the fn as `@strict async fn` to opt in to the async-aware guard protocol, or refactor to avoid @strict inside async context
-warning[K0062]: Mutex guard would live across .await
+  --> tests\ui\strict_k0063_async_context.kobo:4:9
+  |
+1 | async fn handler() {
+  | -------------------- async fn defined here
+4 |         data.borrow_mut().push(4);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ @strict block inside async fn; borrow guards cannot cross .await
+  |
+why: @strict blocks create boundary guards that must be dropped before any .await point; placing an @strict block directly inside an async fn makes that rule ambiguous
+fix: annotate the fn as `@strict async fn` to opt in to the async-aware guard protocol, or refactor to avoid @strict inside async context
+warning[K0062]: async executor dependency is missing
   --> tests\ui\strict_k0063_async_context.kobo:2:9
   |
 2 |     let data = kobo::bind(vec![1, 2, 3]);
   |         ^^^^ no async executor configured
   |
-   = async code detected but no executor (tokio/async-std) found in dependencies
-   = add tokio or async-std to [dependencies] in Cargo.toml
-   = kobo decision: 
-Error: analysis failed
+why: async code was detected but no executor dependency such as tokio or async-std was found
+fix: add tokio or async-std to [dependencies] in Cargo.toml

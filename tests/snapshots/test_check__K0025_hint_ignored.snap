@@ -1,5 +1,6 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
+assertion_line: 81
 expression: output.stderr
 ---
 error[K0025]: soft hint ignored - constraint conflict
@@ -10,8 +11,7 @@ error[K0025]: soft hint ignored - constraint conflict
 5 |     let buf = String::from("kobo");
   |         --- hint applies to this binding
   |
-   = hint `ownership = "move"` conflicts with mutable borrowing requires the shared-mutable floor for `buf`
-   = kobo decision: assigned rc_refcell (greedy priority 5) after the hinted candidate failed
+why: hint `ownership = "move"` conflicts with mutable borrowing requires the shared-mutable floor for `buf`
+fix: Kobo used shared mutable ownership because the hinted ownership shape conflicts with the later facts
 help: drop the later alias, or change the hint to match the actual usage pattern
 run: kobo check tests\ui\K0025_hint_ignored.kobo:4
-Error: analysis failed

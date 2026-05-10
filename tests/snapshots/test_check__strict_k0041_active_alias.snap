@@ -1,17 +1,15 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
-assertion_line: 294
+assertion_line: 342
 expression: output.stderr
 ---
 error[K0041]: cannot enter @strict block - value has active aliases
-  --> tests\ui\strict_k0041_active_alias.kobo
-   |
-   | [bytes 106..148] active aliases at @strict block entry
-
-  --> tests\ui\strict_k0041_active_alias.kobo:3:17
+  --> tests\ui\strict_k0041_active_alias.kobo:5:9
   |
 3 |     let alias = data.clone();
   |                 ------------ alias created here
-   = value has 1 active Rc alias at the point of entering @strict; all aliases must be dropped before the @strict block is entered
-   = kobo decision: drop or explicitly clone-then-drop aliases before the @strict { } boundary
-Error: analysis failed
+5 |         data.borrow_mut().push(4);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ active aliases at @strict block entry
+  |
+why: value has 1 active alias when the @strict block starts; all aliases must end before the boundary is entered
+fix: drop or explicitly clone-then-drop aliases before the @strict { } boundary

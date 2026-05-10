@@ -20,7 +20,28 @@ mod sim_model;
 mod test_cmd;
 mod watch;
 
+use std::fmt as std_fmt;
+
 use crate::{resolve_cli_mode, resolve_guarantee_profile, KoboCommand, SimCommand};
+
+#[derive(Debug)]
+pub(crate) struct DiagnosticExit;
+
+impl std_fmt::Display for DiagnosticExit {
+    fn fmt(&self, formatter: &mut std_fmt::Formatter<'_>) -> std_fmt::Result {
+        formatter.write_str("diagnostics emitted")
+    }
+}
+
+impl std::error::Error for DiagnosticExit {}
+
+pub(crate) fn diagnostics_emitted() -> anyhow::Error {
+    DiagnosticExit.into()
+}
+
+pub(crate) fn is_diagnostic_exit(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<DiagnosticExit>().is_some()
+}
 
 pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
     match command {
@@ -251,6 +272,6 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             simple,
             build,
         } => watch::cmd_watch(&file, simple, build),
-        KoboCommand::Explain { code } => explain::cmd_explain(&code),
+        KoboCommand::Explain { code, verbose } => explain::cmd_explain(&code, verbose),
     }
 }

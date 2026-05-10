@@ -168,6 +168,116 @@ fn sim_init_selects_dynamic_target_without_leaking_neighbor() {
 }
 
 #[test]
+fn sim_init_recommends_each_v09_profile_from_target_shape() {
+    let cases = vec![
+        SimProfileCase {
+            label: "sync",
+            symbol: unique_symbol("handle_sync"),
+            source_template: "fn __SYMBOL__() { let mut total = 0; total += 1; }",
+            expected_profile: "sync",
+            expected_backend: "loom",
+        },
+        SimProfileCase {
+            label: "async",
+            symbol: unique_symbol("handle_async"),
+            source_template: r#"
+async fn __SYMBOL__() {
+    tokio::select! {
+        _ = ward.task => {}
+    }
+}
+"#,
+            expected_profile: "async",
+            expected_backend: "shuttle",
+        },
+        SimProfileCase {
+            label: "stateful",
+            symbol: unique_symbol("reduce_state"),
+            source_template: r#"
+fn __SYMBOL__() {
+    let accepted = parse_operation("deposit");
+    assert!(accepted);
+}
+
+fn parse_operation(input: &str) -> bool {
+    input == "deposit"
+}
+"#,
+            expected_profile: "stateful-input",
+            expected_backend: "proptest",
+        },
+        SimProfileCase {
+            label: "failpoint",
+            symbol: unique_symbol("send_with_failpoint"),
+            source_template: r#"
+fn __SYMBOL__() {
+    ward.failpoint("before-send");
+}
+"#,
+            expected_profile: "failpoint",
+            expected_backend: "failpoints",
+        },
+        SimProfileCase {
+            label: "network",
+            symbol: unique_symbol("fetch_remote"),
+            source_template: r#"
+async fn __SYMBOL__() {
+    let _client = reqwest::Client::new();
+}
+"#,
+            expected_profile: "network",
+            expected_backend: "network-design",
+        },
+    ];
+
+    for case in cases {
+        let project = TestProject::new(&format!("sim-profile-{}", case.label));
+        let source = case.source_template.replace("__SYMBOL__", &case.symbol);
+        let file = project.write("src/profile.kobo", &source);
+
+        let output = run_kobo(
+            &[
+                s("sim"),
+                s("init"),
+                s("--target"),
+                format!("{}:{}", path_arg(&file), case.symbol),
+                s("--minimal"),
+            ],
+            &project.root,
+        );
+
+        assert_success(&output, "sim init should infer target profile");
+        let text = output.combined();
+        assert_contains(
+            &text,
+            &format!(r#""profile": "{}""#, case.expected_profile),
+            "sim init must infer the stable Kobo profile from target shape",
+        );
+        assert_contains(
+            &text,
+            &format!(r#""backend": "{}""#, case.expected_backend),
+            "sim init must record the backend metadata for the inferred profile",
+        );
+        assert_contains(
+            &text,
+            &case.symbol,
+            "sim init metadata must follow the dynamic target symbol",
+        );
+        let copied_source = project.read("src/profile.kobo");
+        assert_not_contains(
+            &copied_source,
+            "shuttle::",
+            "profile inference must not rewrite source to backend imports",
+        );
+        assert_not_contains(
+            &copied_source,
+            "loom::",
+            "profile inference must not rewrite source to backend imports",
+        );
+    }
+}
+
+#[test]
 fn sim_quick_liveness_failure_emits_k0100_and_witness() {
     let project = TestProject::new("sim-liveness");
     let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
@@ -531,4 +641,12 @@ fn failure_injection_hooks_are_distinct_and_seed_deterministic() {
             "each failure hook must be distinct in event stream",
         );
     }
+}
+
+struct SimProfileCase {
+    label: &'static str,
+    symbol: String,
+    source_template: &'static str,
+    expected_profile: &'static str,
+    expected_backend: &'static str,
 }

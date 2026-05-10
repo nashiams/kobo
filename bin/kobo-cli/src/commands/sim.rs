@@ -327,6 +327,9 @@ fn scout_reasons(source: &str) -> Vec<&'static str> {
     if source.contains("kobo::scenario") {
         reasons.push("scenario metadata");
     }
+    if sim_model::profile_shape_for_source(source) == sim_model::TargetProfileShape::Network {
+        reasons.push("network boundary");
+    }
     if source.contains("tokio::spawn") || source.contains("spawn(") {
         reasons.push("async spawn boundary");
     }
@@ -343,29 +346,48 @@ fn scout_reasons(source: &str) -> Vec<&'static str> {
 }
 
 fn backend_recommendations_for(source: &str) -> serde_json::Value {
-    if source.contains("tokio::spawn")
-        || source.contains("select!")
-        || source.contains("async fn")
-        || source.contains("async move")
-    {
-        return json!([
+    match sim_model::profile_shape_for_source(source) {
+        sim_model::TargetProfileShape::Network => json!([
+            {
+                "name": "network",
+                "backend_fit": "design-only network profile",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Loom",
+                "backend_fit": "sync concurrency interleavings around network-facing state",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Shuttle",
+                "backend_fit": "async spawn/select schedule exploration around network-facing tasks",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Turmoil",
+                "backend_fit": "network islands and virtual time reserved for v0.10",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Madsim",
+                "backend_fit": "distributed simulation reserved for v0.10",
+                "executes_in_v09": false
+            }
+        ]),
+        sim_model::TargetProfileShape::Async => json!([
             {"name": "Loom", "backend_fit": "sync concurrency interleavings"},
             {"name": "Shuttle", "backend_fit": "async spawn/select schedule exploration"}
-        ]);
-    }
-
-    if source.contains("assert(")
-        || source.contains("parse(")
-        || source.to_ascii_lowercase().contains("property")
-    {
-        return json!([
+        ]),
+        sim_model::TargetProfileShape::StatefulInput => json!([
             {"name": "proptest", "backend_fit": "input and property exploration"}
-        ]);
+        ]),
+        sim_model::TargetProfileShape::Failpoint => json!([
+            {"name": "failpoints", "backend_fit": "manual failure injection points"}
+        ]),
+        sim_model::TargetProfileShape::Sync => json!([
+            {"name": "Loom", "backend_fit": "sync concurrency interleavings"}
+        ]),
     }
-
-    json!([
-        {"name": "failpoints", "backend_fit": "manual failure injection points"}
-    ])
 }
 
 fn scenario_or_function_name(source: &str) -> Option<String> {

@@ -112,6 +112,15 @@ pub(super) enum BoundaryPolicyChoice {
     Unselected,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(super) enum TargetProfileShape {
+    Sync,
+    Async,
+    StatefulInput,
+    Failpoint,
+    Network,
+}
+
 impl Backend {
     pub(super) const fn as_str(&self) -> &'static str {
         match self {
@@ -120,6 +129,18 @@ impl Backend {
             Self::Proptest => "proptest",
             Self::Failpoints => "failpoints",
             Self::DesignOnlyNetwork => "network-design",
+        }
+    }
+}
+
+impl TargetProfileShape {
+    pub(super) const fn as_profile(self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::Async => "async",
+            Self::StatefulInput => "stateful-input",
+            Self::Failpoint => "failpoint",
+            Self::Network => "network",
         }
     }
 }
@@ -341,21 +362,22 @@ pub(super) fn target_profile(
     if let Some(profile) = pinned {
         return profile.to_owned();
     }
-    let Some(scenario) = document
-        .scenarios
-        .iter()
-        .find(|scenario| scenario.name == target)
-    else {
-        return "async".to_owned();
-    };
-    if scenario.body.contains("failpoint") {
-        "failpoint".to_owned()
-    } else if scenario.body.contains("reqwest::") {
-        "network-design".to_owned()
-    } else if scenario.body.contains("spawn") || scenario.profile == "async" {
-        "async".to_owned()
+    let source = target_profile_source(document, target);
+    profile_shape_for_source(&source).as_profile().to_owned()
+}
+
+pub(super) fn profile_shape_for_source(source: &str) -> TargetProfileShape {
+    let lower = source.to_ascii_lowercase();
+    if has_network_shape(&lower) {
+        TargetProfileShape::Network
+    } else if has_failpoint_shape(&lower) {
+        TargetProfileShape::Failpoint
+    } else if has_stateful_input_shape(&lower) {
+        TargetProfileShape::StatefulInput
+    } else if has_async_shape(&lower) {
+        TargetProfileShape::Async
     } else {
-        "sync".to_owned()
+        TargetProfileShape::Sync
     }
 }
 
@@ -366,6 +388,57 @@ pub(super) fn source_hash(source: &str) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+fn target_profile_source(document: &ScenarioDocument, target: &str) -> String {
+    if let Some(scenario) = document
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == target)
+    {
+        return format!("profile={}\n{}", scenario.profile, scenario.body);
+    }
+    target_function_source(&document.source, target).unwrap_or_else(|| document.source.clone())
+}
+
+fn target_function_source(source: &str, target: &str) -> Option<String> {
+    for line in line_infos(source) {
+        let trimmed = line.text.trim();
+        if parse_function_name(trimmed).as_deref() != Some(target) {
+            continue;
+        }
+        let (_, body) = extract_body(source, line.offset)?;
+        return Some(format!("{trimmed}\n{body}"));
+    }
+    None
+}
+
+fn has_network_shape(lower: &str) -> bool {
+    lower.contains("reqwest::")
+        || lower.contains("hyper::")
+        || lower.contains("std::net::")
+        || lower.contains("::client::new")
+}
+
+fn has_failpoint_shape(lower: &str) -> bool {
+    lower.contains("failpoint")
+}
+
+fn has_stateful_input_shape(lower: &str) -> bool {
+    lower.contains("stateful")
+        || lower.contains("property")
+        || lower.contains("parse(")
+        || lower.contains("parse_")
+        || lower.contains("assert!")
+}
+
+fn has_async_shape(lower: &str) -> bool {
+    lower.contains("profile=async")
+        || lower.contains("async fn")
+        || lower.contains("async move")
+        || lower.contains("tokio::spawn")
+        || lower.contains("spawn(")
+        || lower.contains("select!")
 }
 
 pub(super) fn replay_token(source_identity: &str, seed: u64, run: &SimulationRun) -> String {

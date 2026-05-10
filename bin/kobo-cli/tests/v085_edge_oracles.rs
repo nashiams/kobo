@@ -159,7 +159,7 @@ fn code_count(codes: &[String], code: &str) -> usize {
 
 #[test]
 fn phase_00_edge_unknown_and_case_variant_explain_are_structured() {
-    let lowercase = run(&strings(&["explain", "k0107"]));
+    let lowercase = run(&strings(&["explain", "k0107", "--verbose"]));
     let unknown = run(&strings(&["explain", "K9999"]));
 
     assert_success(&lowercase, "phase 00 lowercase diagnostic explain");

@@ -144,9 +144,8 @@ fn hint_conflict_diagnostic(
         ),
         hint_conflict_explanation(hint_conflict, binding),
         DiagDecision(format!(
-            "assigned {} (greedy priority {}) after the hinted candidate failed",
-            hint_conflict.chosen_tier.label(),
-            tier_priority(hint_conflict.chosen_tier)
+            "Kobo used {} because the hinted ownership shape conflicts with the later facts",
+            human_ownership_tier(hint_conflict.chosen_tier)
         )),
     )
     .with_secondary_label(DiagLabel::secondary(
@@ -248,6 +247,15 @@ fn run_target(file_set: &FileSet, span: kobo_ir::KoboSpan) -> String {
     format!("kobo check {}:{line}", file.path.display())
 }
 
-fn tier_priority(tier: OwnershipTier) -> usize {
-    tier.greedy_priority()
+fn human_ownership_tier(tier: OwnershipTier) -> &'static str {
+    match tier {
+        OwnershipTier::PlainOwned => "plain ownership",
+        OwnershipTier::BoxOwned => "boxed ownership",
+        OwnershipTier::RcShared => "shared ownership",
+        OwnershipTier::ArcShared => "thread-safe shared ownership",
+        OwnershipTier::RcMutShared => "shared mutable ownership",
+        OwnershipTier::ArcMutShared => "thread-safe shared mutable ownership",
+        OwnershipTier::Scoped => "scoped handle ownership",
+        OwnershipTier::Undecided => "the safest available ownership shape",
+    }
 }

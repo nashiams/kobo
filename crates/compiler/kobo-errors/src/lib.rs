@@ -13,7 +13,7 @@ pub use diagnostic::{
     DiagnosticNote, DiagnosticRelatedInfo, DiagnosticSuggestion, DiagnosticSuppression,
     DiagnosticUpstream, KDiagnostic, SuggestionApplicability, TextEdit,
 };
-pub use explain::{explain_code, unknown_code_message};
+pub use explain::{explain_code, explain_code_with_detail, unknown_code_message, ExplainDetail};
 pub use format::{
     format_diagnostic, render_k0020, render_k0021, render_k0041, render_k0042, render_k0043,
     render_k0063, render_labeled_cross_boundary, render_related_info, render_span_compact,

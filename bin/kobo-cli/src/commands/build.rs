@@ -86,7 +86,7 @@ fn cmd_build_file(
     let mut session = build_session(file, cli_mode)?;
     let artifacts = run_codegen_pipeline(&mut session, file).map_err(|()| {
         render_diagnostics_with_format(&session, error_format);
-        anyhow::anyhow!("compilation failed")
+        super::diagnostics_emitted()
     })?;
     render_diagnostics_with_format(&session, error_format);
     let strict_ownership_line = if session.mode().is_strict() {
@@ -111,7 +111,7 @@ fn cmd_build_file(
                 "release ownership guarantee failed with K0001 ownership debt at line {line}"
             );
         }
-        anyhow::bail!("compilation failed");
+        return Err(super::diagnostics_emitted());
     }
 
     if emit_rust {

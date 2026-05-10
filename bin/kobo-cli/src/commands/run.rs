@@ -180,17 +180,19 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
     };
     let mut output = String::new();
     output.push_str(&format!(
-        "// kobo: {command} metadata-only transparency path for v0.8.5\n"
+        "// kobo: {command} v0.9 checked simulation MVP transparency path\n"
     ));
     output.push_str(
         "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",
     );
-    output.push_str("// kobo: backend harness: reserved\n");
+    output.push_str("// kobo: backend harness: reserved for v0.10 adapter execution\n");
     output.push_str(
         "// kobo: possible engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n",
     );
     if harness {
-        output.push_str("// kobo: no backend harness is generated in v0.8.5\n");
+        output.push_str(
+            "// kobo: no backend harness is generated in the v0.9 checked simulation MVP\n",
+        );
     } else {
         output
             .push_str("// kobo: use --harness to inspect the reserved harness transparency path\n");

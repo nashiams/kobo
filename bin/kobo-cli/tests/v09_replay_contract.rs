@@ -50,12 +50,19 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         ["backend"].as_slice(),
         ["backend_replay"].as_slice(),
         ["replay_guarantee"].as_slice(),
+        ["expanded_policy", "ownership"].as_slice(),
+        ["expanded_policy", "liveness"].as_slice(),
+        ["expanded_policy", "replay"].as_slice(),
+        ["expanded_policy", "boundaries"].as_slice(),
+        ["expanded_policy", "errors"].as_slice(),
         ["modeled_boundaries"].as_slice(),
         ["opaque_boundaries"].as_slice(),
+        ["boundary_assumptions"].as_slice(),
         ["obligations"].as_slice(),
         ["boundary_decisions"].as_slice(),
         ["failure", "code"].as_slice(),
         ["failure", "primary_span"].as_slice(),
+        ["failure", "related_spans"].as_slice(),
         ["events"].as_slice(),
     ] {
         assert_json_has_path(&json, path, ".kwit witness required field");
@@ -81,6 +88,12 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         &witness,
         "commit",
         "witness obligations must record discharge alternatives",
+    );
+    assert!(
+        json["failure"]["related_spans"]
+            .as_array()
+            .is_some_and(|spans| !spans.is_empty()),
+        "liveness witness should include related source spans for the obligation"
     );
 }
 
@@ -178,6 +191,107 @@ fn replay_divergence_emits_k0104_with_expected_and_observed_events() {
     assert_contains(&text, "K0104", "divergence must emit K0104");
     assert_contains(&text, "expected", "K0104 must include expected event");
     assert_contains(&text, "observed", "K0104 must include observed event");
+}
+
+#[test]
+fn replay_divergence_honors_human_error_format() {
+    let project = TestProject::new("replay-divergence-human");
+    let witnesses = emit_witness(&project);
+    assert!(
+        !witnesses.is_empty(),
+        "witness should exist before mutation"
+    );
+    let path = &witnesses[0];
+
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("witness should read"))
+            .expect("witness should parse");
+    json["events"][0]["kind"] = serde_json::Value::String("mutated-event".to_owned());
+    fs::write(path, serde_json::to_string_pretty(&json).unwrap()).expect("mutated witness writes");
+
+    let output = run_kobo(
+        &[s("replay"), path_arg(path), s("--error-format=human")],
+        &project.root,
+    );
+
+    assert_failure(&output, "mutated witness must fail replay");
+    let text = output.combined();
+    assert_contains(&text, "K0104", "human replay output must name K0104");
+    assert_contains(
+        &text,
+        "expected",
+        "human replay output must include expected context",
+    );
+    assert_contains(
+        &text,
+        "observed",
+        "human replay output must include observed context",
+    );
+    assert!(
+        !text.trim_start().starts_with('{'),
+        "human replay output must not be raw JSON:\n{text}"
+    );
+}
+
+#[test]
+fn uncontrolled_effect_witness_is_not_replayable() {
+    let project = TestProject::new("not-replayable-witness");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn uncontrolled_effect() {
+    let _ = std::fs::read_to_string("state.txt");
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "uncontrolled effect should emit a witness");
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(
+        !witnesses.is_empty(),
+        "uncontrolled effect failure must emit a witness"
+    );
+    let witness: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(&witnesses[0]).expect("witness should be readable"),
+    )
+    .expect("witness should parse");
+    assert_eq!(
+        witness["replay_guarantee"].as_str(),
+        Some("not_replayable"),
+        "uncontrolled effects must not be labeled exact replay"
+    );
+    assert_json_has_path(
+        &witness,
+        &["boundary_assumptions"],
+        "uncontrolled witness should record replay assumptions",
+    );
+
+    let replay = run_kobo(&[s("replay"), path_arg(&witnesses[0])], &project.root);
+    assert_failure(&replay, "not_replayable witness must not replay as exact");
+    let text = replay.combined();
+    assert_contains(
+        &text,
+        "not_replayable",
+        "replay should report the witness guarantee",
+    );
+    assert_contains(
+        &text,
+        "uncontrolled",
+        "replay should explain the blocking effect",
+    );
 }
 
 #[test]

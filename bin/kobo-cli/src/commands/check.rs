@@ -448,14 +448,16 @@ fn project_boundary_policy_diagnostics(
     file: &Path,
 ) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)?;
-    let Some(boundary_call) = external_replay_boundary(&source) else {
+    let boundary = parse_boundary_attr(&source);
+    let Some(boundary_call) =
+        external_replay_boundary(&source).or_else(|| boundary.as_ref()?.as_replay_boundary())
+    else {
         return Ok(());
     };
 
     let Some((file_id, _)) = session.file_set().iter_files().next() else {
         return Ok(());
     };
-    let boundary = parse_boundary_attr(&source);
     let span = kobo_ir::KoboSpan::new(
         boundary_call.span_start as u32,
         boundary_call.span_end as u32,
@@ -466,6 +468,7 @@ fn project_boundary_policy_diagnostics(
         Some(BoundaryPolicy {
             policy,
             reason: Some(reason),
+            ..
         }) => {
             let severity =
                 resolve_severity(KErrorCode::K0108, session.mode()).unwrap_or(Severity::Warning);
@@ -492,6 +495,7 @@ fn project_boundary_policy_diagnostics(
         Some(BoundaryPolicy {
             policy,
             reason: None,
+            ..
         }) => {
             push_boundary_prompt(
                 session,
@@ -651,14 +655,28 @@ fn push_boundary_prompt(
 }
 
 struct BoundaryPolicy {
+    crate_name: Option<String>,
     policy: String,
     reason: Option<String>,
+    span_start: usize,
+    span_end: usize,
 }
 
 struct ExternalReplayBoundary {
     crate_name: String,
     span_start: usize,
     span_end: usize,
+}
+
+impl BoundaryPolicy {
+    fn as_replay_boundary(&self) -> Option<ExternalReplayBoundary> {
+        let crate_name = self.crate_name.clone()?;
+        Some(ExternalReplayBoundary {
+            crate_name,
+            span_start: self.span_start,
+            span_end: self.span_end,
+        })
+    }
 }
 
 fn external_replay_boundary(source: &str) -> Option<ExternalReplayBoundary> {
@@ -716,14 +734,32 @@ fn imported_client_boundary(source: &str) -> Option<ExternalReplayBoundary> {
 }
 
 fn parse_boundary_attr(source: &str) -> Option<BoundaryPolicy> {
-    let line = source
-        .lines()
-        .map(str::trim)
-        .find(|line| line.contains("kobo::boundary"))?;
-    Some(BoundaryPolicy {
-        policy: extract_named_string(line, "policy").unwrap_or_else(|| "opaque".to_owned()),
-        reason: extract_named_string(line, "reason"),
-    })
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("kobo::boundary") {
+            line_offset += line.len() + 1;
+            continue;
+        }
+        let crate_name = extract_named_string(trimmed, "crate");
+        let local_start = crate_name
+            .as_deref()
+            .and_then(|name| line.find(name))
+            .or_else(|| line.find("kobo::boundary"))
+            .unwrap_or(0);
+        let span_len = crate_name
+            .as_ref()
+            .map(String::len)
+            .unwrap_or("kobo::boundary".len());
+        return Some(BoundaryPolicy {
+            crate_name,
+            policy: extract_named_string(trimmed, "policy").unwrap_or_else(|| "opaque".to_owned()),
+            reason: extract_named_string(trimmed, "reason"),
+            span_start: line_offset + local_start,
+            span_end: line_offset + local_start + span_len,
+        });
+    }
+    None
 }
 
 fn extract_named_string(line: &str, key: &str) -> Option<String> {

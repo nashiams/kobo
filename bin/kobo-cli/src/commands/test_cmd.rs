@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_errors::{
     diagnostic_to_json_value, ColorMode, DiagDecision, DiagLabel, DiagnosticOutputFormat,
-    DiagnosticRenderer, KDiagnostic, Severity,
+    DiagnosticRenderer, KDiagnostic, KErrorCode, Severity,
 };
 use kobo_ir::{FileSetBuilder, KoboSpan};
 
@@ -12,6 +12,23 @@ use crate::ErrorFormat;
 use super::sim_model::{
     self, ScenarioDocument, ScenarioFailure, SimEvent, SimulationOptions, SimulationRun,
 };
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum ReplayGuarantee {
+    Exact,
+    Partial,
+    NotReplayable,
+}
+
+impl ReplayGuarantee {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Partial => "partial",
+            Self::NotReplayable => "not_replayable",
+        }
+    }
+}
 
 pub(super) fn cmd_test(
     file: &Path,
@@ -24,8 +41,19 @@ pub(super) fn cmd_test(
     witness_dir: Option<&Path>,
     error_format: ErrorFormat,
 ) -> anyhow::Result<()> {
-    if sim != Some("quick") {
-        anyhow::bail!("kobo test currently supports --sim quick");
+    match sim {
+        Some("quick") => {}
+        Some("deep") => {
+            anyhow::bail!(
+                "kobo test --sim deep is reserved for v0.10 scheduler portfolios; use --sim quick in v0.9"
+            );
+        }
+        Some(other) => {
+            anyhow::bail!("kobo test --sim {other} is not available in v0.9; use --sim quick");
+        }
+        None => {
+            anyhow::bail!("kobo test requires --sim quick in v0.9");
+        }
     }
 
     let profile = profile.unwrap_or("checked");
@@ -110,23 +138,30 @@ fn write_failure_witness(
         source_path,
         one_based_line_for_offset(&document.source, failure.primary_start)
     );
+    let replay_guarantee = replay_guarantee_for(run, failure);
     let witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
         "target": format!("{}:{}", source_path, run.scenario.name),
+        "scenario": {
+            "name": run.scenario.name,
+            "profile": run.scenario.profile,
+        },
         "source": {
             "path": source_path,
             "hash": document.source_hash,
         },
         "guarantee_profile": guarantee_profile,
+        "expanded_policy": expanded_policy_json(guarantee_profile),
         "seed": seed,
         "backend_profile": run.scenario.profile,
         "backend": run.backend.as_str(),
         "backend_replay": sim_model::replay_token(&document.source_hash, seed, run),
-        "replay_guarantee": if run.opaque_boundaries.is_empty() { "exact" } else { "partial" },
+        "replay_guarantee": replay_guarantee.as_str(),
         "modeled_boundaries": modeled_boundaries_json(run),
         "opaque_boundaries": run.opaque_boundaries.clone(),
-        "obligations": obligations_json(run),
+        "boundary_assumptions": boundary_assumptions_json(run, failure, replay_guarantee),
+        "obligations": obligations_json(&source_path, &document.source, run),
         "boundary_decisions": boundary_decisions_json(run),
         "available_boundary_policies": sim_model::boundary_policy_choices()
             .iter()
@@ -134,7 +169,9 @@ fn write_failure_witness(
             .collect::<Vec<_>>(),
         "failure": {
             "code": failure.code.as_str(),
+            "message": failure.message.clone(),
             "primary_span": primary_span,
+            "related_spans": related_spans_json(&source_path, &document.source, run, failure),
         },
         "events": events_json(&run.events),
     });
@@ -211,7 +248,11 @@ fn modeled_boundaries_json(run: &SimulationRun) -> Vec<&'static str> {
         .collect()
 }
 
-fn obligations_json(run: &SimulationRun) -> Vec<serde_json::Value> {
+fn obligations_json(
+    source_path: &str,
+    source: &str,
+    run: &SimulationRun,
+) -> Vec<serde_json::Value> {
     run.obligations
         .iter()
         .map(|obligation| {
@@ -220,9 +261,107 @@ fn obligations_json(run: &SimulationRun) -> Vec<serde_json::Value> {
                 "type": obligation.type_name.clone(),
                 "actions": obligation.actions.clone(),
                 "discharged": obligation.is_discharged,
+                "declaration_span": span_json(source_path, source, obligation.declaration_span),
+                "drop_span": obligation.drop_span.map(|span| span_json(source_path, source, span)),
             })
         })
         .collect()
+}
+
+fn expanded_policy_json(profile: &str) -> serde_json::Value {
+    let (ownership, liveness, replay, boundaries, errors) = match profile {
+        "dev" => ("record", "record", "record", "record", "ergonomic"),
+        "release" => ("strict", "checked", "checked", "strict", "explicit"),
+        _ => ("checked", "checked", "checked", "checked", "typed"),
+    };
+    serde_json::json!({
+        "profile": profile,
+        "ownership": ownership,
+        "liveness": liveness,
+        "replay": replay,
+        "boundaries": boundaries,
+        "errors": errors,
+    })
+}
+
+fn replay_guarantee_for(run: &SimulationRun, failure: &ScenarioFailure) -> ReplayGuarantee {
+    if matches!(failure.code, KErrorCode::K0102 | KErrorCode::K0103) {
+        return ReplayGuarantee::NotReplayable;
+    }
+    if run.opaque_boundaries.is_empty() {
+        ReplayGuarantee::Exact
+    } else {
+        ReplayGuarantee::Partial
+    }
+}
+
+fn boundary_assumptions_json(
+    run: &SimulationRun,
+    failure: &ScenarioFailure,
+    replay_guarantee: ReplayGuarantee,
+) -> Vec<serde_json::Value> {
+    let mut assumptions = run
+        .boundary_decisions
+        .iter()
+        .map(|decision| {
+            serde_json::json!({
+                "boundary": decision.crate_name.clone(),
+                "policy": decision.policy.as_str(),
+                "reason": decision.reason.clone(),
+                "replay_effect": if replay_guarantee == ReplayGuarantee::Exact {
+                    "modeled"
+                } else {
+                    replay_guarantee.as_str()
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if replay_guarantee == ReplayGuarantee::NotReplayable && assumptions.is_empty() {
+        let boundary = failure
+            .events
+            .first()
+            .and_then(|event| event.label.clone())
+            .unwrap_or_else(|| failure.code.as_str().to_owned());
+        assumptions.push(serde_json::json!({
+            "boundary": boundary,
+            "policy": "debt",
+            "reason": failure.message,
+            "replay_effect": replay_guarantee.as_str(),
+        }));
+    }
+
+    assumptions
+}
+
+fn related_spans_json(
+    source_path: &str,
+    source: &str,
+    run: &SimulationRun,
+    failure: &ScenarioFailure,
+) -> Vec<serde_json::Value> {
+    if failure.code != KErrorCode::K0100 {
+        return Vec::new();
+    }
+    run.obligations
+        .iter()
+        .filter(|obligation| !obligation.is_discharged)
+        .map(|obligation| {
+            serde_json::json!({
+                "label": format!("obligation `{}` declared here", obligation.binding),
+                "span": span_json(source_path, source, obligation.declaration_span),
+            })
+        })
+        .collect()
+}
+
+fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_json::Value {
+    serde_json::json!({
+        "path": source_path,
+        "line": one_based_line_for_offset(source, span.0),
+        "start": span.0,
+        "end": span.1.max(span.0 + 1),
+    })
 }
 
 fn boundary_decisions_json(run: &SimulationRun) -> Vec<serde_json::Value> {

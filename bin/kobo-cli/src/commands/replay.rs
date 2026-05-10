@@ -9,7 +9,7 @@ use super::sim_model;
 
 pub(super) fn cmd_replay(
     file: &Path,
-    _error_format: ErrorFormat,
+    error_format: ErrorFormat,
     roundtrip_metadata: bool,
 ) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)
@@ -28,7 +28,7 @@ pub(super) fn cmd_replay(
     }
 
     if witness["schema_version"].as_u64() == Some(1) {
-        return replay_v1(&witness, file);
+        return replay_v1(&witness, file, error_format);
     }
 
     let source_path = witness["source"]["path"].as_str().unwrap_or("<unknown>");
@@ -42,7 +42,9 @@ pub(super) fn cmd_replay(
     println!("source: {source_path} span {span_start}..{span_end}");
     println!("scenario: {scenario}");
     println!("events: {event_count}");
-    println!("metadata-only: full deterministic replay is not available in v0.8.5");
+    println!(
+        "metadata-only: legacy schema_version 0 witnesses do not carry v0.9 exact replay data"
+    );
     Ok(())
 }
 
@@ -52,9 +54,15 @@ struct VerifiedSource {
     source: String,
 }
 
-fn replay_v1(witness: &Value, witness_path: &Path) -> anyhow::Result<()> {
-    let guarantee = witness["replay_guarantee"].as_str().unwrap_or("partial");
-    if guarantee == "partial" {
+fn replay_v1(
+    witness: &Value,
+    witness_path: &Path,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let guarantee = witness["replay_guarantee"]
+        .as_str()
+        .unwrap_or("not_replayable");
+    if guarantee != "exact" {
         let opaque = witness["opaque_boundaries"]
             .as_array()
             .map(|items| {
@@ -65,11 +73,12 @@ fn replay_v1(witness: &Value, witness_path: &Path) -> anyhow::Result<()> {
                     .join(", ")
             })
             .unwrap_or_default();
-        eprintln!("partial replay witness: opaque boundaries {opaque}");
-        anyhow::bail!("partial replay cannot claim exact replay");
+        let assumptions = witness["boundary_assumptions"].clone();
+        replay_blocked(guarantee, &opaque, assumptions, error_format)?;
+        anyhow::bail!("{guarantee} replay cannot claim exact replay");
     }
 
-    let verified_source = verify_source_identity(witness, witness_path)?;
+    let verified_source = verify_source_identity(witness, witness_path, error_format)?;
     let target = witness_target_scenario(witness)?;
     let document = sim_model::parse_document(verified_source.source.clone());
     let seed = witness["seed"].as_u64().unwrap_or(0);
@@ -102,7 +111,7 @@ fn replay_v1(witness: &Value, witness_path: &Path) -> anyhow::Result<()> {
         "events": witness["events"].clone(),
     });
     if expected != observed {
-        return replay_divergence(expected, observed);
+        return replay_divergence(expected, observed, error_format);
     }
 
     println!(
@@ -118,27 +127,31 @@ fn replay_v1(witness: &Value, witness_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn verify_source_identity(witness: &Value, witness_path: &Path) -> anyhow::Result<VerifiedSource> {
+fn verify_source_identity(
+    witness: &Value,
+    witness_path: &Path,
+    error_format: ErrorFormat,
+) -> anyhow::Result<VerifiedSource> {
     let Some(source_path) = witness["source"]["path"].as_str() else {
-        return source_mismatch("missing source identity");
+        return source_mismatch("missing source identity", error_format);
     };
     let Some(expected_hash) = witness["source"]["hash"].as_str() else {
-        return source_mismatch("missing source hash");
+        return source_mismatch("missing source hash", error_format);
     };
     let witness_dir = witness_path.parent().unwrap_or_else(|| Path::new("."));
     let source_path = sim_model::resolve_witness_source(source_path, witness_dir);
     let source = match std::fs::read_to_string(&source_path) {
         Ok(source) => source,
         Err(_) => {
-            return source_mismatch(&format!(
-                "source mismatch: missing {}",
-                source_path.display()
-            ))
+            return source_mismatch(
+                &format!("source mismatch: missing {}", source_path.display()),
+                error_format,
+            )
         }
     };
     let observed_hash = sim_model::source_hash(&source);
     if observed_hash != expected_hash {
-        return source_mismatch("source mismatch: witness source hash changed");
+        return source_mismatch("source mismatch: witness source hash changed", error_format);
     }
     Ok(VerifiedSource {
         path: source_path,
@@ -166,12 +179,36 @@ fn failure_json(source_path: &str, source: &str, run: &sim_model::SimulationRun)
     };
     serde_json::json!({
         "code": failure.code.as_str(),
+        "message": failure.message.clone(),
         "primary_span": format!(
             "{}:{}:1",
             source_path,
             one_based_line_for_offset(source, failure.primary_start),
         ),
+        "related_spans": related_spans_json(source_path, source, run),
     })
+}
+
+fn related_spans_json(
+    source_path: &str,
+    source: &str,
+    run: &sim_model::SimulationRun,
+) -> Vec<Value> {
+    run.obligations
+        .iter()
+        .filter(|obligation| !obligation.is_discharged)
+        .map(|obligation| {
+            serde_json::json!({
+                "label": format!("obligation `{}` declared here", obligation.binding),
+                "span": {
+                    "path": source_path,
+                    "line": one_based_line_for_offset(source, obligation.declaration_span.0),
+                    "start": obligation.declaration_span.0,
+                    "end": obligation.declaration_span.1.max(obligation.declaration_span.0 + 1),
+                },
+            })
+        })
+        .collect()
 }
 
 fn events_json(events: &[sim_model::SimEvent]) -> Vec<Value> {
@@ -195,28 +232,77 @@ fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
         + 1
 }
 
-fn replay_divergence(expected: Value, observed: Value) -> anyhow::Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "code": "K0104",
-            "message": "kwit replay diverged",
-            "expected": expected,
-            "observed": observed,
-        }))?
-    );
+fn replay_divergence(
+    expected: Value,
+    observed: Value,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let payload = serde_json::json!({
+        "code": "K0104",
+        "message": "kwit replay diverged",
+        "expected": expected,
+        "observed": observed,
+    });
+    emit_replay_issue(&payload, error_format)?;
     anyhow::bail!("K0104 replay divergence")
 }
 
-fn source_mismatch<T>(message: &str) -> anyhow::Result<T> {
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "code": "K0104",
-            "message": message,
-        }))?
-    );
+fn source_mismatch<T>(message: &str, error_format: ErrorFormat) -> anyhow::Result<T> {
+    let payload = serde_json::json!({
+        "code": "K0104",
+        "message": message,
+    });
+    emit_replay_issue(&payload, error_format)?;
     anyhow::bail!("{message}")
+}
+
+fn replay_blocked(
+    guarantee: &str,
+    opaque_boundaries: &str,
+    assumptions: Value,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let payload = serde_json::json!({
+        "code": "K0104",
+        "message": format!("{guarantee} replay witness cannot claim exact replay"),
+        "replay_guarantee": guarantee,
+        "opaque_boundaries": opaque_boundaries,
+        "boundary_assumptions": assumptions,
+    });
+    emit_replay_issue(&payload, error_format)
+}
+
+fn emit_replay_issue(payload: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
+    match error_format {
+        ErrorFormat::Json => {
+            println!("{}", serde_json::to_string(payload)?);
+        }
+        ErrorFormat::Human => {
+            eprintln!(
+                "error[{}]: {}",
+                payload["code"].as_str().unwrap_or("K0104"),
+                payload["message"].as_str().unwrap_or("replay failed"),
+            );
+            if let Some(guarantee) = payload["replay_guarantee"].as_str() {
+                eprintln!("replay guarantee: {guarantee}");
+            }
+            if let Some(boundaries) = payload["opaque_boundaries"].as_str() {
+                if !boundaries.is_empty() {
+                    eprintln!("opaque boundaries: {boundaries}");
+                }
+            }
+            if !payload["boundary_assumptions"].is_null() {
+                eprintln!("boundary assumptions: {}", payload["boundary_assumptions"]);
+            }
+            if !payload["expected"].is_null() {
+                eprintln!("expected: {}", payload["expected"]);
+            }
+            if !payload["observed"].is_null() {
+                eprintln!("observed: {}", payload["observed"]);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_witness(witness: &Value) -> anyhow::Result<()> {
@@ -233,12 +319,19 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             &["backend"][..],
             &["backend_replay"][..],
             &["replay_guarantee"][..],
+            &["expanded_policy", "ownership"][..],
+            &["expanded_policy", "liveness"][..],
+            &["expanded_policy", "replay"][..],
+            &["expanded_policy", "boundaries"][..],
+            &["expanded_policy", "errors"][..],
             &["modeled_boundaries"][..],
             &["opaque_boundaries"][..],
+            &["boundary_assumptions"][..],
             &["obligations"][..],
             &["boundary_decisions"][..],
             &["failure", "code"][..],
             &["failure", "primary_span"][..],
+            &["failure", "related_spans"][..],
             &["events"][..],
         ];
         if witness["replay_guarantee"].as_str() == Some("exact") {

@@ -906,7 +906,7 @@ async fn service_retry() {
         &sim.combined(),
         &[
             "inspect --sim",
-            "metadata-only",
+            "v0.9 checked simulation MVP",
             "Rust-shaped",
             "Cargo-native",
             "backend harness: reserved",
@@ -916,12 +916,12 @@ async fn service_retry() {
     assert_not_contains(
         &sim.combined(),
         "use loom::",
-        "inspect --sim must not emit backend-native imports in v0.8.5",
+        "inspect --sim must not emit backend-native imports",
     );
     assert_not_contains(
         &sim.combined(),
         "use shuttle::",
-        "inspect --sim must not emit backend-native imports in v0.8.5",
+        "inspect --sim must not emit backend-native imports",
     );
 
     let harness = run_kobo(&args_with_file(
@@ -934,7 +934,7 @@ async fn service_retry() {
         &[
             "inspect --sim --harness",
             "reserved",
-            "no backend harness is generated in v0.8.5",
+            "no backend harness is generated in the v0.9 checked simulation MVP",
         ],
         "inspect --sim --harness must reserve the command shape honestly",
     );

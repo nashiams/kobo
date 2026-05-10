@@ -90,6 +90,8 @@ pub(super) struct RuntimeObligationSummary {
     pub type_name: String,
     pub actions: Vec<String>,
     pub is_discharged: bool,
+    pub declaration_span: (usize, usize),
+    pub drop_span: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -788,6 +790,8 @@ impl<'a> SimulationRuntime<'a> {
                 type_name: obligation.type_name.clone(),
                 actions: obligation.actions.clone(),
                 is_discharged: obligation.is_discharged,
+                declaration_span: obligation.declaration_span,
+                drop_span: obligation.drop_span,
             })
             .collect()
     }

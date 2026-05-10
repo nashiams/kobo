@@ -142,10 +142,10 @@ pub(super) fn cmd_sim_scout(
         let recommendations = backend_recommendations_for(&source);
         print_value(
             json!({
-                "backend_fit": recommendations,
-                "executed": false,
-                "note": "metadata only; no backend run",
-            }),
+                    "backend_fit": recommendations,
+            "executed": false,
+            "note": "v0.9 backend profile recommendation only; no external DST backend run",
+                }),
             json_output,
         )?;
         return Ok(());
@@ -249,32 +249,32 @@ pub(super) fn cmd_sim_backends(json_output: bool) -> anyhow::Result<()> {
         {
             "name": "Loom",
             "backend_fit": ["thread interleavings", "sync concurrency"],
-            "executes_in_v085": false
+            "executes_in_v09": false
         },
         {
             "name": "Shuttle",
             "backend_fit": ["async schedules", "spawn/select boundaries"],
-            "executes_in_v085": false
+            "executes_in_v09": false
         },
         {
             "name": "Turmoil",
             "backend_fit": ["network islands", "virtual time"],
-            "executes_in_v085": false
+            "executes_in_v09": false
         },
         {
             "name": "Madsim",
             "backend_fit": ["distributed simulation", "virtual time"],
-            "executes_in_v085": false
+            "executes_in_v09": false
         },
         {
             "name": "proptest",
             "backend_fit": ["stateful input", "parser/property checks"],
-            "executes_in_v085": false
+            "executes_in_v09": false
         },
         {
             "name": "failpoints",
             "backend_fit": ["failure injection", "retry paths"],
-            "executes_in_v085": false
+            "executes_in_v09": false
         }
     ]);
     print_value(
@@ -314,9 +314,9 @@ fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
     json!({
         "kobo_contract": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
         "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
-        "backend_choice": "possible engines only; v0.8.5 recommends metadata and does not execute a backend.",
+        "backend_choice": "possible engines only; v0.9 backend recommendation does not execute an external DST backend.",
         "backend_fit": recommendations,
-        "inspect_transparency": "use kobo inspect --sim for metadata-only transparency; harness generation is reserved.",
+        "inspect_transparency": "use kobo inspect --sim for v0.9 checked simulation MVP transparency; real harness generation is reserved for v0.10.",
         "executed": false,
         "scout": scout,
     })

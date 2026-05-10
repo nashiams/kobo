@@ -84,6 +84,57 @@ fn guarantee_error_strategy_differs_by_policy_without_runtime_result_change() {
 }
 
 #[test]
+fn typed_error_policy_rewrites_multiple_question_sites_on_one_line() {
+    let project = TestProject::new("error-policy-multiple-sites");
+    let file = project.main_file(
+        r#"
+fn load_and_write() -> Result<(), std::io::Error> {
+    let value = std::fs::read_to_string("user.txt")?; std::fs::write("copy.txt", value)?;
+    Ok(())
+}
+
+fn main() {
+    let _ = load_and_write();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("build"),
+            s("--profile"),
+            s("checked"),
+            s("--emit-rust"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "checked typed error strategy should compile");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "ReadToString",
+        "typed policy must keep a variant for the read site",
+    );
+    assert_contains(
+        &text,
+        "Write",
+        "typed policy must keep a variant for the write site",
+    );
+    assert_contains(
+        &text,
+        "std::fs::read_to_string(\"user.txt\").map_err(KoboTypedError::ReadToString)?",
+        "typed policy must rewrite the first ? site with the read variant",
+    );
+    assert_contains(
+        &text,
+        "std::fs::write(\"copy.txt\", value).map_err(KoboTypedError::Write)?",
+        "typed policy must rewrite the second ? site with the write variant",
+    );
+}
+
+#[test]
 fn external_crate_on_replay_path_emits_k0107_policy_choices() {
     let project = TestProject::new("boundary-policy");
     let file = project.copy_fixture("errors/boundary_replay_http.kobo", "src/main.kobo");

@@ -1,8 +1,20 @@
 {
   "schema_version": 1,
-  "kobo_version": "test",
+  "kobo_version": "0.1.0",
   "target": "src/http.kobo:call",
+  "scenario": {
+    "name": "call",
+    "profile": "async"
+  },
   "guarantee_profile": "checked",
+  "expanded_policy": {
+    "profile": "checked",
+    "ownership": "checked",
+    "liveness": "checked",
+    "replay": "checked",
+    "boundaries": "checked",
+    "errors": "typed"
+  },
   "seed": 1,
   "backend_profile": "async",
   "backend": "shuttle",
@@ -10,6 +22,14 @@
   "replay_guarantee": "partial",
   "modeled_boundaries": ["ward.time"],
   "opaque_boundaries": ["reqwest::Client"],
+  "boundary_assumptions": [
+    {
+      "boundary": "reqwest::Client",
+      "policy": "unselected",
+      "reason": null,
+      "replay_effect": "partial"
+    }
+  ],
   "obligations": [],
   "boundary_decisions": [
     {
@@ -18,6 +38,10 @@
       "reason": null
     }
   ],
-  "failure": {"code": "K0103", "primary_span": "src/http.kobo:1:1"},
+  "failure": {
+    "code": "K0103",
+    "primary_span": "src/http.kobo:1:1",
+    "related_spans": []
+  },
   "events": [{"kind": "outside-boundary", "label": "reqwest::Client", "value": null}]
 }

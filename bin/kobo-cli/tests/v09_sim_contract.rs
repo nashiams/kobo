@@ -299,6 +299,74 @@ fn sim_quick_no_scenario_is_clear_failure() {
 }
 
 #[test]
+fn sim_deep_is_reserved_with_actionable_message() {
+    let project = TestProject::new("sim-deep-reserved");
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
+
+    let output = run_kobo(
+        &[s("test"), s("--sim"), s("deep"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(&output, "v0.9 should reserve deep simulation honestly");
+    let text = output.combined();
+    assert_contains(&text, "--sim deep", "message should name requested profile");
+    assert_contains(&text, "v0.10", "message should point to the future phase");
+    assert_contains(
+        &text,
+        "--sim quick",
+        "message should offer the v0.9 command",
+    );
+}
+
+#[test]
+fn inspect_sim_uses_v09_transparency_wording() {
+    let project = TestProject::new("inspect-sim-wording");
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
+
+    let output = run_kobo(&[s("inspect"), s("--sim"), path_arg(&file)], &project.root);
+
+    assert_success(&output, "inspect --sim should succeed");
+    let text = output.combined();
+    assert_contains(&text, "v0.9", "inspect --sim should name v0.9 scope");
+    assert_contains(
+        &text,
+        "checked simulation MVP",
+        "inspect --sim should describe the scoped v0.9 surface",
+    );
+    assert_not_contains(
+        &text,
+        "v0.8.5",
+        "inspect --sim must not expose stale v0.8.5 wording",
+    );
+}
+
+#[test]
+fn sim_scout_why_uses_v09_backend_recommendation_wording() {
+    let project = TestProject::new("sim-scout-wording");
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
+
+    let output = run_kobo(
+        &[s("sim"), s("scout"), s("--why"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_success(&output, "sim scout --why should succeed");
+    let text = output.combined();
+    assert_contains(&text, "v0.9", "scout should name v0.9 scope");
+    assert_contains(
+        &text,
+        "recommendation",
+        "scout should describe backend choice as recommendation",
+    );
+    assert_not_contains(
+        &text,
+        "v0.8.5",
+        "sim scout must not expose stale v0.8.5 wording",
+    );
+}
+
+#[test]
 fn deterministic_time_random_same_seed_replays_and_changed_seed_changes_events() {
     let project = TestProject::new("sim-deterministic");
     let file = project.copy_fixture("sim/deterministic.kobo", "src/deterministic.kobo");

@@ -162,6 +162,42 @@ fn strict_alias_rejects_same_debt_as_release_profile() {
 }
 
 #[test]
+fn strict_run_and_inspect_are_public_release_surfaces() {
+    let project = TestProject::new("strict-run-inspect");
+    let file = project.main_file("fn main() {\n    println!(\"strict ok\");\n}\n");
+
+    let run = run_kobo(&[s("run"), s("--strict"), path_arg(&file)], &project.root);
+    assert_success(
+        &run,
+        "run --strict should use the strict pipeline for accepted source",
+    );
+    assert_not_contains(
+        &run.combined(),
+        "not yet implemented",
+        "strict run must not be a placeholder rejection",
+    );
+
+    let inspect = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+    assert_success(
+        &inspect,
+        "inspect --strict should render strict generated Rust for accepted source",
+    );
+    assert_contains(
+        &inspect.combined(),
+        "fn main",
+        "strict inspect must expose generated Rust",
+    );
+    assert_not_contains(
+        &inspect.combined(),
+        "not yet implemented",
+        "strict inspect must not be a placeholder rejection",
+    );
+}
+
+#[test]
 fn audit_classifies_mechanical_structural_and_unknown_debt() {
     let project = TestProject::new("audit-tiers");
     let file = project.copy_fixture("strict/audit_tiers.kobo", "src/main.kobo");

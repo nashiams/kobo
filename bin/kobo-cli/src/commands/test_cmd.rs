@@ -112,7 +112,7 @@ fn write_failure_witness(
     );
     let witness = serde_json::json!({
         "schema_version": 1,
-        "kobo_version": "test",
+        "kobo_version": env!("CARGO_PKG_VERSION"),
         "target": format!("{}:{}", source_path, run.scenario.name),
         "source": {
             "path": source_path,

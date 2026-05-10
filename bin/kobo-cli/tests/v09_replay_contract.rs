@@ -60,6 +60,16 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
     ] {
         assert_json_has_path(&json, path, ".kwit witness required field");
     }
+    assert_eq!(
+        json["kobo_version"].as_str(),
+        Some(env!("CARGO_PKG_VERSION")),
+        "witness must record the real Kobo package version"
+    );
+    assert_ne!(
+        json["kobo_version"].as_str(),
+        Some("test"),
+        "witness version must not be placeholder text"
+    );
     assert_eq!(json["failure"]["code"], "K0100");
     assert_eq!(json["backend"], "shuttle");
     assert_contains(

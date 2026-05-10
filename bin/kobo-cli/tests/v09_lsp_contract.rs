@@ -1,8 +1,8 @@
 mod v09_common;
 
 use v09_common::{
-    assert_contains, assert_mentions_line, assert_not_contains, assert_success, fixture_text,
-    one_based_line_of, path_arg, run_kobo, s, TestProject,
+    assert_contains, assert_failure, assert_mentions_line, assert_not_contains, assert_success,
+    fixture_text, one_based_line_of, path_arg, run_kobo, s, TestProject,
 };
 
 #[test]
@@ -66,6 +66,53 @@ fn lsp_uses_kwit_link_when_failure_has_witness() {
     let text = output.combined();
     assert_contains(&text, "K0100", "LSP should publish liveness failure");
     assert_contains(&text, ".kwit", "LSP should expose witness link");
+}
+
+#[test]
+fn lsp_links_existing_witness_path_instead_of_placeholder() {
+    let project = TestProject::new("lsp-existing-kwit-link");
+    let file = project.copy_fixture("lsp/leak_delivery.kobo", "src/main.kobo");
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&sim, "failing scenario should emit a witness");
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(
+        !witnesses.is_empty(),
+        "witness must exist before LSP lookup"
+    );
+    let witness_name = witnesses[0]
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("witness filename should be UTF-8");
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            s("--format=json"),
+            s("--no-project-ok"),
+            s("--include-actions"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "LSP diagnostics should succeed");
+    let text = output.combined();
+    assert_contains(&text, witness_name, "LSP should link the emitted witness");
+    assert_not_contains(
+        &text,
+        "<target>.kwit",
+        "LSP witness link must not be a placeholder",
+    );
 }
 
 #[test]

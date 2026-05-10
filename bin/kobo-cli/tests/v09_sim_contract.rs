@@ -382,6 +382,39 @@ fn raw_clock_on_replay_path_emits_k0102() {
 }
 
 #[test]
+fn uncontrolled_effect_emits_k0103() {
+    let project = TestProject::new("uncontrolled-effect");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn uncontrolled_effect() {
+    let _ = std::fs::read_to_string("state.txt");
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "uncontrolled effect must block exact replay");
+    let text = output.combined();
+    assert_contains(&text, "K0103", "uncontrolled effect must emit K0103");
+    assert_contains(
+        &text,
+        "uncontrolled",
+        "K0103 message must name uncontrolled replay effect",
+    );
+}
+
+#[test]
 fn failure_injection_hooks_are_distinct_and_seed_deterministic() {
     let project = TestProject::new("failure-injection");
     let file = project.copy_fixture("sim/failure_injection.kobo", "src/main.kobo");

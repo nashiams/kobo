@@ -20,11 +20,6 @@ pub(super) fn cmd_run(
     erase_lifetimes: bool,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
-    if session.mode() == KoboMode::Strict {
-        eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
-        eprintln!("hint: use --checked for advisory ownership warnings");
-        std::process::exit(1);
-    }
 
     let compile_result = if erase_lifetimes {
         run_and_compile_with_lifetime_erasure(&mut session, file)
@@ -74,11 +69,6 @@ pub(super) fn cmd_inspect(
     audit: Option<&str>,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_mode)?;
-    if session.mode() == KoboMode::Strict {
-        eprintln!("error: --strict mode is not yet implemented (target: v0.9)");
-        eprintln!("hint: use --checked for advisory ownership warnings");
-        std::process::exit(1);
-    }
 
     if audit == Some("json") {
         let source = std::fs::read_to_string(file)

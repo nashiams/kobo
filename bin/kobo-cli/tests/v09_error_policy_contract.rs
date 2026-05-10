@@ -146,6 +146,93 @@ fn boundary_diagnostic_names_dynamic_external_crate() {
 }
 
 #[test]
+fn replay_critical_check_names_dynamic_external_crate() {
+    let project = TestProject::new("replay-critical-dynamic-crate");
+    let crate_name = unique_symbol("external_service");
+    let file = project.write(
+        "src/main.kobo",
+        &format!(
+            r#"
+use {crate_name}::Client;
+
+#[kobo::scenario(name = "fetch_user")]
+fn fetch_user() {{
+    let client = Client::new();
+    println!("{{:?}}", client);
+}}
+"#
+        ),
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            s("--replay-critical"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    let text = output.combined();
+    assert_success(
+        &output,
+        "replay-critical check should keep compatibility while emitting boundary policy",
+    );
+    assert_contains(&text, "K0107", "replay-critical check must emit K0107");
+    assert_contains(
+        &text,
+        &crate_name,
+        "replay-critical check must name the actual external crate",
+    );
+    assert!(
+        !text.contains("reqwest") || crate_name.contains("reqwest"),
+        "boundary diagnostic must not be canned to reqwest:\n{text}"
+    );
+}
+
+#[test]
+fn replay_critical_check_reports_crate_head_for_nested_client_path() {
+    let project = TestProject::new("replay-critical-nested-client");
+    let crate_name = unique_symbol("nested_service");
+    let file = project.write(
+        "src/main.kobo",
+        &format!(
+            r#"
+use {crate_name}::api::Client;
+
+#[kobo::scenario(name = "fetch_nested")]
+fn fetch_nested() {{
+    let client = Client::new();
+    println!("{{:?}}", client);
+}}
+"#
+        ),
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            s("--replay-critical"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "replay-critical check should keep compatibility while emitting boundary policy",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        &format!("unmodeled external boundary `{crate_name}`"),
+        "boundary diagnostic should report the external crate head",
+    );
+}
+
+#[test]
 fn boundary_failure_witness_records_policy_choices_and_dynamic_crate() {
     let project = TestProject::new("boundary-witness-policy");
     let crate_name = unique_symbol("external_service");

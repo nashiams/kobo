@@ -27,7 +27,7 @@ pub(crate) enum KoboCommand {
         #[arg(
             long,
             conflicts_with = "checked",
-            help = "Check in strict mode (v0.9 — not yet implemented)"
+            help = "Check in release/strict guarantee mode"
         )]
         strict: bool,
         #[arg(long, value_enum, help = "Select a guarantee policy preset")]
@@ -96,7 +96,7 @@ pub(crate) enum KoboCommand {
         #[arg(
             long,
             conflicts_with = "checked",
-            help = "Run in strict mode (v0.9 — not yet implemented)"
+            help = "Run in release/strict guarantee mode"
         )]
         strict: bool,
         #[arg(
@@ -118,7 +118,7 @@ pub(crate) enum KoboCommand {
         #[arg(
             long,
             conflicts_with = "checked",
-            help = "Inspect in strict mode (v0.9 — not yet implemented)"
+            help = "Inspect in release/strict guarantee mode"
         )]
         strict: bool,
         #[arg(long, help = "Strip all Kobo wrappers, output standalone Rust")]

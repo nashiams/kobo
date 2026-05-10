@@ -188,6 +188,11 @@ enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    UncontrolledEffect {
+        operation: String,
+        span_start: usize,
+        span_end: usize,
+    },
     ExternalBoundary {
         crate_name: String,
         span_start: usize,
@@ -222,6 +227,7 @@ struct SimulationRuntime<'a> {
     boundary_decisions: Vec<BoundaryDecision>,
     budget_failure: Option<ScenarioFailure>,
     raw_failure: Option<ScenarioFailure>,
+    uncontrolled_failure: Option<ScenarioFailure>,
     boundary_failure: Option<ScenarioFailure>,
 }
 
@@ -490,6 +496,7 @@ impl<'a> SimulationRuntime<'a> {
             boundary_decisions: Vec::new(),
             budget_failure: None,
             raw_failure: None,
+            uncontrolled_failure: None,
             boundary_failure: None,
         }
     }
@@ -525,6 +532,11 @@ impl<'a> SimulationRuntime<'a> {
                     span_start,
                     span_end,
                 } => self.record_raw_failure(operation, (*span_start, *span_end)),
+                ScenarioOperation::UncontrolledEffect {
+                    operation,
+                    span_start,
+                    span_end,
+                } => self.record_uncontrolled_failure(operation, (*span_start, *span_end)),
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
                     span_start,
@@ -546,6 +558,7 @@ impl<'a> SimulationRuntime<'a> {
         let failure = self
             .budget_failure
             .or(self.raw_failure)
+            .or(self.uncontrolled_failure)
             .or(liveness_failure)
             .or(self.boundary_failure);
         if let Some(failure) = failure.as_ref() {
@@ -644,6 +657,25 @@ impl<'a> SimulationRuntime<'a> {
             primary_end: span.1,
             events: vec![SimEvent {
                 kind: "raw-nondeterminism".to_owned(),
+                label: Some(operation.to_owned()),
+                value: None,
+            }],
+        });
+    }
+
+    fn record_uncontrolled_failure(&mut self, operation: &str, span: (usize, usize)) {
+        if self.uncontrolled_failure.is_some() {
+            return;
+        }
+        self.uncontrolled_failure = Some(ScenarioFailure {
+            code: KErrorCode::K0103,
+            message: format!(
+                "scenario cannot replay uncontrolled effect `{operation}`; model, record, or mark replay debt"
+            ),
+            primary_start: span.0,
+            primary_end: span.1,
+            events: vec![SimEvent {
+                kind: "uncontrolled-effect".to_owned(),
                 label: Some(operation.to_owned()),
                 value: None,
             }],
@@ -807,6 +839,15 @@ fn effect_operations(line: &str, global_offset: usize) -> Vec<ScenarioOperation>
         if let Some(local_start) = line.find(needle) {
             operations.push(ScenarioOperation::RawNondeterminism {
                 operation: needle.to_owned(),
+                span_start: global_offset + local_start,
+                span_end: global_offset + local_start + needle.len(),
+            });
+        }
+    }
+    for needle in ["std::fs::", "std::process::", "std::net::"] {
+        if let Some(local_start) = line.find(needle) {
+            operations.push(ScenarioOperation::UncontrolledEffect {
+                operation: needle.trim_end_matches("::").to_owned(),
                 span_start: global_offset + local_start,
                 span_end: global_offset + local_start + needle.len(),
             });

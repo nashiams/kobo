@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kobo_driver::run_check_pipeline;
 use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
@@ -74,10 +74,19 @@ fn v09_lsp_diagnostics(
         },
     );
 
+    let witness_path = witness_path_for_scenario(&run.scenario.name);
     Ok(run
         .failure
         .iter()
-        .map(|failure| diagnostic_from_sim_failure(file_id, &document.source, failure))
+        .map(|failure| {
+            diagnostic_from_sim_failure(
+                file_id,
+                &document.source,
+                failure,
+                &run.scenario.name,
+                witness_path.as_deref(),
+            )
+        })
         .collect())
 }
 
@@ -85,6 +94,8 @@ fn diagnostic_from_sim_failure(
     file_id: kobo_ir::FileId,
     source: &str,
     failure: &ScenarioFailure,
+    scenario_name: &str,
+    witness_path: Option<&Path>,
 ) -> KDiagnostic {
     let start = failure.primary_start.min(source.len()) as u32;
     let mut end = failure.primary_end.min(source.len()) as u32;
@@ -96,11 +107,21 @@ fn diagnostic_from_sim_failure(
         failure.code,
         Severity::Error,
         DiagLabel::primary(span, label_for_sim_failure(failure.code)),
-        explanation_for_sim_failure(failure),
+        explanation_for_sim_failure(failure, scenario_name, witness_path),
         decision_for_sim_failure(failure.code),
     );
     diagnostic = match failure.code {
-        KErrorCode::K0100 => diagnostic.with_run("kobo replay .kobo/witnesses/<target>.kwit"),
+        KErrorCode::K0100 => {
+            let command = witness_path
+                .map(|path| format!("kobo replay {}", path.display()))
+                .unwrap_or_else(|| {
+                    format!(
+                        "kobo replay .kobo/witnesses/{}-0.kwit",
+                        sanitize_witness_name(scenario_name)
+                    )
+                });
+            diagnostic.with_run(command)
+        }
         KErrorCode::K0107 => diagnostic.with_run("kobo test --sim quick"),
         _ => diagnostic.with_run("kobo test --sim quick"),
     };
@@ -117,9 +138,23 @@ fn label_for_sim_failure(code: KErrorCode) -> &'static str {
     }
 }
 
-fn explanation_for_sim_failure(failure: &ScenarioFailure) -> String {
+fn explanation_for_sim_failure(
+    failure: &ScenarioFailure,
+    scenario_name: &str,
+    witness_path: Option<&Path>,
+) -> String {
     match failure.code {
-        KErrorCode::K0100 => format!("{}; witness .kobo/witnesses/<target>.kwit", failure.message),
+        KErrorCode::K0100 => {
+            let witness = witness_path
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        ".kobo/witnesses/{}-0.kwit",
+                        sanitize_witness_name(scenario_name)
+                    )
+                });
+            format!("{}; witness {witness}", failure.message)
+        }
         _ => failure.message.clone(),
     }
 }
@@ -133,4 +168,32 @@ fn decision_for_sim_failure(code: KErrorCode) -> DiagDecision {
         _ => "run kobo test --sim quick for the scenario failure",
     };
     DiagDecision(decision.to_owned())
+}
+
+fn witness_path_for_scenario(scenario_name: &str) -> Option<PathBuf> {
+    let witness_dir = std::env::current_dir()
+        .ok()?
+        .join(".kobo")
+        .join("witnesses");
+    let prefix = format!("{}-", sanitize_witness_name(scenario_name));
+    let mut candidates = std::fs::read_dir(witness_dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("kwit"))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn sanitize_witness_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
 }

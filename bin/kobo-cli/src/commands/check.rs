@@ -448,16 +448,19 @@ fn project_boundary_policy_diagnostics(
     file: &Path,
 ) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)?;
-    if !has_external_boundary(&source) {
+    let Some(boundary_call) = external_replay_boundary(&source) else {
         return Ok(());
-    }
+    };
 
     let Some((file_id, _)) = session.file_set().iter_files().next() else {
         return Ok(());
     };
     let boundary = parse_boundary_attr(&source);
-    let offset = source.find("reqwest").unwrap_or(0) as u32;
-    let span = kobo_ir::KoboSpan::new(offset, offset + "reqwest".len() as u32, file_id);
+    let span = kobo_ir::KoboSpan::new(
+        boundary_call.span_start as u32,
+        boundary_call.span_end as u32,
+        file_id,
+    );
 
     match boundary {
         Some(BoundaryPolicy {
@@ -472,9 +475,15 @@ fn project_boundary_policy_diagnostics(
                     severity,
                     DiagLabel::primary(
                         span,
-                        format!("boundary policy `{policy}` recorded for reqwest"),
+                        format!(
+                            "boundary policy `{policy}` recorded for {}",
+                            boundary_call.crate_name
+                        ),
                     ),
-                    format!("boundary policy `{policy}` recorded for `reqwest`: {reason}"),
+                    format!(
+                        "boundary policy `{policy}` recorded for `{}`: {reason}",
+                        boundary_call.crate_name
+                    ),
                     DiagDecision("review this policy before claiming exact replay".to_owned()),
                 )
                 .with_suppression(DiagnosticSuppression::new(span, reason)),
@@ -487,14 +496,20 @@ fn project_boundary_policy_diagnostics(
             push_boundary_prompt(
                 session,
                 span,
-                format!("boundary policy `{policy}` for `reqwest` requires a reason"),
+                format!(
+                    "boundary policy `{policy}` for `{}` requires a reason",
+                    boundary_call.crate_name
+                ),
             );
         }
         None => {
             push_boundary_prompt(
                 session,
                 span,
-                "unmodeled external boundary `reqwest`; choose model, record, stub, outside, opaque, or debt".to_owned(),
+                format!(
+                    "unmodeled external boundary `{}`; choose model, record, stub, outside, opaque, or debt",
+                    boundary_call.crate_name
+                ),
             );
         }
     }
@@ -640,8 +655,64 @@ struct BoundaryPolicy {
     reason: Option<String>,
 }
 
-fn has_external_boundary(source: &str) -> bool {
-    source.contains("reqwest::") || source.contains("use reqwest")
+struct ExternalReplayBoundary {
+    crate_name: String,
+    span_start: usize,
+    span_end: usize,
+}
+
+fn external_replay_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    direct_client_boundary(source).or_else(|| imported_client_boundary(source))
+}
+
+fn direct_client_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        if let Some(separator) = line.find("::Client::new") {
+            let prefix = &line[..separator];
+            let path_start = prefix
+                .char_indices()
+                .rev()
+                .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_' || *ch == ':'))
+                .map(|(index, _)| index + 1)
+                .unwrap_or(0);
+            let path = &prefix[path_start..];
+            let crate_name = path.split("::").next().unwrap_or(path).to_owned();
+            return Some(ExternalReplayBoundary {
+                span_start: line_offset + path_start,
+                span_end: line_offset + path_start + crate_name.len(),
+                crate_name,
+            });
+        }
+        line_offset += line.len() + 1;
+    }
+    None
+}
+
+fn imported_client_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    if !source.contains("Client::new") {
+        return None;
+    }
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("use ") else {
+            line_offset += line.len() + 1;
+            continue;
+        };
+        let Some(separator) = rest.find("::Client") else {
+            line_offset += line.len() + 1;
+            continue;
+        };
+        let path = rest[..separator].trim();
+        let crate_name = path.split("::").next().unwrap_or(path).to_owned();
+        let local_start = line.find(&crate_name).unwrap_or(0);
+        return Some(ExternalReplayBoundary {
+            span_start: line_offset + local_start,
+            span_end: line_offset + local_start + crate_name.len(),
+            crate_name,
+        });
+    }
+    None
 }
 
 fn parse_boundary_attr(source: &str) -> Option<BoundaryPolicy> {

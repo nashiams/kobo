@@ -147,6 +147,41 @@ fn function_names(source: &str) -> Vec<String> {
     names
 }
 
+fn function_line_count(source: &str, function_name: &str) -> Option<usize> {
+    let lines = source.lines().collect::<Vec<_>>();
+    for (start_index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("fn ")
+            && !trimmed.starts_with("pub fn ")
+            && !trimmed.starts_with("pub(crate) fn ")
+        {
+            continue;
+        }
+        if !trimmed.contains(&format!("fn {function_name}")) {
+            continue;
+        }
+
+        let mut brace_depth = 0isize;
+        let mut has_body = false;
+        for (end_index, body_line) in lines.iter().enumerate().skip(start_index) {
+            for ch in body_line.chars() {
+                match ch {
+                    '{' => {
+                        brace_depth += 1;
+                        has_body = true;
+                    }
+                    '}' => brace_depth -= 1,
+                    _ => {}
+                }
+            }
+            if has_body && brace_depth <= 0 {
+                return Some(end_index - start_index + 1);
+            }
+        }
+    }
+    None
+}
+
 fn count_nonblank_noncomment_lines(source: &str) -> usize {
     strip_comments_and_strings(source)
         .lines()
@@ -179,6 +214,18 @@ fn collect_pipeline_sources() -> BTreeMap<String, String> {
     }
 
     sources
+}
+
+#[test]
+fn analysis_phase_entrypoint_is_not_a_god_function() {
+    let source = read_required(&src_path("pipeline/analysis.rs"));
+    let line_count = function_line_count(&source, "run_analysis_phase")
+        .expect("pipeline/analysis.rs must define run_analysis_phase");
+
+    assert!(
+        line_count <= 120,
+        "run_analysis_phase should orchestrate named projection steps, not own every diagnostic block; found {line_count} lines"
+    );
 }
 
 #[test]

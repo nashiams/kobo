@@ -5,14 +5,30 @@ use anyhow::Context;
 use kobo_errors::{format_diagnostic, render_k0020, render_k0021, DiagOwnerStats};
 use kobo_ir::{FileId, KoboSpan};
 
+use super::ownership_analysis;
+
 pub(super) fn cmd_perf(
     file: &Path,
     from: Option<&Path>,
     threshold: Option<u64>,
+    format: Option<&str>,
 ) -> anyhow::Result<()> {
     let threshold = threshold
         .or_else(|| std::env::var("KOBO_DIAG_THRESHOLD").ok()?.parse().ok())
         .unwrap_or(10_000_u64);
+
+    if format == Some("json") {
+        if let Some(log) = from {
+            let diag_text = fs::read_to_string(log)
+                .with_context(|| format!("failed to read diag log {}", log.display()))?;
+            print!("{}", diag_log_perf_json(file, &diag_text, threshold)?);
+        } else {
+            let source = fs::read_to_string(file)
+                .with_context(|| format!("failed to read {}", file.display()))?;
+            print!("{}", source_perf_json(file, &source, threshold)?);
+        }
+        return Ok(());
+    }
 
     let diag_text = match from {
         Some(log) => fs::read_to_string(log)
@@ -27,7 +43,7 @@ pub(super) fn cmd_perf(
         }
     };
 
-    let entries = parse_diag_log(&diag_text);
+    let entries = parse_diag_log(&diag_text, threshold);
     if entries.is_empty() {
         println!("No [kobo-diag] entries found in log (threshold: {threshold}).");
         return Ok(());
@@ -57,11 +73,90 @@ pub(super) fn cmd_perf(
     Ok(())
 }
 
+fn source_perf_json(file: &Path, source: &str, threshold: u64) -> anyhow::Result<String> {
+    let analysis = ownership_analysis::analyze_source(source);
+    let hot_paths = analysis
+        .perf
+        .hot_paths
+        .iter()
+        .map(|path| {
+            serde_json::json!({
+                "line": path.line,
+                "kind": path.kind,
+                "binding": path.binding,
+                "field": path.field,
+            })
+        })
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "file": cli_relative_path(file)?,
+        "borrow_count": analysis.perf.borrow_count,
+        "mut_borrow_count": analysis.perf.mut_borrow_count,
+        "contention": analysis.perf.contention,
+        "hot_paths": hot_paths,
+        "threshold": threshold,
+    });
+    Ok(format!("{}\n", serde_json::to_string(&value)?))
+}
+
+fn diag_log_perf_json(file: &Path, diag_text: &str, threshold: u64) -> anyhow::Result<String> {
+    let entries = parse_diag_log(diag_text, threshold);
+    let borrow_count = entries.iter().map(|stats| stats.borrow_count).sum::<u64>();
+    let mut_borrow_count = entries
+        .iter()
+        .map(|stats| stats.mut_borrow_count)
+        .sum::<u64>();
+    let contention = entries
+        .iter()
+        .map(|stats| stats.contention_count)
+        .sum::<u64>();
+    let hot_paths = entries
+        .iter()
+        .map(|stats| {
+            serde_json::json!({
+                "binding": stats.binding_name,
+                "borrow_count": stats.borrow_count,
+                "mut_borrow_count": stats.mut_borrow_count,
+                "contention": stats.contention_count,
+                "saturated": stats.saturated,
+                "hot": stats.borrow_count > threshold || stats.mut_borrow_count > threshold,
+            })
+        })
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "file": cli_relative_path(file)?,
+        "source": "diag_log",
+        "borrow_count": borrow_count,
+        "mut_borrow_count": mut_borrow_count,
+        "contention": contention,
+        "hot_paths": hot_paths,
+        "threshold": threshold,
+    });
+    Ok(format!("{}\n", serde_json::to_string(&value)?))
+}
+
+fn cli_relative_path(file: &Path) -> anyhow::Result<String> {
+    let absolute = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to determine current directory")?
+            .join(file)
+    };
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    let display_path = absolute.strip_prefix(&cwd).unwrap_or(&absolute);
+    Ok(display_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
 /// Parse all `[kobo-diag]` blocks from a diag log capture.
 ///
 /// Each block starts with a `[kobo-diag] <loc> — (Rc<RefCell<T>>)` header line
 /// and contains indented key: value lines until the next block or EOF.
-fn parse_diag_log(text: &str) -> Vec<DiagOwnerStats> {
+fn parse_diag_log(text: &str, threshold: u64) -> Vec<DiagOwnerStats> {
     let mut results = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
@@ -80,6 +175,12 @@ fn parse_diag_log(text: &str) -> Vec<DiagOwnerStats> {
             .split(" — ")
             .next()
             .unwrap_or("")
+            .trim()
+            .to_owned();
+        let loc_part = loc_part
+            .split(" - ")
+            .next()
+            .unwrap_or(&loc_part)
             .trim()
             .to_owned();
 
@@ -113,7 +214,7 @@ fn parse_diag_log(text: &str) -> Vec<DiagOwnerStats> {
             mut_borrow_count,
             contention_count,
             saturated,
-            threshold: 10_000,
+            threshold,
         });
     }
 

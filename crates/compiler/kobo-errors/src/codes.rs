@@ -148,6 +148,9 @@ define_error_codes! {
     K0111 => "K0111",
     K0112 => "K0112",
     K0113 => "K0113",
+    K0114 => "K0114",
+    K0115 => "K0115",
+    K0116 => "K0116",
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -209,12 +212,12 @@ impl KErrorCode {
             Self::K0090 => "migration cannot continue - value crosses into external crate",
             Self::K0095 => "ownership of macro-generated value cannot be inferred",
             Self::K0099 => "rustc error remapped to Kobo source",
-            Self::K0100 => "liveness obligation may leave without a required call",
+            Self::K0100 => "checked scenario dropped an unresolved liveness token",
             Self::K0101 => "liveness obligation escapes local analysis",
-            Self::K0102 => "raw nondeterminism appears in a scenario or future replay zone",
-            Self::K0103 => "malformed must_call attribute",
-            Self::K0104 => "invalid kwit witness schema",
-            Self::K0105 => "malformed scenario metadata",
+            Self::K0102 => "raw nondeterminism appears on a replay path",
+            Self::K0103 => "scenario cannot replay an uncontrolled effect",
+            Self::K0104 => ".kwit replay diverged from recorded history",
+            Self::K0105 => "scenario exceeded quick-profile budget",
             Self::K0106 => "witness shrink is unsafe",
             Self::K0107 => "unmodeled external crate boundary",
             Self::K0108 => "replay obligation suppressed",
@@ -223,6 +226,9 @@ impl KErrorCode {
             Self::K0111 => "unclosed delimiter",
             Self::K0112 => "invalid item skipped",
             Self::K0113 => "parser recovery limit reached",
+            Self::K0114 => "malformed must_call attribute",
+            Self::K0115 => "invalid kwit witness schema",
+            Self::K0116 => "malformed scenario metadata",
             _ => "reserved diagnostic code",
         }
     }

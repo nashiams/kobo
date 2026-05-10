@@ -21,6 +21,7 @@ fn guarantee_error_strategy_differs_by_policy_without_runtime_result_change() {
         ],
         &project.root,
     );
+    let dev_generated = project.read("src/main.rs");
     let checked = run_kobo(
         &[
             s("build"),
@@ -56,9 +57,29 @@ fn guarantee_error_strategy_differs_by_policy_without_runtime_result_change() {
         "checked should generate typed enum shape",
     );
     assert_contains(
+        &checked.combined(),
+        "ReadToString",
+        "checked typed error policy must derive a concrete variant from the ? site",
+    );
+    assert_contains(
+        &checked.combined(),
+        "map_err(KoboTypedError::ReadToString)",
+        "checked typed error policy must route the ? site through the generated variant",
+    );
+    assert_contains(
         &release.combined(),
         "explicit",
         "release should require explicit error policy evidence",
+    );
+    assert_contains(
+        &release.combined(),
+        "error_site line",
+        "release explicit policy must record site-level evidence",
+    );
+    assert_contains(
+        &dev_generated,
+        "Box<dyn",
+        "generated Rust file must contain the selected dev error policy, not only stdout",
     );
 }
 
@@ -121,6 +142,52 @@ fn boundary_diagnostic_names_dynamic_external_crate() {
         &text,
         &crate_name,
         "K0107 must identify the actual external boundary, not a canned crate",
+    );
+}
+
+#[test]
+fn boundary_failure_witness_records_policy_choices_and_dynamic_crate() {
+    let project = TestProject::new("boundary-witness-policy");
+    let crate_name = unique_symbol("external_service");
+    let file = project.copy_fixture_template(
+        "errors/boundary_dynamic.template.kobo",
+        "src/main.kobo",
+        &[("__CRATE__", &crate_name)],
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "dynamic external boundary should emit a witness");
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(
+        !witnesses.is_empty(),
+        "boundary failure should create a .kwit witness"
+    );
+    let witness = std::fs::read_to_string(&witnesses[0]).expect("witness should be readable");
+    assert_contains(
+        &witness,
+        &crate_name,
+        "witness boundary metadata must name the actual external crate",
+    );
+    assert_contains(
+        &witness,
+        "unselected",
+        "witness must record that no boundary policy has been selected",
+    );
+    assert_contains(
+        &witness,
+        "partial",
+        "opaque boundary witness must not claim exact deterministic replay",
     );
 }
 

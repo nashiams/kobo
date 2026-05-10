@@ -37,6 +37,8 @@ pub enum DiagnosticCategory {
     Liveness,
     Nondeterminism,
     BoundaryPolicy,
+    Replay,
+    Simulation,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -97,6 +99,8 @@ impl DiagnosticCategory {
             Self::Liveness => "liveness",
             Self::Nondeterminism => "nondeterminism",
             Self::BoundaryPolicy => "boundary-policy",
+            Self::Replay => "replay",
+            Self::Simulation => "simulation",
         }
     }
 }
@@ -753,7 +757,7 @@ fn migration_entries() -> Vec<DiagnosticRegistryEntry> {
 }
 
 fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
-    use DiagnosticCategory::{BoundaryPolicy, Liveness, Nondeterminism};
+    use DiagnosticCategory::{BoundaryPolicy, Liveness, Nondeterminism, Replay, Simulation};
     use MachineEditPolicy::{NotApplicable, RefuseByDefault};
     use ModeBehavior::{NoModeDependency, ReplayBoundaryPrompt, ScriptDebtStrictError};
     use Severity::{Error, Warning};
@@ -763,10 +767,10 @@ fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
     vec![
         entry(
             KErrorCode::K0100,
-            "liveness-obligation-unresolved",
-            "liveness obligation may leave without a required call",
-            "A local value marked must_call may exit a path before commit, rollback, or another required action.",
-            "Kobo reports this as Script debt so ordinary code can keep running while the obligation remains visible. Add the required call on the exit path or suppress it with a recorded reason.",
+            "checked-runtime-liveness-token-dropped",
+            "checked scenario dropped an unresolved liveness token",
+            "A checked-profile scenario dropped a runtime liveness token before ack, nack, requeue, commit, rollback, or another required action.",
+            "Checked simulation records liveness obligations at runtime. Resolve the token with one of its required actions, or record explicit debt when the obligation is intentionally discharged outside the modeled scenario.",
             Liveness,
             Warning,
             ScriptDebtCheckedWarningStrictError,
@@ -789,10 +793,10 @@ fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
         ),
         entry(
             KErrorCode::K0102,
-            "raw-nondeterminism-in-scenario",
-            "raw nondeterminism appears in a scenario or future replay zone",
-            "A scenario or modeled-risk region uses raw nondeterminism such as time, random, spawn, filesystem, network, process, or external I/O.",
-            "Kobo does not claim replay for this code in v0.8.5. Use a policy wrapper, boundary policy, or scout recommendation before asking for deterministic evidence.",
+            "raw-nondeterminism-on-replay-path",
+            "raw nondeterminism appears on a replay path",
+            "A replay-critical path uses raw nondeterminism such as time, random, spawn, filesystem, network, process, or external I/O.",
+            "Choose a deterministic facade, record the effect, or mark explicit replay debt before claiming deterministic replay for this scenario.",
             Nondeterminism,
             Warning,
             Always(Warning),
@@ -802,6 +806,45 @@ fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
         ),
         entry(
             KErrorCode::K0103,
+            "uncontrolled-effect-blocks-replay",
+            "scenario cannot replay an uncontrolled effect",
+            "A scenario reached an uncontrolled effect that was neither modeled nor recorded, so Kobo cannot replay the failure exactly.",
+            "Add a deterministic model, record the effect stream, choose a boundary policy, or mark this scenario as partial replay debt.",
+            Replay,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0104,
+            "kwit-replay-diverged",
+            ".kwit replay diverged from recorded history",
+            "Replay observed an event stream that diverged from the history recorded in the .kwit witness.",
+            "Compare the expected and observed events, verify source identity, and regenerate the witness after intentional source or boundary changes.",
+            Replay,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            ReviewOnly,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0105,
+            "sim-quick-budget-exceeded",
+            "scenario exceeded quick-profile budget",
+            "A deterministic quick-profile scenario exceeded its configured tick or event budget.",
+            "Increase the simulation profile budget, reduce the scenario, or run a deeper profile when the longer exploration is intentional.",
+            Simulation,
+            Error,
+            Always(Error),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
+        ),
+        entry(
+            KErrorCode::K0114,
             "malformed-must-call-attribute",
             "malformed must_call attribute",
             "A must_call obligation attribute could not be parsed into one or more named actions.",
@@ -814,11 +857,11 @@ fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
             NotApplicable,
         ),
         entry(
-            KErrorCode::K0104,
+            KErrorCode::K0115,
             "invalid-kwit-witness-schema",
             "invalid kwit witness schema",
             "A .kwit witness is missing required metadata or uses an unsupported schema version.",
-            "Kobo v0.8.5 validates schema_version 0 witnesses but does not execute deterministic replay.",
+            "Kobo v0.8.5 validates schema_version 0 witnesses but does not execute deterministic replay. v0.9 exact replay uses K0104 only for event-history divergence.",
             BoundaryPolicy,
             Error,
             Always(Error),
@@ -827,7 +870,7 @@ fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
             NotApplicable,
         ),
         entry(
-            KErrorCode::K0105,
+            KErrorCode::K0116,
             "malformed-scenario-metadata",
             "malformed scenario metadata",
             "A scenario attribute is missing required metadata such as its stable scenario name.",

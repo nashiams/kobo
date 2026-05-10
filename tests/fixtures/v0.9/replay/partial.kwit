@@ -5,9 +5,19 @@
   "guarantee_profile": "checked",
   "seed": 1,
   "backend_profile": "async",
+  "backend": "shuttle",
+  "backend_replay": "partial-boundary-fixture",
   "replay_guarantee": "partial",
   "modeled_boundaries": ["ward.time"],
   "opaque_boundaries": ["reqwest::Client"],
+  "obligations": [],
+  "boundary_decisions": [
+    {
+      "crate": "reqwest::Client",
+      "policy": "unselected",
+      "reason": null
+    }
+  ],
   "failure": {"code": "K0103", "primary_span": "src/http.kobo:1:1"},
-  "events": [{"kind": "outside-boundary"}]
+  "events": [{"kind": "outside-boundary", "label": "reqwest::Client", "value": null}]
 }

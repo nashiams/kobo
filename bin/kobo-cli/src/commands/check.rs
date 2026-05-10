@@ -11,13 +11,18 @@ use kobo_errors::{
 };
 use kobo_ir::{FileSetBuilder, KoboMode, KoboSpan};
 
-use crate::ErrorFormat;
+use crate::{ErrorFormat, GuaranteeProfileArg, PolicyOutputFormat};
 
-use super::session::{build_session, render_diagnostics_with_format};
+use super::{
+    policy,
+    session::{build_session, render_diagnostics_with_format},
+};
 
 pub(super) fn cmd_check(
     file: &Path,
     cli_mode: Option<KoboMode>,
+    guarantee_profile: Option<GuaranteeProfileArg>,
+    print_policy: Option<PolicyOutputFormat>,
     pipeline: bool,
     error_format: ErrorFormat,
     recover_parse: bool,
@@ -27,6 +32,20 @@ pub(super) fn cmd_check(
     include_budgeted: bool,
 ) -> anyhow::Result<()> {
     reject_invalid_field_capability_views(file, error_format)?;
+    let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
+        let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
+        let loaded = policy::load_effective_policy(Some(file), profile)?;
+        if let Some(downgrade) = loaded.downgrade() {
+            policy::emit_downgrade(downgrade, error_format)?;
+            anyhow::bail!("guarantee policy downgrade requires reason ledger entry");
+        }
+        if print_policy.is_some() {
+            policy::print_policy_json(&loaded)?;
+        }
+        Some(loaded)
+    } else {
+        None
+    };
 
     let mut session = build_session(file, cli_mode)?;
     session.config.enable_parse_recovery = recover_parse;
@@ -70,6 +89,12 @@ pub(super) fn cmd_check(
 
             if emitted_machine_checked_diagnostic {
                 anyhow::bail!("diagnostics emitted");
+            }
+
+            if print_policy.is_none() {
+                if let Some(policy) = guarantee_policy.as_ref() {
+                    policy::emit_policy_summary(policy);
+                }
             }
 
             Ok(())

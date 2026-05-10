@@ -14,6 +14,7 @@ path = "src/bin/kobo-lsp.rs"
 [dependencies]
 kobo-driver  = { path = "../../crates/compiler/kobo-driver" }
 kobo-errors  = { path = "../../crates/compiler/kobo-errors" }
+kobo-lsp     = { path = "../../crates/compiler/kobo-lsp" }
 kobo-codegen = { path = "../../crates/compiler/kobo-codegen" }
 kobo-debt    = { path = "../../crates/compiler/kobo-debt" }
 kobo-ir      = { path = "../../crates/compiler/kobo-ir" }

@@ -1,7 +1,133 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde_json::json;
+
+use super::sim_model;
+
+pub(super) fn cmd_sim_init(
+    target: &str,
+    minimal: bool,
+    profile: Option<&str>,
+) -> anyhow::Result<()> {
+    let (file, symbol) = target
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("--target must use FILE:SYMBOL"))?;
+    let file = Path::new(file);
+    let source = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read simulation target {}", file.display()))?;
+    let Some(signature) = target_signature(&source, symbol) else {
+        anyhow::bail!(
+            "simulation target `{symbol}` was not found in {}",
+            file.display()
+        );
+    };
+
+    let document = sim_model::parse_document(source);
+    let selected_profile = sim_model::target_profile(&document, symbol, profile);
+    let backend = sim_model::backend_for_profile(&selected_profile);
+    let artifacts = write_sim_scaffold(
+        file,
+        symbol,
+        &selected_profile,
+        backend.as_str(),
+        minimal,
+        &document,
+        &signature,
+    )?;
+    let value = json!({
+        "sim": {
+            "target": symbol,
+            "profile": selected_profile,
+            "backend": backend.as_str(),
+            "minimal": minimal,
+            "scaffold": artifacts.scaffold_path.display().to_string(),
+            "islands": [
+                {
+                    "name": artifacts.scenario_name,
+                    "target": symbol,
+                    "backend": backend.as_str(),
+                    "path": artifacts.island_path.display().to_string(),
+                    "source": file.display().to_string(),
+                }
+            ],
+            "backend_imports_in_user_source": false,
+        }
+    });
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+struct SimArtifacts {
+    scaffold_path: PathBuf,
+    island_path: PathBuf,
+    scenario_name: String,
+}
+
+#[derive(Clone, Debug)]
+struct TargetSignature {
+    is_async: bool,
+    params: Vec<String>,
+}
+
+fn write_sim_scaffold(
+    file: &Path,
+    symbol: &str,
+    profile: &str,
+    backend: &str,
+    minimal: bool,
+    document: &sim_model::ScenarioDocument,
+    signature: &TargetSignature,
+) -> anyhow::Result<SimArtifacts> {
+    let scaffold_dir = std::env::current_dir()
+        .context("failed to determine current directory")?
+        .join(".kobo")
+        .join("sim");
+    std::fs::create_dir_all(&scaffold_dir)
+        .with_context(|| format!("failed to create {}", scaffold_dir.display()))?;
+    let source_path = sim_model::cli_relative_path(file)?;
+    let scenario_name = format!("__kobo_sim_{}", safe_identifier(symbol));
+    let island_path = scaffold_dir.join(format!("{symbol}.scenario.kobo"));
+    let island_source = sim_island_source(
+        &source_path,
+        symbol,
+        &scenario_name,
+        profile,
+        backend,
+        signature,
+    );
+    std::fs::write(&island_path, island_source)
+        .with_context(|| format!("failed to write {}", island_path.display()))?;
+
+    let scaffold_path = scaffold_dir.join(format!("{symbol}.sim.json"));
+    let scaffold = json!({
+        "schema_version": 1,
+        "target": {
+            "source": source_path,
+            "symbol": symbol,
+            "async": signature.is_async,
+            "params": signature.params,
+        },
+        "profile": profile,
+        "backend": backend,
+        "minimal": minimal,
+        "scenario_metadata": {
+            "name": scenario_name,
+            "island": sim_model::cli_relative_path(&island_path)?,
+            "profile": profile,
+            "backend": backend,
+        },
+        "source_hash": document.source_hash,
+        "backend_imports_in_user_source": false,
+    });
+    std::fs::write(&scaffold_path, serde_json::to_string_pretty(&scaffold)?)
+        .with_context(|| format!("failed to write {}", scaffold_path.display()))?;
+    Ok(SimArtifacts {
+        scaffold_path,
+        island_path,
+        scenario_name,
+    })
+}
 
 pub(super) fn cmd_sim_scout(
     file: &Path,
@@ -31,6 +157,91 @@ pub(super) fn cmd_sim_scout(
         scout_source(&source, file)
     };
     print_value(scout, json_output)
+}
+
+fn target_signature(source: &str, symbol: &str) -> Option<TargetSignature> {
+    source
+        .lines()
+        .map(str::trim)
+        .find_map(|line| parse_target_signature(line, symbol))
+}
+
+fn parse_target_signature(line: &str, symbol: &str) -> Option<TargetSignature> {
+    let candidates = [
+        ("pub async fn ", true),
+        ("async fn ", true),
+        ("pub fn ", false),
+        ("fn ", false),
+    ];
+    for (prefix, is_async) in candidates {
+        let Some(rest) = line.strip_prefix(prefix) else {
+            continue;
+        };
+        let rest = rest.strip_prefix(symbol)?;
+        let rest = rest.trim_start();
+        let params = rest.strip_prefix('(')?;
+        let end = params.find(')')?;
+        let params = params[..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|param| !param.is_empty())
+            .map(str::to_owned)
+            .collect();
+        return Some(TargetSignature { is_async, params });
+    }
+    None
+}
+
+fn sim_island_source(
+    source_path: &str,
+    symbol: &str,
+    scenario_name: &str,
+    profile: &str,
+    backend: &str,
+    signature: &TargetSignature,
+) -> String {
+    let async_prefix = if signature.is_async { "async " } else { "" };
+    let await_suffix = if signature.is_async { ".await" } else { "" };
+    let mut source = format!(
+        r#"#[kobo::scenario(profile = "{profile}")]
+{async_prefix}fn {scenario_name}() {{
+    // kobo: target {source_path}:{symbol}
+    // kobo: backend-profile {profile}
+    // kobo: backend {backend}
+"#
+    );
+    if signature.params.is_empty() {
+        source.push_str(&format!("    {symbol}(){await_suffix};\n"));
+    } else {
+        source.push_str(&format!(
+            "    // kobo: target inputs required: {}\n",
+            signature.params.join(", ")
+        ));
+    }
+    source.push_str("}\n");
+    source
+}
+
+fn safe_identifier(value: &str) -> String {
+    let ident = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if ident
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+    {
+        ident
+    } else {
+        format!("_{ident}")
+    }
 }
 
 pub(super) fn cmd_sim_backends(json_output: bool) -> anyhow::Result<()> {

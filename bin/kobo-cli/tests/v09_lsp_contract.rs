@@ -1,8 +1,8 @@
 mod v09_common;
 
 use v09_common::{
-    assert_contains, assert_mentions_line, assert_success, fixture_text, one_based_line_of,
-    path_arg, run_kobo, s, TestProject,
+    assert_contains, assert_mentions_line, assert_not_contains, assert_success, fixture_text,
+    one_based_line_of, path_arg, run_kobo, s, TestProject,
 };
 
 #[test]
@@ -66,6 +66,42 @@ fn lsp_uses_kwit_link_when_failure_has_witness() {
     let text = output.combined();
     assert_contains(&text, "K0100", "LSP should publish liveness failure");
     assert_contains(&text, ".kwit", "LSP should expose witness link");
+}
+
+#[test]
+fn lsp_does_not_emit_liveness_failure_when_must_call_is_resolved() {
+    let project = TestProject::new("lsp-resolved-must-call");
+    let file = project.write(
+        "src/main.kobo",
+        r#"
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "async")]
+fn resolved_delivery() {
+    let delivery = Delivery {};
+    delivery.ack();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            s("--format=json"),
+            s("--no-project-ok"),
+            s("--include-actions"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "resolved LSP diagnostics should succeed");
+    assert_not_contains(
+        &output.combined(),
+        "K0100",
+        "resolved must_call scenario must not publish liveness failure",
+    );
 }
 
 #[test]

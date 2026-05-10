@@ -1,0 +1,10 @@
+[package]
+name    = "kobo-lsp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kobo-errors = { path = "../kobo-errors" }
+kobo-ir     = { path = "../kobo-ir" }
+serde       = { workspace = true }
+serde_json  = { workspace = true }

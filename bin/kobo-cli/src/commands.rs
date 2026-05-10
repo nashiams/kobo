@@ -9,14 +9,18 @@ mod fmt;
 mod init;
 mod lsp_diagnostics;
 mod migrate;
+mod ownership_analysis;
 mod perf;
+mod policy;
 mod replay;
 mod run;
 mod session;
 mod sim;
+mod sim_model;
+mod test_cmd;
 mod watch;
 
-use crate::{resolve_cli_mode, KoboCommand, SimCommand};
+use crate::{resolve_cli_mode, resolve_guarantee_profile, KoboCommand, SimCommand};
 
 pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
     match command {
@@ -24,6 +28,8 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             file,
             checked,
             strict,
+            profile,
+            print_policy,
             pipeline,
             error_format,
             recover_parse,
@@ -31,29 +37,39 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             max_diagnostics,
             visible_region,
             include_budgeted,
-        } => check::cmd_check(
-            &file,
-            resolve_cli_mode(checked, strict),
-            pipeline,
-            error_format,
-            recover_parse,
-            replay_critical,
-            max_diagnostics,
-            visible_region.as_deref(),
-            include_budgeted,
-        ),
+        } => {
+            let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
+            check::cmd_check(
+                &file,
+                resolve_cli_mode(checked, strict, profile),
+                guarantee_profile,
+                print_policy,
+                pipeline,
+                error_format,
+                recover_parse,
+                replay_critical,
+                max_diagnostics,
+                visible_region.as_deref(),
+                include_budgeted,
+            )
+        }
         KoboCommand::LspDiagnostics {
             file,
             format,
             no_project_ok,
-        } => lsp_diagnostics::cmd_lsp_diagnostics(&file, format, no_project_ok),
+            include_actions,
+        } => lsp_diagnostics::cmd_lsp_diagnostics(&file, format, no_project_ok, include_actions),
         KoboCommand::Fmt { file } => fmt::cmd_fmt(&file),
         KoboCommand::Run {
             file,
             checked,
             strict,
             erase_lifetimes,
-        } => run::cmd_run(&file, resolve_cli_mode(checked, strict), erase_lifetimes),
+        } => run::cmd_run(
+            &file,
+            resolve_cli_mode(checked, strict, None),
+            erase_lifetimes,
+        ),
         KoboCommand::Inspect {
             file,
             checked,
@@ -66,9 +82,10 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             cargo,
             profile,
             trait_default,
+            audit,
         } => run::cmd_inspect(
             &file,
-            resolve_cli_mode(checked, strict),
+            resolve_cli_mode(checked, strict, None),
             clean,
             erase_lifetimes,
             scenario_metadata,
@@ -77,6 +94,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             cargo.as_deref(),
             profile.as_deref(),
             trait_default.as_deref(),
+            audit.as_deref(),
         ),
         KoboCommand::Doctor {
             deps,
@@ -108,8 +126,14 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             file,
             from,
             threshold,
-        } => perf::cmd_perf(&file, from.as_deref(), threshold),
+            format,
+        } => perf::cmd_perf(&file, from.as_deref(), threshold, format.as_deref()),
         KoboCommand::Sim { command } => match command {
+            SimCommand::Init {
+                target,
+                minimal,
+                profile,
+            } => sim::cmd_sim_init(&target, minimal, profile.as_deref()),
             SimCommand::Scout {
                 file,
                 json,
@@ -118,10 +142,32 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             } => sim::cmd_sim_scout(&file, json, why, backend_recommendations),
             SimCommand::Backends { json } => sim::cmd_sim_backends(json),
         },
+        KoboCommand::Test {
+            sim,
+            profile,
+            seed,
+            events,
+            inject,
+            event_budget,
+            witness_dir,
+            error_format,
+            file,
+        } => test_cmd::cmd_test(
+            &file,
+            sim.as_deref(),
+            profile.as_deref(),
+            seed,
+            events.as_deref(),
+            inject.as_deref(),
+            event_budget,
+            witness_dir.as_deref(),
+            error_format,
+        ),
         KoboCommand::Replay {
             file,
+            error_format,
             roundtrip_metadata,
-        } => replay::cmd_replay(&file, roundtrip_metadata),
+        } => replay::cmd_replay(&file, error_format, roundtrip_metadata),
         KoboCommand::Fix {
             file,
             dry_run,
@@ -157,8 +203,24 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             debt::cmd_debt(&file, json, summary)
         }
         KoboCommand::Init { name } => init::cmd_init(&name),
-        KoboCommand::Build { checked, strict } => {
-            build::cmd_build(resolve_cli_mode(checked, strict))
+        KoboCommand::Build {
+            checked,
+            strict,
+            profile,
+            print_policy,
+            error_format,
+            emit_rust,
+            file,
+        } => {
+            let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
+            build::cmd_build(
+                resolve_cli_mode(checked, strict, profile),
+                guarantee_profile,
+                print_policy,
+                error_format,
+                emit_rust,
+                file.as_deref(),
+            )
         }
         KoboCommand::Migrate {
             file,

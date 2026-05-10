@@ -7,7 +7,10 @@ use kobo_analysis::{
 use kobo_errors::{
     resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
 };
-use kobo_ir::{AsyncViolationKind, Kir, RelaxAttrError, UseEvent, WarnEarlyPattern};
+use kobo_ir::{
+    AsyncViolationKind, Kir, KoboSpan, RelaxAttrError, TransformBindingFacts, UseEvent,
+    WarnEarlyPattern,
+};
 use kobo_transform::{
     strict_async::check_strict_async, strict_async::guard_liveness::detect_guard_across_await,
 };
@@ -66,9 +69,9 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
 
     for error in kir.must_call_attr_errors() {
         let severity =
-            resolve_severity(KErrorCode::K0103, session.mode()).unwrap_or(Severity::Error);
+            resolve_severity(KErrorCode::K0114, session.mode()).unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
-            KErrorCode::K0103,
+            KErrorCode::K0114,
             severity,
             DiagLabel::primary(error.span, error.message.clone()),
             error.message.clone(),
@@ -383,15 +386,17 @@ fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &
             continue;
         }
 
-        let move_span = binding
-            .usage
-            .uses
-            .iter()
-            .find_map(|event| match event {
-                UseEvent::Moved { span, .. } => Some(*span),
-                _ => None,
-            })
-            .unwrap_or(binding.span);
+        let move_span = source_move_span_for_binding(session, binding).unwrap_or_else(|| {
+            binding
+                .usage
+                .uses
+                .iter()
+                .find_map(|event| match event {
+                    UseEvent::Moved { span, .. } => Some(*span),
+                    _ => None,
+                })
+                .unwrap_or(binding.span)
+        });
         let borrow_span = binding
             .shared_facts
             .borrow_sites
@@ -424,6 +429,50 @@ fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &
     }
 }
 
+fn source_move_span_for_binding(
+    session: &CompileSession,
+    binding: &TransformBindingFacts,
+) -> Option<KoboSpan> {
+    let file_id = binding
+        .usage
+        .uses
+        .iter()
+        .find_map(|event| match event {
+            UseEvent::Moved { span, .. } => Some(span.file_id),
+            _ => None,
+        })
+        .or_else(|| {
+            binding
+                .shared_facts
+                .borrow_sites
+                .first()
+                .map(|span| span.file_id)
+        })
+        .unwrap_or(binding.span.file_id);
+    let entry = session.file_set().get(file_id)?;
+    let source = entry.source();
+    let needle = binding.binding_name.as_str();
+    let mut offset = 0usize;
+
+    for line in source.lines() {
+        if let Some(index) = line.find(needle) {
+            let before = &line[..index];
+            let after = &line[index + needle.len()..];
+            if before.trim_end().ends_with('=')
+                && !before.trim_end().ends_with("&=")
+                && !before.trim_end().ends_with('&')
+                && after.trim_start().starts_with(';')
+            {
+                let start = (offset + index) as u32;
+                return Some(KoboSpan::new(start, start + needle.len() as u32, file_id));
+            }
+        }
+        offset += line.len() + 1;
+    }
+
+    None
+}
+
 struct NondeterminismPattern {
     class_name: &'static str,
     operation: &'static str,
@@ -443,9 +492,9 @@ fn project_scenario_metadata_diagnostics(session: &mut CompileSession) {
             let offset = source.find(line.trim()).unwrap_or(0) as u32;
             let span = kobo_ir::KoboSpan::new(offset, offset + line.trim().len() as u32, file_id);
             let severity =
-                resolve_severity(KErrorCode::K0105, session.mode()).unwrap_or(Severity::Error);
+                resolve_severity(KErrorCode::K0116, session.mode()).unwrap_or(Severity::Error);
             diagnostics.push(KDiagnostic::new(
-                KErrorCode::K0105,
+                KErrorCode::K0116,
                 severity,
                 DiagLabel::primary(span, "`#[kobo::scenario]` requires a name"),
                 "malformed scenario metadata: `#[kobo::scenario]` requires `name = \"...\"`",

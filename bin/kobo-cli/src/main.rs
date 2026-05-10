@@ -30,6 +30,14 @@ pub(crate) enum KoboCommand {
             help = "Check in strict mode (v0.9 — not yet implemented)"
         )]
         strict: bool,
+        #[arg(long, value_enum, help = "Select a guarantee policy preset")]
+        profile: Option<GuaranteeProfileArg>,
+        #[arg(
+            long = "print-policy",
+            value_enum,
+            help = "Print expanded guarantee policy"
+        )]
+        print_policy: Option<PolicyOutputFormat>,
         #[arg(
             long,
             help = "Show full solver pipeline diagnostics (constraint graph, clusters, solver outcome)"
@@ -67,6 +75,8 @@ pub(crate) enum KoboCommand {
         format: ErrorFormat,
         #[arg(long, help = "Allow diagnostics for a file outside a Kobo project")]
         no_project_ok: bool,
+        #[arg(long, help = "Include action metadata for editor clients")]
+        include_actions: bool,
     },
     /// Reformat a .kobo file when the source map proves the edit is lossless.
     Fmt {
@@ -146,6 +156,8 @@ pub(crate) enum KoboCommand {
             help = "Select trait facade lowering default"
         )]
         trait_default: Option<String>,
+        #[arg(long, value_name = "FORMAT", help = "Inspect ownership audit evidence")]
+        audit: Option<String>,
     },
     /// Advisory project dependency and profile report.
     Doctor {
@@ -172,16 +184,42 @@ pub(crate) enum KoboCommand {
         /// Override display threshold (default: KOBO_DIAG_THRESHOLD env or 10000)
         #[arg(long)]
         threshold: Option<u64>,
+        /// Output format for source-derived performance evidence.
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
     },
     /// Simulation and replay evidence helpers.
     Sim {
         #[command(subcommand)]
         command: SimCommand,
     },
+    /// Run reserved v0.9 test/replay gates.
+    Test {
+        #[arg(long, value_name = "PROFILE")]
+        sim: Option<String>,
+        #[arg(long, value_name = "PROFILE")]
+        profile: Option<String>,
+        #[arg(long, value_name = "SEED")]
+        seed: Option<u64>,
+        #[arg(long, value_name = "FORMAT")]
+        events: Option<String>,
+        #[arg(long, value_name = "HOOKS")]
+        inject: Option<String>,
+        #[arg(long = "event-budget", value_name = "N")]
+        event_budget: Option<u64>,
+        #[arg(long = "witness-dir", value_name = "DIR")]
+        witness_dir: Option<PathBuf>,
+        #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
+        error_format: ErrorFormat,
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
     /// Validate and summarize a .kwit witness without executing replay.
     Replay {
         #[arg(value_name = "FILE")]
         file: PathBuf,
+        #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
+        error_format: ErrorFormat,
         #[arg(long)]
         roundtrip_metadata: bool,
     },
@@ -266,6 +304,20 @@ pub(crate) enum KoboCommand {
         checked: bool,
         #[arg(long, conflicts_with = "checked", help = "Build in strict mode")]
         strict: bool,
+        #[arg(long, value_enum, help = "Select a guarantee policy preset")]
+        profile: Option<GuaranteeProfileArg>,
+        #[arg(
+            long = "print-policy",
+            value_enum,
+            help = "Print expanded guarantee policy"
+        )]
+        print_policy: Option<PolicyOutputFormat>,
+        #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
+        error_format: ErrorFormat,
+        #[arg(long, help = "Print generated Rust for a single input file")]
+        emit_rust: bool,
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
     },
     /// Per-function timing report for tick loop functions.
     Bench {
@@ -295,6 +347,15 @@ pub(crate) enum KoboCommand {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum SimCommand {
+    /// Create a minimal simulation island descriptor for one target.
+    Init {
+        #[arg(long, value_name = "FILE:SYMBOL")]
+        target: String,
+        #[arg(long)]
+        minimal: bool,
+        #[arg(long, value_name = "PROFILE")]
+        profile: Option<String>,
+    },
     /// Rank likely first simulation evidence targets.
     Scout {
         #[arg(value_name = "FILE")]
@@ -319,17 +380,59 @@ pub(crate) enum ErrorFormat {
     Json,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum GuaranteeProfileArg {
+    Dev,
+    Checked,
+    Release,
+}
+
+impl GuaranteeProfileArg {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Checked => "checked",
+            Self::Release => "release",
+        }
+    }
+
+    pub(crate) const fn mode(self) -> KoboMode {
+        match self {
+            Self::Dev => KoboMode::Script,
+            Self::Checked => KoboMode::Checked,
+            Self::Release => KoboMode::Strict,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum PolicyOutputFormat {
+    Json,
+}
+
 /// Resolve CLI mode flags to a KoboMode override.
 /// Returns None when no CLI flag is present — the config file (Kobo.toml) or
 /// default (Script) is used instead [Contract R06: CLI overrides per-crate mode].
-pub(crate) fn resolve_cli_mode(checked: bool, strict: bool) -> Option<KoboMode> {
+pub(crate) fn resolve_guarantee_profile(
+    checked: bool,
+    strict: bool,
+    profile: Option<GuaranteeProfileArg>,
+) -> Option<GuaranteeProfileArg> {
     if strict {
-        Some(KoboMode::Strict)
+        Some(GuaranteeProfileArg::Release)
     } else if checked {
-        Some(KoboMode::Checked)
+        Some(GuaranteeProfileArg::Checked)
     } else {
-        None
+        profile
     }
+}
+
+pub(crate) fn resolve_cli_mode(
+    checked: bool,
+    strict: bool,
+    profile: Option<GuaranteeProfileArg>,
+) -> Option<KoboMode> {
+    resolve_guarantee_profile(checked, strict, profile).map(GuaranteeProfileArg::mode)
 }
 
 fn main() -> anyhow::Result<()> {

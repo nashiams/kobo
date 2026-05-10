@@ -1,9 +1,113 @@
 mod v09_common;
 
+use std::{fs, path::Path};
+
 use v09_common::{
     assert_contains, assert_failure, assert_json_has_path, assert_success, first_json,
     fixture_text, path_arg, run_kobo, s, unique_symbol, TestProject,
 };
+
+#[test]
+fn v085_foundation_required_for_v09() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.join("..").join("..");
+    let note_path = repo_root
+        .join(".claude/prompt/roadmap/v0.9/implementation_notes/phase_00_v085_foundation_lock.md");
+    let note = fs::read_to_string(&note_path).unwrap_or_else(|error| {
+        panic!(
+            "phase 00 implementation note should be readable at {}: {error}",
+            note_path.display()
+        )
+    });
+
+    for target in [
+        "crates/compiler/kobo-errors/tests/diagnostic_contract.rs",
+        "crates/compiler/kobo-parser/tests/recovery_contract.rs",
+        "crates/compiler/kobo-parser/tests/preprocess_source_map_contract.rs",
+        "crates/compiler/kobo-driver/tests/parser_recovery_contract.rs",
+        "crates/compiler/kobo-driver/tests/query_contract.rs",
+        "bin/kobo-cli/tests/diagnostic_cli_contract.rs",
+    ] {
+        assert!(
+            repo_root.join(target).exists(),
+            "required v0.8.5 contract target is missing without an accepted replacement: {target}"
+        );
+    }
+
+    for (target, replacements) in [
+        (
+            "bin/kobo-cli/tests/liveness_cli_contract.rs",
+            &[
+                "bin/kobo-cli/tests/v085_phase_oracles.rs::phase_04_liveness_debt_distinguishes_unresolved_commit_and_rollback",
+                "bin/kobo-cli/tests/v085_edge_oracles.rs::phase_04_edge_escape_and_suppression_reason_are_not_same_diagnostic",
+            ][..],
+        ),
+        (
+            "bin/kobo-cli/tests/sim_scout_contract.rs",
+            &[
+                "bin/kobo-cli/tests/v085_phase_oracles.rs::phase_05_sim_scout_ranking_changes_with_project_signals",
+                "bin/kobo-cli/tests/v085_edge_oracles.rs::phase_05_edge_scout_is_stable_and_does_not_modify_source",
+            ][..],
+        ),
+        (
+            "bin/kobo-cli/tests/boundary_policy_contract.rs",
+            &[
+                "bin/kobo-cli/tests/v085_phase_oracles.rs::phase_09_boundary_policy_keeps_normal_crates_compatible_and_replay_explicit",
+                "bin/kobo-cli/tests/v085_edge_oracles.rs::phase_09_edge_boundary_policy_matrix_is_source_sensitive",
+                "bin/kobo-cli/tests/v09_error_policy_contract.rs",
+            ][..],
+        ),
+        (
+            "bin/kobo-cli/tests/witness_replay_contract.rs",
+            &[
+                "bin/kobo-cli/tests/v085_phase_oracles.rs::phase_07_kwit_replay_validates_schema_without_claiming_full_replay",
+                "bin/kobo-cli/tests/v085_edge_oracles.rs::phase_07_edge_kwit_missing_span_fails_unknown_fields_survive",
+                "bin/kobo-cli/tests/v09_replay_contract.rs",
+            ][..],
+        ),
+    ] {
+        assert_documented_replacement(&repo_root, &note, target, replacements);
+    }
+
+    assert_documented_replacement(
+        &repo_root,
+        &note,
+        "crates/compiler/kobo-lsp/Cargo.toml",
+        &[
+            "bin/kobo-cli/src/bin/kobo-lsp.rs",
+            "bin/kobo-cli/src/commands/lsp_diagnostics.rs",
+            "bin/kobo-cli/tests/v085_phase_oracles.rs::phase_02_lsp_payload_export_matches_cli_json",
+            "bin/kobo-cli/tests/v09_lsp_contract.rs",
+        ],
+    );
+}
+
+fn assert_documented_replacement(
+    repo_root: &Path,
+    note: &str,
+    target: &str,
+    replacements: &[&str],
+) {
+    if repo_root.join(target).exists() {
+        return;
+    }
+
+    assert!(
+        note.contains(target),
+        "missing contract target `{target}` must be named in the phase 00 replacement map"
+    );
+    for replacement in replacements {
+        let file_path = replacement.split("::").next().unwrap_or(replacement);
+        assert!(
+            repo_root.join(file_path).exists(),
+            "documented replacement `{replacement}` must exist for missing `{target}`"
+        );
+        assert!(
+            note.contains(replacement),
+            "phase 00 note must document exact replacement `{replacement}` for missing `{target}`"
+        );
+    }
+}
 
 #[test]
 fn guarantee_presets_expand_to_explicit_policy() {

@@ -186,6 +186,69 @@ fn audit_classifies_mechanical_structural_and_unknown_debt() {
 }
 
 #[test]
+fn audit_classifies_unknown_external_use_without_extern_crate_marker() {
+    let project = TestProject::new("audit-unknown-call");
+    let mut source = fixture_text("strict/audit_tiers.kobo");
+    source = source.replace("extern crate unknown_runtime;\n\n", "");
+    let file = project.write("src/main.kobo", &source);
+
+    let output = run_kobo(
+        &[
+            s("inspect"),
+            s("--profile"),
+            s("release"),
+            s("--audit=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "release audit should be inspectable");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "tier\":3",
+        "unknown external call must remain Tier 3 without an extern crate marker",
+    );
+    assert_contains(
+        &text,
+        "unknown_runtime",
+        "unknown audit entry must name the unresolved external path",
+    );
+}
+
+#[test]
+fn audit_reports_every_remaining_site_instead_of_one_per_tier() {
+    let project = TestProject::new("audit-all-sites");
+    let file = project.main_file(
+        r#"
+fn audit_all_sites(value: String) {
+    let _first = value.clone();
+    let _second = value.clone();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("inspect"),
+            s("--profile"),
+            s("release"),
+            s("--audit=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "release audit should be inspectable");
+    let text = output.combined();
+    assert!(
+        text.matches("\"tier\":1").count() >= 2,
+        "audit must report each mechanical site, not just the first tier entry:\n{text}"
+    );
+}
+
+#[test]
 fn field_granularity_wraps_only_proven_field_and_perf_reports_real_stats() {
     let project = TestProject::new("field-perf");
     let file = project.copy_fixture("strict/field_granularity.kobo", "src/main.kobo");
@@ -223,5 +286,51 @@ fn field_granularity_wraps_only_proven_field_and_perf_reports_real_stats() {
     let perf_text = perf.combined();
     for needle in ["borrow_count", "contention", "hot_paths"] {
         assert_contains(&perf_text, needle, "perf must expose real DiagOwner stats");
+    }
+    assert_contains(
+        &perf_text,
+        "shared_count",
+        "perf hot paths must identify the actual contended field",
+    );
+}
+
+#[test]
+fn perf_json_from_diag_log_reports_prior_run_stats() {
+    let project = TestProject::new("perf-from-log-json");
+    let file = project.main_file("fn main() {}\n");
+    let log = project.write(
+        "diag.log",
+        r#"
+[kobo-diag] queue.shared_count - (Rc<RefCell<u64>>)
+  borrow_count: 123
+  mut_borrow_count: 7
+  contention_count: 77
+  saturated: true
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("perf"),
+            path_arg(&file),
+            s("--from"),
+            path_arg(&log),
+            s("--format=json"),
+            s("--threshold"),
+            s("10"),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "perf --from --format=json should use the diag log");
+    let text = output.combined();
+    for needle in [
+        "\"borrow_count\":123",
+        "\"mut_borrow_count\":7",
+        "\"contention\":77",
+        "queue.shared_count",
+        "\"saturated\":true",
+    ] {
+        assert_contains(&text, needle, "perf JSON must reflect prior-run stats");
     }
 }

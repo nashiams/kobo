@@ -47,9 +47,13 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         ["guarantee_profile"].as_slice(),
         ["seed"].as_slice(),
         ["backend_profile"].as_slice(),
+        ["backend"].as_slice(),
+        ["backend_replay"].as_slice(),
         ["replay_guarantee"].as_slice(),
         ["modeled_boundaries"].as_slice(),
         ["opaque_boundaries"].as_slice(),
+        ["obligations"].as_slice(),
+        ["boundary_decisions"].as_slice(),
         ["failure", "code"].as_slice(),
         ["failure", "primary_span"].as_slice(),
         ["events"].as_slice(),
@@ -57,6 +61,17 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         assert_json_has_path(&json, path, ".kwit witness required field");
     }
     assert_eq!(json["failure"]["code"], "K0100");
+    assert_eq!(json["backend"], "shuttle");
+    assert_contains(
+        &witness,
+        "Transaction",
+        "witness obligations must record the concrete must_call type",
+    );
+    assert_contains(
+        &witness,
+        "commit",
+        "witness obligations must record discharge alternatives",
+    );
 }
 
 #[test]
@@ -153,6 +168,81 @@ fn replay_divergence_emits_k0104_with_expected_and_observed_events() {
     assert_contains(&text, "K0104", "divergence must emit K0104");
     assert_contains(&text, "expected", "K0104 must include expected event");
     assert_contains(&text, "observed", "K0104 must include observed event");
+}
+
+#[test]
+fn replay_event_payload_divergence_emits_k0104() {
+    let project = TestProject::new("replay-payload-divergence");
+    let witnesses = emit_witness(&project);
+    assert!(
+        !witnesses.is_empty(),
+        "witness should exist before mutation"
+    );
+    let path = &witnesses[0];
+
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("witness should read"))
+            .expect("witness should parse");
+    json["events"][0]["label"] = serde_json::Value::String("other_token".to_owned());
+    fs::write(path, serde_json::to_string_pretty(&json).unwrap()).expect("mutated witness writes");
+
+    let output = run_kobo(
+        &[s("replay"), path_arg(path), s("--error-format=json")],
+        &project.root,
+    );
+
+    assert_failure(&output, "mutated event payload must fail replay");
+    let text = output.combined();
+    assert_contains(&text, "K0104", "payload divergence must emit K0104");
+    assert_contains(
+        &text,
+        "expected",
+        "K0104 must include expected event payload",
+    );
+    assert_contains(
+        &text,
+        "observed",
+        "K0104 must include observed event payload",
+    );
+}
+
+#[test]
+fn source_mismatch_is_reported_before_exact_replay() {
+    let project = TestProject::new("replay-source-mismatch");
+    let witnesses = emit_witness(&project);
+    assert!(
+        !witnesses.is_empty(),
+        "witness should exist before source edit"
+    );
+    project.write(
+        "src/transaction.kobo",
+        r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {
+    id: u64,
+}
+
+#[kobo::scenario(profile = "async")]
+fn transaction_leaks() {
+    let tx = Transaction { id: 11 };
+    tx.commit();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witnesses[0]),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "edited source must not replay as exact");
+    let text = output.combined();
+    assert_contains(&text, "source", "source mismatch should be named");
+    assert_contains(&text, "mismatch", "source mismatch should be explicit");
 }
 
 #[test]

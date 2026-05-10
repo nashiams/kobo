@@ -31,6 +31,11 @@ fn sim_init_generates_one_tiny_island_and_records_profile() {
         "handle_request",
         "sim init must target requested symbol",
     );
+    assert_contains(
+        &text,
+        "shuttle",
+        "async sim init should record the selected backend profile",
+    );
     assert_not_contains(
         &project.read("src/gateway.kobo"),
         "shuttle::",
@@ -40,6 +45,44 @@ fn sim_init_generates_one_tiny_island_and_records_profile() {
         &project.read("src/gateway.kobo"),
         "loom::",
         "user source must not gain backend imports",
+    );
+
+    let scaffold = project.read(".kobo/sim/handle_request.sim.json");
+    assert_contains(
+        &scaffold,
+        "handle_request",
+        "sim init must write a target-specific scaffold artifact",
+    );
+    assert_contains(
+        &scaffold,
+        "async",
+        "sim init scaffold must record the pinned profile",
+    );
+    assert_contains(
+        &scaffold,
+        "backend",
+        "sim init scaffold must record backend selection metadata",
+    );
+    assert_contains(
+        &scaffold,
+        "scenario_metadata",
+        "sim init scaffold must point at the generated scenario island",
+    );
+    let island = project.read(".kobo/sim/handle_request.scenario.kobo");
+    assert_contains(
+        &island,
+        r#"#[kobo::scenario(profile = "async")]"#,
+        "sim init must generate a real scenario metadata island",
+    );
+    assert_contains(
+        &island,
+        "handle_request",
+        "scenario island must be tied to the requested target",
+    );
+    assert_not_contains(
+        &island,
+        "shuttle::",
+        "scenario island must not import backend crates into Kobo source",
     );
 }
 
@@ -153,6 +196,106 @@ fn sim_quick_liveness_failure_emits_k0100_and_witness() {
         "diagnostic must include discharge alternatives",
     );
     assert_contains(&text, ".kwit", "sim failure must expose witness path");
+}
+
+#[test]
+fn sim_quick_resolved_must_call_does_not_emit_k0100() {
+    let project = TestProject::new("sim-liveness-resolved");
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "async")]
+fn resolved_delivery() {
+    let delivery = Delivery {};
+    delivery.ack();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--profile"),
+            s("checked"),
+            s("--seed"),
+            s("7"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "resolved must_call scenario should pass");
+    assert_not_contains(
+        &output.combined(),
+        "K0100",
+        "resolved obligation must not emit liveness failure",
+    );
+}
+
+#[test]
+fn runtime_liveness_ignores_comment_discharge_text() {
+    let project = TestProject::new("sim-liveness-comment");
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "async")]
+fn unresolved_comment_delivery() {
+    let delivery = Delivery {};
+    // delivery.ack();
+    let _lost = delivery;
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--profile"),
+            s("checked"),
+            s("--seed"),
+            s("7"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "comment-only discharge must not satisfy must_call liveness",
+    );
+    let text = output.combined();
+    assert_contains(&text, "K0100", "unresolved token must emit K0100");
+    assert_contains(
+        &text,
+        "delivery",
+        "diagnostic should name the dropped token",
+    );
+}
+
+#[test]
+fn sim_quick_no_scenario_is_clear_failure() {
+    let project = TestProject::new("sim-no-scenario");
+    let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");
+
+    let output = run_kobo(
+        &[s("test"), s("--sim"), s("quick"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(&output, "missing scenario must fail");
+    let text = output.combined();
+    assert_contains(&text, "scenario", "failure should name missing scenario");
+    assert_contains(&text, "kobo::scenario", "failure should be actionable");
 }
 
 #[test]

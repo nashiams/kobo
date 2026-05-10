@@ -1,0 +1,6 @@
+fn main() {
+    let order = String::from("order-7");
+    let first = order.clone();
+    let moved = order;
+    println!("{} {}", first, moved);
+}

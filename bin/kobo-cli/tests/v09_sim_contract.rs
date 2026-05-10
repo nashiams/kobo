@@ -1,40 +1,14 @@
 mod v09_common;
 
 use v09_common::{
-    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg, run_kobo, s,
-    unique_symbol, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, fixture_text, path_arg,
+    run_kobo, s, unique_symbol, TestProject,
 };
-
-const GATEWAY: &str = r#"
-#[kobo::must_call(ack | nack | requeue)]
-struct Delivery {
-    id: u64,
-}
-
-async fn handle_request(delivery: Delivery) {
-    let _lost = delivery;
-}
-
-#[kobo::scenario(profile = "async")]
-async fn cancelled_request() {
-    let delivery = Delivery { id: 7 };
-    handle_request(delivery).await;
-}
-"#;
-
-const DETERMINISTIC: &str = r#"
-#[kobo::scenario(profile = "async")]
-fn deterministic_case() {
-    let when = ward.time.now();
-    let pick = ward.random.u64();
-    println!("{} {}", when, pick);
-}
-"#;
 
 #[test]
 fn sim_init_generates_one_tiny_island_and_records_profile() {
     let project = TestProject::new("sim-init");
-    let file = project.write("src/gateway.kobo", GATEWAY);
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
 
     let output = run_kobo(
         &[
@@ -74,7 +48,7 @@ fn sim_init_target_mutation_changes_generated_metadata() {
     let project = TestProject::new("sim-init-mutation");
     let file = project.write(
         "src/gateway.kobo",
-        &GATEWAY.replace("handle_request", "handle_payment"),
+        &fixture_text("sim/gateway.kobo").replace("handle_request", "handle_payment"),
     );
 
     let output = run_kobo(
@@ -107,18 +81,11 @@ fn sim_init_selects_dynamic_target_without_leaking_neighbor() {
     let project = TestProject::new("sim-init-dynamic");
     let selected = unique_symbol("handle_selected");
     let neighbor = unique_symbol("handle_neighbor");
-    let source = format!(
-        r#"
-async fn {neighbor}() {{
-    println!("neighbor");
-}}
-
-async fn {selected}() {{
-    println!("selected");
-}}
-"#
+    let file = project.copy_fixture_template(
+        "sim/dynamic_gateway.template.kobo",
+        "src/dynamic_gateway.kobo",
+        &[("__NEIGHBOR__", &neighbor), ("__SELECTED__", &selected)],
     );
-    let file = project.write("src/dynamic_gateway.kobo", &source);
 
     let output = run_kobo(
         &[
@@ -160,7 +127,7 @@ async fn {selected}() {{
 #[test]
 fn sim_quick_liveness_failure_emits_k0100_and_witness() {
     let project = TestProject::new("sim-liveness");
-    let file = project.write("src/gateway.kobo", GATEWAY);
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
 
     let output = run_kobo(
         &[
@@ -191,7 +158,7 @@ fn sim_quick_liveness_failure_emits_k0100_and_witness() {
 #[test]
 fn deterministic_time_random_same_seed_replays_and_changed_seed_changes_events() {
     let project = TestProject::new("sim-deterministic");
-    let file = project.write("src/deterministic.kobo", DETERMINISTIC);
+    let file = project.copy_fixture("sim/deterministic.kobo", "src/deterministic.kobo");
 
     let first = run_kobo(
         &[
@@ -248,15 +215,7 @@ fn deterministic_time_random_same_seed_replays_and_changed_seed_changes_events()
 #[test]
 fn raw_clock_on_replay_path_emits_k0102() {
     let project = TestProject::new("raw-clock");
-    let file = project.main_file(
-        r#"
-#[kobo::scenario(profile = "async")]
-fn raw_clock_case() {
-    let now = std::time::SystemTime::now();
-    println!("{:?}", now);
-}
-"#,
-    );
+    let file = project.copy_fixture("sim/raw_clock.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[
@@ -282,17 +241,7 @@ fn raw_clock_case() {
 #[test]
 fn failure_injection_hooks_are_distinct_and_seed_deterministic() {
     let project = TestProject::new("failure-injection");
-    let file = project.main_file(
-        r#"
-#[kobo::scenario(profile = "async")]
-async fn fallible_path() {
-    ward.failpoint("before-send");
-    ward.task.spawn(async {});
-    ward.time.jump_ms(10);
-    ward.failpoint("crash-after-send");
-}
-"#,
-    );
+    let file = project.copy_fixture("sim/failure_injection.kobo", "src/main.kobo");
 
     let first = run_kobo(
         &[

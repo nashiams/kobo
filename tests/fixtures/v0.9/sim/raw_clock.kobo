@@ -1,0 +1,5 @@
+#[kobo::scenario(profile = "async")]
+fn raw_clock_case() {
+    let now = std::time::SystemTime::now();
+    println!("{:?}", now);
+}

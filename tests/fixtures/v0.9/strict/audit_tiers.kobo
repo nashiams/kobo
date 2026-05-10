@@ -1,0 +1,25 @@
+extern crate unknown_runtime;
+
+struct Cart {
+    name: String,
+    total: u64,
+}
+
+fn mechanical() {
+    let name = String::from("n");
+    let other = name.clone();
+    println!("{}", other);
+}
+
+fn structural(flag: bool) {
+    let mut cart = Cart { name: String::from("cart"), total: 0 };
+    let view = &cart.name;
+    if flag {
+        cart.total += 1;
+    }
+    println!("{}", view);
+}
+
+fn unknown() {
+    unknown_runtime::opaque();
+}

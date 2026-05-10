@@ -1,37 +1,15 @@
 mod v09_common;
 
 use v09_common::{
-    assert_contains, assert_failure, assert_json_has_path, assert_success, first_json, path_arg,
-    run_kobo, s, unique_symbol, TestProject,
+    assert_contains, assert_failure, assert_json_has_path, assert_success, first_json,
+    fixture_text, path_arg, run_kobo, s, unique_symbol, TestProject,
 };
-
-const BASIC_SOURCE: &str = r#"
-fn main() {
-    let value = String::from("v09");
-    println!("{}", value);
-}
-"#;
 
 #[test]
 fn guarantee_presets_expand_to_explicit_policy() {
     let project = TestProject::new("guarantee-policy");
-    let file = project.main_file(BASIC_SOURCE);
-    project.write(
-        "Kobo.toml",
-        r#"
-[guarantees]
-ownership = "record"
-liveness = "checked"
-replay = "checked"
-boundaries = "record"
-errors = "typed"
-
-[ci.release]
-deny_new_debt = true
-strict_paths = ["src/payment/**", "src/auth/**"]
-deny_downgrade_without_reason = true
-"#,
-    );
+    let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");
+    project.copy_fixture("policy/Kobo_checked.toml", "Kobo.toml");
 
     let output = run_kobo(
         &[
@@ -64,7 +42,7 @@ deny_downgrade_without_reason = true
 #[test]
 fn strict_alias_matches_release_policy() {
     let project = TestProject::new("strict-alias");
-    let file = project.main_file(BASIC_SOURCE);
+    let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");
 
     let release = run_kobo(
         &[
@@ -99,21 +77,8 @@ fn strict_alias_matches_release_policy() {
 #[test]
 fn strict_downgrade_requires_reason_ledger() {
     let project = TestProject::new("downgrade-reason");
-    let file = project.main_file(BASIC_SOURCE);
-    project.write(
-        "Kobo.toml",
-        r#"
-[guarantees]
-ownership = "strict"
-liveness = "checked"
-replay = "checked"
-boundaries = "strict"
-errors = "explicit"
-
-[paths."src/main.kobo"]
-ownership = "record"
-"#,
-    );
+    let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");
+    project.copy_fixture("policy/Kobo_downgrade.toml", "Kobo.toml");
 
     let output = run_kobo(
         &[
@@ -138,26 +103,10 @@ fn path_policy_overrides_follow_dynamic_file_globs() {
     let project = TestProject::new("dynamic-path-policy");
     let payment_name = unique_symbol("payment_flow");
     let public_name = unique_symbol("public_flow");
-    let payment_file = project.write(
-        &format!("src/payment/{payment_name}.kobo"),
-        "fn main() {}\n",
-    );
-    let public_file = project.write(&format!("src/public/{public_name}.kobo"), "fn main() {}\n");
-    project.write(
-        "Kobo.toml",
-        r#"
-[profiles.release.guarantees]
-ownership = "strict"
-liveness = "checked"
-replay = "checked"
-boundaries = "strict"
-errors = "explicit"
-
-[paths."src/payment/**"]
-ownership = "record"
-reason = "legacy checkout migration"
-"#,
-    );
+    let basic_source = fixture_text("policy/basic.kobo");
+    let payment_file = project.write(&format!("src/payment/{payment_name}.kobo"), &basic_source);
+    let public_file = project.write(&format!("src/public/{public_name}.kobo"), &basic_source);
+    project.copy_fixture("policy/Kobo_path_glob.toml", "Kobo.toml");
 
     let payment = run_kobo(
         &[
@@ -201,7 +150,7 @@ reason = "legacy checkout migration"
 #[test]
 fn docs_and_cli_do_not_expose_script_strict_as_language_identities() {
     let project = TestProject::new("no-mode-identity");
-    let file = project.main_file(BASIC_SOURCE);
+    let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");
     let output = run_kobo(
         &[s("check"), s("--profile"), s("dev"), path_arg(&file)],
         &project.root,

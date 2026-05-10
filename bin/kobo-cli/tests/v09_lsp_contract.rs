@@ -1,21 +1,14 @@
 mod v09_common;
 
 use v09_common::{
-    assert_contains, assert_mentions_line, assert_success, one_based_line_of, path_arg, run_kobo,
-    s, TestProject,
+    assert_contains, assert_mentions_line, assert_success, fixture_text, one_based_line_of,
+    path_arg, run_kobo, s, TestProject,
 };
 
 #[test]
 fn lsp_publishes_k010x_payloads_witness_links_and_actions() {
     let project = TestProject::new("lsp-k010x");
-    let file = project.main_file(
-        r#"
-#[kobo::scenario(profile = "async")]
-async fn replay_http() {
-    let _ = reqwest::Client::new();
-}
-"#,
-    );
+    let file = project.copy_fixture("lsp/replay_http.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[
@@ -56,18 +49,7 @@ async fn replay_http() {
 #[test]
 fn lsp_uses_kwit_link_when_failure_has_witness() {
     let project = TestProject::new("lsp-kwit-link");
-    let file = project.main_file(
-        r#"
-#[kobo::must_call(ack | nack)]
-struct Delivery {}
-
-#[kobo::scenario(profile = "async")]
-fn leak_delivery() {
-    let delivery = Delivery {};
-    let _lost = delivery;
-}
-"#,
-    );
+    let file = project.copy_fixture("lsp/leak_delivery.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[
@@ -89,29 +71,16 @@ fn leak_delivery() {
 #[test]
 fn lsp_ranges_move_when_boundary_call_moves() {
     let project = TestProject::new("lsp-range-shift");
-    let first_source = r#"
-#[kobo::scenario(profile = "async")]
-async fn replay_http_first() {
-    let _ = reqwest::Client::new();
-}
-"#;
-    let second_source = r#"
-
-
-
-#[kobo::scenario(profile = "async")]
-async fn replay_http_second() {
-    let _ = reqwest::Client::new();
-}
-"#;
-    let first_line = one_based_line_of(first_source, "reqwest::Client::new");
-    let second_line = one_based_line_of(second_source, "reqwest::Client::new");
+    let first_source = fixture_text("lsp/range_first.kobo");
+    let second_source = fixture_text("lsp/range_second.kobo");
+    let first_line = one_based_line_of(&first_source, "reqwest::Client::new");
+    let second_line = one_based_line_of(&second_source, "reqwest::Client::new");
     assert_ne!(
         first_line, second_line,
         "fixture must shift the boundary call"
     );
-    let first_file = project.write("src/lsp_first.kobo", first_source);
-    let second_file = project.write("src/lsp_second.kobo", second_source);
+    let first_file = project.write("src/lsp_first.kobo", &first_source);
+    let second_file = project.write("src/lsp_second.kobo", &second_source);
 
     let first = run_kobo(
         &[

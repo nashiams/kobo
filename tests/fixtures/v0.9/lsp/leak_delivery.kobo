@@ -1,0 +1,8 @@
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "async")]
+fn leak_delivery() {
+    let delivery = Delivery {};
+    let _lost = delivery;
+}

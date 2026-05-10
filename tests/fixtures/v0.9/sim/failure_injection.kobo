@@ -1,0 +1,7 @@
+#[kobo::scenario(profile = "async")]
+async fn fallible_path() {
+    ward.failpoint("before-send");
+    ward.task.spawn(async {});
+    ward.time.jump_ms(10);
+    ward.failpoint("crash-after-send");
+}

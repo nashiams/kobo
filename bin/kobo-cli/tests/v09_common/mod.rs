@@ -38,6 +38,21 @@ impl TestProject {
         self.write("src/main.kobo", contents)
     }
 
+    pub fn copy_fixture(&self, fixture_relative: &str, project_relative: &str) -> PathBuf {
+        let contents = fixture_text(fixture_relative);
+        self.write(project_relative, &contents)
+    }
+
+    pub fn copy_fixture_template(
+        &self,
+        fixture_relative: &str,
+        project_relative: &str,
+        replacements: &[(&str, &str)],
+    ) -> PathBuf {
+        let contents = fixture_template(fixture_relative, replacements);
+        self.write(project_relative, &contents)
+    }
+
     pub fn read(&self, relative: &str) -> String {
         fs::read_to_string(self.root.join(relative)).expect("test project file should be readable")
     }
@@ -101,6 +116,30 @@ pub fn s(value: impl Into<String>) -> String {
 
 pub fn path_arg(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+pub fn fixture_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join("v0.9")
+        .join(relative)
+}
+
+pub fn fixture_text(relative: &str) -> String {
+    let path = fixture_path(relative);
+    fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("fixture `{}` should be readable: {error}", path.display()))
+}
+
+pub fn fixture_template(relative: &str, replacements: &[(&str, &str)]) -> String {
+    let mut contents = fixture_text(relative);
+    for (placeholder, replacement) in replacements {
+        contents = contents.replace(placeholder, replacement);
+    }
+    contents
 }
 
 pub fn assert_success(output: &CliOutput, context: &str) {

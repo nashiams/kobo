@@ -2,31 +2,13 @@ mod v09_common;
 
 use v09_common::{
     assert_contains, assert_failure, assert_mentions_line, assert_not_contains, assert_success,
-    one_based_line_of, path_arg, run_kobo, s, TestProject,
+    fixture_text, one_based_line_of, path_arg, run_kobo, s, TestProject,
 };
-
-const UNRESOLVED_DEBT: &str = r#"
-fn main() {
-    let order = String::from("order-7");
-    let first = &order;
-    let moved = order;
-    println!("{} {}", first, moved);
-}
-"#;
-
-const FIXED_DEBT: &str = r#"
-fn main() {
-    let order = String::from("order-7");
-    let first = order.clone();
-    let moved = order;
-    println!("{} {}", first, moved);
-}
-"#;
 
 #[test]
 fn release_rejects_unresolved_owned_debt_that_dev_records() {
     let project = TestProject::new("release-rejects-debt");
-    let file = project.main_file(UNRESOLVED_DEBT);
+    let file = project.copy_fixture("strict/unresolved_debt.kobo", "src/main.kobo");
 
     let dev = run_kobo(
         &[s("check"), s("--profile"), s("dev"), path_arg(&file)],
@@ -69,33 +51,16 @@ fn release_rejects_unresolved_owned_debt_that_dev_records() {
 #[test]
 fn release_ownership_diagnostic_span_tracks_shifted_source() {
     let project = TestProject::new("release-shifted-span");
-    let compact_source = r#"
-fn main() {
-    let order = String::from("order-7");
-    let first = &order;
-    let moved = order;
-    println!("{} {}", first, moved);
-}
-"#;
-    let shifted_source = r#"
-
-
-
-fn main() {
-    let order = String::from("order-7");
-    let first = &order;
-    let moved = order;
-    println!("{} {}", first, moved);
-}
-"#;
-    let compact_line = one_based_line_of(compact_source, "let moved = order");
-    let shifted_line = one_based_line_of(shifted_source, "let moved = order");
+    let compact_source = fixture_text("strict/ownership_compact.kobo");
+    let shifted_source = fixture_text("strict/ownership_shifted.kobo");
+    let compact_line = one_based_line_of(&compact_source, "let moved = order");
+    let shifted_line = one_based_line_of(&shifted_source, "let moved = order");
     assert_ne!(
         compact_line, shifted_line,
         "fixture must shift the move line"
     );
-    let compact_file = project.write("src/compact.kobo", compact_source);
-    let shifted_file = project.write("src/shifted.kobo", shifted_source);
+    let compact_file = project.write("src/compact.kobo", &compact_source);
+    let shifted_file = project.write("src/shifted.kobo", &shifted_source);
 
     let compact = run_kobo(
         &[
@@ -135,7 +100,7 @@ fn main() {
 #[test]
 fn release_accepts_fixed_debt_and_emits_clean_rust_without_hidden_runtime() {
     let project = TestProject::new("release-clean-rust");
-    let file = project.main_file(FIXED_DEBT);
+    let file = project.copy_fixture("strict/fixed_debt.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[
@@ -165,7 +130,7 @@ fn release_accepts_fixed_debt_and_emits_clean_rust_without_hidden_runtime() {
 #[test]
 fn strict_alias_rejects_same_debt_as_release_profile() {
     let project = TestProject::new("strict-rejects-same");
-    let file = project.main_file(UNRESOLVED_DEBT);
+    let file = project.copy_fixture("strict/unresolved_debt.kobo", "src/main.kobo");
 
     let release = run_kobo(
         &[
@@ -199,35 +164,7 @@ fn strict_alias_rejects_same_debt_as_release_profile() {
 #[test]
 fn audit_classifies_mechanical_structural_and_unknown_debt() {
     let project = TestProject::new("audit-tiers");
-    let file = project.main_file(
-        r#"
-extern crate unknown_runtime;
-
-struct Cart {
-    name: String,
-    total: u64,
-}
-
-fn mechanical() {
-    let name = String::from("n");
-    let other = name.clone();
-    println!("{}", other);
-}
-
-fn structural(flag: bool) {
-    let mut cart = Cart { name: String::from("cart"), total: 0 };
-    let view = &cart.name;
-    if flag {
-        cart.total += 1;
-    }
-    println!("{}", view);
-}
-
-fn unknown() {
-    unknown_runtime::opaque();
-}
-"#,
-    );
+    let file = project.copy_fixture("strict/audit_tiers.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[
@@ -251,22 +188,7 @@ fn unknown() {
 #[test]
 fn field_granularity_wraps_only_proven_field_and_perf_reports_real_stats() {
     let project = TestProject::new("field-perf");
-    let file = project.main_file(
-        r#"
-struct Session {
-    shared_count: u64,
-    immutable_name: String,
-}
-
-fn bump(session: &mut Session) {
-    session.shared_count += 1;
-}
-
-fn read_name(session: &Session) {
-    println!("{}", session.immutable_name);
-}
-"#,
-    );
+    let file = project.copy_fixture("strict/field_granularity.kobo", "src/main.kobo");
 
     let build = run_kobo(
         &[

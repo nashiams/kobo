@@ -1,0 +1,8 @@
+fn load_user() -> Result<String, std::io::Error> {
+    let value = std::fs::read_to_string("user.txt")?;
+    Ok(value)
+}
+
+fn main() {
+    let _ = load_user();
+}

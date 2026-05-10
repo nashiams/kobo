@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "kobo_version": "test",
+  "target": "src/http.kobo:call",
+  "guarantee_profile": "checked",
+  "seed": 1,
+  "backend_profile": "async",
+  "replay_guarantee": "partial",
+  "modeled_boundaries": ["ward.time"],
+  "opaque_boundaries": ["reqwest::Client"],
+  "failure": {"code": "K0103", "primary_span": "src/http.kobo:1:1"},
+  "events": [{"kind": "outside-boundary"}]
+}

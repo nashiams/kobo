@@ -1,0 +1,4 @@
+#[kobo::scenario(profile = "async")]
+async fn replay_dynamic_boundary() {
+    let _ = __CRATE__::Client::new();
+}

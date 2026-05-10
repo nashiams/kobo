@@ -1,0 +1,11 @@
+[guarantees]
+ownership = "record"
+liveness = "checked"
+replay = "checked"
+boundaries = "record"
+errors = "typed"
+
+[ci.release]
+deny_new_debt = true
+strict_paths = ["src/payment/**", "src/auth/**"]
+deny_downgrade_without_reason = true

@@ -7,21 +7,8 @@ use v09_common::{
     unique_symbol, TestProject,
 };
 
-const FAILING_SCENARIO: &str = r#"
-#[kobo::must_call(commit | rollback)]
-struct Transaction {
-    id: u64,
-}
-
-#[kobo::scenario(profile = "async")]
-fn transaction_leaks() {
-    let tx = Transaction { id: 11 };
-    let _lost = tx;
-}
-"#;
-
 fn emit_witness(project: &TestProject) -> Vec<std::path::PathBuf> {
-    let file = project.write("src/transaction.kobo", FAILING_SCENARIO);
+    let file = project.copy_fixture("replay/transaction_leaks.kobo", "src/transaction.kobo");
     let output = run_kobo(
         &[
             s("test"),
@@ -77,21 +64,11 @@ fn kwit_schema_records_dynamic_target_and_seed() {
     let project = TestProject::new("kwit-dynamic-target");
     let scenario = unique_symbol("transaction_leaks");
     let seed = u64::from(std::process::id()) + 109;
-    let source = format!(
-        r#"
-#[kobo::must_call(commit | rollback)]
-struct Transaction {{
-    id: u64,
-}}
-
-#[kobo::scenario(profile = "async")]
-fn {scenario}() {{
-    let tx = Transaction {{ id: 11 }};
-    let _lost = tx;
-}}
-"#
+    let file = project.copy_fixture_template(
+        "replay/dynamic_transaction.template.kobo",
+        "src/dynamic_transaction.kobo",
+        &[("__SCENARIO__", &scenario)],
     );
-    let file = project.write("src/dynamic_transaction.kobo", &source);
     let output = run_kobo(
         &[
             s("test"),
@@ -181,22 +158,7 @@ fn replay_divergence_emits_k0104_with_expected_and_observed_events() {
 #[test]
 fn partial_replay_is_labeled_partial_not_exact() {
     let project = TestProject::new("partial-replay");
-    let witness = project.write(
-        ".kobo/witnesses/partial.kwit",
-        r#"{
-  "schema_version": 1,
-  "kobo_version": "test",
-  "target": "src/http.kobo:call",
-  "guarantee_profile": "checked",
-  "seed": 1,
-  "backend_profile": "async",
-  "replay_guarantee": "partial",
-  "modeled_boundaries": ["ward.time"],
-  "opaque_boundaries": ["reqwest::Client"],
-  "failure": {"code": "K0103", "primary_span": "src/http.kobo:1:1"},
-  "events": [{"kind": "outside-boundary"}]
-}"#,
-    );
+    let witness = project.copy_fixture("replay/partial.kwit", ".kobo/witnesses/partial.kwit");
 
     let output = run_kobo(&[s("replay"), path_arg(&witness)], &project.root);
     assert_failure(&output, "partial replay must not claim exact success");

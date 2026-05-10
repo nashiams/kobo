@@ -1,0 +1,4 @@
+#[kobo::scenario(profile = "async")]
+fn never_finishes() {
+    loop {}
+}

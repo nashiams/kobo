@@ -2,13 +2,13 @@ mod v09_common;
 
 use v09_common::{
     assert_contains, assert_failure, assert_mentions_line, assert_not_contains, assert_success,
-    one_based_line_of, path_arg, run_kobo, s, unique_symbol, TestProject,
+    fixture_template, one_based_line_of, path_arg, run_kobo, s, unique_symbol, TestProject,
 };
 
 #[test]
 fn trap_string_only_profiles_do_not_count() {
     let project = TestProject::new("trap-string-profile");
-    let file = project.main_file("fn main() {}\n");
+    let file = project.copy_fixture("traps/string_profile.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[
@@ -48,12 +48,7 @@ fn trap_string_only_profiles_do_not_count() {
 #[test]
 fn trap_backend_imports_never_leak_into_user_source() {
     let project = TestProject::new("trap-backend-imports");
-    let file = project.write(
-        "src/gateway.kobo",
-        r#"
-async fn handle_request() {}
-"#,
-    );
+    let file = project.copy_fixture("traps/backend_imports.kobo", "src/gateway.kobo");
 
     let output = run_kobo(
         &[
@@ -81,14 +76,7 @@ async fn handle_request() {}
 #[test]
 fn trap_quick_budget_overflow_emits_k0105_instead_of_hanging() {
     let project = TestProject::new("trap-budget");
-    let file = project.main_file(
-        r#"
-#[kobo::scenario(profile = "async")]
-fn never_finishes() {
-    loop {}
-}
-"#,
-    );
+    let file = project.copy_fixture("sim/budget_overflow.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[
@@ -114,33 +102,11 @@ fn trap_diagnostic_spans_move_with_source_offsets() {
     let project = TestProject::new("trap-span-shift");
     let first_type = unique_symbol("DeliveryA");
     let second_type = unique_symbol("DeliveryB");
-    let first_source = format!(
-        r#"
-#[kobo::must_call(ack | nack)]
-struct {first_type} {{}}
-
-#[kobo::scenario(profile = "async")]
-fn leak_first() {{
-    let delivery = {first_type} {{}};
-    let _lost = delivery;
-}}
-"#
-    );
-    let second_source = format!(
-        r#"
-
-
-
-
-#[kobo::must_call(ack | nack)]
-struct {second_type} {{}}
-
-#[kobo::scenario(profile = "async")]
-fn leak_second() {{
-    let delivery = {second_type} {{}};
-    let _lost = delivery;
-}}
-"#
+    let first_source =
+        fixture_template("sim/span_first.template.kobo", &[("__TYPE__", &first_type)]);
+    let second_source = fixture_template(
+        "sim/span_second.template.kobo",
+        &[("__TYPE__", &second_type)],
     );
     let first_line = one_based_line_of(&first_source, "let _lost = delivery");
     let second_line = one_based_line_of(&second_source, "let _lost = delivery");
@@ -199,14 +165,7 @@ fn leak_second() {{
 #[test]
 fn trap_lsp_uses_registry_payload_for_k010x_actions() {
     let project = TestProject::new("trap-lsp");
-    let file = project.main_file(
-        r#"
-#[kobo::scenario(profile = "async")]
-async fn replay_http() {
-    let _ = reqwest::Client::new();
-}
-"#,
-    );
+    let file = project.copy_fixture("lsp/replay_http.kobo", "src/main.kobo");
 
     let output = run_kobo(
         &[

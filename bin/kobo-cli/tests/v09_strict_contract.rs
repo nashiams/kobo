@@ -1,8 +1,8 @@
 mod v09_common;
 
 use v09_common::{
-    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg, run_kobo, s,
-    TestProject,
+    assert_contains, assert_failure, assert_mentions_line, assert_not_contains, assert_success,
+    one_based_line_of, path_arg, run_kobo, s, TestProject,
 };
 
 const UNRESOLVED_DEBT: &str = r#"
@@ -44,11 +44,92 @@ fn release_rejects_unresolved_owned_debt_that_dev_records() {
     );
 
     assert_success(&dev, "dev profile should record debt without blocking");
-    assert_failure(&release, "release profile must reject unresolved ownership debt");
+    assert_failure(
+        &release,
+        "release profile must reject unresolved ownership debt",
+    );
     let text = release.combined();
-    assert_contains(&text, "K000", "release failure must use registered K000x code");
-    assert_contains(&text, "ownership", "release failure must name ownership debt");
-    assert_contains(&text, "src/main.kobo", "release failure must use source span");
+    assert_contains(
+        &text,
+        "K000",
+        "release failure must use registered K000x code",
+    );
+    assert_contains(
+        &text,
+        "ownership",
+        "release failure must name ownership debt",
+    );
+    assert_contains(
+        &text,
+        "src/main.kobo",
+        "release failure must use source span",
+    );
+}
+
+#[test]
+fn release_ownership_diagnostic_span_tracks_shifted_source() {
+    let project = TestProject::new("release-shifted-span");
+    let compact_source = r#"
+fn main() {
+    let order = String::from("order-7");
+    let first = &order;
+    let moved = order;
+    println!("{} {}", first, moved);
+}
+"#;
+    let shifted_source = r#"
+
+
+
+fn main() {
+    let order = String::from("order-7");
+    let first = &order;
+    let moved = order;
+    println!("{} {}", first, moved);
+}
+"#;
+    let compact_line = one_based_line_of(compact_source, "let moved = order");
+    let shifted_line = one_based_line_of(shifted_source, "let moved = order");
+    assert_ne!(
+        compact_line, shifted_line,
+        "fixture must shift the move line"
+    );
+    let compact_file = project.write("src/compact.kobo", compact_source);
+    let shifted_file = project.write("src/shifted.kobo", shifted_source);
+
+    let compact = run_kobo(
+        &[
+            s("build"),
+            s("--profile"),
+            s("release"),
+            s("--error-format=json"),
+            path_arg(&compact_file),
+        ],
+        &project.root,
+    );
+    let shifted = run_kobo(
+        &[
+            s("build"),
+            s("--profile"),
+            s("release"),
+            s("--error-format=json"),
+            path_arg(&shifted_file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&compact, "compact ownership debt should fail release");
+    assert_failure(&shifted, "shifted ownership debt should fail release");
+    assert_mentions_line(
+        &compact,
+        compact_line,
+        "compact diagnostic must point at actual moved value",
+    );
+    assert_mentions_line(
+        &shifted,
+        shifted_line,
+        "shifted diagnostic must move with source offset",
+    );
 }
 
 #[test]
@@ -69,7 +150,11 @@ fn release_accepts_fixed_debt_and_emits_clean_rust_without_hidden_runtime() {
 
     assert_success(&output, "fixed release build should succeed");
     let text = output.combined();
-    assert_contains(&text, ".rs", "release build should expose generated Rust path");
+    assert_contains(
+        &text,
+        ".rs",
+        "release build should expose generated Rust path",
+    );
     assert_not_contains(
         &text,
         "kobo-runtime",
@@ -193,7 +278,10 @@ fn read_name(session: &Session) {
         ],
         &project.root,
     );
-    assert_success(&build, "release build should succeed for field-granularity fixture");
+    assert_success(
+        &build,
+        "release build should succeed for field-granularity fixture",
+    );
     let build_text = build.combined();
     assert_contains(
         &build_text,
@@ -205,7 +293,10 @@ fn read_name(session: &Session) {
         "field granularity must not wrap whole struct when only one field needs it:\n{build_text}"
     );
 
-    let perf = run_kobo(&[s("perf"), path_arg(&file), s("--format=json")], &project.root);
+    let perf = run_kobo(
+        &[s("perf"), path_arg(&file), s("--format=json")],
+        &project.root,
+    );
     assert_success(&perf, "kobo perf should report real analysis stats");
     let perf_text = perf.combined();
     for needle in ["borrow_count", "contention", "hot_paths"] {

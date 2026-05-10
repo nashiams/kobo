@@ -16,10 +16,8 @@ pub struct TestProject {
 impl TestProject {
     pub fn new(label: &str) -> Self {
         let counter = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "kobo-v09-{label}-{}-{counter}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("kobo-v09-{label}-{}-{counter}", std::process::id()));
         if root.exists() {
             let _ = fs::remove_dir_all(&root);
         }
@@ -137,6 +135,39 @@ pub fn assert_not_contains(text: &str, needle: &str, context: &str) {
     );
 }
 
+pub fn unique_symbol(prefix: &str) -> String {
+    let counter = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let normalized: String = prefix
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect();
+    format!("{normalized}_{}_{}", std::process::id(), counter)
+}
+
+pub fn one_based_line_of(source: &str, needle: &str) -> usize {
+    source
+        .lines()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("source must contain `{needle}`:\n{source}"))
+        + 1
+}
+
+pub fn assert_mentions_line(output: &CliOutput, line: usize, context: &str) {
+    let text = output.combined();
+    let patterns = [
+        format!(":{line}:"),
+        format!("\"line\":{line}"),
+        format!("\"line\": {line}"),
+        format!("line {line}"),
+    ];
+    assert!(
+        patterns.iter().any(|pattern| text.contains(pattern)),
+        "{context}\nexpected output to mention source line {line}\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
 pub fn json_lines(output: &CliOutput) -> Vec<Value> {
     output
         .combined()
@@ -146,17 +177,22 @@ pub fn json_lines(output: &CliOutput) -> Vec<Value> {
 }
 
 pub fn first_json(output: &CliOutput, context: &str) -> Value {
-    json_lines(output)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("{context}: expected at least one JSON line\n{}", output.combined()))
+    json_lines(output).into_iter().next().unwrap_or_else(|| {
+        panic!(
+            "{context}: expected at least one JSON line\n{}",
+            output.combined()
+        )
+    })
 }
 
 pub fn assert_json_has_path(value: &Value, path: &[&str], context: &str) {
     let mut cursor = value;
     for segment in path {
-        cursor = cursor
-            .get(*segment)
-            .unwrap_or_else(|| panic!("{context}: missing JSON path `{}` in {value}", path.join(".")));
+        cursor = cursor.get(*segment).unwrap_or_else(|| {
+            panic!(
+                "{context}: missing JSON path `{}` in {value}",
+                path.join(".")
+            )
+        });
     }
 }

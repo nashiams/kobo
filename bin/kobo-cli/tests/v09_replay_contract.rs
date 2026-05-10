@@ -4,7 +4,7 @@ use std::fs;
 
 use v09_common::{
     assert_contains, assert_failure, assert_json_has_path, assert_success, path_arg, run_kobo, s,
-    TestProject,
+    unique_symbol, TestProject,
 };
 
 const FAILING_SCENARIO: &str = r#"
@@ -73,13 +73,74 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
 }
 
 #[test]
+fn kwit_schema_records_dynamic_target_and_seed() {
+    let project = TestProject::new("kwit-dynamic-target");
+    let scenario = unique_symbol("transaction_leaks");
+    let seed = u64::from(std::process::id()) + 109;
+    let source = format!(
+        r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {{
+    id: u64,
+}}
+
+#[kobo::scenario(profile = "async")]
+fn {scenario}() {{
+    let tx = Transaction {{ id: 11 }};
+    let _lost = tx;
+}}
+"#
+    );
+    let file = project.write("src/dynamic_transaction.kobo", &source);
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--profile"),
+            s("checked"),
+            s("--seed"),
+            seed.to_string(),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "dynamic liveness failure should emit witness");
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(
+        !witnesses.is_empty(),
+        "dynamic failure must create .kwit witness"
+    );
+    let witness = fs::read_to_string(&witnesses[0]).expect("witness should be readable");
+    let json: serde_json::Value =
+        serde_json::from_str(&witness).expect(".kwit should be structured JSON");
+    assert_contains(
+        json["target"].as_str().unwrap_or_default(),
+        &scenario,
+        "witness target must use actual scenario symbol",
+    );
+    assert_eq!(
+        json["seed"].as_u64(),
+        Some(seed),
+        "witness seed must come from CLI seed, not canned output"
+    );
+}
+
+#[test]
 fn replay_exact_kwit_succeeds_and_reports_same_failure() {
     let project = TestProject::new("replay-exact");
     let witnesses = emit_witness(&project);
     assert!(!witnesses.is_empty(), "witness should exist before replay");
 
     let output = run_kobo(
-        &[s("replay"), path_arg(&witnesses[0]), s("--error-format=json")],
+        &[
+            s("replay"),
+            path_arg(&witnesses[0]),
+            s("--error-format=json"),
+        ],
         &project.root,
     );
 
@@ -93,7 +154,10 @@ fn replay_exact_kwit_succeeds_and_reports_same_failure() {
 fn replay_divergence_emits_k0104_with_expected_and_observed_events() {
     let project = TestProject::new("replay-divergence");
     let witnesses = emit_witness(&project);
-    assert!(!witnesses.is_empty(), "witness should exist before mutation");
+    assert!(
+        !witnesses.is_empty(),
+        "witness should exist before mutation"
+    );
     let path = &witnesses[0];
 
     let mut json: serde_json::Value =

@@ -2,7 +2,7 @@ mod v09_common;
 
 use v09_common::{
     assert_contains, assert_failure, assert_json_has_path, assert_success, first_json, path_arg,
-    run_kobo, s, TestProject,
+    run_kobo, s, unique_symbol, TestProject,
 };
 
 const BASIC_SOURCE: &str = r#"
@@ -91,8 +91,7 @@ fn strict_alias_matches_release_policy() {
     let release_json = first_json(&release, "release policy json");
     let strict_json = first_json(&strict, "strict alias policy json");
     assert_eq!(
-        release_json["guarantees"],
-        strict_json["guarantees"],
+        release_json["guarantees"], strict_json["guarantees"],
         "`--strict` must be an alias for release/strict guarantees, not another language mode"
     );
 }
@@ -132,6 +131,71 @@ ownership = "record"
     assert_contains(&text, "downgrade", "downgrade should be named");
     assert_contains(&text, "reason", "downgrade must ask for a reason");
     assert_contains(&text, "ledger", "downgrade must be recorded as evidence");
+}
+
+#[test]
+fn path_policy_overrides_follow_dynamic_file_globs() {
+    let project = TestProject::new("dynamic-path-policy");
+    let payment_name = unique_symbol("payment_flow");
+    let public_name = unique_symbol("public_flow");
+    let payment_file = project.write(
+        &format!("src/payment/{payment_name}.kobo"),
+        "fn main() {}\n",
+    );
+    let public_file = project.write(&format!("src/public/{public_name}.kobo"), "fn main() {}\n");
+    project.write(
+        "Kobo.toml",
+        r#"
+[profiles.release.guarantees]
+ownership = "strict"
+liveness = "checked"
+replay = "checked"
+boundaries = "strict"
+errors = "explicit"
+
+[paths."src/payment/**"]
+ownership = "record"
+reason = "legacy checkout migration"
+"#,
+    );
+
+    let payment = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--print-policy=json"),
+            path_arg(&payment_file),
+        ],
+        &project.root,
+    );
+    let public = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--print-policy=json"),
+            path_arg(&public_file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&payment, "payment path policy should be printable");
+    assert_success(&public, "public path policy should be printable");
+    let payment_json = first_json(&payment, "payment path policy json");
+    let public_json = first_json(&public, "public path policy json");
+    assert_eq!(
+        payment_json["guarantees"]["ownership"], "record",
+        "glob override must apply to dynamically named payment file"
+    );
+    assert_eq!(
+        public_json["guarantees"]["ownership"], "strict",
+        "default release policy must remain strict outside payment glob"
+    );
+    assert_ne!(
+        payment_json["guarantees"]["ownership"], public_json["guarantees"]["ownership"],
+        "policy printer must resolve the actual input path, not emit one canned profile"
+    );
 }
 
 #[test]

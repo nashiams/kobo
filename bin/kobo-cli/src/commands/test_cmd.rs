@@ -228,11 +228,7 @@ fn emit_failure(
             println!("{}", serde_json::to_string(&value)?);
         }
         ErrorFormat::Human => {
-            let color = if std::env::var_os("NO_COLOR").is_some() {
-                ColorMode::Never
-            } else {
-                ColorMode::Auto
-            };
+            let color = super::session::resolve_color_mode(ColorMode::Auto);
             let renderer = DiagnosticRenderer::new(color, DiagnosticOutputFormat::HumanCard);
             eprintln!("{}", renderer.render(files.as_file_set(), &diagnostic));
         }

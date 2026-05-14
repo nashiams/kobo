@@ -3,15 +3,22 @@ source: bin/kobo-cli/tests/test_ui.rs
 assertion_line: 81
 expression: output.stderr
 ---
-error[K0025]: soft hint ignored - constraint conflict
+error[K0025]: Kobo cannot use this ownership hint
   --> tests\ui\K0025_hint_ignored.kobo:4:30
   |
 4 |     #[kobo::hint(ownership = "move")]
-  |                              ^^^^^^ hint requests move ownership here
+  |                              ^^^^^^ this ownership hint asks Kobo to move `buf`
 5 |     let buf = String::from("kobo");
-  |         --- hint applies to this binding
+  |         --- hint applies to this value
   |
-why: hint `ownership = "move"` conflicts with mutable borrowing requires the shared-mutable floor for `buf`
-fix: Kobo used shared mutable ownership because the hinted ownership shape conflicts with the later facts
-help: drop the later alias, or change the hint to match the actual usage pattern
-run: kobo check tests\ui\K0025_hint_ignored.kobo:4
+What Kobo found:
+  The hint asks Kobo to move `buf`, but the code mutably uses `buf` more than once.
+Why this matters:
+  A moved value has only one owner. This code needs a shape that can support repeated mutable use.
+Try this:
+  Remove the hint, change it to match the sharing pattern, or refactor so `buf` has only one owner.
+More:
+  Run `kobo explain K0025` for examples and deeper context.
+  Also: if this sharing is intentional, let Kobo choose the shared representation and review it with
+  `kobo inspect`
+  Rerun: kobo check tests\ui\K0025_hint_ignored.kobo:4

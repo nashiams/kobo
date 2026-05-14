@@ -6,7 +6,7 @@ use kobo_errors::{
     KDiagnostic,
 };
 use kobo_errors::{KErrorCode, Severity};
-use kobo_ir::{FileSet, Kir, KoboMode, OwnershipTier, StrictBoundaryViolation, TransformFacts};
+use kobo_ir::{FileSet, Kir, KoboMode, StrictBoundaryViolation, TransformFacts};
 
 use crate::ownership_facts::{BorrowFact, BorrowKind, HintConflictFact, MoveFact};
 use crate::runner::AnalysisFacts;
@@ -137,25 +137,64 @@ fn hint_conflict_diagnostic(
         severity,
         DiagLabel::primary(
             hint_conflict.hint_span,
-            format!(
-                "hint requests {} ownership here",
-                hint_conflict.hint.as_str()
-            ),
+            hint_conflict_label(hint_conflict, binding),
         ),
         hint_conflict_explanation(hint_conflict, binding),
         DiagDecision(format!(
-            "Kobo used {} because the hinted ownership shape conflicts with the later facts",
-            human_ownership_tier(hint_conflict.chosen_tier)
+            "Remove the hint, change it to match the sharing pattern, or refactor so `{}` has only one owner.",
+            binding.binding_name
         )),
     )
     .with_secondary_label(DiagLabel::secondary(
         binding.span,
-        "hint applies to this binding",
+        "hint applies to this value",
     ))
+    .with_finding(hint_conflict_finding(hint_conflict, binding))
     .with_help(DiagHelp(
-        "drop the later alias, or change the hint to match the actual usage pattern".to_owned(),
+        "if this sharing is intentional, let Kobo choose the shared representation and review it with `kobo inspect`".to_owned(),
     ))
     .with_run(CliSuggestion(run_target(file_set, hint_conflict.hint_span)))
+}
+
+fn hint_conflict_label(
+    hint_conflict: &kobo_ir::HintConflictFact,
+    binding: &kobo_ir::TransformBindingFacts,
+) -> String {
+    if hint_conflict.hint.as_str() == "move" {
+        return format!(
+            "this ownership hint asks Kobo to move `{}`",
+            binding.binding_name
+        );
+    }
+
+    format!(
+        "this ownership hint asks Kobo to use `{}`",
+        hint_conflict.hint.as_str()
+    )
+}
+
+fn hint_conflict_finding(
+    hint_conflict: &kobo_ir::HintConflictFact,
+    binding: &kobo_ir::TransformBindingFacts,
+) -> String {
+    if hint_conflict.hint.as_str() == "move"
+        && matches!(
+            hint_conflict.reason,
+            kobo_ir::HintConflictReason::MutableUse
+        )
+    {
+        return format!(
+            "The hint asks Kobo to move `{}`, but the code mutably uses `{}` more than once.",
+            binding.binding_name, binding.binding_name
+        );
+    }
+
+    format!(
+        "The hint asks Kobo to use `{}` ownership, but `{}` {}.",
+        hint_conflict.hint.as_str(),
+        binding.binding_name,
+        hint_conflict_reason_text(hint_conflict.reason)
+    )
 }
 
 fn move_explanation(move_fact: &MoveFact, file_set: &FileSet) -> DiagExplanation {
@@ -185,29 +224,38 @@ fn hint_conflict_explanation(
     hint_conflict: &kobo_ir::HintConflictFact,
     binding: &kobo_ir::TransformBindingFacts,
 ) -> DiagExplanation {
-    let conflict = match hint_conflict.reason {
-        kobo_ir::HintConflictReason::Aliasing => {
-            "an active borrow is still live at the later move site"
-        }
-        kobo_ir::HintConflictReason::MutableUse => {
-            "mutable borrowing requires the shared-mutable floor"
-        }
-        kobo_ir::HintConflictReason::SendRequired => {
-            "thread-crossing usage requires a Send-safe shared tier"
-        }
-        kobo_ir::HintConflictReason::AsyncDeferred => "Box<T> is deferred inside async fn in v0.3",
-        kobo_ir::HintConflictReason::SharedUsage => {
-            "multiple read-only borrow sites still require sharing in script mode"
-        }
-        kobo_ir::HintConflictReason::Unknown => "later usage invalidated the hinted candidate",
-    };
+    if hint_conflict.hint.as_str() == "move"
+        && matches!(
+            hint_conflict.reason,
+            kobo_ir::HintConflictReason::MutableUse
+        )
+    {
+        return DiagExplanation(
+            "A moved value has only one owner. This code needs a shape that can support repeated mutable use."
+                .to_owned(),
+        );
+    }
 
     DiagExplanation(format!(
-        "hint `ownership = \"{}\"` conflicts with {} for `{}`",
+        "The requested `{}` ownership shape does not match how `{}` is used later. Kobo keeps the source behavior first and reports the hint for review.",
         hint_conflict.hint.as_str(),
-        conflict,
         binding.binding_name,
     ))
+}
+
+fn hint_conflict_reason_text(reason: kobo_ir::HintConflictReason) -> &'static str {
+    match reason {
+        kobo_ir::HintConflictReason::Aliasing => {
+            "still has an active borrow when the value would move"
+        }
+        kobo_ir::HintConflictReason::MutableUse => "is mutably used more than once",
+        kobo_ir::HintConflictReason::SendRequired => "must cross a thread boundary safely",
+        kobo_ir::HintConflictReason::AsyncDeferred => {
+            "is used in async code that cannot use this ownership shape yet"
+        }
+        kobo_ir::HintConflictReason::SharedUsage => "is read from more than one shared place",
+        kobo_ir::HintConflictReason::Unknown => "is used in a way that conflicts with the hint",
+    }
 }
 
 fn binding_name_at(file_set: &FileSet, span: kobo_ir::KoboSpan) -> String {
@@ -245,17 +293,4 @@ fn run_target(file_set: &FileSet, span: kobo_ir::KoboSpan) -> String {
     };
     let (line, _) = file.line_col(span.start);
     format!("kobo check {}:{line}", file.path.display())
-}
-
-fn human_ownership_tier(tier: OwnershipTier) -> &'static str {
-    match tier {
-        OwnershipTier::PlainOwned => "plain ownership",
-        OwnershipTier::BoxOwned => "boxed ownership",
-        OwnershipTier::RcShared => "shared ownership",
-        OwnershipTier::ArcShared => "thread-safe shared ownership",
-        OwnershipTier::RcMutShared => "shared mutable ownership",
-        OwnershipTier::ArcMutShared => "thread-safe shared mutable ownership",
-        OwnershipTier::Scoped => "scoped handle ownership",
-        OwnershipTier::Undecided => "the safest available ownership shape",
-    }
 }

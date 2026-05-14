@@ -1,6 +1,6 @@
 use anyhow::Context;
 use kobo_driver::{load_config, run_codegen_pipeline, KoboMode};
-use kobo_errors::{KErrorCode, Severity};
+use kobo_errors::{ColorMode, KErrorCode, Severity};
 
 use std::path::Path;
 
@@ -16,6 +16,7 @@ pub(super) fn cmd_build(
     guarantee_profile: Option<GuaranteeProfileArg>,
     print_policy: Option<PolicyOutputFormat>,
     error_format: ErrorFormat,
+    color_mode: ColorMode,
     emit_rust: bool,
     file: Option<&Path>,
 ) -> anyhow::Result<()> {
@@ -26,6 +27,7 @@ pub(super) fn cmd_build(
             guarantee_profile,
             print_policy,
             error_format,
+            color_mode,
             emit_rust,
         );
     }
@@ -65,6 +67,7 @@ fn cmd_build_file(
     guarantee_profile: Option<GuaranteeProfileArg>,
     print_policy: Option<PolicyOutputFormat>,
     error_format: ErrorFormat,
+    color_mode: ColorMode,
     emit_rust: bool,
 ) -> anyhow::Result<()> {
     let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
@@ -85,10 +88,10 @@ fn cmd_build_file(
 
     let mut session = build_session(file, cli_mode)?;
     let artifacts = run_codegen_pipeline(&mut session, file).map_err(|()| {
-        render_diagnostics_with_format(&session, error_format);
+        render_diagnostics_with_format(&session, error_format, color_mode);
         super::diagnostics_emitted()
     })?;
-    render_diagnostics_with_format(&session, error_format);
+    render_diagnostics_with_format(&session, error_format, color_mode);
     let strict_ownership_line = if session.mode().is_strict() {
         session
             .visible_diagnostics()

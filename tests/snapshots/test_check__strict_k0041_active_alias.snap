@@ -11,5 +11,12 @@ error[K0041]: cannot enter @strict block - value has active aliases
 5 |         data.borrow_mut().push(4);
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ active aliases at @strict block entry
   |
-why: value has 1 active alias when the @strict block starts; all aliases must end before the boundary is entered
-fix: drop or explicitly clone-then-drop aliases before the @strict { } boundary
+What Kobo found:
+  active aliases at @strict block entry
+Why this matters:
+  value has 1 active alias when the @strict block starts; all aliases must end before the boundary
+  is entered
+Try this:
+  drop or explicitly clone-then-drop aliases before the @strict { } boundary
+More:
+  Run `kobo explain K0041` for examples and deeper context.

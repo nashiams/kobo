@@ -82,6 +82,7 @@ pub struct KDiagnostic {
     pub severity: Severity,
     pub primary: DiagLabel,
     pub secondary: Vec<DiagLabel>,
+    pub finding: Option<String>,
     pub explanation: DiagExplanation,
     pub decision: DiagDecision,
     pub help: Option<DiagHelp>,
@@ -127,6 +128,7 @@ impl KDiagnostic {
             severity,
             primary,
             secondary: Vec::new(),
+            finding: None,
             explanation: explanation.into(),
             decision: decision.into(),
             help: None,
@@ -142,6 +144,11 @@ impl KDiagnostic {
 
     pub fn with_secondary_label(mut self, label: DiagLabel) -> Self {
         self.secondary.push(label);
+        self
+    }
+
+    pub fn with_finding(mut self, finding: impl Into<String>) -> Self {
+        self.finding = Some(finding.into());
         self
     }
 

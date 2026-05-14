@@ -189,6 +189,12 @@ impl MachineEditPolicy {
 }
 
 impl DiagnosticRegistry {
+    pub fn active_entries(&self) -> impl Iterator<Item = &DiagnosticRegistryEntry> {
+        self.entries
+            .values()
+            .filter(|entry| entry.status == DiagnosticStatus::Active)
+    }
+
     pub fn get(&self, code: KErrorCode) -> Option<&DiagnosticRegistryEntry> {
         self.find_by_code_text(code.as_str())
     }
@@ -368,10 +374,10 @@ fn strict_boundary_entries() -> Vec<DiagnosticRegistryEntry> {
     vec![
         entry(
             KErrorCode::K0025,
-            "soft-hint-constraint-conflict",
-            "soft hint ignored - constraint conflict",
-            "A Kobo hint could not be applied because it conflicts with required ownership facts.",
-            "Hints are advisory. Kobo keeps the required facts first, then reports the hint so the mismatch can be reviewed instead of silently changing behavior.",
+            "ownership-hint-cannot-be-used",
+            "Kobo cannot use this ownership hint",
+            "A hint asks Kobo for an ownership shape this value's actual use cannot support.",
+            "A moved value has only one owner. Code that needs repeated mutable use must use a shape that supports that sharing.",
             StrictBoundary,
             Error,
             Always(Error),
@@ -474,19 +480,12 @@ fn async_entries() -> Vec<DiagnosticRegistryEntry> {
             "future-send-boundary",
             "future requires Send but value cannot safely cross thread boundary",
             "An async future requires Send but a captured value cannot satisfy that boundary.",
-            "Kobo refuses silent Arc<Mutex<T>> insertion.\n\
-Use #[kobo::async_shared] when shared async ownership is intentional.\n\
+            "The future may run on another worker thread, but one captured value is only safe on the current thread.\n\
+Kobo does not hide that by inserting shared mutation for you.\n\
 Use LocalSet when the task is intentionally single-thread local.\n\
-Narrow guard lifetimes before spawn or await when sharing is accidental.\n\
-Prefer message passing or actor ownership when mutation crosses many tasks.\n\
-Avoid hiding the issue with a generated blocking mutex.\n\
-Check whether the captured value must be Send, Sync, or merely local.\n\
-Use `kobo inspect` to confirm the source-mapped capture site.\n\
-Use `kobo sim scout` when scheduler evidence would help prioritize work.\n\
-Compare the span that creates the value, the capture span, and the await or spawn boundary.\n\
-If the value is read-only, prefer immutable sharing over mutable sharing.\n\
-If mutation is required, make that policy visible in source.\n\
-Keep the short CLI card focused; this explain page carries the longer tradeoff list.\n\
+Use #[kobo::async_shared] when shared async ownership is intentional.\n\
+Capture only thread-safe data when the task really should move between worker threads.\n\
+If mutation crosses many tasks, prefer message passing or actor ownership.\n\
 If this crosses an external runtime boundary, record the boundary tradeoff explicitly.",
             Async,
             Warning,
@@ -511,9 +510,9 @@ If this crosses an external runtime boundary, record the boundary tradeoff expli
         entry(
             KErrorCode::K0063,
             "strict-block-inside-async",
-            "@strict block inside async fn without @strict async fn",
-            "A strict block appears in an async function without the async-aware strict contract.",
-            "The strict boundary and async suspension rules interact. Kobo needs an explicit async strict contract before it can preserve boundary guarantees across await points.",
+            "this strict borrow is inside code that can pause",
+            "This strict block runs inside an async function.",
+            "Kobo needs strict borrows to end before the function can pause or be cancelled.",
             Async,
             Warning,
             AsyncModeDependent,
@@ -576,7 +575,7 @@ fn solver_entries() -> Vec<DiagnosticRegistryEntry> {
             KErrorCode::K0080,
             "structural-ownership-conflict",
             "structural ownership conflict - no automatic fix possible",
-            "The solver found an ownership structure that requires human design input.",
+            "Kobo found an ownership shape that needs a human design choice.",
             "More than one architecture could be correct, or the current shape needs a design boundary. Kobo reports the conflict instead of fabricating a silent rewrite.",
             Solver,
             Note,
@@ -640,9 +639,9 @@ fn solver_entries() -> Vec<DiagnosticRegistryEntry> {
         entry(
             KErrorCode::K0081,
             "ownership-cluster-too-large",
-            "ownership cluster too large for automatic solving",
-            "A constraint cluster exceeds the configured automatic solver limit.",
-            "Kobo stops instead of making a silent partial decision when the solver input is too large.",
+            "ownership problem is too large to choose automatically",
+            "Too many ownership choices are connected in one part of the code.",
+            "Kobo stops instead of making a silent partial decision. Split the code or add a local ownership annotation so the intended owner is clear.",
             Solver,
             Error,
             Always(Error),
@@ -652,9 +651,9 @@ fn solver_entries() -> Vec<DiagnosticRegistryEntry> {
         ),
         entry(
             KErrorCode::K0082,
-            "solver-budget-exceeded",
-            "solver exceeded its time budget",
-            "The solver ran out of budget before reaching a complete answer.",
+            "ownership-budget-exceeded",
+            "ownership analysis took too long",
+            "Kobo ran out of budget before reaching a complete answer.",
             "Budget exhaustion is distinct from no-solution so users can decide whether to increase budget or simplify the code.",
             Solver,
             Error,
@@ -665,9 +664,9 @@ fn solver_entries() -> Vec<DiagnosticRegistryEntry> {
         ),
         entry(
             KErrorCode::K0083,
-            "solver-human-review",
-            "solver decision requires human review",
-            "The solver found more than one valid ownership candidate.",
+            "ownership-choice-needs-review",
+            "ownership choice requires human review",
+            "Kobo found more than one valid ownership candidate.",
             "Kobo may choose a lowest-risk candidate for codegen, but review output must expose the alternatives.",
             Solver,
             Warning,
@@ -678,9 +677,9 @@ fn solver_entries() -> Vec<DiagnosticRegistryEntry> {
         ),
         entry(
             KErrorCode::K0084,
-            "solver-medium-confidence",
-            "solver made a provisional decision with medium confidence",
-            "A solver choice is acceptable but not strong enough to hide from review.",
+            "ownership-medium-confidence",
+            "ownership choice needs confirmation",
+            "Kobo found an ownership choice that is plausible but not strong enough to hide from review.",
             "Kobo reports medium-confidence choices so migration remains auditable.",
             Solver,
             Warning,
@@ -691,8 +690,8 @@ fn solver_entries() -> Vec<DiagnosticRegistryEntry> {
         ),
         entry(
             KErrorCode::K0085,
-            "solver-low-confidence",
-            "solver applied a low-confidence heuristic - verify manually",
+            "ownership-low-confidence",
+            "ownership suggestion needs manual review",
             "A low-confidence ownership choice requires human review.",
             "Kobo keeps low-confidence picks visible rather than treating them as final migration decisions.",
             Solver,
@@ -951,7 +950,7 @@ fn parser_recovery_entries() -> Vec<DiagnosticRegistryEntry> {
             "syntax-error-recovered",
             "syntax error recovered",
             "Kobo recovered from invalid syntax and continued compiling the remaining trustworthy source regions.",
-            "Kobo keeps parsing after localized syntax errors so it can report other independent diagnostics. The poisoned region is skipped by later compiler phases to avoid cascades.",
+            "Kobo keeps parsing after localized syntax errors so it can report other independent diagnostics. The broken source range is skipped by later compiler phases to avoid cascades.",
             Parser,
             Error,
             Always(Error),
@@ -964,7 +963,7 @@ fn parser_recovery_entries() -> Vec<DiagnosticRegistryEntry> {
             "unclosed-delimiter",
             "unclosed delimiter",
             "A delimiter was opened but not closed before the parser reached a synchronization boundary.",
-            "Kobo recovered by treating the unterminated region as poisoned and resuming at the next safe item or statement boundary.",
+            "Kobo resumes at the next safe item or statement boundary so one missing delimiter does not hide unrelated diagnostics.",
             Parser,
             Error,
             Always(Error),
@@ -977,7 +976,7 @@ fn parser_recovery_entries() -> Vec<DiagnosticRegistryEntry> {
             "invalid-item-skipped",
             "invalid item skipped",
             "Kobo skipped an invalid item while preserving later parseable items.",
-            "The skipped item is not lowered to KIR. Later phases operate only on parseable source regions so follow-on diagnostics stay trustworthy.",
+            "The skipped item is not analyzed further. Later phases operate only on parseable source regions so follow-on diagnostics stay trustworthy.",
             Parser,
             Error,
             Always(Error),

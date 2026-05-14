@@ -9,5 +9,12 @@ note[K0080-P1]: ownership pattern will require architectural decision at migrati
 6 | struct GraphNode {
   | ^^^^^^^^^^^^^^^^^^ bidirectional shared links in `GraphNode`
   |
-why: struct `GraphNode` has shared mutable links that form a cycle (left<->right); this can leak memory unless back-links use weak references
-fix: advisory only; no automatic fix; see `kobo debt` for migration guidance
+What Kobo found:
+  bidirectional shared links in `GraphNode`
+Why this matters:
+  struct `GraphNode` has shared mutable links that form a cycle (left<->right); this can leak memory
+  unless back-links use weak references
+Try this:
+  advisory only; no automatic fix; see `kobo debt` for migration guidance
+More:
+  Run `kobo explain K0080-P1` for examples and deeper context.

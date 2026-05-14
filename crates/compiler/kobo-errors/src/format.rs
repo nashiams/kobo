@@ -4,6 +4,8 @@ use crate::diagnostic::{
     CliSuggestion, DiagHelp, DiagLabel, DiagLabelKind, DiagnosticRelatedInfo, KDiagnostic,
 };
 
+const HUMAN_GUIDANCE_WIDTH: usize = 100;
+
 pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
     let mut rendered = String::new();
     rendered.push_str(&format!(
@@ -14,18 +16,23 @@ pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String
     ));
     rendered.push('\n');
     rendered.push_str(&render_label_group(file_set, diagnostic));
-    push_named_line(&mut rendered, "why", &diagnostic.explanation.0);
-    push_named_line(&mut rendered, "fix", &diagnostic.decision.0);
-
-    if let Some(help) = diagnostic.help.as_ref() {
-        push_help(&mut rendered, help);
-    }
-
-    if let Some(run) = diagnostic.run.as_ref() {
-        push_run(&mut rendered, run);
-    }
+    push_section(&mut rendered, "What Kobo found:", card_finding(diagnostic));
+    push_section(
+        &mut rendered,
+        "Why this matters:",
+        &diagnostic.explanation.0,
+    );
+    push_section(&mut rendered, "Try this:", &diagnostic.decision.0);
+    push_more_section(&mut rendered, diagnostic);
 
     rendered
+}
+
+fn card_finding(diagnostic: &KDiagnostic) -> &str {
+    diagnostic
+        .finding
+        .as_deref()
+        .unwrap_or(&diagnostic.primary.text)
 }
 
 pub fn render_related_info(file_set: &FileSet, related: &DiagnosticRelatedInfo) -> String {
@@ -210,36 +217,76 @@ fn marker_width(file: &kobo_ir::FileEntry, label: &DiagLabel) -> usize {
     1
 }
 
-fn push_named_line(rendered: &mut String, label: &str, value: &str) {
+fn push_section(rendered: &mut String, heading: &str, value: &str) {
     let value = value.trim();
     if value.is_empty() {
         return;
     }
 
     rendered.push('\n');
-    rendered.push_str(label);
-    rendered.push_str(": ");
-    rendered.push_str(value);
+    rendered.push_str(heading);
+    rendered.push('\n');
+    push_wrapped_multiline_text(rendered, value);
 }
 
-fn push_help(rendered: &mut String, help: &DiagHelp) {
-    if help.is_empty() {
-        return;
-    }
+fn push_wrapped_multiline_text(rendered: &mut String, value: &str) {
+    for (index, line) in value.lines().enumerate() {
+        if index > 0 {
+            rendered.push('\n');
+        }
 
-    rendered.push('\n');
-    rendered.push_str("help: ");
-    rendered.push_str(&help.0);
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        push_wrapped_text(rendered, "  ", "  ", line.trim());
+    }
 }
 
-fn push_run(rendered: &mut String, run: &CliSuggestion) {
-    if run.is_empty() {
-        return;
+fn push_wrapped_text(rendered: &mut String, prefix: &str, continuation: &str, value: &str) {
+    let mut line = prefix.to_owned();
+    for word in value.split_whitespace() {
+        let separator_width = usize::from(!line.ends_with(' '));
+        let projected_width = line.chars().count() + separator_width + word.chars().count();
+        if projected_width > HUMAN_GUIDANCE_WIDTH && line.trim() != prefix.trim() {
+            rendered.push_str(line.trim_end());
+            rendered.push('\n');
+            line.clear();
+            line.push_str(continuation);
+            line.push_str(word);
+        } else {
+            if !line.ends_with(' ') {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    rendered.push_str(line.trim_end());
+}
+
+fn push_more_section(rendered: &mut String, diagnostic: &KDiagnostic) {
+    rendered.push('\n');
+    rendered.push_str("More:");
+    rendered.push('\n');
+    push_wrapped_text(
+        rendered,
+        "  ",
+        "  ",
+        &format!(
+            "Run `kobo explain {}` for examples and deeper context.",
+            diagnostic.code
+        ),
+    );
+
+    if let Some(help) = diagnostic.help.as_ref().filter(|help| !help.is_empty()) {
+        rendered.push('\n');
+        push_wrapped_text(rendered, "  Also: ", "  ", &help.0);
     }
 
-    rendered.push('\n');
-    rendered.push_str("run: ");
-    rendered.push_str(&run.0);
+    if let Some(run) = diagnostic.run.as_ref().filter(|run| !run.is_empty()) {
+        rendered.push('\n');
+        push_wrapped_text(rendered, "  Rerun: ", "  ", &run.0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +444,7 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let explanation =
         "a closure defined inside an @strict block captures a shared mutable binding; \
-         calling the closure later could keep strict boundary guards alive for too long";
+         calling the closure later could keep the strict borrow alive after the block ends";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0042,
@@ -453,26 +500,25 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
         _ => panic!("render_k0063 called with wrong violation type"),
     };
 
-    let primary = DiagLabel::primary(
-        fact.block_span,
-        "@strict block inside async fn; borrow guards cannot cross .await",
-    );
+    let primary = DiagLabel::primary(fact.block_span, "this strict borrow starts here");
 
-    let explanation = "@strict blocks create boundary guards that must be dropped before any \
-         .await point; placing an @strict block directly inside an async fn makes \
-         that rule ambiguous";
+    let explanation =
+        "Kobo needs strict borrows to end before the function can pause or be cancelled.";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0063,
         Severity::Error,
         primary,
         explanation,
-        "annotate the fn as `@strict async fn` to opt in to the async-aware guard \
-         protocol, or refactor to avoid @strict inside async context",
-    );
+        "1. Use `@strict async fn` if the whole function should follow Kobo's async strict rules.\n\
+         2. Or move this strict work into a small non-async helper.",
+    )
+    .with_finding("This strict block runs inside an async function.");
 
-    diag.secondary
-        .push(DiagLabel::secondary(async_fn_span, "async fn defined here"));
+    diag.secondary.push(DiagLabel::secondary(
+        async_fn_span,
+        "async functions can pause at `.await`",
+    ));
     diag
 }
 
@@ -631,8 +677,13 @@ mod tests {
         assert!(rendered.contains("error[K0001]: value used after move"));
         assert!(rendered.contains("--> src/main.kobo:2:5"));
         assert!(rendered.contains("------ value moved here"));
-        assert!(rendered.contains("help: clone explicitly at the call site"));
-        assert!(rendered.contains("run: kobo check src/main.kobo:2"));
+        assert!(rendered.contains("What Kobo found:"));
+        assert!(rendered.contains("Why this matters:"));
+        assert!(rendered.contains("Try this:"));
+        assert!(rendered.contains("More:"));
+        assert!(rendered.contains("clone explicitly at the call site"));
+        assert!(rendered.contains("Rerun:"));
+        assert!(rendered.contains("src/main.kobo:2"));
     }
 
     #[test]

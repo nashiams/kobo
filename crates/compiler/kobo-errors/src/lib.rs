@@ -31,8 +31,8 @@ pub use registry::{
     DiagnosticStatus, MachineEditPolicy, ModeBehavior, SeverityPolicy, SuggestionPolicy,
 };
 pub use render::{
-    render_diagnostic_card, render_diagnostic_header_only, ColorMode, DiagnosticOutputFormat,
-    DiagnosticRenderer,
+    render_diagnostic_card, render_diagnostic_header_only, resolve_color_mode_from_parts,
+    ColorMode, DiagnosticOutputFormat, DiagnosticRenderer,
 };
 
 /// Convenience alias for library-level error handling.

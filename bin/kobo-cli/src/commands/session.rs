@@ -1,9 +1,11 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_driver::{load_config_for, CompileSession};
 use kobo_errors::{
-    diagnostic_to_json_value, ColorMode, DiagnosticOutputFormat, DiagnosticRenderer, Severity,
+    diagnostic_to_json_value, resolve_color_mode_from_parts, ColorMode, DiagnosticOutputFormat,
+    DiagnosticRenderer, Severity,
 };
 use kobo_ir::KoboMode;
 
@@ -31,15 +33,15 @@ pub(super) fn build_session(
 }
 
 pub(super) fn render_diagnostics(session: &CompileSession) {
-    render_diagnostics_with_format(session, ErrorFormat::Human);
+    render_diagnostics_with_format(session, ErrorFormat::Human, ColorMode::Auto);
 }
 
-pub(super) fn render_diagnostics_with_format(session: &CompileSession, format: ErrorFormat) {
-    let color = if std::env::var_os("NO_COLOR").is_some() {
-        ColorMode::Never
-    } else {
-        ColorMode::Auto
-    };
+pub(super) fn render_diagnostics_with_format(
+    session: &CompileSession,
+    format: ErrorFormat,
+    color_mode: ColorMode,
+) {
+    let color = resolve_color_mode(color_mode);
     let renderer = DiagnosticRenderer::new(color, DiagnosticOutputFormat::HumanCard);
 
     for diagnostic in session.visible_diagnostics() {
@@ -65,6 +67,14 @@ pub(super) fn render_diagnostics_with_format(session: &CompileSession, format: E
             }
         }
     }
+}
+
+pub(super) fn resolve_color_mode(color_mode: ColorMode) -> ColorMode {
+    resolve_color_mode_from_parts(
+        color_mode,
+        std::env::var_os("NO_COLOR").is_some(),
+        std::io::stderr().is_terminal(),
+    )
 }
 
 pub(super) fn line_number_for_offset(source: &str, offset: u32) -> usize {

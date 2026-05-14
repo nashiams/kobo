@@ -13,8 +13,15 @@ error[K0041]: cannot enter @strict block - value has active aliases
 6 |         consume(data);
   |                   ---- alias created here
   |
-why: value has 2 active aliases when the @strict block starts; all aliases must end before the boundary is entered
-fix: drop or explicitly clone-then-drop aliases before the @strict { } boundary
+What Kobo found:
+  active aliases at @strict block entry
+Why this matters:
+  value has 2 active aliases when the @strict block starts; all aliases must end before the boundary
+  is entered
+Try this:
+  drop or explicitly clone-then-drop aliases before the @strict { } boundary
+More:
+  Run `kobo explain K0041` for examples and deeper context.
 error[K0043]: value moved inside @strict block - cannot restore on exit
   --> tests\ui\strict_k0043_moved_binding.kobo:6:19
   |
@@ -23,5 +30,12 @@ error[K0043]: value moved inside @strict block - cannot restore on exit
 6 |         consume(data);
   |                   ^^^^ value moved here
   |
-why: a binding is moved inside an @strict block; the boundary guard is dropped on exit from the block and the moved value cannot be restored to its outer ownership shape
-fix: clone the value before moving, or drop the guard before the move statement
+What Kobo found:
+  value moved here
+Why this matters:
+  a binding is moved inside an @strict block; the boundary guard is dropped on exit from the block
+  and the moved value cannot be restored to its outer ownership shape
+Try this:
+  clone the value before moving, or drop the guard before the move statement
+More:
+  Run `kobo explain K0043` for examples and deeper context.

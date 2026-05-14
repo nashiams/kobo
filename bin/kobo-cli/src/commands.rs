@@ -53,6 +53,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             print_policy,
             pipeline,
             error_format,
+            color,
             recover_parse,
             replay_critical,
             max_diagnostics,
@@ -67,6 +68,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 print_policy,
                 pipeline,
                 error_format,
+                color.color_mode(),
                 recover_parse,
                 replay_critical,
                 max_diagnostics,
@@ -230,6 +232,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             profile,
             print_policy,
             error_format,
+            color,
             emit_rust,
             file,
         } => {
@@ -239,6 +242,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 guarantee_profile,
                 print_policy,
                 error_format,
+                color.color_mode(),
                 emit_rust,
                 file.as_deref(),
             )

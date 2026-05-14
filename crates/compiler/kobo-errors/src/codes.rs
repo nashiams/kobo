@@ -10,6 +10,10 @@ macro_rules! define_error_codes {
         }
 
         impl KErrorCode {
+            pub const ALL: &'static [Self] = &[
+                $( Self::$code, )*
+            ];
+
             pub const fn as_str(self) -> &'static str {
                 match self {
                     $( Self::$code => $label, )*
@@ -229,7 +233,7 @@ impl KErrorCode {
             Self::K0114 => "malformed must_call attribute",
             Self::K0115 => "invalid kwit witness schema",
             Self::K0116 => "malformed scenario metadata",
-            _ => "reserved diagnostic code",
+            _ => "reserved Kobo diagnostic slot",
         }
     }
 

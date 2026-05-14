@@ -232,7 +232,48 @@ fn registry_entries() -> Vec<DiagnosticRegistryEntry> {
     entries.extend(migration_entries());
     entries.extend(v085_entries());
     entries.extend(parser_recovery_entries());
+    append_reserved_entries(&mut entries);
     entries
+}
+
+fn append_reserved_entries(entries: &mut Vec<DiagnosticRegistryEntry>) {
+    for code in KErrorCode::ALL {
+        if !entries.iter().any(|entry| entry.code == *code) {
+            entries.push(reserved_entry(*code));
+        }
+    }
+}
+
+fn reserved_entry(code: KErrorCode) -> DiagnosticRegistryEntry {
+    DiagnosticRegistryEntry {
+        code,
+        code_text: code.as_str(),
+        slug: "reserved-kobo-diagnostic-slot",
+        title: "reserved Kobo diagnostic slot",
+        summary: "This K-code is reserved by this Kobo version and is not emitted as a user diagnostic yet.",
+        explain: "Kobo keeps stable K-code ranges so future diagnostics can be added without renumbering existing errors. A reserved slot is part of that public catalog, but normal compiler output should not produce it until the slot is promoted into an active diagnostic.",
+        category: reserved_category(code),
+        status: DiagnosticStatus::Reserved,
+        default_severity: Severity::Note,
+        severity_policy: SeverityPolicy::HiddenUntilActive,
+        mode_behavior: ModeBehavior::NoModeDependency,
+        suggestion_policy: SuggestionPolicy::HelpOnly,
+        machine_edit_policy: MachineEditPolicy::NotApplicable,
+    }
+}
+
+fn reserved_category(code: KErrorCode) -> DiagnosticCategory {
+    match code_number(code.as_str()).unwrap_or_default() {
+        1..=19 => DiagnosticCategory::Ownership,
+        20..=39 => DiagnosticCategory::Performance,
+        40..=59 => DiagnosticCategory::StrictBoundary,
+        60..=79 => DiagnosticCategory::Async,
+        80..=89 => DiagnosticCategory::Solver,
+        90..=99 => DiagnosticCategory::MigrationBoundary,
+        100..=109 => DiagnosticCategory::Replay,
+        110..=116 => DiagnosticCategory::Parser,
+        _ => DiagnosticCategory::Simulation,
+    }
 }
 
 fn ownership_entries() -> Vec<DiagnosticRegistryEntry> {

@@ -24,6 +24,66 @@ fn active_registry_entries() -> Vec<DiagnosticRegistryEntry> {
     diagnostic_registry().active_entries().cloned().collect()
 }
 
+fn all_registry_entries() -> Vec<DiagnosticRegistryEntry> {
+    let registry = diagnostic_registry();
+    KErrorCode::ALL
+        .iter()
+        .map(|code| {
+            registry
+                .get(*code)
+                .unwrap_or_else(|| panic!("missing registry entry for {}", code.as_str()))
+                .clone()
+        })
+        .collect()
+}
+
+#[test]
+fn every_enum_code_is_registered() {
+    let registry = diagnostic_registry();
+
+    for code in KErrorCode::ALL {
+        assert!(
+            registry.find_by_code_text(code.as_str()).is_some(),
+            "{} exists in KErrorCode but has no registry entry",
+            code.as_str()
+        );
+    }
+}
+
+#[test]
+fn every_k_code_has_elm_level_explain_page() {
+    for code in KErrorCode::ALL {
+        let text = explain_code(code.as_str())
+            .unwrap_or_else(|| panic!("missing explain text for {}", code.as_str()));
+
+        assert!(
+            text.contains("What happened"),
+            "{} explain must say what happened:\n{text}",
+            code.as_str()
+        );
+        assert!(
+            text.contains("Why this matters"),
+            "{} explain must teach why it matters:\n{text}",
+            code.as_str()
+        );
+        assert!(
+            text.contains("How to fix"),
+            "{} explain must include fix guidance:\n{text}",
+            code.as_str()
+        );
+        assert!(
+            text.contains("Option 1:"),
+            "{} explain must offer explicit fix choices:\n{text}",
+            code.as_str()
+        );
+        assert!(
+            text.contains("Example") && text.contains("Problem:") && text.contains("Fix:"),
+            "{} explain must include a concrete problem/fix example:\n{text}",
+            code.as_str()
+        );
+    }
+}
+
 #[test]
 fn active_explain_pages_are_human_teaching_pages() {
     for code in active_codes_to_check() {
@@ -64,10 +124,10 @@ fn verbose_explain_pages_keep_machine_metadata() {
 }
 
 #[test]
-fn active_registry_text_has_no_mojibake() {
+fn all_registry_text_has_no_mojibake() {
     let bad = ["\u{00e2}", "\u{00c3}\u{00a2}", "\u{fffd}"];
 
-    for entry in active_registry_entries() {
+    for entry in all_registry_entries() {
         let combined = format!(
             "{}\n{}\n{}\n{}",
             entry.title, entry.summary, entry.explain, entry.slug
@@ -131,6 +191,28 @@ fn every_active_explain_page_has_specific_fix_and_example() {
 }
 
 #[test]
+fn active_codes_do_not_use_explain_fallbacks() {
+    let fallback_prose = [
+        "Review the highlighted source and make the ownership or boundary choice explicit.",
+        "Follow the help text from the diagnostic card and rerun Kobo.",
+        "Apply a machine-applicable suggestion only after checking that it preserves the source intent.",
+        "Choose an explicit boundary policy so the guarantee remains reviewable.",
+    ];
+
+    for entry in active_registry_entries() {
+        let text = explain_code(entry.code_text)
+            .unwrap_or_else(|| panic!("missing explain text for {}", entry.code_text));
+        for fallback in fallback_prose {
+            assert!(
+                !text.contains(fallback),
+                "{} active explain page used fallback prose `{fallback}`:\n{text}",
+                entry.code_text
+            );
+        }
+    }
+}
+
+#[test]
 fn high_traffic_explain_pages_include_small_examples() {
     for code in active_codes_to_check() {
         let text = explain_code(code.as_str()).expect("explain page should exist");
@@ -183,13 +265,13 @@ fn default_explain_pages_avoid_internal_solver_jargon() {
         "machine edits:",
     ];
 
-    for entry in active_registry_entries() {
-        let text = explain_code(entry.code_text).expect("explain page should exist");
+    for code in KErrorCode::ALL {
+        let text = explain_code(code.as_str()).expect("explain page should exist");
         for needle in forbidden {
             assert!(
                 !text.contains(needle),
                 "{} default explain leaked `{needle}`:\n{text}",
-                entry.code_text
+                code.as_str()
             );
         }
     }

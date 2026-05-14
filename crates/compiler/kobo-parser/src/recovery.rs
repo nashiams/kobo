@@ -111,9 +111,36 @@ fn diagnostic_for_error(code: KErrorCode, span: KoboSpan, message: String) -> KD
         code,
         Severity::Error,
         DiagLabel::primary(span, message.clone()),
-        message,
-        "skip poisoned region and continue parsing",
+        parser_explanation(code),
+        parser_decision(code),
     )
+    .with_finding(message)
+}
+
+fn parser_explanation(code: KErrorCode) -> &'static str {
+    match code {
+        KErrorCode::K0111 => {
+            "A delimiter was opened but not closed. Kobo skips only the broken range so unrelated code can still be checked."
+        }
+        KErrorCode::K0113 => {
+            "There are too many syntax errors to keep recovery trustworthy. Fix the earliest syntax error first."
+        }
+        _ => {
+            "This syntax error prevents Kobo from trusting this source range. Kobo skips only that broken range so unrelated code can still be checked."
+        }
+    }
+}
+
+fn parser_decision(code: KErrorCode) -> &'static str {
+    match code {
+        KErrorCode::K0111 => {
+            "Close the delimiter shown in the snippet, then rerun Kobo before reviewing follow-up messages."
+        }
+        KErrorCode::K0113 => {
+            "Fix the first reported syntax error, rerun Kobo, and continue only after recovery stays under the limit."
+        }
+        _ => "Fix the highlighted syntax first, then rerun Kobo to clear follow-up messages.",
+    }
 }
 
 fn syntax_message_for_region(region_source: &str) -> String {

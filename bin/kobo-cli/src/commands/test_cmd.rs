@@ -215,9 +215,10 @@ fn emit_failure(
         failure.code,
         Severity::Error,
         DiagLabel::primary(span, message.clone()),
-        message,
-        DiagDecision("make replay evidence deterministic and explicit".to_owned()),
-    );
+        scenario_failure_explanation(failure),
+        DiagDecision(scenario_failure_decision(failure)),
+    )
+    .with_finding(scenario_failure_finding(failure, witness_path));
 
     match error_format {
         ErrorFormat::Json => {
@@ -235,6 +236,94 @@ fn emit_failure(
     }
 
     Ok(())
+}
+
+fn scenario_failure_finding(failure: &ScenarioFailure, witness_path: Option<&Path>) -> String {
+    let finding = match failure.code {
+        KErrorCode::K0100 => {
+            let binding = scenario_failure_label(failure).unwrap_or("the value");
+            format!(
+                "A checked scenario can drop `{binding}` before calling one of its required actions."
+            )
+        }
+        KErrorCode::K0102 => {
+            "This replay path uses raw time, randomness, file IO, or task scheduling.".to_owned()
+        }
+        KErrorCode::K0103 => {
+            "This replay path performs an effect Kobo cannot replay deterministically.".to_owned()
+        }
+        KErrorCode::K0105 => {
+            "This scenario exceeded the quick simulation budget before it finished.".to_owned()
+        }
+        KErrorCode::K0107 => {
+            let boundary = scenario_failure_label(failure).unwrap_or("external code");
+            format!("This replay path crosses `{boundary}` without a boundary policy.")
+        }
+        _ => failure.message.clone(),
+    };
+
+    match witness_path {
+        Some(path) => format!("{finding} Witness: {}", path.display()),
+        None => finding,
+    }
+}
+
+fn scenario_failure_explanation(failure: &ScenarioFailure) -> String {
+    match failure.code {
+        KErrorCode::K0100 => {
+            "Kobo tracks must_call values as obligations. Every return, cancellation, or replayed path must finish the obligation before the value leaves scope.".to_owned()
+        }
+        KErrorCode::K0102 => {
+            "Replay evidence only stays useful when the same inputs produce the same event stream. Raw nondeterminism can make a replay pass or fail for the wrong reason.".to_owned()
+        }
+        KErrorCode::K0103 => {
+            "An uncontrolled effect can change outside Kobo's replay model. The scenario needs a model, a recording, or an explicit debt boundary before Kobo can trust the replay.".to_owned()
+        }
+        KErrorCode::K0105 => {
+            "The quick profile is for small, fast evidence. A scenario that exceeds its budget needs to be shrunk or moved to a slower profile.".to_owned()
+        }
+        KErrorCode::K0107 => {
+            "External code can perform IO, scheduling, time, randomness, or other effects that Kobo cannot infer from the source alone. The boundary policy says what replay may assume.".to_owned()
+        }
+        _ => failure.message.clone(),
+    }
+}
+
+fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
+    match failure.code {
+        KErrorCode::K0100 => {
+            let actions = scenario_failure_actions(&failure.message)
+                .unwrap_or_else(|| "one required action".to_owned());
+            format!(
+                "Call {actions} on every path, or record explicit debt if cleanup happens outside this scenario."
+            )
+        }
+        KErrorCode::K0102 => {
+            "Route time, randomness, file IO, and task scheduling through modeled facades before claiming replay evidence.".to_owned()
+        }
+        KErrorCode::K0103 => {
+            "Model the effect, record the effect stream, move it outside replay, or mark replay debt explicitly.".to_owned()
+        }
+        KErrorCode::K0105 => {
+            "Reduce the scenario, split it into smaller scenarios, or run it under a profile with a larger budget.".to_owned()
+        }
+        KErrorCode::K0107 => {
+            "Choose model, record, stub, outside, opaque, or debt for this boundary before claiming exact replay.".to_owned()
+        }
+        _ => "Make replay evidence deterministic and explicit.".to_owned(),
+    }
+}
+
+fn scenario_failure_label(failure: &ScenarioFailure) -> Option<&str> {
+    failure
+        .events
+        .iter()
+        .find_map(|event| event.label.as_deref())
+}
+
+fn scenario_failure_actions(message: &str) -> Option<String> {
+    let actions = message.split("discharge with ").nth(1)?;
+    Some(actions.trim_end_matches('.').to_owned())
 }
 
 fn modeled_boundaries_json(run: &SimulationRun) -> Vec<&'static str> {

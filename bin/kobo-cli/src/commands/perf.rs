@@ -3,9 +3,15 @@ use std::path::Path;
 
 use anyhow::Context;
 use kobo_errors::{format_diagnostic, render_k0020, render_k0021, DiagOwnerStats};
-use kobo_ir::{FileId, KoboSpan};
+use kobo_ir::{FileId, FileSetBuilder, KoboSpan};
 
 use super::ownership_analysis;
+
+#[derive(Copy, Clone)]
+struct SourceSpanContext<'a> {
+    file_id: FileId,
+    source: &'a str,
+}
 
 pub(super) fn cmd_perf(
     file: &Path,
@@ -43,14 +49,22 @@ pub(super) fn cmd_perf(
         }
     };
 
-    let entries = parse_diag_log(&diag_text, threshold);
+    let source =
+        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
+    let mut file_set_builder = FileSetBuilder::new();
+    let file_id = file_set_builder.add_file(file.to_path_buf(), source.clone());
+    let source_context = SourceSpanContext {
+        file_id,
+        source: &source,
+    };
+    let entries = parse_diag_log(&diag_text, threshold, Some(source_context));
     if entries.is_empty() {
         println!("No [kobo-diag] entries found in log (threshold: {threshold}).");
         return Ok(());
     }
 
     // Emit diagnostics to stdout as plain text; no session needed for perf.
-    let file_set = kobo_ir::FileSet::new();
+    let file_set = file_set_builder.as_file_set();
     let mut hot_count = 0usize;
 
     for stats in &entries {
@@ -100,7 +114,7 @@ fn source_perf_json(file: &Path, source: &str, threshold: u64) -> anyhow::Result
 }
 
 fn diag_log_perf_json(file: &Path, diag_text: &str, threshold: u64) -> anyhow::Result<String> {
-    let entries = parse_diag_log(diag_text, threshold);
+    let entries = parse_diag_log(diag_text, threshold, None);
     let borrow_count = entries.iter().map(|stats| stats.borrow_count).sum::<u64>();
     let mut_borrow_count = entries
         .iter()
@@ -156,7 +170,11 @@ fn cli_relative_path(file: &Path) -> anyhow::Result<String> {
 ///
 /// Each block starts with a `[kobo-diag] <loc> — (Rc<RefCell<T>>)` header line
 /// and contains indented key: value lines until the next block or EOF.
-fn parse_diag_log(text: &str, threshold: u64) -> Vec<DiagOwnerStats> {
+fn parse_diag_log(
+    text: &str,
+    threshold: u64,
+    source_context: Option<SourceSpanContext<'_>>,
+) -> Vec<DiagOwnerStats> {
     let mut results = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
@@ -207,8 +225,12 @@ fn parse_diag_log(text: &str, threshold: u64) -> Vec<DiagOwnerStats> {
             i += 1;
         }
 
+        let source_location = source_context
+            .and_then(|context| span_from_log_location(&loc_part, context))
+            .unwrap_or_else(|| KoboSpan::new(0, 0, FileId(0)));
+
         results.push(DiagOwnerStats {
-            source_location: KoboSpan::new(0, 0, FileId(0)),
+            source_location,
             binding_name: loc_part,
             borrow_count,
             mut_borrow_count,
@@ -219,4 +241,53 @@ fn parse_diag_log(text: &str, threshold: u64) -> Vec<DiagOwnerStats> {
     }
 
     results
+}
+
+fn span_from_log_location(
+    location: &str,
+    source_context: SourceSpanContext<'_>,
+) -> Option<KoboSpan> {
+    let (line, column) = line_column_from_location(location)?;
+    let offset = byte_offset_for_line_column(source_context.source, line, column)?;
+    let end = (offset + 1).min(source_context.source.len());
+    Some(KoboSpan::new(
+        offset as u32,
+        end.max(offset) as u32,
+        source_context.file_id,
+    ))
+}
+
+fn line_column_from_location(location: &str) -> Option<(usize, usize)> {
+    let mut parts = location.rsplitn(3, ':');
+    let column = parts.next()?.trim().parse().ok()?;
+    let line = parts.next()?.trim().parse().ok()?;
+    Some((line, column))
+}
+
+fn byte_offset_for_line_column(source: &str, line: usize, column: usize) -> Option<usize> {
+    if line == 0 || column == 0 {
+        return None;
+    }
+
+    let mut current_line = 1usize;
+    let mut line_start = 0usize;
+    for (index, byte) in source.bytes().enumerate() {
+        if current_line == line {
+            break;
+        }
+        if byte == b'\n' {
+            current_line += 1;
+            line_start = index + 1;
+        }
+    }
+
+    if current_line != line {
+        return None;
+    }
+
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|relative_end| line_start + relative_end)
+        .unwrap_or(source.len());
+    Some((line_start + column - 1).min(line_end).min(source.len()))
 }

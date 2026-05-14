@@ -354,7 +354,7 @@ pub fn render_k0020(stats: &DiagOwnerStats, file_set: &FileSet) -> KDiagnostic {
         Severity::Warning,
         primary,
         explanation,
-        "flagged for migration; no automatic fix applied",
+        "Move this hot loop into @strict, reuse owned data outside the loop, or keep the shared mutable shape with a measured reason.",
     )
     .with_help(DiagHelp(
         "annotate the loop with @strict to get zero overhead inside the block".to_owned(),

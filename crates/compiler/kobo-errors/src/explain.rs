@@ -87,6 +87,10 @@ struct ExplainProse {
 }
 
 fn fix_guidance(entry: &DiagnosticRegistryEntry) -> &'static str {
+    if entry.status == crate::DiagnosticStatus::Reserved {
+        return reserved_fix_guidance();
+    }
+
     if let Some(prose) = explain_prose(entry.code) {
         return prose.fix;
     }
@@ -148,6 +152,10 @@ fn fix_guidance(entry: &DiagnosticRegistryEntry) -> &'static str {
 }
 
 fn example_guidance(entry: &DiagnosticRegistryEntry) -> Option<&'static str> {
+    if entry.status == crate::DiagnosticStatus::Reserved {
+        return Some(reserved_example_guidance());
+    }
+
     if let Some(prose) = explain_prose(entry.code) {
         return Some(prose.example);
     }
@@ -191,6 +199,17 @@ fn example_guidance(entry: &DiagnosticRegistryEntry) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+fn reserved_fix_guidance() -> &'static str {
+    "Option 1: If you saw this code in normal compiler output, report a Kobo bug with the command and source file.\n\
+     Option 2: If you are reading the catalog, treat this as a future diagnostic slot.\n\
+     Option 3: Do not write tests or suppressions that depend on this slot until it becomes active."
+}
+
+fn reserved_example_guidance() -> &'static str {
+    "Problem:\nA build prints K0003 even though this Kobo version marks that slot as reserved.\n\n\
+     Fix:\nReport the compiler output as a Kobo bug, because reserved slots should not be emitted as real user diagnostics."
 }
 
 fn explain_prose(code: crate::KErrorCode) -> Option<ExplainProse> {

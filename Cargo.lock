@@ -300,6 +300,7 @@ dependencies = [
  "kobo-ir",
  "kobo-lsp",
  "kobo-migrate",
+ "kobo-sim-core",
  "proc-macro2",
  "serde_json",
  "syn",
@@ -404,6 +405,20 @@ dependencies = [
  "proc-macro2",
  "syn",
  "thiserror",
+]
+
+[[package]]
+name = "kobo-sim-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kobo-errors",
+ "kobo-ir",
+ "kobo-parser",
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "syn",
 ]
 
 [[package]]

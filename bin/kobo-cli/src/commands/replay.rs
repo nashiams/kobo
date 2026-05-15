@@ -78,29 +78,30 @@ fn replay_v1(
         anyhow::bail!("{guarantee} replay cannot claim exact replay");
     }
 
+    validate_exact_witness_contract(witness, error_format)?;
     let verified_source = verify_source_identity(witness, witness_path, error_format)?;
     let target = witness_target_scenario(witness)?;
-    let document = sim_model::parse_document(verified_source.source.clone());
     let seed = witness["seed"].as_u64().unwrap_or(0);
     let profile = witness["backend_profile"]
         .as_str()
         .or_else(|| witness["guarantee_profile"].as_str())
         .unwrap_or("checked");
-    let run = sim_model::run_quick_target(
-        &document,
-        sim_model::SimulationOptions {
-            profile,
+    let run = kobo_sim_core::run_full_depth(
+        &verified_source.source,
+        &target,
+        kobo_sim_core::EngineMode::Both,
+        kobo_sim_core::ScenarioOptions {
+            profile: profile.to_owned(),
             seed,
             inject: None,
             event_budget: None,
         },
-        Some(&target),
-    );
+    )?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
     let expected = serde_json::json!({
-        "backend": run.backend.as_str(),
-        "backend_replay": sim_model::replay_token(&verified_source.hash, seed, &run),
+        "backend": backend_for_profile(&run.profile),
+        "backend_replay": replay_token(&verified_source.hash, seed, &run),
         "execution_digest": execution_digest_json(&run),
         "failure": failure_json(source_display, &verified_source.source, &run),
         "events": events_json(&run.events),
@@ -121,7 +122,7 @@ fn replay_v1(
         serde_json::to_string(&serde_json::json!({
             "replay": "exact",
             "source": verified_source.path.display().to_string(),
-            "backend": run.backend.as_str(),
+            "backend": backend_for_profile(&run.profile),
             "failure": witness["failure"],
             "events": run.events.len(),
         }))?
@@ -175,7 +176,7 @@ fn witness_target_scenario(witness: &Value) -> anyhow::Result<String> {
     Ok(scenario.to_owned())
 }
 
-fn failure_json(source_path: &str, source: &str, run: &sim_model::SimulationRun) -> Value {
+fn failure_json(source_path: &str, source: &str, run: &kobo_sim_core::FullDepthRun) -> Value {
     let Some(failure) = run.failure.as_ref() else {
         return Value::Null;
     };
@@ -198,23 +199,25 @@ fn witness_failure_json(witness: &Value) -> Value {
     })
 }
 
-fn execution_digest_json(run: &sim_model::SimulationRun) -> Value {
-    let Some(digest) = run.execution_digest.as_ref() else {
-        return Value::Null;
-    };
+fn execution_digest_json(run: &kobo_sim_core::FullDepthRun) -> Value {
     serde_json::json!({
-        "engine": digest.engine,
-        "model_version": digest.model_version,
-        "scenario_ir_hash": digest.scenario_ir_hash,
-        "operation_count": digest.operation_count,
-        "event_hash": digest.event_hash,
+        "engine": "semantic-sim",
+        "semantic_engine": run.digest.semantic_engine.as_str(),
+        "harness_engine": run.digest.harness_engine.as_str(),
+        "model_version": run.digest.model_version.as_str(),
+        "scenario_ir_hash": run.digest.scenario_ir_hash.as_str(),
+        "operation_count": run.digest.operation_count,
+        "event_hash": run.digest.semantic_trace_hash.as_str(),
+        "semantic_trace_hash": run.digest.semantic_trace_hash.as_str(),
+        "harness_trace_hash": run.digest.harness_trace_hash.as_str(),
+        "agreement": run.digest.agreement.as_str(),
     })
 }
 
 fn related_spans_json(
     source_path: &str,
     source: &str,
-    run: &sim_model::SimulationRun,
+    run: &kobo_sim_core::FullDepthRun,
 ) -> Vec<Value> {
     run.obligations
         .iter()
@@ -233,7 +236,7 @@ fn related_spans_json(
         .collect()
 }
 
-fn events_json(events: &[sim_model::SimEvent]) -> Vec<Value> {
+fn events_json(events: &[kobo_sim_core::ScenarioEvent]) -> Vec<Value> {
     events
         .iter()
         .map(|event| {
@@ -244,6 +247,66 @@ fn events_json(events: &[sim_model::SimEvent]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+fn replay_token(source_identity: &str, seed: u64, run: &kobo_sim_core::FullDepthRun) -> String {
+    let mut material = String::new();
+    material.push_str(source_identity);
+    material.push(':');
+    material.push_str(&seed.to_string());
+    material.push(':');
+    material.push_str(backend_for_profile(&run.profile));
+    material.push(':');
+    material.push_str(&run.digest.semantic_trace_hash);
+    material.push(':');
+    material.push_str(&run.digest.harness_trace_hash);
+    kobo_sim_core::digest::stable_hash(&material)
+}
+
+fn backend_for_profile(profile: &str) -> &'static str {
+    match profile {
+        "sync" => "loom",
+        "stateful-input" => "proptest",
+        "failpoint" => "failpoints",
+        "network" | "network-design" => "network-design",
+        _ => "shuttle",
+    }
+}
+
+fn validate_exact_witness_contract(
+    witness: &Value,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let unsupported = witness["coverage"]["unsupported_constructs"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true);
+    if !unsupported {
+        let payload = serde_json::json!({
+            "code": "K0116",
+            "message": "scenario coverage incomplete; exact replay is not allowed",
+            "coverage": witness["coverage"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0116 scenario coverage incomplete");
+    }
+    let digest = &witness["execution_digest"];
+    let semantic_engine = digest["semantic_engine"].as_str();
+    let harness_engine = digest["harness_engine"].as_str();
+    let agreement = digest["agreement"].as_str();
+    if semantic_engine != Some("driver-kir")
+        || harness_engine != Some("generated-rust-harness")
+        || agreement != Some("matched")
+    {
+        let payload = serde_json::json!({
+            "code": "K0117",
+            "message": "semantic trace and harness trace diverged or are missing",
+            "execution_digest": digest.clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0117 exact witness lacks semantic/harness agreement");
+    }
+    Ok(())
 }
 
 fn one_based_line_for_offset(source: &str, offset: usize) -> usize {

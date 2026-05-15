@@ -6,29 +6,11 @@ use kobo_errors::{
     DiagnosticRenderer, KDiagnostic, KErrorCode, Severity,
 };
 use kobo_ir::{FileSetBuilder, KoboSpan};
+use kobo_sim_core::{EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure};
 
 use crate::ErrorFormat;
 
-use super::sim_model::{
-    self, ScenarioDocument, ScenarioFailure, SimEvent, SimulationOptions, SimulationRun,
-};
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum ReplayGuarantee {
-    Exact,
-    Partial,
-    NotReplayable,
-}
-
-impl ReplayGuarantee {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Exact => "exact",
-            Self::Partial => "partial",
-            Self::NotReplayable => "not_replayable",
-        }
-    }
-}
+use super::sim_model::{self, ScenarioDocument};
 
 pub(super) fn cmd_test(
     file: &Path,
@@ -41,6 +23,7 @@ pub(super) fn cmd_test(
     witness_dir: Option<&Path>,
     error_format: ErrorFormat,
     target: Option<&str>,
+    engine: Option<&str>,
 ) -> anyhow::Result<()> {
     match sim {
         Some("quick") => {}
@@ -59,56 +42,74 @@ pub(super) fn cmd_test(
 
     let profile = profile.unwrap_or("checked");
     let seed = seed.unwrap_or(0);
+    let engine = parse_engine(engine.unwrap_or("both"))?;
     let document = sim_model::load_document(file)?;
-    let run = sim_model::run_quick_target(
-        &document,
-        SimulationOptions {
-            profile,
+    let target_name = target
+        .map(str::to_owned)
+        .or_else(|| document.scenarios.first().map(|scenario| scenario.name.clone()))
+        .unwrap_or_else(|| "<missing>".to_owned());
+    let run = kobo_sim_core::run_full_depth(
+        &document.source,
+        &target_name,
+        engine,
+        kobo_sim_core::ScenarioOptions {
+            profile: profile.to_owned(),
             seed,
-            inject,
+            inject: inject.map(str::to_owned),
             event_budget,
         },
-        target,
-    );
+    )?;
+
+    let mut witness_path = None;
+    if run.failure.is_some() || witness_dir.is_some() {
+        witness_path = Some(write_run_witness(
+            file,
+            &document,
+            profile,
+            seed,
+            witness_dir,
+            &run,
+        )?);
+    }
 
     if events == Some("json") {
         print_events(file, seed, &run.events)?;
         return Ok(());
     }
 
-    let Some(failure) = run.failure.as_ref() else {
-        println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({
-                "scenario": run.scenario.name,
-                "seed": seed,
-                "backend_profile": run.scenario.profile,
-                "status": "passed",
-            }))?
-        );
-        return Ok(());
-    };
+    if let Some(failure) = run.failure.as_ref() {
+        emit_failure(
+            file,
+            &document.source,
+            failure,
+            witness_path.as_deref(),
+            error_format,
+        )?;
+        anyhow::bail!("{}", failure.message)
+    }
 
-    let witness_path = Some(write_failure_witness(
-        file,
-        &document,
-        profile,
-        seed,
-        witness_dir,
-        &run,
-        failure,
-    )?);
-    emit_failure(
-        file,
-        &document.source,
-        failure,
-        witness_path.as_deref(),
-        error_format,
-    )?;
-    anyhow::bail!("{}", failure.message)
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "scenario": run.target,
+            "seed": seed,
+            "backend_profile": run.profile,
+            "status": "passed",
+        }))?
+    );
+    Ok(())
 }
 
-fn print_events(file: &Path, seed: u64, events: &[SimEvent]) -> anyhow::Result<()> {
+fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
+    match value {
+        "semantic" => Ok(EngineMode::SemanticOnly),
+        "harness" => Ok(EngineMode::HarnessOnly),
+        "both" => Ok(EngineMode::Both),
+        _ => anyhow::bail!("invalid sim engine; expected semantic, harness, or both"),
+    }
+}
+
+fn print_events(file: &Path, seed: u64, events: &[ScenarioEvent]) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
@@ -121,33 +122,33 @@ fn print_events(file: &Path, seed: u64, events: &[SimEvent]) -> anyhow::Result<(
     Ok(())
 }
 
-fn write_failure_witness(
+fn write_run_witness(
     file: &Path,
     document: &ScenarioDocument,
     guarantee_profile: &str,
     seed: u64,
     witness_dir: Option<&Path>,
-    run: &SimulationRun,
-    failure: &ScenarioFailure,
+    run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
     std::fs::create_dir_all(&directory)
         .with_context(|| format!("failed to create witness directory {}", directory.display()))?;
-    let witness_path = directory.join(format!("{}-{seed}.kwit", sanitize_name(&run.scenario.name)));
+    let witness_path = directory.join(format!("{}-{seed}.kwit", sanitize_name(&run.target)));
     let source_path = sim_model::cli_relative_path(file)?;
-    let primary_span = format!(
-        "{}:{}:1",
-        source_path,
-        one_based_line_for_offset(&document.source, failure.primary_start)
-    );
-    let replay_guarantee = replay_guarantee_for(run, failure);
+    let primary_span = run.failure.as_ref().map(|failure| {
+        format!(
+            "{}:{}:1",
+            source_path,
+            one_based_line_for_offset(&document.source, failure.primary_start)
+        )
+    });
     let witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
-        "target": format!("{}:{}", source_path, run.scenario.name),
+        "target": format!("{}:{}", source_path, run.target),
         "scenario": {
-            "name": run.scenario.name,
-            "profile": run.scenario.profile,
+            "name": run.target,
+            "profile": run.profile,
         },
         "source": {
             "path": source_path,
@@ -156,26 +157,19 @@ fn write_failure_witness(
         "guarantee_profile": guarantee_profile,
         "expanded_policy": expanded_policy_json(guarantee_profile),
         "seed": seed,
-        "backend_profile": run.scenario.profile,
-        "backend": run.backend.as_str(),
-        "backend_replay": sim_model::replay_token(&document.source_hash, seed, run),
+        "backend_profile": run.profile,
+        "backend": backend_for_profile(&run.profile),
+        "backend_replay": replay_token(&document.source_hash, seed, run),
         "execution_digest": execution_digest_json(run),
-        "replay_guarantee": replay_guarantee.as_str(),
+        "coverage": coverage_json(run),
+        "replay_guarantee": run.replay_guarantee.as_str(),
         "modeled_boundaries": modeled_boundaries_json(run),
         "opaque_boundaries": run.opaque_boundaries.clone(),
-        "boundary_assumptions": boundary_assumptions_json(run, failure, replay_guarantee),
+        "boundary_assumptions": boundary_assumptions_json(run),
         "obligations": obligations_json(&source_path, &document.source, run),
         "boundary_decisions": boundary_decisions_json(run),
-        "available_boundary_policies": sim_model::boundary_policy_choices()
-            .iter()
-            .map(|choice| choice.as_str())
-            .collect::<Vec<_>>(),
-        "failure": {
-            "code": failure.code.as_str(),
-            "message": failure.message.clone(),
-            "primary_span": primary_span,
-            "related_spans": related_spans_json(&source_path, &document.source, run, failure),
-        },
+        "available_boundary_policies": ["model", "record", "stub", "outside", "opaque", "debt"],
+        "failure": failure_json(&source_path, &document.source, run, primary_span),
         "events": events_json(&run.events),
     });
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
@@ -183,16 +177,25 @@ fn write_failure_witness(
     Ok(witness_path)
 }
 
-fn execution_digest_json(run: &SimulationRun) -> serde_json::Value {
-    let Some(digest) = run.execution_digest.as_ref() else {
-        return serde_json::Value::Null;
-    };
+fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
     serde_json::json!({
-        "engine": digest.engine,
-        "model_version": digest.model_version,
-        "scenario_ir_hash": digest.scenario_ir_hash,
-        "operation_count": digest.operation_count,
-        "event_hash": digest.event_hash,
+        "engine": "semantic-sim",
+        "semantic_engine": run.digest.semantic_engine,
+        "harness_engine": run.digest.harness_engine,
+        "model_version": run.digest.model_version,
+        "scenario_ir_hash": run.digest.scenario_ir_hash,
+        "operation_count": run.digest.operation_count,
+        "event_hash": run.digest.semantic_trace_hash,
+        "semantic_trace_hash": run.digest.semantic_trace_hash,
+        "harness_trace_hash": run.digest.harness_trace_hash,
+        "agreement": run.digest.agreement,
+    })
+}
+
+fn coverage_json(run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "unsupported_constructs": run.coverage.unsupported_constructs,
+        "reason": run.coverage.reason,
     })
 }
 
@@ -275,6 +278,15 @@ fn scenario_failure_finding(failure: &ScenarioFailure, witness_path: Option<&Pat
             let boundary = scenario_failure_label(failure).unwrap_or("external code");
             format!("This replay path crosses `{boundary}` without a boundary policy.")
         }
+        KErrorCode::K0116 => {
+            "This scenario uses syntax Kobo has not modeled for exact replay yet.".to_owned()
+        }
+        KErrorCode::K0117 => {
+            "The compiler semantic trace and generated harness trace do not agree.".to_owned()
+        }
+        KErrorCode::K0118 => {
+            "The action points at an artifact that does not match the current source.".to_owned()
+        }
         _ => failure.message.clone(),
     };
 
@@ -301,6 +313,15 @@ fn scenario_failure_explanation(failure: &ScenarioFailure) -> String {
         KErrorCode::K0107 => {
             "External code can perform IO, scheduling, time, randomness, or other effects that Kobo cannot infer from the source alone. The boundary policy says what replay may assume.".to_owned()
         }
+        KErrorCode::K0116 => {
+            "Exact replay is only sound for modeled syntax. Kobo found a construct outside the current modeled island coverage.".to_owned()
+        }
+        KErrorCode::K0117 => {
+            "Full-depth replay needs two independent traces to match: the compiler semantic trace and the generated harness trace.".to_owned()
+        }
+        KErrorCode::K0118 => {
+            "Editor and replay actions must point at artifacts created from the current source hash and target.".to_owned()
+        }
         _ => failure.message.clone(),
     }
 }
@@ -326,15 +347,21 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
         KErrorCode::K0107 => {
             "Choose model, record, stub, outside, opaque, or debt for this boundary before claiming exact replay.".to_owned()
         }
+        KErrorCode::K0116 => {
+            "Use a modeled construct, split the scenario, or keep the witness partial until coverage is implemented.".to_owned()
+        }
+        KErrorCode::K0117 => {
+            "Regenerate the witness with --engine both and investigate any trace mismatch before replaying it.".to_owned()
+        }
+        KErrorCode::K0118 => {
+            "Regenerate the witness/session artifacts for the current source before using the action.".to_owned()
+        }
         _ => "Make replay evidence deterministic and explicit.".to_owned(),
     }
 }
 
 fn scenario_failure_label(failure: &ScenarioFailure) -> Option<&str> {
-    failure
-        .events
-        .iter()
-        .find_map(|event| event.label.as_deref())
+    failure.events.iter().find_map(|event| event.label.as_deref())
 }
 
 fn scenario_failure_actions(message: &str) -> Option<String> {
@@ -342,25 +369,21 @@ fn scenario_failure_actions(message: &str) -> Option<String> {
     Some(actions.trim_end_matches('.').to_owned())
 }
 
-fn modeled_boundaries_json(run: &SimulationRun) -> Vec<&'static str> {
+fn modeled_boundaries_json(run: &FullDepthRun) -> Vec<&'static str> {
     run.modeled_boundaries
         .iter()
         .map(|boundary| boundary.as_str())
         .collect()
 }
 
-fn obligations_json(
-    source_path: &str,
-    source: &str,
-    run: &SimulationRun,
-) -> Vec<serde_json::Value> {
+fn obligations_json(source_path: &str, source: &str, run: &FullDepthRun) -> Vec<serde_json::Value> {
     run.obligations
         .iter()
         .map(|obligation| {
             serde_json::json!({
-                "binding": obligation.binding.clone(),
-                "type": obligation.type_name.clone(),
-                "actions": obligation.actions.clone(),
+                "binding": obligation.binding,
+                "type": obligation.type_name,
+                "actions": obligation.actions,
                 "discharged": obligation.is_discharged,
                 "declaration_span": span_json(source_path, source, obligation.declaration_span),
                 "drop_span": obligation.drop_span.map(|span| span_json(source_path, source, span)),
@@ -385,60 +408,68 @@ fn expanded_policy_json(profile: &str) -> serde_json::Value {
     })
 }
 
-fn replay_guarantee_for(run: &SimulationRun, failure: &ScenarioFailure) -> ReplayGuarantee {
-    if matches!(failure.code, KErrorCode::K0102 | KErrorCode::K0103) {
-        return ReplayGuarantee::NotReplayable;
-    }
-    if run.opaque_boundaries.is_empty() {
-        ReplayGuarantee::Exact
-    } else {
-        ReplayGuarantee::Partial
-    }
-}
-
-fn boundary_assumptions_json(
-    run: &SimulationRun,
-    failure: &ScenarioFailure,
-    replay_guarantee: ReplayGuarantee,
-) -> Vec<serde_json::Value> {
+fn boundary_assumptions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
     let mut assumptions = run
         .boundary_decisions
         .iter()
         .map(|decision| {
             serde_json::json!({
-                "boundary": decision.crate_name.clone(),
+                "boundary": decision.crate_name,
                 "policy": decision.policy.as_str(),
-                "reason": decision.reason.clone(),
-                "replay_effect": if replay_guarantee == ReplayGuarantee::Exact {
+                "reason": decision.reason,
+                "replay_effect": if run.replay_guarantee == ReplayGuarantee::Exact {
                     "modeled"
                 } else {
-                    replay_guarantee.as_str()
+                    run.replay_guarantee.as_str()
                 },
             })
         })
         .collect::<Vec<_>>();
 
-    if replay_guarantee == ReplayGuarantee::NotReplayable && assumptions.is_empty() {
-        let boundary = failure
-            .events
-            .first()
+    if run.replay_guarantee == ReplayGuarantee::NotReplayable && assumptions.is_empty() {
+        let boundary = run
+            .failure
+            .as_ref()
+            .and_then(|failure| failure.events.first())
             .and_then(|event| event.label.clone())
-            .unwrap_or_else(|| failure.code.as_str().to_owned());
+            .unwrap_or_else(|| "uncontrolled".to_owned());
+        let reason = run
+            .failure
+            .as_ref()
+            .map(|failure| failure.message.clone())
+            .unwrap_or_else(|| "not replayable".to_owned());
         assumptions.push(serde_json::json!({
             "boundary": boundary,
             "policy": "debt",
-            "reason": failure.message,
-            "replay_effect": replay_guarantee.as_str(),
+            "reason": reason,
+            "replay_effect": run.replay_guarantee.as_str(),
         }));
     }
 
     assumptions
 }
 
+fn failure_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+    primary_span: Option<String>,
+) -> serde_json::Value {
+    let Some(failure) = run.failure.as_ref() else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "code": failure.code.as_str(),
+        "message": failure.message,
+        "primary_span": primary_span.unwrap_or_else(|| format!("{source_path}:1:1")),
+        "related_spans": related_spans_json(source_path, source, run, failure),
+    })
+}
+
 fn related_spans_json(
     source_path: &str,
     source: &str,
-    run: &SimulationRun,
+    run: &FullDepthRun,
     failure: &ScenarioFailure,
 ) -> Vec<serde_json::Value> {
     if failure.code != KErrorCode::K0100 {
@@ -465,20 +496,20 @@ fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_jso
     })
 }
 
-fn boundary_decisions_json(run: &SimulationRun) -> Vec<serde_json::Value> {
+fn boundary_decisions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
     run.boundary_decisions
         .iter()
         .map(|decision| {
             serde_json::json!({
-                "crate": decision.crate_name.clone(),
+                "crate": decision.crate_name,
                 "policy": decision.policy.as_str(),
-                "reason": decision.reason.clone(),
+                "reason": decision.reason,
             })
         })
         .collect()
 }
 
-fn events_json(events: &[SimEvent]) -> Vec<serde_json::Value> {
+fn events_json(events: &[ScenarioEvent]) -> Vec<serde_json::Value> {
     events
         .iter()
         .map(|event| {
@@ -489,6 +520,30 @@ fn events_json(events: &[SimEvent]) -> Vec<serde_json::Value> {
             })
         })
         .collect()
+}
+
+fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String {
+    let mut material = String::new();
+    material.push_str(source_identity);
+    material.push(':');
+    material.push_str(&seed.to_string());
+    material.push(':');
+    material.push_str(backend_for_profile(&run.profile));
+    material.push(':');
+    material.push_str(&run.digest.semantic_trace_hash);
+    material.push(':');
+    material.push_str(&run.digest.harness_trace_hash);
+    kobo_sim_core::digest::stable_hash(&material)
+}
+
+fn backend_for_profile(profile: &str) -> &'static str {
+    match profile {
+        "sync" => "loom",
+        "stateful-input" => "proptest",
+        "failpoint" => "failpoints",
+        "network" | "network-design" => "network-design",
+        _ => "shuttle",
+    }
 }
 
 fn sanitize_name(value: &str) -> String {

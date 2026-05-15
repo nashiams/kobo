@@ -166,6 +166,38 @@ fn replay_exact_kwit_succeeds_and_reports_same_failure() {
 }
 
 #[test]
+fn exact_replay_fails_when_harness_agreement_is_removed() {
+    let project = TestProject::new("replay-missing-harness-agreement");
+    let file = project.copy_fixture("replay/transaction_leaks.kobo", "src/transaction.kobo");
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--engine"),
+            s("both"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&sim, "failing sim should emit witness");
+    let witness = project.find_files_with_ext("kwit")[0].clone();
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&witness).unwrap()).unwrap();
+    json["execution_digest"]["agreement"] = serde_json::Value::String("semantic-only".to_owned());
+    std::fs::write(&witness, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    let replay = run_kobo(
+        &[s("replay"), path_arg(&witness), s("--error-format=json")],
+        &project.root,
+    );
+    assert_failure(&replay, "exact replay must reject missing harness agreement");
+    assert_contains(&replay.combined(), "K0117", "engine mismatch must be explicit");
+}
+
+#[test]
 fn replay_divergence_emits_k0104_with_expected_and_observed_events() {
     let project = TestProject::new("replay-divergence");
     let witnesses = emit_witness(&project);

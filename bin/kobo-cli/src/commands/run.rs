@@ -161,12 +161,20 @@ fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
                     "column": record.column,
                 },
                 "evidence": record.evidence,
+                "provenance": {
+                    "source": "parser-kir-solver",
+                    "rule": "ownership-audit-record",
+                },
             })
         })
         .collect::<Vec<_>>();
 
     let value = serde_json::json!({
         "schema_version": 1,
+        "provenance": {
+            "source": "parser-kir-solver",
+            "confidence": "evidence-backed",
+        },
         "audit": entries,
     });
     Ok(format!("{}\n", serde_json::to_string(&value)?))

@@ -45,6 +45,8 @@ fn registry_contains_public_slug_and_policy_fields() {
         KErrorCode::K0114,
         KErrorCode::K0115,
         KErrorCode::K0116,
+        KErrorCode::K0117,
+        KErrorCode::K0118,
     ] {
         let entry = registry.get(code).expect("active code must be registered");
         assert!(!entry.slug.trim().is_empty(), "{code} needs public slug");
@@ -167,9 +169,21 @@ fn source_coverage_k010x_codes_match_registry() {
         ),
         (
             KErrorCode::K0116,
-            "malformed-scenario-metadata",
-            DiagnosticCategory::Nondeterminism,
-            "scenario",
+            "scenario-coverage-incomplete",
+            DiagnosticCategory::Replay,
+            "Unsupported constructs",
+        ),
+        (
+            KErrorCode::K0117,
+            "semantic-harness-trace-diverged",
+            DiagnosticCategory::Replay,
+            "trace",
+        ),
+        (
+            KErrorCode::K0118,
+            "stale-evidence-artifact",
+            DiagnosticCategory::Replay,
+            "artifact",
         ),
     ];
 
@@ -252,6 +266,8 @@ fn every_emitted_active_code_is_registered_and_marked_active() {
         KErrorCode::K0114,
         KErrorCode::K0115,
         KErrorCode::K0116,
+        KErrorCode::K0117,
+        KErrorCode::K0118,
         KErrorCode::K0107,
         KErrorCode::K0108,
     ];

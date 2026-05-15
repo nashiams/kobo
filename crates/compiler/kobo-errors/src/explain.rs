@@ -600,11 +600,25 @@ fn scenario_explain_prose(code: crate::KErrorCode) -> Option<ExplainProse> {
                       Fix:\nRegenerate the witness or update it to the current schema.",
         },
         crate::KErrorCode::K0116 => ExplainProse {
-            fix: "Option 1: Add the missing scenario metadata field.\n\
-                  Option 2: Regenerate scenario metadata from the current source.\n\
-                  Option 3: Remove stale metadata before rerunning the scenario command.",
-            example: "Problem:\nScenario metadata names a file that no longer exists.\n\n\
-                      Fix:\nRegenerate the metadata from the current source tree.",
+            fix: "Option 1: Split the scenario around the unsupported construct.\n\
+                  Option 2: Keep the witness partial until that construct has a model.\n\
+                  Option 3: Replace the construct with a modeled Kobo facade for exact replay.",
+            example: "Problem:\nA scenario uses tokio::select!, but this Kobo version cannot model every cancellation branch for exact replay.\n\n\
+                      Fix:\nKeep the witness partial or rewrite the scenario through a modeled cancellation-safe facade.",
+        },
+        crate::KErrorCode::K0117 => ExplainProse {
+            fix: "Option 1: Regenerate the witness with --engine both.\n\
+                  Option 2: Compare semantic_trace_hash and harness_trace_hash before trusting replay.\n\
+                  Option 3: Treat the witness as invalid until the mismatch is explained.",
+            example: "Problem:\nThe compiler semantic trace says an ack happened, but the generated harness trace does not.\n\n\
+                      Fix:\nRegenerate the witness and investigate the trace mismatch before claiming exact replay.",
+        },
+        crate::KErrorCode::K0118 => ExplainProse {
+            fix: "Option 1: Regenerate the witness or session artifact for the current source.\n\
+                  Option 2: Ignore stale artifacts whose source hash or target does not match.\n\
+                  Option 3: Rerun the command that produced the artifact before using editor actions.",
+            example: "Problem:\nAn LSP replay action points at a witness from an older source hash.\n\n\
+                      Fix:\nRerun kobo test --sim quick --engine both and use the new witness path.",
         },
         _ => return None,
     };

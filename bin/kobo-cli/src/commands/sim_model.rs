@@ -1,9 +1,11 @@
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_errors::KErrorCode;
 
-use super::sim_semantic;
+use kobo_sim_core as sim_core;
 
 #[derive(Clone, Debug)]
 pub(super) struct ScenarioDocument {
@@ -291,15 +293,6 @@ pub(super) fn load_document(file: &Path) -> anyhow::Result<ScenarioDocument> {
 }
 
 pub(super) fn parse_document(source: String) -> ScenarioDocument {
-    if let Some((must_call_types, scenarios)) = sim_semantic::parse_metadata(&source) {
-        return ScenarioDocument {
-            source_hash: source_hash(&source),
-            must_call_types,
-            scenarios,
-            source,
-        };
-    }
-
     ScenarioDocument {
         source_hash: source_hash(&source),
         must_call_types: parse_must_call_types(&source),
@@ -570,7 +563,15 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
 
 impl ScenarioProgram {
     fn from_document(document: &ScenarioDocument, scenario: &Scenario) -> Self {
-        sim_semantic::scenario_program_from_document(document, scenario).unwrap_or_else(|| {
+        sim_core::lower::lower_from_parser(&document.source, &scenario.name, &scenario.profile)
+            .map(|lowered| Self {
+                operations: lowered
+                    .operations
+                    .into_iter()
+                    .map(convert_core_operation)
+                    .collect(),
+            })
+            .unwrap_or_else(|_| {
             let span_end = document.source.len().min(1);
             Self {
                 operations: vec![ScenarioOperation::UncontrolledEffect {
@@ -605,11 +606,92 @@ impl ScenarioProgram {
 
         ExecutionDigest {
             engine: "semantic-sim".to_owned(),
-            model_version: sim_semantic::MODEL_VERSION.to_owned(),
+            model_version: sim_core::lower::MODEL_VERSION.to_owned(),
             scenario_ir_hash: source_hash(&ir_material),
             operation_count: self.operations.len(),
             event_hash: source_hash(&event_material),
         }
+    }
+}
+
+fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOperation {
+    match operation {
+        sim_core::ScenarioOperation::CreateObligation {
+            binding,
+            type_name,
+            actions,
+            span_start,
+            span_end,
+        } => ScenarioOperation::CreateObligation {
+            binding,
+            type_name,
+            actions,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::Discharge { binding, action } => {
+            ScenarioOperation::Discharge { binding, action }
+        }
+        sim_core::ScenarioOperation::MoveBinding {
+            binding,
+            span_start,
+            span_end,
+        } => ScenarioOperation::MoveBinding {
+            binding,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::ModeledEffect {
+            boundary,
+            span_start,
+            span_end,
+        } => ScenarioOperation::ModeledEffect {
+            boundary: convert_core_boundary(boundary),
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::RawNondeterminism {
+            operation,
+            span_start,
+            span_end,
+        } => ScenarioOperation::RawNondeterminism {
+            operation,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::UncontrolledEffect {
+            operation,
+            span_start,
+            span_end,
+        } => ScenarioOperation::UncontrolledEffect {
+            operation,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::ExternalBoundary {
+            crate_name,
+            span_start,
+            span_end,
+        } => ScenarioOperation::ExternalBoundary {
+            crate_name,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::Loop {
+            span_start,
+            span_end,
+        } => ScenarioOperation::Loop {
+            span_start,
+            span_end,
+        },
+    }
+}
+
+fn convert_core_boundary(boundary: sim_core::ModeledBoundary) -> ModeledBoundary {
+    match boundary {
+        sim_core::ModeledBoundary::WardTime => ModeledBoundary::WardTime,
+        sim_core::ModeledBoundary::WardRandom => ModeledBoundary::WardRandom,
+        sim_core::ModeledBoundary::WardTask => ModeledBoundary::WardTask,
     }
 }
 

@@ -10,6 +10,19 @@ pub struct LspCodeAction {
     pub command: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticArtifact {
+    pub code: String,
+    pub witness_path: String,
+    pub source_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WitnessArtifact {
+    pub path: String,
+    pub source_hash: String,
+}
+
 pub fn diagnostic_payload(file_set: &FileSet, diagnostic: &KDiagnostic) -> DiagnosticLspPayload {
     DiagnosticLspPayload::from_diagnostic(file_set, diagnostic)
 }
@@ -34,6 +47,21 @@ pub fn code_action_commands(code: KErrorCode) -> Vec<String> {
 
 pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {
     code_actions_for_code_and_replay(code, None)
+}
+
+pub fn actions_for_diagnostic_with_artifacts(
+    diagnostic: &DiagnosticArtifact,
+    artifacts: &[WitnessArtifact],
+) -> Vec<LspCodeAction> {
+    let code = parse_code(&diagnostic.code).unwrap_or(KErrorCode::K0100);
+    let replay_command = artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.path == diagnostic.witness_path
+                && artifact.source_hash == diagnostic.source_hash
+        })
+        .map(|artifact| format!("kobo replay {}", artifact.path));
+    code_actions_for_code_and_replay(code, replay_command.as_deref())
 }
 
 fn code_actions_for_diagnostic(diagnostic: &KDiagnostic) -> Vec<LspCodeAction> {
@@ -108,4 +136,34 @@ fn action_commands(actions: &[LspCodeAction]) -> Vec<String> {
         .iter()
         .filter_map(|action| action.command.clone())
         .collect()
+}
+
+fn parse_code(code: &str) -> Option<KErrorCode> {
+    KErrorCode::ALL
+        .iter()
+        .copied()
+        .find(|candidate| candidate.as_str() == code)
+}
+
+pub mod test_support {
+    use super::{DiagnosticArtifact, WitnessArtifact};
+
+    pub fn diagnostic_with_artifact(
+        code: &str,
+        witness_path: &str,
+        source_hash: &str,
+    ) -> DiagnosticArtifact {
+        DiagnosticArtifact {
+            code: code.to_owned(),
+            witness_path: witness_path.to_owned(),
+            source_hash: source_hash.to_owned(),
+        }
+    }
+
+    pub fn witness_artifact(path: &str, source_hash: &str) -> WitnessArtifact {
+        WitnessArtifact {
+            path: path.to_owned(),
+            source_hash: source_hash.to_owned(),
+        }
+    }
 }

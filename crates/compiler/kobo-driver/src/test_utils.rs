@@ -4,6 +4,7 @@
 //! touch the filesystem. Every phase's test suite imports these helpers.
 
 use std::path::Path;
+use std::path::PathBuf;
 
 use kobo_codegen::{codegen_file, CodegenOptions};
 use kobo_ir::{
@@ -18,6 +19,7 @@ use kobo_parser::{
 use kobo_transform::{build_kir, TransformOptions};
 
 use crate::config::KoboConfig;
+use crate::pipeline::{apply_error_policy_sites, CodegenArtifacts};
 use crate::session::CompileSession;
 
 // --- Types first ---
@@ -104,6 +106,39 @@ pub fn compile_and_inspect_script_mode(source: &str) -> String {
 pub fn compile_and_inspect_with_config(source: &str, config: KoboConfig) -> String {
     let result = compile_to_kir(source, &config).expect("compile_to_kir failed");
     codegen_to_string(&result.kir, &result.ast, &config)
+}
+
+pub fn run_codegen_for_source_with_policy(
+    source: &str,
+    policy_name: &str,
+) -> Result<CodegenArtifacts, String> {
+    let config = KoboConfig::default();
+    let result = compile_to_kir(source, &config)?;
+    let solution = SolutionMap::new();
+    let kobo_path = Path::new("test.kobo");
+    let rs_path = Path::new("test.rs");
+    let executor_choice = kobo_codegen::executor::select_executor(&config.dependencies);
+    let output = codegen_file(
+        &result.kir,
+        &result.ast,
+        &solution,
+        kobo_path,
+        rs_path,
+        &CodegenOptions {
+            diag_mode: false,
+            executor_choice,
+        },
+    );
+    let artifacts = CodegenArtifacts {
+        file_id: FileId(0),
+        rs_source: output.rs_source,
+        rs_path: PathBuf::from("test.rs"),
+        map_path: PathBuf::from("test.kobo.map"),
+        source_map: output.source_map,
+        must_call_obligations: result.kir.must_call_obligations().to_vec(),
+        error_policy_sites: Vec::new(),
+    };
+    Ok(apply_error_policy_sites(artifacts, policy_name))
 }
 
 /// Like `compile_and_inspect` but returns `Result` — for tests expecting compile errors.

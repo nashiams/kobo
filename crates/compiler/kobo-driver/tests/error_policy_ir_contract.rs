@@ -23,6 +23,10 @@ fn main() -> Result<(), std::io::Error> {
         "generated Rust must map the real error operator"
     );
     assert!(
+        !artifacts.rs_source.contains("__kobo_error_policy_site"),
+        "codegen-owned error policy markers must not leak into generated Rust"
+    );
+    assert!(
         artifacts.rs_source.contains("literal ?") && artifacts.rs_source.contains("raw ? string"),
         "non-operator question marks must survive unchanged"
     );

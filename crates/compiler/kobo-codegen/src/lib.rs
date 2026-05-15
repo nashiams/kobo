@@ -11,7 +11,7 @@ mod sourcemap;
 use std::path::Path;
 
 pub use emit::emit_file;
-pub use error_policy::{collect_error_policy_sites, ErrorPolicySite};
+pub use error_policy::ErrorPolicySite;
 pub use sourcemap::{
     wrap_source_map, KoboSourceMap, RsSpan, SolverBudgetJson, SolverEvidenceJson, SourceMapEntry,
 };
@@ -77,8 +77,9 @@ pub fn codegen_file(
         &anchors,
         &mut entries,
     );
+    let (rs_source, error_policy_sites) =
+        error_policy::resolve_marked_error_policy_sites(rs_source, &lowered.error_policy_markers);
     let source_map = wrap_source_map(kobo_path, rs_path, entries);
-    let error_policy_sites = collect_error_policy_sites(ast, &rs_source, ast.file_id);
 
     CodegenOutput {
         rs_source,

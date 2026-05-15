@@ -1,0 +1,13 @@
+{
+  "source_hash": "source-hash-nonce_26192",
+  "generated_rust_hash": "46700cc92da34d9d",
+  "harness_dir": "C:\\Users\\LENOVO\\Downloads\\Phase Lulus\\kobo\\crates\\compiler\\kobo-sim-core\\.kobo\\harness\\source-hash-nonce_26192-main-46700cc92da34d9d",
+  "harness_rs_path": "C:\\Users\\LENOVO\\Downloads\\Phase Lulus\\kobo\\crates\\compiler\\kobo-sim-core\\.kobo\\harness\\source-hash-nonce_26192-main-46700cc92da34d9d\\harness.rs",
+  "command": [
+    "C:\\Users\\LENOVO\\Downloads\\Phase Lulus\\kobo\\crates\\compiler\\kobo-sim-core\\.kobo\\harness\\source-hash-nonce_26192-main-46700cc92da34d9d\\harness_bin.exe"
+  ],
+  "exit_code": 0,
+  "stdout_hash": "c2ae3bb01ce1eef5",
+  "stderr_hash": "cbf29ce484222325",
+  "event_count": 2
+}

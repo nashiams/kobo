@@ -2,7 +2,6 @@ use kobo_ir::{FileId, KoboSpan};
 use kobo_parser::KoboFile;
 use serde::{Deserialize, Serialize};
 use syn::spanned::Spanned;
-use syn::visit::{self, Visit};
 use syn::{Expr, ExprCall, ExprMethodCall, ExprTry, Path as SynPath};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -15,31 +14,87 @@ pub struct ErrorPolicySite {
     pub source_error: String,
 }
 
-pub fn collect_error_policy_sites(
-    kobo_file: &KoboFile,
-    generated_source: &str,
-    file_id: FileId,
-) -> Vec<ErrorPolicySite> {
-    let source_sites = source_try_sites(kobo_file);
-    let generated_offsets = generated_try_offsets(generated_source);
-    source_sites
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, source_try)| {
-            let generated_offset = generated_offsets.get(index).copied()?;
-            let (operation, variant, source_error) =
-                classify_try_operation(source_try.expr.as_ref());
-            let source_span = kobo_file.span_from_syn(source_try.span());
-            Some(ErrorPolicySite {
-                source_span: normalized_span(source_span, file_id),
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ErrorPolicyMarker {
+    pub id: usize,
+    pub source_span: KoboSpan,
+    pub operation: String,
+    pub variant: String,
+    pub source_error: String,
+}
+
+impl ErrorPolicyMarker {
+    pub(crate) fn from_try_expr(id: usize, kobo_file: &KoboFile, try_expr: &ExprTry) -> Self {
+        let source_span =
+            normalized_span(kobo_file.span_from_syn(try_expr.span()), kobo_file.file_id);
+        let (operation, variant, source_error) = classify_try_operation(try_expr.expr.as_ref());
+        Self {
+            id,
+            source_span,
+            operation: operation.to_owned(),
+            variant: variant.to_owned(),
+            source_error: source_error.to_owned(),
+        }
+    }
+
+    pub(crate) fn binding_name(&self) -> String {
+        marker_binding_name(self.id)
+    }
+
+    pub(crate) fn method_name(&self) -> String {
+        marker_method_name(self.id)
+    }
+}
+
+pub(crate) fn marker_binding_name(id: usize) -> String {
+    format!("__kobo_error_policy_site_{id}")
+}
+
+pub(crate) fn marker_method_name(id: usize) -> String {
+    format!("__kobo_error_policy_site_{id}_map")
+}
+
+pub(crate) fn resolve_marked_error_policy_sites(
+    marked_source: String,
+    markers: &[ErrorPolicyMarker],
+) -> (String, Vec<ErrorPolicySite>) {
+    let mut source = marked_source;
+    let mut sites = Vec::with_capacity(markers.len());
+    for marker in markers {
+        remove_marker_binding(&mut source, marker);
+        if let Some(generated_offset) = remove_marker_method(&mut source, marker) {
+            sites.push(ErrorPolicySite {
+                source_span: marker.source_span,
                 generated_offset,
-                line: one_based_line_for_offset(generated_source, generated_offset),
-                operation: operation.to_owned(),
-                variant: variant.to_owned(),
-                source_error: source_error.to_owned(),
-            })
-        })
-        .collect()
+                line: one_based_line_for_offset(&source, generated_offset),
+                operation: marker.operation.clone(),
+                variant: marker.variant.clone(),
+                source_error: marker.source_error.clone(),
+            });
+        }
+    }
+    (source, sites)
+}
+
+fn remove_marker_binding(source: &mut String, marker: &ErrorPolicyMarker) {
+    let binding = format!("let {} = ();", marker.binding_name());
+    let Some(binding_start) = source.find(&binding) else {
+        return;
+    };
+    let line_start = source[..binding_start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let line_end = source[binding_start..]
+        .find('\n')
+        .map_or(source.len(), |index| binding_start + index + 1);
+    source.replace_range(line_start..line_end, "");
+}
+
+fn remove_marker_method(source: &mut String, marker: &ErrorPolicyMarker) -> Option<usize> {
+    let method = format!(".{}()", marker.method_name());
+    let generated_offset = source.find(&method)?;
+    source.replace_range(generated_offset..generated_offset + method.len(), "");
+    Some(generated_offset)
 }
 
 fn normalized_span(span: KoboSpan, file_id: FileId) -> KoboSpan {
@@ -82,60 +137,10 @@ fn path_last_ident(path: &SynPath) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn source_try_sites(kobo_file: &KoboFile) -> Vec<ExprTry> {
-    let mut visitor = TrySiteVisitor::default();
-    visitor.visit_file(kobo_file.syn_file());
-    visitor.sites
-}
-
-fn generated_try_offsets(source: &str) -> Vec<usize> {
-    let Ok(file) = syn::parse_file(source) else {
-        return Vec::new();
-    };
-    let mut visitor = TrySiteVisitor::default();
-    visitor.visit_file(&file);
-    visitor
-        .sites
-        .into_iter()
-        .map(|site| {
-            let end = site.span().end();
-            line_col_to_offset(source, end.line, end.column)
-                .unwrap_or(source.len())
-                .saturating_sub(1)
-        })
-        .collect()
-}
-
-#[derive(Default)]
-struct TrySiteVisitor {
-    sites: Vec<ExprTry>,
-}
-
-impl<'ast> Visit<'ast> for TrySiteVisitor {
-    fn visit_expr_try(&mut self, node: &'ast ExprTry) {
-        self.sites.push(node.clone());
-        visit::visit_expr_try(self, node);
-    }
-}
-
 fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
     source[..offset.min(source.len())]
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count()
         + 1
-}
-
-fn line_col_to_offset(source: &str, line: usize, column: usize) -> Option<usize> {
-    if line == 0 {
-        return None;
-    }
-    let mut offset = 0usize;
-    for (index, text) in source.lines().enumerate() {
-        if index + 1 == line {
-            return Some((offset + column).min(source.len()));
-        }
-        offset += text.len() + 1;
-    }
-    None
 }

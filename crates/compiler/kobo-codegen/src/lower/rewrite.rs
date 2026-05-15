@@ -18,6 +18,7 @@ use super::plan::{AnnotationNote, LoweringPlan};
 use super::scope::{type_name_from_syn, ScopeStack};
 use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
+use crate::error_policy::ErrorPolicyMarker;
 use crate::executor::executor_attribute;
 use crate::CodegenOptions;
 
@@ -31,6 +32,7 @@ pub(crate) struct Lowerer<'a> {
     pub(super) strict_counter: StrictGuardCounter,
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
+    pub(super) error_policy_markers: Vec<ErrorPolicyMarker>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -50,6 +52,7 @@ impl<'a> Lowerer<'a> {
             strict_counter: StrictGuardCounter::new(),
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
+            error_policy_markers: Vec::new(),
         }
     }
 
@@ -65,8 +68,18 @@ impl<'a> Lowerer<'a> {
         captured_bindings_need_spawn_local(captured)
     }
 
-    pub(crate) fn into_parts(self) -> (Vec<AnnotationNote>, Vec<LoweringAnchor>) {
-        (self.annotation_notes, self.anchors)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<AnnotationNote>,
+        Vec<LoweringAnchor>,
+        Vec<ErrorPolicyMarker>,
+    ) {
+        (
+            self.annotation_notes,
+            self.anchors,
+            self.error_policy_markers,
+        )
     }
 
     fn lower_item(&mut self, item: &mut syn::Item) {

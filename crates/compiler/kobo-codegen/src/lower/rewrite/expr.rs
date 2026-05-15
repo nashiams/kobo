@@ -1,5 +1,5 @@
 use kobo_ir::OwnershipTier;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::parse::Parser;
 use syn::parse_quote;
 use syn::spanned::Spanned;
@@ -104,6 +104,7 @@ impl super::Lowerer<'_> {
             syn::Expr::Return(return_expr) => self.lower_return_expr(return_expr, scopes),
             syn::Expr::Struct(expr_struct) => self.lower_struct_expr(expr_struct, scopes),
             syn::Expr::Tuple(tuple) => self.lower_exprs(tuple.elems.iter_mut(), scopes),
+            syn::Expr::Try(try_expr) => self.lower_try_expr(try_expr, scopes),
             syn::Expr::Unary(unary) => self.lower_expr(unary.expr.as_mut(), scopes),
             syn::Expr::While(expr_while) => self.lower_while_expr(expr_while, scopes),
             _ => {}
@@ -339,6 +340,23 @@ impl super::Lowerer<'_> {
                 self.lower_expr(inner.as_mut(), scopes);
             }
         }
+    }
+
+    fn lower_try_expr(&mut self, try_expr: &mut syn::ExprTry, scopes: &mut ScopeStack) {
+        self.lower_expr(try_expr.expr.as_mut(), scopes);
+        let marker = crate::error_policy::ErrorPolicyMarker::from_try_expr(
+            self.error_policy_markers.len(),
+            self.ast,
+            try_expr,
+        );
+        let binding = format_ident!("{}", marker.binding_name());
+        let method = format_ident!("{}", marker.method_name());
+        let inner = (*try_expr.expr).clone();
+        try_expr.expr = Box::new(parse_quote!({
+            let #binding = ();
+            #inner
+        }.#method()));
+        self.error_policy_markers.push(marker);
     }
 
     fn lower_struct_expr(&mut self, expr_struct: &mut syn::ExprStruct, scopes: &mut ScopeStack) {

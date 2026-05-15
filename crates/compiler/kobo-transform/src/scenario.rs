@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use kobo_ir::{
-    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioCoverageFacts,
-    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioCoverageFacts, ScenarioModeledBoundary,
+    ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
 use syn::spanned::Spanned;
@@ -323,7 +323,8 @@ impl<'a> ScenarioLowerer<'a> {
             self.operations.push(ScenarioOp {
                 span: self.span(call),
                 kind: ScenarioOpKind::ExternalBoundary {
-                    crate_name: path_first_ident(&path.path).unwrap_or_else(|| "external".to_owned()),
+                    crate_name: path_first_ident(&path.path)
+                        .unwrap_or_else(|| "external".to_owned()),
                 },
             });
             return true;

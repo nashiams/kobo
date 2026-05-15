@@ -110,7 +110,13 @@ fn semantic_engine_must_not_lower_from_syn_file() {
 fn driver_scenario_must_be_kir_owned_not_syn_owned() {
     let scenario = read("../../crates/compiler/kobo-driver/src/scenario.rs");
 
-    for banned in ["use syn::", "KoboFile", "syn_file()", "ExprMethodCall", "ItemFn"] {
+    for banned in [
+        "use syn::",
+        "KoboFile",
+        "syn_file()",
+        "ExprMethodCall",
+        "ItemFn",
+    ] {
         assert!(
             !scenario.contains(banned),
             "driver scenario extraction must consume KIR/codegen scenario facts, not `{banned}`"
@@ -143,6 +149,7 @@ fn error_policy_must_come_from_codegen_metadata_not_text_offsets() {
 #[test]
 fn error_policy_must_be_codegen_output_metadata() {
     let codegen = read("../../crates/compiler/kobo-driver/src/pipeline/codegen.rs");
+    let codegen_error_policy = read("../../crates/compiler/kobo-codegen/src/error_policy.rs");
 
     for banned in [
         "collect_error_policy_sites(&kobo_file",
@@ -159,6 +166,17 @@ fn error_policy_must_be_codegen_output_metadata() {
         codegen.contains("error_policy_sites"),
         "driver codegen artifacts must carry codegen-owned error policy metadata"
     );
+    for banned in [
+        "generated_source",
+        "generated_try_offsets",
+        "syn::parse_file",
+        "TrySiteVisitor",
+    ] {
+        assert!(
+            !codegen_error_policy.contains(banned),
+            "kobo-codegen must emit error policy metadata at lowering sites, not reconstruct it through `{banned}`"
+        );
+    }
 }
 
 #[test]

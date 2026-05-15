@@ -265,14 +265,13 @@ fn inject_modeled_boundary_event(
     };
     for (needle, replacement) in replacements {
         if source.contains(needle) {
-            return Ok(source.replacen(
-                needle,
-                &instrumented_expression(replacement, &print),
-                1,
-            ));
+            return Ok(source.replacen(needle, &instrumented_expression(replacement, &print), 1));
         }
     }
-    anyhow::bail!("generated Rust did not contain modeled boundary {}", boundary_label(boundary))
+    anyhow::bail!(
+        "generated Rust did not contain modeled boundary {}",
+        boundary_label(boundary)
+    )
 }
 
 fn instrumented_expression(expression: &str, print: &str) -> String {

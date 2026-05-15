@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_errors::KErrorCode;
 
+use super::sim_semantic;
+
 #[derive(Clone, Debug)]
 pub(super) struct ScenarioDocument {
     pub source: String,
@@ -16,6 +18,7 @@ pub(super) struct Scenario {
     pub name: String,
     pub profile: String,
     pub body: String,
+    #[allow(dead_code)]
     pub body_start: usize,
 }
 
@@ -43,6 +46,7 @@ pub(super) struct SimulationRun {
     pub opaque_boundaries: Vec<String>,
     pub obligations: Vec<RuntimeObligationSummary>,
     pub boundary_decisions: Vec<BoundaryDecision>,
+    pub execution_digest: Option<ExecutionDigest>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,17 +59,19 @@ pub(super) struct ScenarioFailure {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ReplayBoundary {
-    pub crate_name: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-#[derive(Clone, Debug)]
 pub(super) struct SimEvent {
     pub kind: String,
     pub label: Option<String>,
     pub value: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ExecutionDigest {
+    pub engine: String,
+    pub model_version: String,
+    pub scenario_ir_hash: String,
+    pub operation_count: usize,
+    pub event_hash: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,12 +187,12 @@ pub(super) fn boundary_policy_choices() -> [BoundaryPolicyChoice; 6] {
 }
 
 #[derive(Clone, Debug)]
-struct ScenarioProgram {
-    operations: Vec<ScenarioOperation>,
+pub(super) struct ScenarioProgram {
+    pub(super) operations: Vec<ScenarioOperation>,
 }
 
 #[derive(Clone, Debug)]
-enum ScenarioOperation {
+pub(super) enum ScenarioOperation {
     CreateObligation {
         binding: String,
         type_name: String,
@@ -205,6 +211,8 @@ enum ScenarioOperation {
     },
     ModeledEffect {
         boundary: ModeledBoundary,
+        span_start: usize,
+        span_end: usize,
     },
     RawNondeterminism {
         operation: String,
@@ -242,7 +250,8 @@ struct SimulationRuntime<'a> {
     scenario: &'a Scenario,
     seed: u64,
     event_budget: Option<u64>,
-    inject: Option<&'a str>,
+    failure_hooks: Vec<FailureHook>,
+    has_applied_failure_hooks: bool,
     events: Vec<SimEvent>,
     modeled_boundaries: Vec<ModeledBoundary>,
     opaque_boundaries: Vec<String>,
@@ -251,7 +260,17 @@ struct SimulationRuntime<'a> {
     budget_failure: Option<ScenarioFailure>,
     raw_failure: Option<ScenarioFailure>,
     uncontrolled_failure: Option<ScenarioFailure>,
+    cancel_failure: Option<ScenarioFailure>,
+    injection_failure: Option<ScenarioFailure>,
     boundary_failure: Option<ScenarioFailure>,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum FailureHook {
+    Cancel,
+    Preempt,
+    TimeJump,
+    Crash,
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +291,15 @@ pub(super) fn load_document(file: &Path) -> anyhow::Result<ScenarioDocument> {
 }
 
 pub(super) fn parse_document(source: String) -> ScenarioDocument {
+    if let Some((must_call_types, scenarios)) = sim_semantic::parse_metadata(&source) {
+        return ScenarioDocument {
+            source_hash: source_hash(&source),
+            must_call_types,
+            scenarios,
+            source,
+        };
+    }
+
     ScenarioDocument {
         source_hash: source_hash(&source),
         must_call_types: parse_must_call_types(&source),
@@ -311,7 +339,9 @@ pub(super) fn run_quick_target(
     let program = ScenarioProgram::from_document(document, &scenario);
     let mut runtime = SimulationRuntime::new(&scenario, options);
     runtime.execute(&program);
-    runtime.finish()
+    let mut run = runtime.finish();
+    run.execution_digest = Some(program.execution_digest(&run.events));
+    run
 }
 
 pub(super) fn missing_scenario_run(profile: &str, source_len: usize) -> SimulationRun {
@@ -331,6 +361,7 @@ pub(super) fn missing_scenario_run(profile: &str, source_len: usize) -> Simulati
         opaque_boundaries: Vec::new(),
         obligations: Vec::new(),
         boundary_decisions: Vec::new(),
+        execution_digest: None,
     }
 }
 
@@ -351,6 +382,7 @@ pub(super) fn target_not_found_run(profile: &str, source_len: usize) -> Simulati
         opaque_boundaries: Vec::new(),
         obligations: Vec::new(),
         boundary_decisions: Vec::new(),
+        execution_digest: None,
     }
 }
 
@@ -538,22 +570,146 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
 
 impl ScenarioProgram {
     fn from_document(document: &ScenarioDocument, scenario: &Scenario) -> Self {
-        let mut operations = Vec::new();
-        for line in line_infos(&scenario.body) {
-            let global_offset = scenario.body_start + line.offset;
-            let executable = strip_line_comment(line.text).trim();
-            if executable.is_empty() {
-                continue;
+        sim_semantic::scenario_program_from_document(document, scenario).unwrap_or_else(|| {
+            let span_end = document.source.len().min(1);
+            Self {
+                operations: vec![ScenarioOperation::UncontrolledEffect {
+                    operation: "semantic scenario lowering failed".to_owned(),
+                    span_start: 0,
+                    span_end,
+                }],
             }
-            operations.extend(obligation_operations(
-                executable,
-                global_offset,
-                &document.must_call_types,
-            ));
-            operations.extend(effect_operations(executable, global_offset));
-            operations.extend(control_operations(executable, global_offset));
+        })
+    }
+
+    fn execution_digest(&self, events: &[SimEvent]) -> ExecutionDigest {
+        let mut ir_material = String::new();
+        for operation in &self.operations {
+            operation.push_fingerprint(&mut ir_material);
+            ir_material.push('\n');
         }
-        Self { operations }
+
+        let mut event_material = String::new();
+        for event in events {
+            event_material.push_str(&event.kind);
+            event_material.push('|');
+            if let Some(label) = event.label.as_deref() {
+                event_material.push_str(label);
+            }
+            event_material.push('|');
+            if let Some(value) = event.value {
+                event_material.push_str(&value.to_string());
+            }
+            event_material.push('\n');
+        }
+
+        ExecutionDigest {
+            engine: "semantic-sim".to_owned(),
+            model_version: sim_semantic::MODEL_VERSION.to_owned(),
+            scenario_ir_hash: source_hash(&ir_material),
+            operation_count: self.operations.len(),
+            event_hash: source_hash(&event_material),
+        }
+    }
+}
+
+impl ScenarioOperation {
+    fn push_fingerprint(&self, output: &mut String) {
+        match self {
+            Self::CreateObligation {
+                binding,
+                type_name,
+                actions,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("create:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(type_name);
+                output.push(':');
+                output.push_str(&actions.join("|"));
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::Discharge { binding, action } => {
+                output.push_str("discharge:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(action);
+            }
+            Self::MoveBinding {
+                binding,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("move:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::ModeledEffect {
+                boundary,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("modeled:");
+                output.push_str(boundary.as_str());
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::RawNondeterminism {
+                operation,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("raw:");
+                output.push_str(operation);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::UncontrolledEffect {
+                operation,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("uncontrolled:");
+                output.push_str(operation);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::ExternalBoundary {
+                crate_name,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("boundary:");
+                output.push_str(crate_name);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::Loop {
+                span_start,
+                span_end,
+            } => {
+                output.push_str("loop:");
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+        }
     }
 }
 
@@ -563,7 +719,8 @@ impl<'a> SimulationRuntime<'a> {
             scenario,
             seed: options.seed,
             event_budget: options.event_budget,
-            inject: options.inject,
+            failure_hooks: ordered_failure_hooks(options.inject, options.seed),
+            has_applied_failure_hooks: false,
             events: Vec::new(),
             modeled_boundaries: Vec::new(),
             opaque_boundaries: Vec::new(),
@@ -572,6 +729,8 @@ impl<'a> SimulationRuntime<'a> {
             budget_failure: None,
             raw_failure: None,
             uncontrolled_failure: None,
+            cancel_failure: None,
+            injection_failure: None,
             boundary_failure: None,
         }
     }
@@ -599,8 +758,12 @@ impl<'a> SimulationRuntime<'a> {
                     span_start,
                     span_end,
                 } => self.mark_binding_moved(binding, (*span_start, *span_end)),
-                ScenarioOperation::ModeledEffect { boundary } => {
-                    self.record_modeled_effect(boundary.clone());
+                ScenarioOperation::ModeledEffect {
+                    boundary,
+                    span_start,
+                    span_end,
+                } => {
+                    self.record_modeled_effect(boundary.clone(), (*span_start, *span_end));
                 }
                 ScenarioOperation::RawNondeterminism {
                     operation,
@@ -623,7 +786,6 @@ impl<'a> SimulationRuntime<'a> {
                 } => self.record_budget_failure((*span_start, *span_end)),
             }
         }
-        self.record_injection_events();
     }
 
     fn finish(self) -> SimulationRun {
@@ -634,6 +796,8 @@ impl<'a> SimulationRuntime<'a> {
             .budget_failure
             .or(self.raw_failure)
             .or(self.uncontrolled_failure)
+            .or(self.injection_failure)
+            .or(self.cancel_failure)
             .or(liveness_failure)
             .or(self.boundary_failure);
         if let Some(failure) = failure.as_ref() {
@@ -648,6 +812,7 @@ impl<'a> SimulationRuntime<'a> {
             opaque_boundaries: self.opaque_boundaries,
             obligations,
             boundary_decisions: self.boundary_decisions,
+            execution_digest: None,
         }
     }
 
@@ -696,29 +861,174 @@ impl<'a> SimulationRuntime<'a> {
         }
     }
 
-    fn record_modeled_effect(&mut self, boundary: ModeledBoundary) {
+    fn record_modeled_effect(&mut self, boundary: ModeledBoundary, span: (usize, usize)) {
         if !self.modeled_boundaries.contains(&boundary) {
             self.modeled_boundaries.push(boundary.clone());
         }
-        self.events.push(match boundary {
-            ModeledBoundary::WardTime => SimEvent {
-                kind: "deterministic-time".to_owned(),
-                label: None,
-                value: Some(self.seed.wrapping_mul(1_000).wrapping_add(17)),
-            },
-            ModeledBoundary::WardRandom => SimEvent {
-                kind: "deterministic-random".to_owned(),
-                label: None,
-                value: Some(self.seed.rotate_left(13) ^ 0x9e37_79b9_7f4a_7c15_u64),
-            },
-            ModeledBoundary::WardTask => SimEvent {
-                kind: "deterministic-task".to_owned(),
-                label: Some("ward.task".to_owned()),
-                value: Some(self.seed),
-            },
-        });
+        let hooks = self.failure_hooks_for_effect();
+        self.events.push(modeled_effect_event(
+            boundary.clone(),
+            self.seed,
+            hooks.contains(&FailureHook::TimeJump),
+        ));
+        for hook in hooks {
+            self.apply_failure_hook(hook, &boundary, span);
+        }
     }
 
+    fn failure_hooks_for_effect(&mut self) -> Vec<FailureHook> {
+        if self.has_applied_failure_hooks {
+            return Vec::new();
+        }
+        self.has_applied_failure_hooks = true;
+        self.failure_hooks.clone()
+    }
+
+    fn apply_failure_hook(
+        &mut self,
+        hook: FailureHook,
+        boundary: &ModeledBoundary,
+        span: (usize, usize),
+    ) {
+        match hook {
+            FailureHook::Cancel => self.record_cancel_hook(boundary, span),
+            FailureHook::Preempt => self.events.push(SimEvent {
+                kind: "failure-injection-preempt".to_owned(),
+                label: Some(boundary.as_str().to_owned()),
+                value: Some(self.seed),
+            }),
+            FailureHook::TimeJump => self.events.push(SimEvent {
+                kind: "failure-injection-time-jump".to_owned(),
+                label: Some(boundary.as_str().to_owned()),
+                value: Some(self.seed.wrapping_add(60_000)),
+            }),
+            FailureHook::Crash => self.record_crash_hook(boundary, span),
+        }
+    }
+
+    fn record_cancel_hook(&mut self, boundary: &ModeledBoundary, span: (usize, usize)) {
+        let Some(obligation) = self
+            .obligations
+            .iter_mut()
+            .rev()
+            .find(|obligation| !obligation.is_discharged)
+        else {
+            self.events.push(SimEvent {
+                kind: "failure-injection-cancel".to_owned(),
+                label: Some(boundary.as_str().to_owned()),
+                value: None,
+            });
+            return;
+        };
+
+        obligation.drop_span = Some(span);
+        let binding = obligation.binding.clone();
+        let actions = obligation.actions.join(", ");
+        if self.cancel_failure.is_none() {
+            self.cancel_failure = Some(ScenarioFailure {
+                code: KErrorCode::K0100,
+                message: format!(
+                    "failure injection `cancel` cancelled active obligation `{binding}` at {}; discharge with {actions}",
+                    boundary.as_str()
+                ),
+                primary_start: span.0,
+                primary_end: span.1,
+                events: vec![SimEvent {
+                    kind: "failure-injection-cancel".to_owned(),
+                    label: Some(binding),
+                    value: None,
+                }],
+            });
+        }
+    }
+
+    fn record_crash_hook(&mut self, boundary: &ModeledBoundary, span: (usize, usize)) {
+        self.events.push(SimEvent {
+            kind: "failure-injection-crash".to_owned(),
+            label: Some(boundary.as_str().to_owned()),
+            value: None,
+        });
+        if self.injection_failure.is_none() {
+            self.injection_failure = Some(ScenarioFailure {
+                code: KErrorCode::K0103,
+                message: format!(
+                    "failure injection `crash` stopped modeled effect `{}`; record, model, or mark replay debt",
+                    boundary.as_str()
+                ),
+                primary_start: span.0,
+                primary_end: span.1,
+                events: vec![SimEvent {
+                    kind: "failure-injection-crash".to_owned(),
+                    label: Some(boundary.as_str().to_owned()),
+                    value: None,
+                }],
+            });
+        }
+    }
+
+    fn liveness_failure(&self) -> Option<ScenarioFailure> {
+        let obligation = self
+            .obligations
+            .iter()
+            .find(|obligation| !obligation.is_discharged)?;
+        let span = obligation.drop_span.unwrap_or(obligation.declaration_span);
+        let actions = obligation.actions.join(", ");
+        Some(ScenarioFailure {
+            code: KErrorCode::K0100,
+            message: format!(
+                "checked scenario dropped `{}` without required action; discharge with {actions}",
+                obligation.binding
+            ),
+            primary_start: span.0,
+            primary_end: span.1,
+            events: vec![SimEvent {
+                kind: "liveness-token-drop".to_owned(),
+                label: Some(obligation.binding.clone()),
+                value: None,
+            }],
+        })
+    }
+
+    fn obligation_summaries(&self) -> Vec<RuntimeObligationSummary> {
+        self.obligations
+            .iter()
+            .map(|obligation| RuntimeObligationSummary {
+                binding: obligation.binding.clone(),
+                type_name: obligation.type_name.clone(),
+                actions: obligation.actions.clone(),
+                is_discharged: obligation.is_discharged,
+                declaration_span: obligation.declaration_span,
+                drop_span: obligation.drop_span,
+            })
+            .collect()
+    }
+}
+
+fn modeled_effect_event(boundary: ModeledBoundary, seed: u64, has_time_jump: bool) -> SimEvent {
+    match boundary {
+        ModeledBoundary::WardTime => SimEvent {
+            kind: "deterministic-time".to_owned(),
+            label: None,
+            value: Some(
+                seed.wrapping_mul(1_000)
+                    .wrapping_add(17)
+                    .wrapping_add(if has_time_jump { 60_000 } else { 0 }),
+            ),
+        },
+        ModeledBoundary::WardRandom => SimEvent {
+            kind: "deterministic-random".to_owned(),
+            label: None,
+            value: Some(seed.rotate_left(13) ^ 0x9e37_79b9_7f4a_7c15_u64),
+        },
+        ModeledBoundary::WardTask => SimEvent {
+            kind: "deterministic-task".to_owned(),
+            label: Some("ward.task".to_owned()),
+            value: Some(seed),
+        },
+    }
+}
+
+impl<'a> SimulationRuntime<'a> {
     fn record_raw_failure(&mut self, operation: &str, span: (usize, usize)) {
         if self.raw_failure.is_some() {
             return;
@@ -807,205 +1117,33 @@ impl<'a> SimulationRuntime<'a> {
             }],
         });
     }
-
-    fn record_injection_events(&mut self) {
-        let Some(inject) = self.inject else {
-            return;
-        };
-        if self.modeled_boundaries.is_empty() {
-            return;
-        }
-        let mut hooks = inject
-            .split(',')
-            .map(str::trim)
-            .filter(|hook| !hook.is_empty())
-            .collect::<Vec<_>>();
-        if hooks.is_empty() {
-            return;
-        }
-        let rotate_by = (self.seed as usize) % hooks.len();
-        hooks.rotate_left(rotate_by);
-        self.events.extend(hooks.into_iter().map(|hook| SimEvent {
-            kind: "failure-injection".to_owned(),
-            label: Some(hook.to_owned()),
-            value: None,
-        }));
-    }
-
-    fn liveness_failure(&self) -> Option<ScenarioFailure> {
-        let obligation = self
-            .obligations
-            .iter()
-            .find(|obligation| !obligation.is_discharged)?;
-        let span = obligation.drop_span.unwrap_or(obligation.declaration_span);
-        let actions = obligation.actions.join(", ");
-        Some(ScenarioFailure {
-            code: KErrorCode::K0100,
-            message: format!(
-                "checked scenario dropped `{}` without required action; discharge with {actions}",
-                obligation.binding
-            ),
-            primary_start: span.0,
-            primary_end: span.1,
-            events: vec![SimEvent {
-                kind: "liveness-token-drop".to_owned(),
-                label: Some(obligation.binding.clone()),
-                value: None,
-            }],
-        })
-    }
-
-    fn obligation_summaries(&self) -> Vec<RuntimeObligationSummary> {
-        self.obligations
-            .iter()
-            .map(|obligation| RuntimeObligationSummary {
-                binding: obligation.binding.clone(),
-                type_name: obligation.type_name.clone(),
-                actions: obligation.actions.clone(),
-                is_discharged: obligation.is_discharged,
-                declaration_span: obligation.declaration_span,
-                drop_span: obligation.drop_span,
-            })
-            .collect()
-    }
 }
 
-fn obligation_operations(
-    line: &str,
-    global_offset: usize,
-    must_call_types: &[MustCallType],
-) -> Vec<ScenarioOperation> {
-    let mut operations = Vec::new();
-    for must_call_type in must_call_types {
-        if let Some(binding) = parse_binding_for_type(line, &must_call_type.type_name) {
-            let span = span_in_line(global_offset, line, &binding);
-            operations.push(ScenarioOperation::CreateObligation {
-                binding,
-                type_name: must_call_type.type_name.clone(),
-                actions: must_call_type.actions.clone(),
-                span_start: span.0,
-                span_end: span.1,
-            });
-        }
-    }
-    if let Some((binding, action)) = parse_method_call(line) {
-        operations.push(ScenarioOperation::Discharge { binding, action });
-    }
-    if let Some((binding, span)) = parse_move_binding(line, global_offset) {
-        operations.push(ScenarioOperation::MoveBinding {
-            binding,
-            span_start: span.0,
-            span_end: span.1,
-        });
-    }
-    operations
-}
-
-fn effect_operations(line: &str, global_offset: usize) -> Vec<ScenarioOperation> {
-    let mut operations = Vec::new();
-    for (needle, boundary) in [
-        ("ward.time", ModeledBoundary::WardTime),
-        ("ward.random", ModeledBoundary::WardRandom),
-        ("ward.task", ModeledBoundary::WardTask),
-    ] {
-        if line.contains(needle) {
-            operations.push(ScenarioOperation::ModeledEffect { boundary });
-        }
-    }
-    for needle in ["SystemTime::now", "Instant::now", "thread_rng", "rand::"] {
-        if let Some(local_start) = line.find(needle) {
-            operations.push(ScenarioOperation::RawNondeterminism {
-                operation: needle.to_owned(),
-                span_start: global_offset + local_start,
-                span_end: global_offset + local_start + needle.len(),
-            });
-        }
-    }
-    for needle in ["std::fs::", "std::process::", "std::net::"] {
-        if let Some(local_start) = line.find(needle) {
-            operations.push(ScenarioOperation::UncontrolledEffect {
-                operation: needle.trim_end_matches("::").to_owned(),
-                span_start: global_offset + local_start,
-                span_end: global_offset + local_start + needle.len(),
-            });
-        }
-    }
-    if let Some(boundary) = parse_external_boundary(line, global_offset) {
-        operations.push(ScenarioOperation::ExternalBoundary {
-            crate_name: boundary.crate_name,
-            span_start: boundary.start,
-            span_end: boundary.end,
-        });
-    }
-    operations
-}
-
-fn control_operations(line: &str, global_offset: usize) -> Vec<ScenarioOperation> {
-    let Some(local_start) = line.find("loop") else {
+fn ordered_failure_hooks(inject: Option<&str>, seed: u64) -> Vec<FailureHook> {
+    let Some(inject) = inject else {
         return Vec::new();
     };
-    vec![ScenarioOperation::Loop {
-        span_start: global_offset + local_start,
-        span_end: global_offset + local_start + "loop".len(),
-    }]
-}
-
-fn strip_line_comment(line: &str) -> &str {
-    line.split_once("//")
-        .map(|(before_comment, _)| before_comment)
-        .unwrap_or(line)
-}
-
-fn parse_method_call(line: &str) -> Option<(String, String)> {
-    let call_start = line.find('(')?;
-    let before_call = line[..call_start].trim_end();
-    let (binding, action) = before_call.rsplit_once('.')?;
-    Some((ident_suffix(binding)?, ident_prefix(action)?))
-}
-
-fn parse_move_binding(line: &str, global_offset: usize) -> Option<(String, (usize, usize))> {
-    if let Some(binding) = line.strip_prefix("drop(").and_then(|rest| {
-        let close = rest.find(')')?;
-        ident_prefix(&rest[..close])
-    }) {
-        let span = span_in_line(global_offset, line, &format!("drop({binding})"));
-        return Some((binding, span));
+    let mut hooks = inject
+        .split(',')
+        .filter_map(|hook| FailureHook::from_label(hook.trim()))
+        .collect::<Vec<_>>();
+    if hooks.len() > 1 {
+        let rotate_by = (seed as usize) % hooks.len();
+        hooks.rotate_left(rotate_by);
     }
-    let rest = line.strip_prefix("let ")?;
-    let (_, value) = rest.split_once('=')?;
-    let binding = ident_prefix(value.trim().trim_end_matches(';'))?;
-    let pattern = format!("= {binding}");
-    let span = if line.contains(&pattern) {
-        span_in_line(global_offset, line, &pattern)
-    } else {
-        span_in_line(global_offset, line, &binding)
-    };
-    Some((binding, span))
+    hooks
 }
 
-fn parse_external_boundary(line: &str, global_offset: usize) -> Option<ReplayBoundary> {
-    let separator = line.find("::Client::new")?;
-    let prefix = &line[..separator];
-    let local_start = prefix
-        .char_indices()
-        .rev()
-        .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_'))
-        .map(|(index, _)| index + 1)
-        .unwrap_or(0);
-    let crate_name = line[local_start..separator].to_owned();
-    Some(ReplayBoundary {
-        crate_name,
-        start: global_offset + local_start,
-        end: global_offset + separator,
-    })
-}
-
-fn span_in_line(global_offset: usize, line: &str, needle: &str) -> (usize, usize) {
-    let local_start = line.find(needle).unwrap_or(0);
-    (
-        global_offset + local_start,
-        global_offset + local_start + needle.len(),
-    )
+impl FailureHook {
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "cancel" => Some(Self::Cancel),
+            "preempt" => Some(Self::Preempt),
+            "time-jump" | "timejump" => Some(Self::TimeJump),
+            "crash" => Some(Self::Crash),
+            _ => None,
+        }
+    }
 }
 
 fn empty_scenario(profile: &str) -> Scenario {
@@ -1015,16 +1153,6 @@ fn empty_scenario(profile: &str) -> Scenario {
         body: String::new(),
         body_start: 0,
     }
-}
-
-fn parse_binding_for_type(line: &str, type_name: &str) -> Option<String> {
-    let rest = line.strip_prefix("let ")?;
-    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
-    let (binding, value) = rest.split_once('=')?;
-    value
-        .trim_start()
-        .starts_with(type_name)
-        .then(|| binding.trim().to_owned())
 }
 
 fn parse_must_call_actions(line: &str) -> Option<Vec<String>> {
@@ -1092,14 +1220,6 @@ fn ident_prefix(input: &str) -> Option<String> {
         .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
         .collect::<String>();
     (!ident.is_empty()).then_some(ident)
-}
-
-fn ident_suffix(input: &str) -> Option<String> {
-    input
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
-        .filter(|part| !part.is_empty())
-        .next_back()
-        .map(str::to_owned)
 }
 
 pub(super) fn backend_for_profile(profile: &str) -> Backend {

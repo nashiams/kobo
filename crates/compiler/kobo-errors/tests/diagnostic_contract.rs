@@ -1,9 +1,12 @@
 use kobo_errors::{
-    diagnostic_registry, resolve_severity, DiagnosticCategory, DiagnosticNote,
+    diagnostic_registry, render_k0041, resolve_severity, DiagnosticCategory, DiagnosticNote,
     DiagnosticRelatedInfo, DiagnosticStatus, DiagnosticSuggestion, KErrorCode, MachineEditPolicy,
     ModeBehavior, Severity, SuggestionApplicability, SuggestionPolicy, TextEdit,
 };
-use kobo_ir::{FileId, FileSetBuilder, KoboMode, KoboSpan};
+use kobo_ir::{
+    FileId, FileSetBuilder, KirNodeId, KoboMode, KoboSpan, StrictBoundaryFact,
+    StrictBoundaryViolation,
+};
 
 #[test]
 fn registry_has_metadata_for_active_codes() {
@@ -511,4 +514,24 @@ fn render_preserves_related_notes_and_suggestions_in_no_color_mode() {
     assert!(rendered.contains("clone before the later use"));
     assert!(rendered.contains("name.clone()"));
     assert!(!rendered.contains("\u{1b}["));
+}
+
+#[test]
+fn strict_renderer_wrong_fact_type_returns_internal_diagnostic_instead_of_panicking() {
+    let fact = StrictBoundaryFact {
+        block_span: KoboSpan::new(0, 6, FileId(0)),
+        violation: StrictBoundaryViolation::MovedInside {
+            binding_id: KirNodeId(7),
+            move_site: KoboSpan::new(3, 8, FileId(0)),
+        },
+    };
+
+    let diagnostic = render_k0041(&fact);
+
+    assert_eq!(diagnostic.code, KErrorCode::K0041);
+    assert_eq!(diagnostic.severity, Severity::Error);
+    assert!(
+        diagnostic.explanation.0.contains("internal Kobo routing"),
+        "wrong strict renderer route should become a stable internal diagnostic, not a panic"
+    );
 }

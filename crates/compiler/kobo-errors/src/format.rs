@@ -398,7 +398,7 @@ pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let alias_sites = match &fact.violation {
         StrictBoundaryViolation::ActiveAliases { alias_sites, .. } => alias_sites.as_slice(),
-        _ => panic!("render_k0041 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0041, fact, "active aliases"),
     };
 
     let primary = DiagLabel::primary(fact.block_span, "active aliases at @strict block entry");
@@ -434,7 +434,7 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let closure_span = match &fact.violation {
         StrictBoundaryViolation::ClosureCapture { closure_span, .. } => *closure_span,
-        _ => panic!("render_k0042 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0042, fact, "closure capture"),
     };
 
     let primary = DiagLabel::primary(
@@ -468,7 +468,7 @@ pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let move_site = match &fact.violation {
         StrictBoundaryViolation::MovedInside { move_site, .. } => *move_site,
-        _ => panic!("render_k0043 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0043, fact, "moved value"),
     };
 
     let primary = DiagLabel::primary(move_site, "value moved here");
@@ -497,7 +497,7 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let async_fn_span = match &fact.violation {
         StrictBoundaryViolation::AsyncContext { async_fn_span } => *async_fn_span,
-        _ => panic!("render_k0063 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0063, fact, "async context"),
     };
 
     let primary = DiagLabel::primary(fact.block_span, "this strict borrow starts here");
@@ -535,7 +535,13 @@ pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
             break_or_continue_span,
             ..
         } => (label.as_str(), *break_or_continue_span),
-        _ => panic!("render_labeled_cross_boundary called with wrong violation type"),
+        _ => {
+            return render_wrong_strict_violation(
+                KErrorCode::K0044,
+                fact,
+                "labeled break or continue",
+            )
+        }
     };
 
     let primary = DiagLabel::primary(
@@ -559,6 +565,25 @@ pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
     diag.secondary
         .push(DiagLabel::secondary(fact.block_span, "@strict block here"));
     diag
+}
+
+fn render_wrong_strict_violation(
+    code: crate::codes::KErrorCode,
+    fact: &StrictBoundaryFact,
+    expected: &str,
+) -> KDiagnostic {
+    use crate::codes::Severity;
+
+    KDiagnostic::new(
+        code,
+        Severity::Error,
+        DiagLabel::primary(fact.block_span, "strict diagnostic route mismatch"),
+        format!(
+            "internal Kobo routing expected {expected}, but received a different strict boundary fact"
+        ),
+        "report this as a Kobo compiler bug; the source program should not make the renderer panic",
+    )
+    .with_finding("Kobo reached a diagnostic renderer with the wrong strict fact type.")
 }
 
 #[cfg(test)]

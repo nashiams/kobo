@@ -21,20 +21,35 @@ pub fn diagnostic_value(
 ) -> serde_json::Result<Value> {
     let mut value = serde_json::to_value(diagnostic_payload(file_set, diagnostic))?;
     if include_actions {
-        value["codeAction"] = json!(code_action_commands(diagnostic.code));
-        value["codeActions"] = serde_json::to_value(code_actions_for(diagnostic.code))?;
+        let actions = code_actions_for_diagnostic(diagnostic);
+        value["codeAction"] = json!(action_commands(&actions));
+        value["codeActions"] = serde_json::to_value(actions)?;
     }
     Ok(value)
 }
 
 pub fn code_action_commands(code: KErrorCode) -> Vec<String> {
-    code_actions_for(code)
-        .into_iter()
-        .filter_map(|action| action.command)
-        .collect()
+    action_commands(&code_actions_for(code))
 }
 
 pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {
+    code_actions_for_code_and_replay(code, None)
+}
+
+fn code_actions_for_diagnostic(diagnostic: &KDiagnostic) -> Vec<LspCodeAction> {
+    let replay_command = diagnostic
+        .run
+        .as_ref()
+        .map(|run| run.0.as_str())
+        .filter(|command| command.starts_with("kobo replay "))
+        .filter(|command| !command.contains("<witness>"));
+    code_actions_for_code_and_replay(diagnostic.code, replay_command)
+}
+
+fn code_actions_for_code_and_replay(
+    code: KErrorCode,
+    replay_command: Option<&str>,
+) -> Vec<LspCodeAction> {
     let code_text = code.as_str();
     let mut actions = vec![LspCodeAction {
         title: format!("Explain {code_text}"),
@@ -52,7 +67,11 @@ pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {
             actions.push(LspCodeAction {
                 title: "Replay witness".to_owned(),
                 group: "replay".to_owned(),
-                command: Some("kobo replay .kobo/witnesses/<witness>.kwit".to_owned()),
+                command: Some(
+                    replay_command
+                        .unwrap_or("kobo replay .kobo/witnesses/<witness>.kwit")
+                        .to_owned(),
+                ),
             });
         }
         KErrorCode::K0107 => {
@@ -64,7 +83,11 @@ pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {
             actions.push(LspCodeAction {
                 title: "Replay witness".to_owned(),
                 group: "replay".to_owned(),
-                command: Some("kobo replay .kobo/witnesses/<witness>.kwit".to_owned()),
+                command: Some(
+                    replay_command
+                        .unwrap_or("kobo replay .kobo/witnesses/<witness>.kwit")
+                        .to_owned(),
+                ),
             });
             for choice in ["model", "record", "stub", "outside", "opaque", "debt"] {
                 actions.push(LspCodeAction {
@@ -78,4 +101,11 @@ pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {
     }
 
     actions
+}
+
+fn action_commands(actions: &[LspCodeAction]) -> Vec<String> {
+    actions
+        .iter()
+        .filter_map(|action| action.command.clone())
+        .collect()
 }

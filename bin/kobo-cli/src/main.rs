@@ -214,6 +214,8 @@ pub(crate) enum KoboCommand {
         witness_dir: Option<PathBuf>,
         #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
         error_format: ErrorFormat,
+        #[arg(long, value_name = "SCENARIO")]
+        target: Option<String>,
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },

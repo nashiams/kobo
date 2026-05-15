@@ -370,3 +370,32 @@ fn perf_json_from_diag_log_reports_prior_run_stats() {
         assert_contains(&text, needle, "perf JSON must reflect prior-run stats");
     }
 }
+
+#[test]
+fn perf_json_without_diag_log_is_labeled_source_estimate() {
+    let project = TestProject::new("perf-source-estimate");
+    let file = project.copy_fixture("strict/field_granularity.kobo", "src/main.kobo");
+
+    let output = run_kobo(
+        &[s("perf"), path_arg(&file), s("--format=json")],
+        &project.root,
+    );
+
+    assert_success(&output, "perf source estimate JSON should succeed");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        r#""source":"source_estimate""#,
+        "default perf JSON must not pretend to be prior-run DiagOwner data",
+    );
+    assert_contains(
+        &text,
+        "source-derived estimate",
+        "default perf JSON should tell users what evidence backed the report",
+    );
+    assert_not_contains(
+        &text,
+        r#""source":"diag_log""#,
+        "diag-log evidence must only appear when --from is supplied",
+    );
+}

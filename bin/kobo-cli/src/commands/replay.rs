@@ -101,13 +101,15 @@ fn replay_v1(
     let expected = serde_json::json!({
         "backend": run.backend.as_str(),
         "backend_replay": sim_model::replay_token(&verified_source.hash, seed, &run),
+        "execution_digest": execution_digest_json(&run),
         "failure": failure_json(source_display, &verified_source.source, &run),
         "events": events_json(&run.events),
     });
     let observed = serde_json::json!({
         "backend": witness["backend"].clone(),
         "backend_replay": witness["backend_replay"].clone(),
-        "failure": witness["failure"].clone(),
+        "execution_digest": witness["execution_digest"].clone(),
+        "failure": witness_failure_json(witness),
         "events": witness["events"].clone(),
     });
     if expected != observed {
@@ -179,13 +181,33 @@ fn failure_json(source_path: &str, source: &str, run: &sim_model::SimulationRun)
     };
     serde_json::json!({
         "code": failure.code.as_str(),
-        "message": failure.message.clone(),
         "primary_span": format!(
             "{}:{}:1",
             source_path,
             one_based_line_for_offset(source, failure.primary_start),
         ),
         "related_spans": related_spans_json(source_path, source, run),
+    })
+}
+
+fn witness_failure_json(witness: &Value) -> Value {
+    serde_json::json!({
+        "code": witness["failure"]["code"].clone(),
+        "primary_span": witness["failure"]["primary_span"].clone(),
+        "related_spans": witness["failure"]["related_spans"].clone(),
+    })
+}
+
+fn execution_digest_json(run: &sim_model::SimulationRun) -> Value {
+    let Some(digest) = run.execution_digest.as_ref() else {
+        return Value::Null;
+    };
+    serde_json::json!({
+        "engine": digest.engine,
+        "model_version": digest.model_version,
+        "scenario_ir_hash": digest.scenario_ir_hash,
+        "operation_count": digest.operation_count,
+        "event_hash": digest.event_hash,
     })
 }
 
@@ -337,6 +359,11 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
         if witness["replay_guarantee"].as_str() == Some("exact") {
             required.push(&["source", "path"][..]);
             required.push(&["source", "hash"][..]);
+            required.push(&["execution_digest", "engine"][..]);
+            required.push(&["execution_digest", "model_version"][..]);
+            required.push(&["execution_digest", "scenario_ir_hash"][..]);
+            required.push(&["execution_digest", "operation_count"][..]);
+            required.push(&["execution_digest", "event_hash"][..]);
         }
         for path in required {
             if value_at(witness, path).is_none() {

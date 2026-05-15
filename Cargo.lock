@@ -300,7 +300,9 @@ dependencies = [
  "kobo-ir",
  "kobo-lsp",
  "kobo-migrate",
+ "proc-macro2",
  "serde_json",
+ "syn",
  "toml",
 ]
 

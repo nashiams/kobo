@@ -104,6 +104,8 @@ fn source_perf_json(file: &Path, source: &str, threshold: u64) -> anyhow::Result
         .collect::<Vec<_>>();
     let value = serde_json::json!({
         "file": cli_relative_path(file)?,
+        "source": "source_estimate",
+        "evidence": "source-derived estimate; pass --from diag.log for prior-run DiagOwner stats",
         "borrow_count": analysis.perf.borrow_count,
         "mut_borrow_count": analysis.perf.mut_borrow_count,
         "contention": analysis.perf.contention,

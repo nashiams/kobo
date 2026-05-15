@@ -17,6 +17,7 @@ mod run;
 mod session;
 mod sim;
 mod sim_model;
+mod sim_semantic;
 mod test_cmd;
 mod watch;
 
@@ -174,6 +175,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             event_budget,
             witness_dir,
             error_format,
+            target,
             file,
         } => test_cmd::cmd_test(
             &file,
@@ -185,6 +187,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             event_budget,
             witness_dir.as_deref(),
             error_format,
+            target.as_deref(),
         ),
         KoboCommand::Replay {
             file,

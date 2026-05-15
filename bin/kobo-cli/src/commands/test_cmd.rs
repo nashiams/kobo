@@ -40,6 +40,7 @@ pub(super) fn cmd_test(
     event_budget: Option<u64>,
     witness_dir: Option<&Path>,
     error_format: ErrorFormat,
+    target: Option<&str>,
 ) -> anyhow::Result<()> {
     match sim {
         Some("quick") => {}
@@ -59,7 +60,7 @@ pub(super) fn cmd_test(
     let profile = profile.unwrap_or("checked");
     let seed = seed.unwrap_or(0);
     let document = sim_model::load_document(file)?;
-    let run = sim_model::run_quick(
+    let run = sim_model::run_quick_target(
         &document,
         SimulationOptions {
             profile,
@@ -67,6 +68,7 @@ pub(super) fn cmd_test(
             inject,
             event_budget,
         },
+        target,
     );
 
     if events == Some("json") {
@@ -157,6 +159,7 @@ fn write_failure_witness(
         "backend_profile": run.scenario.profile,
         "backend": run.backend.as_str(),
         "backend_replay": sim_model::replay_token(&document.source_hash, seed, run),
+        "execution_digest": execution_digest_json(run),
         "replay_guarantee": replay_guarantee.as_str(),
         "modeled_boundaries": modeled_boundaries_json(run),
         "opaque_boundaries": run.opaque_boundaries.clone(),
@@ -178,6 +181,19 @@ fn write_failure_witness(
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
     Ok(witness_path)
+}
+
+fn execution_digest_json(run: &SimulationRun) -> serde_json::Value {
+    let Some(digest) = run.execution_digest.as_ref() else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "engine": digest.engine,
+        "model_version": digest.model_version,
+        "scenario_ir_hash": digest.scenario_ir_hash,
+        "operation_count": digest.operation_count,
+        "event_hash": digest.event_hash,
+    })
 }
 
 fn witness_directory(file: &Path, witness_dir: Option<&Path>) -> anyhow::Result<PathBuf> {

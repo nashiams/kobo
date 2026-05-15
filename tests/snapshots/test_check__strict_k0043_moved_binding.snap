@@ -1,6 +1,6 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
-assertion_line: 326
+assertion_line: 374
 expression: output.stderr
 ---
 error[K0041]: cannot enter @strict block - value has active aliases
@@ -9,20 +9,33 @@ error[K0041]: cannot enter @strict block - value has active aliases
 3 |     let alias = data.clone();
   |                 ------------ alias created here
 6 |         consume(data);
-  |         ^ active aliases at @strict block entry
+  |         ^^^^^^^^^^^^^^ active aliases at @strict block entry
 6 |         consume(data);
-  |                   - alias created here
+  |                   ---- alias created here
   |
-   = value has 2 active Rc aliases at the point of entering @strict; all aliases must be dropped before the @strict block is entered
-   = kobo decision: drop or explicitly clone-then-drop aliases before the @strict { } boundary
-error[K0043]: value moved inside @strict block - cannot re-wrap on exit
+What Kobo found:
+  active aliases at @strict block entry
+Why this matters:
+  value has 2 active aliases when the @strict block starts; all aliases must end before the boundary
+  is entered
+Try this:
+  drop or explicitly clone-then-drop aliases before the @strict { } boundary
+More:
+  Run `kobo explain K0041` for examples and deeper context.
+error[K0043]: value moved inside @strict block - cannot restore on exit
   --> tests\ui\strict_k0043_moved_binding.kobo:6:19
   |
 6 |         consume(data);
-  |         - @strict block
+  |         -------------- @strict block
 6 |         consume(data);
-  |                   ^ value moved here
+  |                   ^^^^ value moved here
   |
-   = a binding is moved inside an @strict block; the borrow guard is dropped on exit from the block and the now-moved value cannot be re-wrapped with Rc<RefCell<T>>; this would leave the handle in an inconsistent state
-   = kobo decision: clone the value before moving, or drop the guard before the move statement
-Error: analysis failed
+What Kobo found:
+  value moved here
+Why this matters:
+  a binding is moved inside an @strict block; the boundary guard is dropped on exit from the block
+  and the moved value cannot be restored to its outer ownership shape
+Try this:
+  clone the value before moving, or drop the guard before the move statement
+More:
+  Run `kobo explain K0043` for examples and deeper context.

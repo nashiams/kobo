@@ -25,13 +25,14 @@ pub(super) fn cmd_check(
     print_policy: Option<PolicyOutputFormat>,
     pipeline: bool,
     error_format: ErrorFormat,
+    color_mode: ColorMode,
     recover_parse: bool,
     replay_critical: bool,
     max_diagnostics: Option<usize>,
     visible_region: Option<&str>,
     include_budgeted: bool,
 ) -> anyhow::Result<()> {
-    reject_invalid_field_capability_views(file, error_format)?;
+    reject_invalid_field_capability_views(file, error_format, color_mode)?;
     let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
         let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
         let loaded = policy::load_effective_policy(Some(file), profile)?;
@@ -59,7 +60,7 @@ pub(super) fn cmd_check(
                 project_boundary_policy_diagnostics(&mut session, file)?;
             }
             project_contextual_suggestions(&mut session, file)?;
-            render_diagnostics_with_format(&session, error_format);
+            render_diagnostics_with_format(&session, error_format, color_mode);
             render_budget_summary(
                 file,
                 error_format,
@@ -88,7 +89,7 @@ pub(super) fn cmd_check(
             }
 
             if emitted_machine_checked_diagnostic {
-                anyhow::bail!("diagnostics emitted");
+                return Err(super::diagnostics_emitted());
             }
 
             if print_policy.is_none() {
@@ -104,7 +105,7 @@ pub(super) fn cmd_check(
                 project_boundary_policy_diagnostics(&mut session, file)?;
             }
             project_contextual_suggestions(&mut session, file)?;
-            render_diagnostics_with_format(&session, error_format);
+            render_diagnostics_with_format(&session, error_format, color_mode);
             render_budget_summary(
                 file,
                 error_format,
@@ -112,7 +113,7 @@ pub(super) fn cmd_check(
                 visible_region,
                 include_budgeted,
             )?;
-            anyhow::bail!("analysis failed");
+            Err(super::diagnostics_emitted())
         }
     }
 }
@@ -120,6 +121,7 @@ pub(super) fn cmd_check(
 fn reject_invalid_field_capability_views(
     file: &Path,
     error_format: ErrorFormat,
+    color_mode: ColorMode,
 ) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)?;
     let views = field_capability_views(&source);
@@ -136,6 +138,7 @@ fn reject_invalid_field_capability_views(
                     file,
                     &source,
                     error_format,
+                    color_mode,
                     FieldCapabilityIssue {
                         span_start: field.start,
                         span_end: field.end,
@@ -162,6 +165,7 @@ fn reject_invalid_field_capability_views(
                     file,
                     &source,
                     error_format,
+                    color_mode,
                     FieldCapabilityIssue {
                         span_start: field.start,
                         span_end: field.end,
@@ -187,6 +191,7 @@ fn emit_field_capability_issue(
     file: &Path,
     source: &str,
     error_format: ErrorFormat,
+    color_mode: ColorMode,
     issue: FieldCapabilityIssue,
 ) -> anyhow::Result<()> {
     let mut files = FileSetBuilder::new();
@@ -210,11 +215,7 @@ fn emit_field_capability_issue(
             );
         }
         ErrorFormat::Human => {
-            let color = if std::env::var_os("NO_COLOR").is_some() {
-                ColorMode::Never
-            } else {
-                ColorMode::Auto
-            };
+            let color = super::session::resolve_color_mode(color_mode);
             let renderer = DiagnosticRenderer::new(color, DiagnosticOutputFormat::HumanCard);
             eprintln!("{}", renderer.render(files.as_file_set(), &diagnostic));
         }

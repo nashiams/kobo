@@ -7,6 +7,23 @@ pub enum ColorMode {
     Never,
 }
 
+pub fn resolve_color_mode_from_parts(
+    requested: ColorMode,
+    no_color_is_set: bool,
+    stderr_is_terminal: bool,
+) -> ColorMode {
+    if no_color_is_set {
+        return ColorMode::Never;
+    }
+
+    match requested {
+        ColorMode::Auto if stderr_is_terminal => ColorMode::Always,
+        ColorMode::Auto => ColorMode::Never,
+        ColorMode::Always => ColorMode::Always,
+        ColorMode::Never => ColorMode::Never,
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticOutputFormat {
     HumanCard,
@@ -36,7 +53,8 @@ impl DiagnosticRenderer {
     fn apply_color_mode(&self, rendered: String) -> String {
         match self.color_mode {
             ColorMode::Never => strip_ansi(&rendered),
-            ColorMode::Auto | ColorMode::Always => rendered,
+            ColorMode::Auto => rendered,
+            ColorMode::Always => colorize_human_card(&rendered),
         }
     }
 }
@@ -124,4 +142,56 @@ fn strip_ansi(input: &str) -> String {
         }
     }
     out
+}
+
+fn colorize_human_card(input: &str) -> String {
+    let mut output = String::new();
+    for (index, line) in input.lines().enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+        output.push_str(&colorize_line(line));
+    }
+    if input.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+fn colorize_line(line: &str) -> String {
+    let Some(style) = style_for_line(line) else {
+        return line.to_owned();
+    };
+    format!("{style}{line}\x1b[0m")
+}
+
+fn style_for_line(line: &str) -> Option<&'static str> {
+    let trimmed = line.trim_start();
+    if line.starts_with("error[") {
+        Some("\x1b[1;31m")
+    } else if line.starts_with("warning[") {
+        Some("\x1b[1;33m")
+    } else if line.starts_with("note[") {
+        Some("\x1b[1;36m")
+    } else if trimmed.starts_with("-->") {
+        Some("\x1b[34m")
+    } else if trimmed.starts_with("What Kobo found:") {
+        Some("\x1b[1;36m")
+    } else if trimmed.starts_with("Why this matters:") {
+        Some("\x1b[1;36m")
+    } else if trimmed.starts_with("Try this:") {
+        Some("\x1b[1;32m")
+    } else if trimmed.starts_with("More:") {
+        Some("\x1b[34m")
+    } else if line.starts_with("why:") {
+        Some("\x1b[1;36m")
+    } else if line.starts_with("fix:") {
+        Some("\x1b[1;32m")
+    } else if line.starts_with("help:") {
+        Some("\x1b[36m")
+    } else if line.starts_with("run:") {
+        Some("\x1b[34m")
+    } else {
+        None
+    }
 }

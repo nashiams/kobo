@@ -4,6 +4,8 @@ use crate::diagnostic::{
     CliSuggestion, DiagHelp, DiagLabel, DiagLabelKind, DiagnosticRelatedInfo, KDiagnostic,
 };
 
+const HUMAN_GUIDANCE_WIDTH: usize = 100;
+
 pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
     let mut rendered = String::new();
     rendered.push_str(&format!(
@@ -14,22 +16,23 @@ pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String
     ));
     rendered.push('\n');
     rendered.push_str(&render_label_group(file_set, diagnostic));
-    rendered.push('\n');
-    rendered.push_str("   = ");
-    rendered.push_str(&diagnostic.explanation.0);
-    rendered.push('\n');
-    rendered.push_str("   = kobo decision: ");
-    rendered.push_str(&diagnostic.decision.0);
-
-    if let Some(help) = diagnostic.help.as_ref() {
-        push_help(&mut rendered, help);
-    }
-
-    if let Some(run) = diagnostic.run.as_ref() {
-        push_run(&mut rendered, run);
-    }
+    push_section(&mut rendered, "What Kobo found:", card_finding(diagnostic));
+    push_section(
+        &mut rendered,
+        "Why this matters:",
+        &diagnostic.explanation.0,
+    );
+    push_section(&mut rendered, "Try this:", &diagnostic.decision.0);
+    push_more_section(&mut rendered, diagnostic);
 
     rendered
+}
+
+fn card_finding(diagnostic: &KDiagnostic) -> &str {
+    diagnostic
+        .finding
+        .as_deref()
+        .unwrap_or(&diagnostic.primary.text)
 }
 
 pub fn render_related_info(file_set: &FileSet, related: &DiagnosticRelatedInfo) -> String {
@@ -48,7 +51,7 @@ pub fn render_span_compact(file_set: &FileSet, span: KoboSpan) -> String {
         return format!("<unknown>:{}..{}", span.start, span.end);
     };
 
-    if !span.is_valid_for(file) {
+    if !can_render_span_start(file, span) {
         return format!("{}:{}..{}", file.path.display(), span.start, span.end);
     }
 
@@ -63,7 +66,8 @@ fn render_label_group(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
 
     let labels = ordered_labels(diagnostic);
     if labels.iter().any(|label| {
-        label.span.file_id != diagnostic.primary.span.file_id || !label.span.is_valid_for(file)
+        label.span.file_id != diagnostic.primary.span.file_id
+            || !can_render_span_start(file, label.span)
     }) {
         return render_individual_blocks(file_set, diagnostic);
     }
@@ -137,7 +141,7 @@ fn render_label_block(file_set: &FileSet, label: &DiagLabel, include_label_text:
         return render_fallback(label, "<unknown>");
     };
 
-    if !label.span.is_valid_for(file) {
+    if !can_render_span_start(file, label.span) {
         return render_fallback(label, &file.path.display().to_string());
     }
 
@@ -177,6 +181,12 @@ fn render_fallback(label: &DiagLabel, path: &str) -> String {
     )
 }
 
+fn can_render_span_start(file: &FileEntry, span: KoboSpan) -> bool {
+    span.start <= span.end
+        && (span.start as usize) <= file.source().len()
+        && file.line_text(file.line_col(span.start).0).is_some()
+}
+
 fn marker_for_kind(kind: DiagLabelKind) -> &'static str {
     match kind {
         DiagLabelKind::Primary => "^",
@@ -192,32 +202,91 @@ fn marker_width(file: &kobo_ir::FileEntry, label: &DiagLabel) -> usize {
     }
 
     let (line, column_start) = file.line_col(label.span.start);
-    let (_, column_end) = file.line_col(label.span.end.saturating_sub(1));
+    let (end_line, column_end) = file.line_col(label.span.end.saturating_sub(1));
     if let Some(line_text) = file.line_text(line) {
+        if end_line != line {
+            return line_text
+                .len()
+                .saturating_sub(column_start.saturating_sub(1))
+                .max(1);
+        }
+
         return (column_end.saturating_sub(column_start) + 1).min(line_text.len().max(1));
     }
 
     1
 }
 
-fn push_help(rendered: &mut String, help: &DiagHelp) {
-    if help.is_empty() {
+fn push_section(rendered: &mut String, heading: &str, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
         return;
     }
 
     rendered.push('\n');
-    rendered.push_str("help: ");
-    rendered.push_str(&help.0);
+    rendered.push_str(heading);
+    rendered.push('\n');
+    push_wrapped_multiline_text(rendered, value);
 }
 
-fn push_run(rendered: &mut String, run: &CliSuggestion) {
-    if run.is_empty() {
-        return;
+fn push_wrapped_multiline_text(rendered: &mut String, value: &str) {
+    for (index, line) in value.lines().enumerate() {
+        if index > 0 {
+            rendered.push('\n');
+        }
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        push_wrapped_text(rendered, "  ", "  ", line.trim());
+    }
+}
+
+fn push_wrapped_text(rendered: &mut String, prefix: &str, continuation: &str, value: &str) {
+    let mut line = prefix.to_owned();
+    for word in value.split_whitespace() {
+        let separator_width = usize::from(!line.ends_with(' '));
+        let projected_width = line.chars().count() + separator_width + word.chars().count();
+        if projected_width > HUMAN_GUIDANCE_WIDTH && line.trim() != prefix.trim() {
+            rendered.push_str(line.trim_end());
+            rendered.push('\n');
+            line.clear();
+            line.push_str(continuation);
+            line.push_str(word);
+        } else {
+            if !line.ends_with(' ') {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    rendered.push_str(line.trim_end());
+}
+
+fn push_more_section(rendered: &mut String, diagnostic: &KDiagnostic) {
+    rendered.push('\n');
+    rendered.push_str("More:");
+    rendered.push('\n');
+    push_wrapped_text(
+        rendered,
+        "  ",
+        "  ",
+        &format!(
+            "Run `kobo explain {}` for examples and deeper context.",
+            diagnostic.code
+        ),
+    );
+
+    if let Some(help) = diagnostic.help.as_ref().filter(|help| !help.is_empty()) {
+        rendered.push('\n');
+        push_wrapped_text(rendered, "  Also: ", "  ", &help.0);
     }
 
-    rendered.push('\n');
-    rendered.push_str("run: ");
-    rendered.push_str(&run.0);
+    if let Some(run) = diagnostic.run.as_ref().filter(|run| !run.is_empty()) {
+        rendered.push('\n');
+        push_wrapped_text(rendered, "  Rerun: ", "  ", &run.0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,8 +337,7 @@ pub fn render_k0020(stats: &DiagOwnerStats, file_set: &FileSet) -> KDiagnostic {
 
     let est = stats.estimated_total_ms();
     let explanation = format!(
-        "`{}` is Rc<RefCell<T>> accessed inside a tight loop\n   \
-         = estimated overhead: ~14ns/access (x86-64 ref) → ~{}ms total last run",
+        "`{}` uses shared mutable ownership inside a tight loop; estimated overhead is about 14ns per access on the x86-64 reference machine, or about {}ms in the last run",
         stats.binding_name, est
     );
 
@@ -286,7 +354,7 @@ pub fn render_k0020(stats: &DiagOwnerStats, file_set: &FileSet) -> KDiagnostic {
         Severity::Warning,
         primary,
         explanation,
-        "flagged for migration; no automatic fix applied",
+        "Move this hot loop into @strict, reuse owned data outside the loop, or keep the shared mutable shape with a measured reason.",
     )
     .with_help(DiagHelp(
         "annotate the loop with @strict to get zero overhead inside the block".to_owned(),
@@ -314,7 +382,7 @@ pub fn render_k0021(stats: &DiagOwnerStats) -> KDiagnostic {
         Severity::Warning,
         primary,
         explanation,
-        "advisory only — program continues to run correctly",
+        "advisory only; program continues to run correctly",
     )
 }
 
@@ -330,15 +398,15 @@ pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let alias_sites = match &fact.violation {
         StrictBoundaryViolation::ActiveAliases { alias_sites, .. } => alias_sites.as_slice(),
-        _ => panic!("render_k0041 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0041, fact, "active aliases"),
     };
 
     let primary = DiagLabel::primary(fact.block_span, "active aliases at @strict block entry");
 
     let alias_count = alias_sites.len();
     let explanation = format!(
-        "value has {alias_count} active Rc alias{} at the point of entering @strict; \
-         all aliases must be dropped before the @strict block is entered",
+        "value has {alias_count} active alias{} when the @strict block starts; \
+         all aliases must end before the boundary is entered",
         if alias_count == 1 { "" } else { "es" }
     );
 
@@ -366,17 +434,17 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let closure_span = match &fact.violation {
         StrictBoundaryViolation::ClosureCapture { closure_span, .. } => *closure_span,
-        _ => panic!("render_k0042 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0042, fact, "closure capture"),
     };
 
     let primary = DiagLabel::primary(
         closure_span,
-        "closure captures Rc<RefCell<T>> binding across @strict boundary",
+        "closure captures a shared mutable binding across @strict boundary",
     );
 
-    let explanation = "a closure defined inside an @strict block captures a wrapped binding; \
-         borrowing through Rc<RefCell<T>> inside a closure may panic if the @strict \
-         guard is still active when the closure is called";
+    let explanation =
+        "a closure defined inside an @strict block captures a shared mutable binding; \
+         calling the closure later could keep the strict borrow alive after the block ends";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0042,
@@ -384,7 +452,7 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
         primary,
         explanation,
         "extract the closure outside the @strict block, or refactor to avoid capturing \
-         the wrapped value",
+         the guarded value",
     );
 
     diag.secondary
@@ -400,14 +468,13 @@ pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let move_site = match &fact.violation {
         StrictBoundaryViolation::MovedInside { move_site, .. } => *move_site,
-        _ => panic!("render_k0043 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0043, fact, "moved value"),
     };
 
     let primary = DiagLabel::primary(move_site, "value moved here");
 
-    let explanation = "a binding is moved inside an @strict block; the borrow guard is dropped \
-         on exit from the block and the now-moved value cannot be re-wrapped with \
-         Rc<RefCell<T>>; this would leave the handle in an inconsistent state";
+    let explanation = "a binding is moved inside an @strict block; the boundary guard is dropped \
+         on exit from the block and the moved value cannot be restored to its outer ownership shape";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0043,
@@ -430,29 +497,28 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let async_fn_span = match &fact.violation {
         StrictBoundaryViolation::AsyncContext { async_fn_span } => *async_fn_span,
-        _ => panic!("render_k0063 called with wrong violation type"),
+        _ => return render_wrong_strict_violation(KErrorCode::K0063, fact, "async context"),
     };
 
-    let primary = DiagLabel::primary(
-        fact.block_span,
-        "@strict block inside async fn — borrow guards cannot cross .await",
-    );
+    let primary = DiagLabel::primary(fact.block_span, "this strict borrow starts here");
 
-    let explanation = "@strict blocks acquire Rc<RefCell<T>> borrow guards that must be dropped \
-         before any .await point; placing an @strict block directly inside an async \
-         fn makes this invariant unenforceable at compile time";
+    let explanation =
+        "Kobo needs strict borrows to end before the function can pause or be cancelled.";
 
     let mut diag = KDiagnostic::new(
         KErrorCode::K0063,
         Severity::Error,
         primary,
         explanation,
-        "annotate the fn as `@strict async fn` to opt in to the async-aware guard \
-         protocol, or refactor to avoid @strict inside async context",
-    );
+        "1. Use `@strict async fn` if the whole function should follow Kobo's async strict rules.\n\
+         2. Or move this strict work into a small non-async helper.",
+    )
+    .with_finding("This strict block runs inside an async function.");
 
-    diag.secondary
-        .push(DiagLabel::secondary(async_fn_span, "async fn defined here"));
+    diag.secondary.push(DiagLabel::secondary(
+        async_fn_span,
+        "async functions can pause at `.await`",
+    ));
     diag
 }
 
@@ -469,7 +535,13 @@ pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
             break_or_continue_span,
             ..
         } => (label.as_str(), *break_or_continue_span),
-        _ => panic!("render_labeled_cross_boundary called with wrong violation type"),
+        _ => {
+            return render_wrong_strict_violation(
+                KErrorCode::K0044,
+                fact,
+                "labeled break or continue",
+            )
+        }
     };
 
     let primary = DiagLabel::primary(
@@ -493,6 +565,25 @@ pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
     diag.secondary
         .push(DiagLabel::secondary(fact.block_span, "@strict block here"));
     diag
+}
+
+fn render_wrong_strict_violation(
+    code: crate::codes::KErrorCode,
+    fact: &StrictBoundaryFact,
+    expected: &str,
+) -> KDiagnostic {
+    use crate::codes::Severity;
+
+    KDiagnostic::new(
+        code,
+        Severity::Error,
+        DiagLabel::primary(fact.block_span, "strict diagnostic route mismatch"),
+        format!(
+            "internal Kobo routing expected {expected}, but received a different strict boundary fact"
+        ),
+        "report this as a Kobo compiler bug; the source program should not make the renderer panic",
+    )
+    .with_finding("Kobo reached a diagnostic renderer with the wrong strict fact type.")
 }
 
 #[cfg(test)]
@@ -611,8 +702,13 @@ mod tests {
         assert!(rendered.contains("error[K0001]: value used after move"));
         assert!(rendered.contains("--> src/main.kobo:2:5"));
         assert!(rendered.contains("------ value moved here"));
-        assert!(rendered.contains("help: clone explicitly at the call site"));
-        assert!(rendered.contains("run: kobo check src/main.kobo:2"));
+        assert!(rendered.contains("What Kobo found:"));
+        assert!(rendered.contains("Why this matters:"));
+        assert!(rendered.contains("Try this:"));
+        assert!(rendered.contains("More:"));
+        assert!(rendered.contains("clone explicitly at the call site"));
+        assert!(rendered.contains("Rerun:"));
+        assert!(rendered.contains("src/main.kobo:2"));
     }
 
     #[test]

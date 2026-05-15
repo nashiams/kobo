@@ -1,6 +1,6 @@
 use anyhow::Context;
 use kobo_driver::{load_config, run_codegen_pipeline, KoboMode};
-use kobo_errors::{KErrorCode, Severity};
+use kobo_errors::{ColorMode, KErrorCode, Severity};
 
 use std::path::Path;
 
@@ -16,6 +16,7 @@ pub(super) fn cmd_build(
     guarantee_profile: Option<GuaranteeProfileArg>,
     print_policy: Option<PolicyOutputFormat>,
     error_format: ErrorFormat,
+    color_mode: ColorMode,
     emit_rust: bool,
     file: Option<&Path>,
 ) -> anyhow::Result<()> {
@@ -26,6 +27,7 @@ pub(super) fn cmd_build(
             guarantee_profile,
             print_policy,
             error_format,
+            color_mode,
             emit_rust,
         );
     }
@@ -65,6 +67,7 @@ fn cmd_build_file(
     guarantee_profile: Option<GuaranteeProfileArg>,
     print_policy: Option<PolicyOutputFormat>,
     error_format: ErrorFormat,
+    color_mode: ColorMode,
     emit_rust: bool,
 ) -> anyhow::Result<()> {
     let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
@@ -85,10 +88,10 @@ fn cmd_build_file(
 
     let mut session = build_session(file, cli_mode)?;
     let artifacts = run_codegen_pipeline(&mut session, file).map_err(|()| {
-        render_diagnostics_with_format(&session, error_format);
-        anyhow::anyhow!("compilation failed")
+        render_diagnostics_with_format(&session, error_format, color_mode);
+        super::diagnostics_emitted()
     })?;
-    render_diagnostics_with_format(&session, error_format);
+    render_diagnostics_with_format(&session, error_format, color_mode);
     let strict_ownership_line = if session.mode().is_strict() {
         session
             .visible_diagnostics()
@@ -111,7 +114,7 @@ fn cmd_build_file(
                 "release ownership guarantee failed with K0001 ownership debt at line {line}"
             );
         }
-        anyhow::bail!("compilation failed");
+        return Err(super::diagnostics_emitted());
     }
 
     if emit_rust {
@@ -160,6 +163,7 @@ fn apply_error_policy_posture(source: &str, policy: &policy::GuaranteePolicy) ->
 
 #[derive(Clone, Debug)]
 struct ErrorSite {
+    offset: usize,
     line: usize,
     operation: &'static str,
     variant: &'static str,
@@ -205,53 +209,159 @@ fn typed_error_policy_source(source: &str, error_sites: &[ErrorSite]) -> String 
 }
 
 fn rewrite_question_error_sites(source: &str, error_sites: &[ErrorSite]) -> String {
-    let mut output = String::new();
-    for (line_index, line) in source.lines().enumerate() {
-        let line_number = line_index + 1;
-        if let Some(site) = error_sites.iter().find(|site| site.line == line_number) {
-            if let Some(question) = line.rfind('?') {
-                if !line[..question].contains("map_err(") {
-                    output.push_str(&line[..question]);
-                    output.push_str(&format!(".map_err(KoboTypedError::{})", site.variant));
-                    output.push_str(&line[question..]);
-                    output.push('\n');
-                    continue;
-                }
-            }
-        }
-        output.push_str(line);
-        output.push('\n');
+    if error_sites.is_empty() {
+        return source.to_owned();
     }
+
+    let mut output = String::with_capacity(source.len() + error_sites.len() * 32);
+    let mut cursor = 0usize;
+    for site in error_sites {
+        if site.offset > source.len() || site.offset < cursor {
+            continue;
+        }
+        if expression_already_maps_error(&source[..site.offset]) {
+            continue;
+        }
+        output.push_str(&source[cursor..site.offset]);
+        output.push_str(&format!(".map_err(KoboTypedError::{})", site.variant));
+        cursor = site.offset;
+    }
+    output.push_str(&source[cursor..]);
     output
 }
 
 fn error_sites(source: &str) -> Vec<ErrorSite> {
-    source
-        .lines()
-        .enumerate()
-        .filter_map(|(line_index, line)| {
-            if !line.contains('?') {
-                return None;
-            }
-            let (operation, variant, source_error) = classify_question_operation(line);
-            Some(ErrorSite {
-                line: line_index + 1,
+    question_operator_offsets(source)
+        .into_iter()
+        .map(|offset| {
+            let context = expression_context_before(source, offset);
+            let (operation, variant, source_error) = classify_question_operation(context);
+            ErrorSite {
+                offset,
+                line: one_based_line_for_offset(source, offset),
                 operation,
                 variant,
                 source_error,
-            })
+            }
         })
         .collect()
 }
 
-fn classify_question_operation(line: &str) -> (&'static str, &'static str, &'static str) {
-    if line.contains("read_to_string") {
+fn classify_question_operation(context: &str) -> (&'static str, &'static str, &'static str) {
+    if context.contains("read_to_string") {
         ("read_to_string", "ReadToString", "std::io::Error")
-    } else if line.contains("write(") || line.contains("write_all(") {
+    } else if context.contains("write(") || context.contains("write_all(") {
         ("write", "Write", "std::io::Error")
-    } else if line.contains("File::open") || line.contains("OpenOptions::") {
+    } else if context.contains("File::open") || context.contains("OpenOptions::") {
         ("open", "Open", "std::io::Error")
     } else {
         ("io", "Io", "std::io::Error")
     }
+}
+
+fn question_operator_offsets(source: &str) -> Vec<usize> {
+    let bytes = source.as_bytes();
+    let mut offsets = Vec::new();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'?' => {
+                offsets.push(index);
+                index += 1;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+            }
+            b'"' => {
+                index = skip_quoted(bytes, index, b'"');
+            }
+            b'\'' => {
+                index = skip_quoted(bytes, index, b'\'');
+            }
+            b'r' if raw_string_hashes(bytes, index).is_some() => {
+                index = skip_raw_string(bytes, index);
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+    offsets
+}
+
+fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> usize {
+    let mut index = start + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            return index + 1;
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+fn raw_string_hashes(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'r') {
+        return None;
+    }
+    let mut index = start + 1;
+    let mut hashes = 0usize;
+    while bytes.get(index) == Some(&b'#') {
+        hashes += 1;
+        index += 1;
+    }
+    (bytes.get(index) == Some(&b'"')).then_some(hashes)
+}
+
+fn skip_raw_string(bytes: &[u8], start: usize) -> usize {
+    let Some(hashes) = raw_string_hashes(bytes, start) else {
+        return start + 1;
+    };
+    let mut index = start + 1 + hashes + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'"'
+            && (0..hashes).all(|hash| bytes.get(index + 1 + hash) == Some(&b'#'))
+        {
+            return (index + 1 + hashes).min(bytes.len());
+        }
+        index += 1;
+    }
+    bytes.len()
+}
+
+fn expression_context_before(source: &str, offset: usize) -> &str {
+    let prefix = &source[..offset.min(source.len())];
+    let start = prefix
+        .rfind(|ch| matches!(ch, ';' | '\n' | '{' | '}'))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    prefix[start..].trim()
+}
+
+fn expression_already_maps_error(prefix: &str) -> bool {
+    let context = expression_context_before(prefix, prefix.len());
+    context.contains(".map_err(")
+}
+
+fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
+    source[..offset.min(source.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
 }

@@ -120,6 +120,66 @@ fn sim_init_target_mutation_changes_generated_metadata() {
 }
 
 #[test]
+fn sim_init_generates_runnable_primitive_inputs_for_parameterized_target() {
+    let project = TestProject::new("sim-init-parameterized");
+    let file = project.main_file(
+        r#"
+async fn handle_amount(user_id: u64, dry_run: bool, label: &str) {
+    if dry_run {
+        println!("{}", label);
+    }
+    println!("{}", user_id);
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("init"),
+            s("--target"),
+            format!("{}:handle_amount", path_arg(&file)),
+            s("--minimal"),
+            s("--profile"),
+            s("async"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "sim init should generate a runnable primitive input island",
+    );
+    let scaffold = project.read(".kobo/sim/handle_amount.sim.json");
+    assert_contains(
+        &scaffold,
+        "input_fixtures",
+        "scaffold must record generated primitive inputs",
+    );
+    assert_contains(
+        &scaffold,
+        "user_id",
+        "input fixture metadata must keep parameter names",
+    );
+    let island = project.read(".kobo/sim/handle_amount.scenario.kobo");
+    assert_contains(
+        &island,
+        "handle_amount(0_u64, false, \"kobo-sim\")",
+        "scenario island must call the target with generated primitive values",
+    );
+    assert_contains(
+        &island,
+        ".await",
+        "async parameterized target should still be awaited",
+    );
+    assert_not_contains(
+        &island,
+        "target inputs required",
+        "primitive parameters should not degrade into a comment-only island",
+    );
+}
+
+#[test]
 fn sim_init_selects_dynamic_target_without_leaking_neighbor() {
     let project = TestProject::new("sim-init-dynamic");
     let selected = unique_symbol("handle_selected");
@@ -165,6 +225,116 @@ fn sim_init_selects_dynamic_target_without_leaking_neighbor() {
         "loom::",
         "dynamic source must remain backend-agnostic",
     );
+}
+
+#[test]
+fn sim_init_recommends_each_v09_profile_from_target_shape() {
+    let cases = vec![
+        SimProfileCase {
+            label: "sync",
+            symbol: unique_symbol("handle_sync"),
+            source_template: "fn __SYMBOL__() { let mut total = 0; total += 1; }",
+            expected_profile: "sync",
+            expected_backend: "loom",
+        },
+        SimProfileCase {
+            label: "async",
+            symbol: unique_symbol("handle_async"),
+            source_template: r#"
+async fn __SYMBOL__() {
+    tokio::select! {
+        _ = ward.task => {}
+    }
+}
+"#,
+            expected_profile: "async",
+            expected_backend: "shuttle",
+        },
+        SimProfileCase {
+            label: "stateful",
+            symbol: unique_symbol("reduce_state"),
+            source_template: r#"
+fn __SYMBOL__() {
+    let accepted = parse_operation("deposit");
+    assert!(accepted);
+}
+
+fn parse_operation(input: &str) -> bool {
+    input == "deposit"
+}
+"#,
+            expected_profile: "stateful-input",
+            expected_backend: "proptest",
+        },
+        SimProfileCase {
+            label: "failpoint",
+            symbol: unique_symbol("send_with_failpoint"),
+            source_template: r#"
+fn __SYMBOL__() {
+    ward.failpoint("before-send");
+}
+"#,
+            expected_profile: "failpoint",
+            expected_backend: "failpoints",
+        },
+        SimProfileCase {
+            label: "network",
+            symbol: unique_symbol("fetch_remote"),
+            source_template: r#"
+async fn __SYMBOL__() {
+    let _client = reqwest::Client::new();
+}
+"#,
+            expected_profile: "network",
+            expected_backend: "network-design",
+        },
+    ];
+
+    for case in cases {
+        let project = TestProject::new(&format!("sim-profile-{}", case.label));
+        let source = case.source_template.replace("__SYMBOL__", &case.symbol);
+        let file = project.write("src/profile.kobo", &source);
+
+        let output = run_kobo(
+            &[
+                s("sim"),
+                s("init"),
+                s("--target"),
+                format!("{}:{}", path_arg(&file), case.symbol),
+                s("--minimal"),
+            ],
+            &project.root,
+        );
+
+        assert_success(&output, "sim init should infer target profile");
+        let text = output.combined();
+        assert_contains(
+            &text,
+            &format!(r#""profile": "{}""#, case.expected_profile),
+            "sim init must infer the stable Kobo profile from target shape",
+        );
+        assert_contains(
+            &text,
+            &format!(r#""backend": "{}""#, case.expected_backend),
+            "sim init must record the backend metadata for the inferred profile",
+        );
+        assert_contains(
+            &text,
+            &case.symbol,
+            "sim init metadata must follow the dynamic target symbol",
+        );
+        let copied_source = project.read("src/profile.kobo");
+        assert_not_contains(
+            &copied_source,
+            "shuttle::",
+            "profile inference must not rewrite source to backend imports",
+        );
+        assert_not_contains(
+            &copied_source,
+            "loom::",
+            "profile inference must not rewrite source to backend imports",
+        );
+    }
 }
 
 #[test]
@@ -367,6 +537,35 @@ fn sim_scout_why_uses_v09_backend_recommendation_wording() {
 }
 
 #[test]
+fn explain_reports_backend_profile_rationale() {
+    let project = TestProject::new("profile-explain");
+
+    let output = run_kobo(&[s("explain"), s("profile:async")], &project.root);
+
+    assert_success(
+        &output,
+        "kobo explain should explain stable backend profiles",
+    );
+    let text = output.combined();
+    assert_contains(&text, "profile:async", "explain should name the profile");
+    assert_contains(
+        &text,
+        "shuttle",
+        "async profile explanation should include backend metadata",
+    );
+    assert_contains(
+        &text,
+        "tokio::spawn",
+        "async profile explanation should describe why the profile is selected",
+    );
+    assert_contains(
+        &text,
+        "v0.9",
+        "profile explain must be honest about v0.9 recommendation scope",
+    );
+}
+
+#[test]
 fn deterministic_time_random_same_seed_replays_and_changed_seed_changes_events() {
     let project = TestProject::new("sim-deterministic");
     let file = project.copy_fixture("sim/deterministic.kobo", "src/deterministic.kobo");
@@ -515,13 +714,36 @@ fn failure_injection_hooks_are_distinct_and_seed_deterministic() {
         ],
         &project.root,
     );
+    let changed = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("100"),
+            s("--inject"),
+            s("cancel,preempt,time-jump,crash"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
 
     assert_success(&first, "failure-injection run should succeed");
     assert_success(&second, "same-seed failure-injection run should succeed");
+    assert_success(
+        &changed,
+        "changed-seed failure-injection run should succeed",
+    );
     assert_eq!(
         first.combined(),
         second.combined(),
         "same seed must produce the same injection order"
+    );
+    assert_ne!(
+        first.combined(),
+        changed.combined(),
+        "changed seed should explore a different injection order"
     );
     let text = first.combined();
     for hook in ["cancel", "preempt", "time-jump", "crash"] {
@@ -531,4 +753,87 @@ fn failure_injection_hooks_are_distinct_and_seed_deterministic() {
             "each failure hook must be distinct in event stream",
         );
     }
+}
+
+#[test]
+fn failure_injection_cancel_and_crash_change_modeled_outcome() {
+    let project = TestProject::new("failure-injection-behavior");
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "async")]
+fn cancel_delivery() {
+    let delivery = Delivery {};
+    ward.task();
+    delivery.ack();
+}
+"#,
+    );
+
+    let cancel = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("1"),
+            s("--inject"),
+            s("cancel"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &cancel,
+        "cancel injection should make an active obligation fail",
+    );
+    let cancel_text = cancel.combined();
+    assert_contains(
+        &cancel_text,
+        "K0100",
+        "cancel injection must affect liveness, not just append metadata",
+    );
+    assert_contains(
+        &cancel_text,
+        "cancel",
+        "cancel failure should preserve the injected hook label",
+    );
+
+    let crash = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("1"),
+            s("--inject"),
+            s("crash"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&crash, "crash injection should stop the modeled effect");
+    let crash_text = crash.combined();
+    assert_contains(
+        &crash_text,
+        "K0103",
+        "crash injection must become an uncontrolled modeled failure",
+    );
+    assert_contains(
+        &crash_text,
+        "crash",
+        "crash failure should preserve the injected hook label",
+    );
+}
+
+struct SimProfileCase {
+    label: &'static str,
+    symbol: String,
+    source_template: &'static str,
+    expected_profile: &'static str,
+    expected_backend: &'static str,
 }

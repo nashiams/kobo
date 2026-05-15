@@ -1,28 +1,39 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
-assertion_line: 310
+assertion_line: 358
 expression: output.stderr
 ---
 error[K0041]: cannot enter @strict block - value has active aliases
-  --> tests\ui\strict_k0042_closure_capture.kobo
-   |
-   | [bytes 108..174] active aliases at @strict block entry
-
-  --> tests\ui\strict_k0042_closure_capture.kobo:3:19
+  --> tests\ui\strict_k0042_closure_capture.kobo:5:9
   |
 3 |     let _shared = data.clone();
   |                   ------------ alias created here
-   = value has 1 active Rc alias at the point of entering @strict; all aliases must be dropped before the @strict block is entered
-   = kobo decision: drop or explicitly clone-then-drop aliases before the @strict { } boundary
-error[K0042]: closure captures LocalOwned<T> across @strict boundary
+5 |         let f = || data.borrow_mut().push(4);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ active aliases at @strict block entry
+  |
+What Kobo found:
+  active aliases at @strict block entry
+Why this matters:
+  value has 1 active alias when the @strict block starts; all aliases must end before the boundary
+  is entered
+Try this:
+  drop or explicitly clone-then-drop aliases before the @strict { } boundary
+More:
+  Run `kobo explain K0041` for examples and deeper context.
+error[K0042]: closure captures value across @strict boundary
   --> tests\ui\strict_k0042_closure_capture.kobo:5:27
   |
 5 |         let f = || data.borrow_mut().push(4);
-  |                           ^ closure captures Rc<RefCell<T>> binding across @strict boundary
-
-  --> tests\ui\strict_k0042_closure_capture.kobo
-   |
-   | [bytes 108..174] @strict block here
-   = a closure defined inside an @strict block captures a wrapped binding; borrowing through Rc<RefCell<T>> inside a closure may panic if the @strict guard is still active when the closure is called
-   = kobo decision: extract the closure outside the @strict block, or refactor to avoid capturing the wrapped value
-Error: analysis failed
+  |         ------------------------------------- @strict block here
+5 |         let f = || data.borrow_mut().push(4);
+  |                           ^^^^^^^^^^^^^^^^^^^ closure captures a shared mutable binding across @strict boundary
+  |
+What Kobo found:
+  closure captures a shared mutable binding across @strict boundary
+Why this matters:
+  a closure defined inside an @strict block captures a shared mutable binding; calling the closure
+  later could keep the strict borrow alive after the block ends
+Try this:
+  extract the closure outside the @strict block, or refactor to avoid capturing the guarded value
+More:
+  Run `kobo explain K0042` for examples and deeper context.

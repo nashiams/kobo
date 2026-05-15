@@ -1,14 +1,20 @@
 ---
 source: bin/kobo-cli/tests/test_ui.rs
-assertion_line: 156
+assertion_line: 191
 expression: output.stderr
 ---
 note[K0080-P1]: ownership pattern will require architectural decision at migration
   --> tests\ui\K0080_P1_node.kobo:6:1
   |
 6 | struct GraphNode {
-  | ^ bidirectional Rc links in `GraphNode`
+  | ^^^^^^^^^^^^^^^^^^ bidirectional shared links in `GraphNode`
   |
-   = struct `GraphNode` has Rc<RefCell<T>> links that form a cycle (left↔right)
-   = this will leak memory unless Weak references are used
-   = kobo decision: advisory only — no automatic fix; see `kobo debt` for migration guidance
+What Kobo found:
+  bidirectional shared links in `GraphNode`
+Why this matters:
+  struct `GraphNode` has shared mutable links that form a cycle (left<->right); this can leak memory
+  unless back-links use weak references
+Try this:
+  advisory only; no automatic fix; see `kobo debt` for migration guidance
+More:
+  Run `kobo explain K0080-P1` for examples and deeper context.

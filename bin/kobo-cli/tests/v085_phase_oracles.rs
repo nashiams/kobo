@@ -196,8 +196,8 @@ fn first_named_line(text: &str, prefix: &str) -> String {
 
 #[test]
 fn phase_00_explain_and_json_share_registry_identity() {
-    let boundary = run_kobo(&args(&["explain", "K0107"]));
-    let suppression = run_kobo(&args(&["explain", "K0108"]));
+    let boundary = run_kobo(&args(&["explain", "K0107", "--verbose"]));
+    let suppression = run_kobo(&args(&["explain", "K0108", "--verbose"]));
     assert_success(&boundary, "phase 00 K0107 explain");
     assert_success(&suppression, "phase 00 K0108 explain");
 

@@ -158,7 +158,7 @@ fn project_warn_early_diagnostics(session: &mut CompileSession, kir: &Kir) {
             DiagLabel::primary(fact.span, label_text),
             explanation,
             DiagDecision(
-                "advisory only — no automatic fix; see `kobo debt` for migration guidance"
+                "advisory only; no automatic fix; see `kobo debt` for migration guidance"
                     .to_owned(),
             ),
         ));
@@ -173,15 +173,14 @@ fn warn_early_diagnostic_parts(pattern: &WarnEarlyPattern) -> (KErrorCode, Strin
         } => {
             let pairs = field_pairs
                 .iter()
-                .map(|(left, right)| format!("{left}↔{right}"))
+                .map(|(left, right)| format!("{left}<->{right}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             (
                 KErrorCode::K0080P1,
-                format!("bidirectional Rc links in `{struct_name}`"),
+                format!("bidirectional shared links in `{struct_name}`"),
                 format!(
-                    "struct `{struct_name}` has Rc<RefCell<T>> links that form a cycle ({pairs})\n   \
-                     = this will leak memory unless Weak references are used"
+                    "struct `{struct_name}` has shared mutable links that form a cycle ({pairs}); this can leak memory unless back-links use weak references"
                 ),
             )
         }
@@ -191,26 +190,23 @@ fn warn_early_diagnostic_parts(pattern: &WarnEarlyPattern) -> (KErrorCode, Strin
             parent_field,
         } => (
             KErrorCode::K0080P2,
-            format!("parent↔child back-pointer in `{struct_name}`"),
+            format!("parent-child back-pointer in `{struct_name}`"),
             format!(
-                "struct `{struct_name}` has `{children_field}` (children) and `{parent_field}` (parent) — Rc cycle\n   \
-                 = this will leak unless parent uses Weak references"
+                "struct `{struct_name}` has `{children_field}` children and `{parent_field}` parent links; this can leak unless the parent link uses weak references"
             ),
         ),
         WarnEarlyPattern::SharedMutableAt3PlusSites { site_count, .. } => (
             KErrorCode::K0080P3,
             format!("shared mutable state at {site_count} call sites"),
             format!(
-                "the binding is mutated from {site_count} distinct call sites\n   \
-                 = migration will require an architectural decision on ownership"
+                "the binding is mutated from {site_count} distinct call sites; migration will require an architectural ownership decision"
             ),
         ),
         WarnEarlyPattern::SelfReferentialStruct { struct_name } => (
             KErrorCode::K0080P4,
             format!("self-referential struct `{struct_name}` without indirection"),
             format!(
-                "struct `{struct_name}` contains a direct (non-indirected) field of the same type\n   \
-                 = this would have infinite size; use Box<{struct_name}> or Rc<RefCell<{struct_name}>>"
+                "struct `{struct_name}` contains a direct field of the same type; this would have infinite size, so use Box<{struct_name}> or another explicit indirection"
             ),
         ),
     }
@@ -221,50 +217,53 @@ fn project_strict_async_diagnostics(session: &mut CompileSession, kir: &Kir) {
         != kobo_codegen::executor::ExecutorChoice::None;
     let async_violations = check_strict_async(kir, session.mode(), has_executor);
     for violation in &async_violations {
-        let (code, label_text, explanation) = async_violation_diagnostic_parts(&violation.kind);
+        let (code, label_text, explanation, decision) =
+            async_violation_diagnostic_parts(&violation.kind);
         let severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
             code,
             severity,
             DiagLabel::primary(violation.span, label_text),
             explanation,
-            DiagDecision(String::new()),
+            decision,
         ));
     }
 }
 
-fn async_violation_diagnostic_parts(kind: &AsyncViolationKind) -> (KErrorCode, String, String) {
+fn async_violation_diagnostic_parts(
+    kind: &AsyncViolationKind,
+) -> (KErrorCode, String, String, String) {
     match kind {
         AsyncViolationKind::NonSendCapture { binding_name, .. } => (
             KErrorCode::K0060,
             format!("binding `{binding_name}` is not Send"),
             format!(
-                "binding `{binding_name}` would be wrapped in Rc (not Send) but the async context requires Send\n   \
-                 = kobo decision: refused to generate non-Send wrapper in async context"
+                "binding `{binding_name}` would use single-thread sharing, but this async context requires Send"
             ),
+            "use message passing, clone owned data, or keep the task on a local executor".to_owned(),
         ),
         AsyncViolationKind::NonSyncShared { binding_name, .. } => (
             KErrorCode::K0061,
             format!("binding `{binding_name}` is not Sync for shared access"),
             format!(
-                "binding `{binding_name}` requires Sync for cross-task sharing but the current wrapper is not Sync\n   \
-                 = kobo decision: consider restructuring with channels or an actor pattern"
+                "binding `{binding_name}` requires Sync for cross-task sharing, but the current ownership shape is not Sync"
             ),
+            "restructure with channels, actor ownership, or an explicit async shared state policy".to_owned(),
         ),
         AsyncViolationKind::MissingExecutor => (
             KErrorCode::K0062,
             "no async executor configured".to_owned(),
-            "async code detected but no executor (tokio/async-std) found in dependencies\n   \
-             = add tokio or async-std to [dependencies] in Cargo.toml"
+            "async code was detected but no executor dependency such as tokio or async-std was found"
                 .to_owned(),
+            "add tokio or async-std to [dependencies] in Cargo.toml".to_owned(),
         ),
         AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
             KErrorCode::K0063,
             format!("strict mode: async wrapping not permitted for `{binding_name}`"),
             format!(
-                "in @strict mode, binding `{binding_name}` cannot use ownership wrappers in async context\n   \
-                 = kobo decision: @strict requires zero-cost ownership — no Rc, Arc, or RefCell"
+                "in @strict mode, binding `{binding_name}` cannot use ownership wrappers in async context"
             ),
+            "use @strict async fn when the async strict protocol is intentional, or move this work into a synchronous helper".to_owned(),
         ),
     }
 }

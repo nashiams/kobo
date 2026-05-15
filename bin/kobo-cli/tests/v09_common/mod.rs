@@ -110,6 +110,20 @@ pub fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     }
 }
 
+pub fn run_kobo_with_env(args: &[String], cwd: &Path, envs: &[(&str, &str)]) -> CliOutput {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kobo"));
+    command.args(args).current_dir(cwd);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let output = command.output().expect("kobo command should launch");
+    CliOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
 pub fn s(value: impl Into<String>) -> String {
     value.into()
 }

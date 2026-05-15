@@ -293,3 +293,39 @@ fn k010x_explain_codes_use_v09_meanings() {
         );
     }
 }
+
+#[test]
+fn v09_bug_audit_does_not_report_closed_findings_as_open() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.join("..").join("..");
+    let audit_path = repo_root.join(".claude/prompt/agent/v0.9/bugs.md");
+    let audit = fs::read_to_string(&audit_path).unwrap_or_else(|error| {
+        panic!(
+            "v0.9 bug audit should be readable at {}: {error}",
+            audit_path.display()
+        )
+    });
+
+    for stale_finding in [
+        "Replay `--error-format` is ignored",
+        "`kobo inspect --sim` still reports v0.8.5",
+        "No full expanded policy snapshot",
+        "No `not_replayable` replay guarantee variant",
+        "Boundary assumptions exist, but not as a full audited assumption ledger",
+    ] {
+        assert!(
+            !audit.contains(stale_finding),
+            "v0.9 audit still reports a closed finding as open: {stale_finding}"
+        );
+    }
+    assert_contains(
+        &audit,
+        "No open v0.9 implementation blockers",
+        "audit verdict must distinguish v0.9 completion from future scheduler/backend work",
+    );
+    assert_contains(
+        &audit,
+        "v0.10+",
+        "audit must route real backend execution and scheduler work out of v0.9",
+    );
+}

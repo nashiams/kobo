@@ -70,6 +70,13 @@ struct TargetSignature {
     params: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+struct InputFixture {
+    name: String,
+    type_name: String,
+    expression: String,
+}
+
 fn write_sim_scaffold(
     file: &Path,
     symbol: &str,
@@ -100,6 +107,7 @@ fn write_sim_scaffold(
         .with_context(|| format!("failed to write {}", island_path.display()))?;
 
     let scaffold_path = scaffold_dir.join(format!("{symbol}.sim.json"));
+    let input_fixtures = input_fixtures_for(signature);
     let scaffold = json!({
         "schema_version": 1,
         "target": {
@@ -108,6 +116,16 @@ fn write_sim_scaffold(
             "async": signature.is_async,
             "params": signature.params,
         },
+        "input_fixtures": input_fixtures
+            .iter()
+            .map(|fixture| {
+                json!({
+                    "name": fixture.name,
+                    "type": fixture.type_name,
+                    "expression": fixture.expression,
+                })
+            })
+            .collect::<Vec<_>>(),
         "profile": profile,
         "backend": backend,
         "minimal": minimal,
@@ -212,6 +230,8 @@ fn sim_island_source(
     );
     if signature.params.is_empty() {
         source.push_str(&format!("    {symbol}(){await_suffix};\n"));
+    } else if let Some(arguments) = generated_arguments(signature) {
+        source.push_str(&format!("    {symbol}({arguments}){await_suffix};\n"));
     } else {
         source.push_str(&format!(
             "    // kobo: target inputs required: {}\n",
@@ -220,6 +240,54 @@ fn sim_island_source(
     }
     source.push_str("}\n");
     source
+}
+
+fn generated_arguments(signature: &TargetSignature) -> Option<String> {
+    let fixtures = input_fixtures_for(signature);
+    (fixtures.len() == signature.params.len()).then(|| {
+        fixtures
+            .into_iter()
+            .map(|fixture| fixture.expression)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+fn input_fixtures_for(signature: &TargetSignature) -> Vec<InputFixture> {
+    signature
+        .params
+        .iter()
+        .filter_map(|param| input_fixture_for_param(param))
+        .collect()
+}
+
+fn input_fixture_for_param(param: &str) -> Option<InputFixture> {
+    let (name, type_name) = param.split_once(':')?;
+    let name = name.trim().trim_start_matches("mut ").trim().to_owned();
+    let type_name = type_name.trim().to_owned();
+    let expression = fixture_expression_for_type(&type_name)?;
+    Some(InputFixture {
+        name,
+        type_name,
+        expression,
+    })
+}
+
+fn fixture_expression_for_type(type_name: &str) -> Option<String> {
+    let compact_type = type_name.replace(' ', "");
+    match compact_type.as_str() {
+        "bool" => Some("false".to_owned()),
+        "&str" | "&'staticstr" => Some("\"kobo-sim\"".to_owned()),
+        "String" | "std::string::String" => Some("String::from(\"kobo-sim\")".to_owned()),
+        "()" => Some("()".to_owned()),
+        "usize" | "u8" | "u16" | "u32" | "u64" | "u128" | "isize" | "i8" | "i16" | "i32"
+        | "i64" | "i128" => Some(format!("0_{compact_type}")),
+        "f32" => Some("0.0_f32".to_owned()),
+        "f64" => Some("0.0_f64".to_owned()),
+        _ if compact_type.starts_with("Option<") => Some("None".to_owned()),
+        _ if compact_type.starts_with("Vec<") => Some("Vec::new()".to_owned()),
+        _ => None,
+    }
 }
 
 fn safe_identifier(value: &str) -> String {
@@ -327,6 +395,9 @@ fn scout_reasons(source: &str) -> Vec<&'static str> {
     if source.contains("kobo::scenario") {
         reasons.push("scenario metadata");
     }
+    if sim_model::profile_shape_for_source(source) == sim_model::TargetProfileShape::Network {
+        reasons.push("network boundary");
+    }
     if source.contains("tokio::spawn") || source.contains("spawn(") {
         reasons.push("async spawn boundary");
     }
@@ -343,29 +414,48 @@ fn scout_reasons(source: &str) -> Vec<&'static str> {
 }
 
 fn backend_recommendations_for(source: &str) -> serde_json::Value {
-    if source.contains("tokio::spawn")
-        || source.contains("select!")
-        || source.contains("async fn")
-        || source.contains("async move")
-    {
-        return json!([
+    match sim_model::profile_shape_for_source(source) {
+        sim_model::TargetProfileShape::Network => json!([
+            {
+                "name": "network",
+                "backend_fit": "design-only network profile",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Loom",
+                "backend_fit": "sync concurrency interleavings around network-facing state",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Shuttle",
+                "backend_fit": "async spawn/select schedule exploration around network-facing tasks",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Turmoil",
+                "backend_fit": "network islands and virtual time reserved for v0.10",
+                "executes_in_v09": false
+            },
+            {
+                "name": "Madsim",
+                "backend_fit": "distributed simulation reserved for v0.10",
+                "executes_in_v09": false
+            }
+        ]),
+        sim_model::TargetProfileShape::Async => json!([
             {"name": "Loom", "backend_fit": "sync concurrency interleavings"},
             {"name": "Shuttle", "backend_fit": "async spawn/select schedule exploration"}
-        ]);
-    }
-
-    if source.contains("assert(")
-        || source.contains("parse(")
-        || source.to_ascii_lowercase().contains("property")
-    {
-        return json!([
+        ]),
+        sim_model::TargetProfileShape::StatefulInput => json!([
             {"name": "proptest", "backend_fit": "input and property exploration"}
-        ]);
+        ]),
+        sim_model::TargetProfileShape::Failpoint => json!([
+            {"name": "failpoints", "backend_fit": "manual failure injection points"}
+        ]),
+        sim_model::TargetProfileShape::Sync => json!([
+            {"name": "Loom", "backend_fit": "sync concurrency interleavings"}
+        ]),
     }
-
-    json!([
-        {"name": "failpoints", "backend_fit": "manual failure injection points"}
-    ])
 }
 
 fn scenario_or_function_name(source: &str) -> Option<String> {

@@ -1,4 +1,4 @@
-use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
+use kobo_errors::{CliSuggestion, DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{FileSetBuilder, KoboSpan};
 
 fn diagnostic(code: KErrorCode, source: &str, needle: &str) -> (kobo_ir::FileSet, KDiagnostic) {
@@ -68,4 +68,29 @@ fn k0107_payload_exposes_grouped_boundary_choices() {
             "payload should expose boundary choice {choice}: {text}"
         );
     }
+}
+
+#[test]
+fn lsp_replay_action_uses_actual_witness_path_when_diagnostic_has_one() {
+    let (file_set, diagnostic) = diagnostic(
+        KErrorCode::K0100,
+        "#[kobo::must_call(ack | nack)]\nstruct Delivery {}\n",
+        "must_call",
+    );
+    let diagnostic = diagnostic.with_run(CliSuggestion(
+        "kobo replay .kobo/witnesses/order-7.kwit".to_owned(),
+    ));
+
+    let value = kobo_lsp::diagnostic_value(&file_set, &diagnostic, true)
+        .expect("LSP diagnostic should serialize");
+    let text = serde_json::to_string(&value).expect("value should serialize");
+
+    assert!(
+        text.contains("kobo replay .kobo/witnesses/order-7.kwit"),
+        "replay action must use the diagnostic witness path: {text}"
+    );
+    assert!(
+        !text.contains("<witness>.kwit"),
+        "actual witness diagnostics must not expose replay template placeholders: {text}"
+    );
 }

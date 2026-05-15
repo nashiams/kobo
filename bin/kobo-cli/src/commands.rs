@@ -17,10 +17,32 @@ mod run;
 mod session;
 mod sim;
 mod sim_model;
+mod sim_semantic;
 mod test_cmd;
 mod watch;
 
+use std::fmt as std_fmt;
+
 use crate::{resolve_cli_mode, resolve_guarantee_profile, KoboCommand, SimCommand};
+
+#[derive(Debug)]
+pub(crate) struct DiagnosticExit;
+
+impl std_fmt::Display for DiagnosticExit {
+    fn fmt(&self, formatter: &mut std_fmt::Formatter<'_>) -> std_fmt::Result {
+        formatter.write_str("diagnostics emitted")
+    }
+}
+
+impl std::error::Error for DiagnosticExit {}
+
+pub(crate) fn diagnostics_emitted() -> anyhow::Error {
+    DiagnosticExit.into()
+}
+
+pub(crate) fn is_diagnostic_exit(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<DiagnosticExit>().is_some()
+}
 
 pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
     match command {
@@ -32,6 +54,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             print_policy,
             pipeline,
             error_format,
+            color,
             recover_parse,
             replay_critical,
             max_diagnostics,
@@ -46,6 +69,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 print_policy,
                 pipeline,
                 error_format,
+                color.color_mode(),
                 recover_parse,
                 replay_critical,
                 max_diagnostics,
@@ -151,6 +175,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             event_budget,
             witness_dir,
             error_format,
+            target,
             file,
         } => test_cmd::cmd_test(
             &file,
@@ -162,6 +187,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             event_budget,
             witness_dir.as_deref(),
             error_format,
+            target.as_deref(),
         ),
         KoboCommand::Replay {
             file,
@@ -209,6 +235,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             profile,
             print_policy,
             error_format,
+            color,
             emit_rust,
             file,
         } => {
@@ -218,6 +245,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 guarantee_profile,
                 print_policy,
                 error_format,
+                color.color_mode(),
                 emit_rust,
                 file.as_deref(),
             )
@@ -251,6 +279,6 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             simple,
             build,
         } => watch::cmd_watch(&file, simple, build),
-        KoboCommand::Explain { code } => explain::cmd_explain(&code),
+        KoboCommand::Explain { code, verbose } => explain::cmd_explain(&code, verbose),
     }
 }

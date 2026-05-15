@@ -1,1 +1,5 @@
-fn main() {}
+fn main() {
+    let shadow_profile =
+        "profile=dev; ownership=off; liveness=off; replay=off; boundaries=unchecked";
+    let _keep_source_live = shadow_profile;
+}

@@ -10,6 +10,10 @@ macro_rules! define_error_codes {
         }
 
         impl KErrorCode {
+            pub const ALL: &'static [Self] = &[
+                $( Self::$code, )*
+            ];
+
             pub const fn as_str(self) -> &'static str {
                 match self {
                     $( Self::$code => $label, )*
@@ -183,19 +187,19 @@ impl KErrorCode {
             Self::K0002 => "cannot borrow as mutable - already borrowed",
             Self::K0020 => "RefCell accessed >10,000 times in hot path",
             Self::K0021 => "DiagOwner borrow counter saturated - count understated",
-            Self::K0025 => "soft hint ignored - constraint conflict",
+            Self::K0025 => "Kobo cannot use this ownership hint",
             Self::K0026 => "relax attribute has no effect or is malformed",
             Self::K0030 => "resource handle moved - cannot alias file handle",
             Self::K0031 => "engine-owned binding capped to PlainOwned",
             Self::K0032 => "live borrow at move forces shared ownership",
             Self::K0041 => "cannot enter @strict block - value has active aliases",
-            Self::K0042 => "closure captures LocalOwned<T> across @strict boundary",
-            Self::K0043 => "value moved inside @strict block - cannot re-wrap on exit",
+            Self::K0042 => "closure captures value across @strict boundary",
+            Self::K0043 => "value moved inside @strict block - cannot restore on exit",
             Self::K0044 => "labeled break or continue crosses @strict boundary",
             Self::K0060 => "RefCell borrow is live at suspend point",
             Self::K0061 => "future requires Send but value cannot safely cross thread boundary",
-            Self::K0062 => "Mutex guard would live across .await",
-            Self::K0063 => "@strict block inside async fn without @strict async fn",
+            Self::K0062 => "async executor dependency is missing",
+            Self::K0063 => "this strict borrow is inside code that can pause",
             Self::K0064 => "@strict inside async block - ownership cannot be tracked across yield",
             Self::K0065 => "select branch may not be cancel-safe",
             Self::K0067 => "handler request-state leaks across async boundary",
@@ -204,11 +208,11 @@ impl KErrorCode {
             Self::K0080P2 => "parent-child Rc back-pointer tree - cycle risk",
             Self::K0080P3 => "shared mutable state at 3+ call sites",
             Self::K0080P4 => "self-referential struct - infinite size without indirection",
-            Self::K0081 => "ownership cluster too large for automatic solving",
-            Self::K0082 => "solver exceeded its time budget",
-            Self::K0083 => "solver decision requires human review",
-            Self::K0084 => "solver made a provisional decision with medium confidence",
-            Self::K0085 => "solver applied a low-confidence heuristic - verify manually",
+            Self::K0081 => "ownership problem is too large to choose automatically",
+            Self::K0082 => "ownership analysis took too long",
+            Self::K0083 => "ownership choice requires human review",
+            Self::K0084 => "ownership choice needs confirmation",
+            Self::K0085 => "ownership suggestion needs manual review",
             Self::K0090 => "migration cannot continue - value crosses into external crate",
             Self::K0095 => "ownership of macro-generated value cannot be inferred",
             Self::K0099 => "rustc error remapped to Kobo source",
@@ -229,7 +233,7 @@ impl KErrorCode {
             Self::K0114 => "malformed must_call attribute",
             Self::K0115 => "invalid kwit witness schema",
             Self::K0116 => "malformed scenario metadata",
-            _ => "reserved diagnostic code",
+            _ => "reserved Kobo diagnostic slot",
         }
     }
 

@@ -1,1 +1,22 @@
-async fn handle_request() {}
+use std::time::Duration;
+
+#[kobo::must_call(reply | cancel)]
+struct ReplyToken;
+
+async fn handle_request() {
+    let token = ReplyToken;
+    let worker = tokio::spawn(async move { fetch_gateway().await });
+
+    tokio::select! {
+        response = worker => {
+            token.reply(response);
+        }
+        _ = tokio::time::sleep(Duration::from_millis(5)) => {
+            token.cancel();
+        }
+    }
+}
+
+async fn fetch_gateway() -> Result<(), String> {
+    Ok(())
+}

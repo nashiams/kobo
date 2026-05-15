@@ -3,6 +3,7 @@ mod commands;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use kobo_errors::ColorMode;
 use kobo_ir::KoboMode;
 
 #[derive(Parser, Debug)]
@@ -45,6 +46,8 @@ pub(crate) enum KoboCommand {
         pipeline: bool,
         #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
         error_format: ErrorFormat,
+        #[arg(long, value_enum, default_value_t = ColorArg::Auto)]
+        color: ColorArg,
         #[arg(
             long,
             help = "Recover from parser errors and continue trustworthy phases"
@@ -211,6 +214,8 @@ pub(crate) enum KoboCommand {
         witness_dir: Option<PathBuf>,
         #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
         error_format: ErrorFormat,
+        #[arg(long, value_name = "SCENARIO")]
+        target: Option<String>,
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
@@ -314,6 +319,8 @@ pub(crate) enum KoboCommand {
         print_policy: Option<PolicyOutputFormat>,
         #[arg(long = "error-format", value_enum, default_value_t = ErrorFormat::Human)]
         error_format: ErrorFormat,
+        #[arg(long, value_enum, default_value_t = ColorArg::Auto)]
+        color: ColorArg,
         #[arg(long, help = "Print generated Rust for a single input file")]
         emit_rust: bool,
         #[arg(value_name = "FILE")]
@@ -342,6 +349,8 @@ pub(crate) enum KoboCommand {
     Explain {
         #[arg(value_name = "CODE")]
         code: String,
+        #[arg(long, help = "Show registry metadata and machine policy details")]
+        verbose: bool,
     },
 }
 
@@ -378,6 +387,23 @@ pub(crate) enum SimCommand {
 pub(crate) enum ErrorFormat {
     Human,
     Json,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ColorArg {
+    Auto,
+    Always,
+    Never,
+}
+
+impl ColorArg {
+    pub(crate) const fn color_mode(self) -> ColorMode {
+        match self {
+            Self::Auto => ColorMode::Auto,
+            Self::Always => ColorMode::Always,
+            Self::Never => ColorMode::Never,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -435,7 +461,14 @@ pub(crate) fn resolve_cli_mode(
     resolve_guarantee_profile(checked, strict, profile).map(GuaranteeProfileArg::mode)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
     let args = Args::parse();
-    commands::dispatch(args.command)
+    match commands::dispatch(args.command) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) if commands::is_diagnostic_exit(&error) => std::process::ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }

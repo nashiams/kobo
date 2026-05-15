@@ -5,6 +5,7 @@ mod multi_file;
 mod pipeline;
 mod query;
 mod rustc;
+pub mod scenario;
 mod session;
 pub mod test_utils;
 
@@ -18,14 +19,15 @@ pub use filesystem::{
 };
 pub use multi_file::{run_build_pipeline, BuildOutput};
 pub use pipeline::{
-    apply_lifetime_erasure, effective_mode, extract_before_borrow_rewrite,
-    lifetime_erasure_debt_report, run_and_compile, run_and_compile_with_lifetime_erasure,
-    run_check_pipeline, run_codegen_pipeline, run_kir_phase, run_pipeline,
-    run_pipeline_ordering_check, apply_error_policy_sites, CodegenArtifacts, ErrorPolicySite,
+    apply_error_policy_sites, apply_lifetime_erasure, effective_mode,
+    extract_before_borrow_rewrite, lifetime_erasure_debt_report, run_and_compile,
+    run_and_compile_with_lifetime_erasure, run_check_pipeline, run_codegen_pipeline, run_kir_phase,
+    run_pipeline, run_pipeline_ordering_check, CodegenArtifacts, ErrorPolicySite,
 };
 pub use query::{
     CodegenOutput as QueryCodegenOutput, DiagnosticOutput, KirOutput, ParsedOutput, QueryMetrics,
     QuerySession, SolverOutput,
 };
 pub use rustc::binary_path_for;
+pub use scenario::build_scenario_program;
 pub use session::{is_inside_relaxed_fn, CompileSession};

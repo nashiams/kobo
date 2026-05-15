@@ -36,13 +36,16 @@ fn k010x_payloads_include_registry_metadata_and_runnables() {
         "range",
         "kobo explain K0100",
         "kobo test --sim quick",
-        "kobo replay",
     ] {
         assert!(
             text.contains(needle),
             "LSP payload should contain {needle}: {text}"
         );
     }
+    assert!(
+        !text.contains("kobo replay"),
+        "LSP must not offer replay without a real witness artifact: {text}"
+    );
 }
 
 #[test]

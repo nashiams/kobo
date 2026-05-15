@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use kobo_ir::KoboMode;
 use serde_json::Value;
 
 use crate::ErrorFormat;
@@ -86,16 +87,28 @@ fn replay_v1(
         .as_str()
         .or_else(|| witness["guarantee_profile"].as_str())
         .unwrap_or("checked");
-    let run = kobo_sim_core::run_full_depth(
-        &verified_source.source,
+    let mut session =
+        super::session::build_session(&verified_source.path, Some(KoboMode::Checked))?;
+    let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
+        .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
+    let scenario_program = kobo_driver::build_scenario_program(
+        &artifacts.kobo_file,
+        &artifacts,
         &target,
+        verified_source.hash.clone(),
+        profile,
+    )?;
+    let options = kobo_sim_core::ScenarioOptions {
+        profile: profile.to_owned(),
+        seed,
+        inject: None,
+        event_budget: None,
+    };
+    let run = kobo_sim_core::run_full_depth_from_program(
+        &scenario_program,
+        &artifacts.rs_source,
+        &options,
         kobo_sim_core::EngineMode::Both,
-        kobo_sim_core::ScenarioOptions {
-            profile: profile.to_owned(),
-            seed,
-            inject: None,
-            event_budget: None,
-        },
     )?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
@@ -103,6 +116,7 @@ fn replay_v1(
         "backend": backend_for_profile(&run.profile),
         "backend_replay": replay_token(&verified_source.hash, seed, &run),
         "execution_digest": execution_digest_json(&run),
+        "harness_manifest": run.harness_manifest.clone(),
         "failure": failure_json(source_display, &verified_source.source, &run),
         "events": events_json(&run.events),
     });
@@ -110,6 +124,7 @@ fn replay_v1(
         "backend": witness["backend"].clone(),
         "backend_replay": witness["backend_replay"].clone(),
         "execution_digest": witness["execution_digest"].clone(),
+        "harness_manifest": witness["harness_manifest"].clone(),
         "failure": witness_failure_json(witness),
         "events": witness["events"].clone(),
     });
@@ -211,6 +226,10 @@ fn execution_digest_json(run: &kobo_sim_core::FullDepthRun) -> Value {
         "semantic_trace_hash": run.digest.semantic_trace_hash.as_str(),
         "harness_trace_hash": run.digest.harness_trace_hash.as_str(),
         "agreement": run.digest.agreement.as_str(),
+        "generated_rust_hash": run.digest.generated_rust_hash.as_deref(),
+        "harness_manifest_hash": run.digest.harness_manifest_hash.as_deref(),
+        "harness_exit_code": run.digest.harness_exit_code,
+        "harness_event_count": run.digest.harness_event_count,
     })
 }
 
@@ -294,8 +313,8 @@ fn validate_exact_witness_contract(
     let semantic_engine = digest["semantic_engine"].as_str();
     let harness_engine = digest["harness_engine"].as_str();
     let agreement = digest["agreement"].as_str();
-    if semantic_engine != Some("driver-kir")
-        || harness_engine != Some("generated-rust-harness")
+    if semantic_engine != Some("driver-kir-scenario")
+        || harness_engine != Some("generated-rust-process")
         || agreement != Some("matched")
     {
         let payload = serde_json::json!({
@@ -427,6 +446,11 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["execution_digest", "scenario_ir_hash"][..]);
             required.push(&["execution_digest", "operation_count"][..]);
             required.push(&["execution_digest", "event_hash"][..]);
+            required.push(&["execution_digest", "generated_rust_hash"][..]);
+            required.push(&["execution_digest", "harness_manifest_hash"][..]);
+            required.push(&["execution_digest", "harness_exit_code"][..]);
+            required.push(&["harness_manifest", "harness_rs_path"][..]);
+            required.push(&["harness_manifest", "stdout_hash"][..]);
         }
         for path in required {
             if value_at(witness, path).is_none() {

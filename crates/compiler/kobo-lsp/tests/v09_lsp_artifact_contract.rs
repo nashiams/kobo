@@ -17,3 +17,20 @@ fn replay_action_rejects_stale_witness_and_uses_artifact_payload() {
     assert!(!text.contains(".kobo/witnesses/stale.kwit"));
     assert!(!text.contains("<witness>.kwit"));
 }
+
+#[test]
+fn lsp_actions_do_not_guess_kwit_path_when_no_witness_exists() {
+    let diagnostic =
+        kobo_lsp::test_support::diagnostic_with_artifact("K0100", "", "source-hash-current");
+    let actions = kobo_lsp::actions_for_diagnostic_with_artifacts(&diagnostic, &[]);
+    let text = serde_json::to_string(&actions).unwrap();
+
+    assert!(
+        !text.contains(".kwit"),
+        "LSP must not link guessed witness paths"
+    );
+    assert!(
+        !text.contains("exact replay"),
+        "LSP must not claim exact replay without an exact witness"
+    );
+}

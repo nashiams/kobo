@@ -355,6 +355,7 @@ dependencies = [
  "kobo-transform",
  "serde",
  "serde_json",
+ "syn",
  "thiserror",
  "toml",
 ]
@@ -414,11 +415,8 @@ dependencies = [
  "anyhow",
  "kobo-errors",
  "kobo-ir",
- "kobo-parser",
- "proc-macro2",
  "serde",
  "serde_json",
- "syn",
 ]
 
 [[package]]

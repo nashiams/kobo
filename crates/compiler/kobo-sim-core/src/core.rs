@@ -1,4 +1,7 @@
 use kobo_errors::KErrorCode;
+use kobo_ir::ScenarioProgram;
+
+use crate::harness_manifest::HarnessManifest;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineMode {
@@ -15,6 +18,17 @@ pub struct ScenarioOptions {
     pub event_budget: Option<u64>,
 }
 
+impl Default for ScenarioOptions {
+    fn default() -> Self {
+        Self {
+            profile: "checked".to_owned(),
+            seed: 0,
+            inject: None,
+            event_budget: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FullDepthRun {
     pub target: String,
@@ -28,6 +42,7 @@ pub struct FullDepthRun {
     pub opaque_boundaries: Vec<String>,
     pub obligations: Vec<RuntimeObligationSummary>,
     pub boundary_decisions: Vec<BoundaryDecision>,
+    pub harness_manifest: Option<HarnessManifest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +78,10 @@ pub struct ExecutionDigest {
     pub semantic_trace_hash: String,
     pub harness_trace_hash: String,
     pub agreement: String,
+    pub generated_rust_hash: Option<String>,
+    pub harness_manifest_hash: Option<String>,
+    pub harness_exit_code: Option<i32>,
+    pub harness_event_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,7 +93,7 @@ pub struct ScenarioFailure {
     pub events: Vec<ScenarioEvent>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScenarioEvent {
     pub kind: String,
     pub label: Option<String>,
@@ -184,37 +203,40 @@ pub enum ScenarioOperation {
     },
 }
 
-pub fn run_compiler_semantics(source: &str, target: &str) -> anyhow::Result<FullDepthRun> {
-    run_compiler_semantics_with_options(
-        source,
-        target,
-        ScenarioOptions {
-            profile: "checked".to_owned(),
-            seed: 0,
-            inject: None,
-            event_budget: None,
-        },
+pub fn run_compiler_semantics(_source: &str, _target: &str) -> anyhow::Result<FullDepthRun> {
+    anyhow::bail!(
+        "source-based sim-core lowering is not available in production-depth mode; use run_semantics_from_program"
     )
 }
 
-pub fn run_compiler_semantics_with_options(
-    source: &str,
-    target: &str,
-    options: ScenarioOptions,
+pub fn run_semantics_from_program(
+    program: &ScenarioProgram,
+    options: &ScenarioOptions,
 ) -> anyhow::Result<FullDepthRun> {
-    let lowered = crate::lower::lower_from_parser(source, target, &options.profile)?;
-    Ok(execute_lowered(target, &options, lowered))
+    let lowered = crate::lower::lower_from_program(program, &options.profile);
+    Ok(execute_lowered(&program.target, options, lowered))
 }
 
 pub fn run_full_depth(
-    source: &str,
-    target: &str,
+    _source: &str,
+    _target: &str,
+    _mode: EngineMode,
+    _options: ScenarioOptions,
+) -> anyhow::Result<FullDepthRun> {
+    anyhow::bail!(
+        "source-based full-depth execution is not available; build a ScenarioProgram through kobo-driver"
+    )
+}
+
+pub fn run_full_depth_from_program(
+    program: &ScenarioProgram,
+    generated_rust: &str,
+    options: &ScenarioOptions,
     mode: EngineMode,
-    options: ScenarioOptions,
 ) -> anyhow::Result<FullDepthRun> {
     match mode {
         EngineMode::SemanticOnly => {
-            let mut run = run_compiler_semantics_with_options(source, target, options)?;
+            let mut run = run_semantics_from_program(program, options)?;
             run.replay_guarantee = ReplayGuarantee::Partial;
             run.coverage.reason =
                 Some("semantic-only execution has no generated harness agreement".to_owned());
@@ -224,12 +246,24 @@ pub fn run_full_depth(
             Ok(run)
         }
         EngineMode::HarnessOnly => {
-            let semantic = run_compiler_semantics_with_options(source, target, options)?;
-            crate::harness::check_harness_agreement(source, target, semantic, EngineMode::HarnessOnly)
+            let semantic = run_semantics_from_program(program, options)?;
+            crate::harness::check_harness_agreement(
+                program,
+                generated_rust,
+                options,
+                semantic,
+                EngineMode::HarnessOnly,
+            )
         }
         EngineMode::Both => {
-            let semantic = run_compiler_semantics_with_options(source, target, options)?;
-            crate::harness::check_harness_agreement(source, target, semantic, EngineMode::Both)
+            let semantic = run_semantics_from_program(program, options)?;
+            crate::harness::check_harness_agreement(
+                program,
+                generated_rust,
+                options,
+                semantic,
+                EngineMode::Both,
+            )
         }
     }
 }
@@ -392,7 +426,11 @@ impl<'a> Runtime<'a> {
             .rev()
             .find(|obligation| obligation.binding == binding && !obligation.is_discharged)
         {
-            if obligation.actions.iter().any(|candidate| candidate == action) {
+            if obligation
+                .actions
+                .iter()
+                .any(|candidate| candidate == action)
+            {
                 obligation.is_discharged = true;
             }
         }
@@ -402,7 +440,8 @@ impl<'a> Runtime<'a> {
         if !self.modeled_boundaries.contains(&boundary) {
             self.modeled_boundaries.push(boundary.clone());
         }
-        self.events.push(modeled_effect_event(&boundary, self.options.seed));
+        self.events
+            .push(modeled_effect_event(&boundary, self.options.seed));
         if self.applied_injection {
             return;
         }
@@ -410,7 +449,11 @@ impl<'a> Runtime<'a> {
         let Some(inject) = self.options.inject.as_deref() else {
             return;
         };
-        for hook in inject.split(',').map(str::trim).filter(|hook| !hook.is_empty()) {
+        for hook in inject
+            .split(',')
+            .map(str::trim)
+            .filter(|hook| !hook.is_empty())
+        {
             match hook {
                 "cancel" => self.record_cancel_hook(&boundary, span),
                 "preempt" => self.events.push(ScenarioEvent {
@@ -512,12 +555,7 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    fn finish(
-        mut self,
-        target: &str,
-        lowered: LoweredScenario,
-        agreement: &str,
-    ) -> FullDepthRun {
+    fn finish(mut self, target: &str, lowered: LoweredScenario, agreement: &str) -> FullDepthRun {
         let liveness = self.liveness_failure();
         if self.failure.is_none() {
             self.failure = liveness;
@@ -557,7 +595,7 @@ impl<'a> Runtime<'a> {
             failure: self.failure,
             coverage: lowered.coverage,
             digest: ExecutionDigest {
-                semantic_engine: "driver-kir".to_owned(),
+                semantic_engine: "driver-kir-scenario".to_owned(),
                 harness_engine: "none".to_owned(),
                 model_version: crate::lower::MODEL_VERSION.to_owned(),
                 scenario_ir_hash,
@@ -565,11 +603,16 @@ impl<'a> Runtime<'a> {
                 semantic_trace_hash: trace_hash,
                 harness_trace_hash: String::new(),
                 agreement: agreement.to_owned(),
+                generated_rust_hash: None,
+                harness_manifest_hash: None,
+                harness_exit_code: None,
+                harness_event_count: 0,
             },
             modeled_boundaries: self.modeled_boundaries,
             opaque_boundaries: self.opaque_boundaries,
             obligations,
             boundary_decisions: self.boundary_decisions,
+            harness_manifest: None,
         }
     }
 

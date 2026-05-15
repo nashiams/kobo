@@ -1,0 +1,58 @@
+use kobo_driver::scenario::build_scenario_program;
+use kobo_driver::test_utils::{compile_to_kir, run_codegen_for_source_with_policy};
+use kobo_driver::KoboConfig;
+
+fn source_with_name(name: &str) -> String {
+    format!(
+        r#"
+#[kobo::must_call(ack | nack)]
+struct Delivery_{name} {{}}
+
+fn handle_{name}() {{
+    let msg = Delivery_{name} {{}};
+    msg.ack();
+}}
+"#
+    )
+}
+
+#[test]
+fn scenario_model_is_derived_from_compiler_facts_not_fixture_names() {
+    let suffix = format!("case_{}", std::process::id());
+    let source = source_with_name(&suffix);
+    let config = KoboConfig::default();
+    let compiled = compile_to_kir(&source, &config).expect("compile to KIR");
+    let codegen =
+        run_codegen_for_source_with_policy(&source, "default").expect("codegen artifacts");
+
+    let scenario = build_scenario_program(
+        &compiled.ast,
+        &codegen,
+        &format!("handle_{suffix}"),
+        "test-source-hash".to_owned(),
+        "checked",
+    )
+    .expect("scenario program");
+
+    assert!(
+        scenario
+            .operations
+            .iter()
+            .any(|op| matches!(op.kind, kobo_ir::ScenarioOpKind::CreateObligation { .. })),
+        "must-call owner must become a scenario acquire operation"
+    );
+    assert!(
+        scenario
+            .operations
+            .iter()
+            .any(|op| matches!(op.kind, kobo_ir::ScenarioOpKind::Discharge { ref action, .. } if action == "ack")),
+        "must-call ack action must become a scenario terminal operation"
+    );
+    assert!(
+        scenario
+            .operations
+            .iter()
+            .all(|op| op.span.file_id == scenario.file_id),
+        "scenario operations must retain source-mapped spans"
+    );
+}

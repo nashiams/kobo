@@ -101,8 +101,12 @@ pub(super) fn cmd_perf(
 
 fn session_perf_json(file: &Path, session: &Path, threshold: u64) -> anyhow::Result<String> {
     let path = session.join("diagowner.jsonl");
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read structured session artifact {}", path.display()))?;
+    let text = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read structured session artifact {}",
+            path.display()
+        )
+    })?;
     let mut borrow_count = 0_u64;
     let mut mut_borrow_count = 0_u64;
     let mut contention = 0_u64;

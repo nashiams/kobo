@@ -71,15 +71,32 @@ fn {scenario}() {{
     assert_eq!(witness["replay_guarantee"].as_str(), Some("exact"));
     assert_eq!(
         witness["execution_digest"]["semantic_engine"].as_str(),
-        Some("driver-kir")
+        Some("driver-kir-scenario")
     );
     assert_eq!(
         witness["execution_digest"]["harness_engine"].as_str(),
-        Some("generated-rust-harness")
+        Some("generated-rust-process")
     );
     assert_eq!(
         witness["execution_digest"]["agreement"].as_str(),
         Some("matched")
+    );
+    assert!(
+        witness["execution_digest"]["generated_rust_hash"]
+            .as_str()
+            .is_some(),
+        "exact witness must record generated Rust hash"
+    );
+    assert!(
+        witness["execution_digest"]["harness_manifest_hash"]
+            .as_str()
+            .is_some(),
+        "exact witness must record harness manifest hash"
+    );
+    assert_eq!(
+        witness["execution_digest"]["harness_exit_code"].as_i64(),
+        Some(0),
+        "exact witness must record successful harness process"
     );
     assert_json_has_path(
         &witness,
@@ -212,7 +229,11 @@ fn {scenario}() {{
         ".kobo/witnesses/<witness>.kwit",
         "LSP must not expose placeholder replay paths",
     );
-    assert_not_contains(&text, "stale:file", "LSP must ignore stale witness artifacts");
+    assert_not_contains(
+        &text,
+        "stale:file",
+        "LSP must ignore stale witness artifacts",
+    );
 }
 
 #[test]
@@ -267,12 +288,7 @@ fn main() {
 "#,
     );
     let output = run_kobo(
-        &[
-            s("inspect"),
-            s("--audit"),
-            s("json"),
-            path_arg(&file),
-        ],
+        &[s("inspect"), s("--audit"), s("json"), path_arg(&file)],
         &project.root,
     );
     assert_success(&output, "audit should run");

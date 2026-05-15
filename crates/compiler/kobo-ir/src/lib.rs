@@ -4,6 +4,7 @@ mod mode;
 mod node_id;
 mod ownership;
 mod resource;
+pub mod scenario;
 mod solution_map;
 mod span;
 pub mod strict;
@@ -31,6 +32,10 @@ pub use ownership::{
     TierDecision, TierReason, TierViolation, TransformBindingFacts, TransformFacts, UseEvent,
 };
 pub use resource::ResourceKind;
+pub use scenario::{
+    ScenarioBoundary, ScenarioCoverageFacts, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind,
+    ScenarioProgram,
+};
 pub use solution_map::SolutionMap;
 pub use span::KoboSpan;
 pub use strict::{

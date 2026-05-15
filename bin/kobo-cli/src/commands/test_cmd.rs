@@ -5,7 +5,7 @@ use kobo_errors::{
     diagnostic_to_json_value, ColorMode, DiagDecision, DiagLabel, DiagnosticOutputFormat,
     DiagnosticRenderer, KDiagnostic, KErrorCode, Severity,
 };
-use kobo_ir::{FileSetBuilder, KoboSpan};
+use kobo_ir::{FileSetBuilder, KoboMode, KoboSpan};
 use kobo_sim_core::{EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure};
 
 use crate::ErrorFormat;
@@ -46,18 +46,34 @@ pub(super) fn cmd_test(
     let document = sim_model::load_document(file)?;
     let target_name = target
         .map(str::to_owned)
-        .or_else(|| document.scenarios.first().map(|scenario| scenario.name.clone()))
+        .or_else(|| {
+            document
+                .scenarios
+                .first()
+                .map(|scenario| scenario.name.clone())
+        })
         .unwrap_or_else(|| "<missing>".to_owned());
-    let run = kobo_sim_core::run_full_depth(
-        &document.source,
+    let mut session = super::session::build_session(file, Some(KoboMode::Checked))?;
+    let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
+    let scenario_program = kobo_driver::build_scenario_program(
+        &artifacts.kobo_file,
+        &artifacts,
         &target_name,
+        document.source_hash.clone(),
+        profile,
+    )?;
+    let options = kobo_sim_core::ScenarioOptions {
+        profile: profile.to_owned(),
+        seed,
+        inject: inject.map(str::to_owned),
+        event_budget,
+    };
+    let run = kobo_sim_core::run_full_depth_from_program(
+        &scenario_program,
+        &artifacts.rs_source,
+        &options,
         engine,
-        kobo_sim_core::ScenarioOptions {
-            profile: profile.to_owned(),
-            seed,
-            inject: inject.map(str::to_owned),
-            event_budget,
-        },
     )?;
 
     let mut witness_path = None;
@@ -161,6 +177,7 @@ fn write_run_witness(
         "backend": backend_for_profile(&run.profile),
         "backend_replay": replay_token(&document.source_hash, seed, run),
         "execution_digest": execution_digest_json(run),
+        "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage_json(run),
         "replay_guarantee": run.replay_guarantee.as_str(),
         "modeled_boundaries": modeled_boundaries_json(run),
@@ -189,6 +206,10 @@ fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
         "semantic_trace_hash": run.digest.semantic_trace_hash,
         "harness_trace_hash": run.digest.harness_trace_hash,
         "agreement": run.digest.agreement,
+        "generated_rust_hash": run.digest.generated_rust_hash,
+        "harness_manifest_hash": run.digest.harness_manifest_hash,
+        "harness_exit_code": run.digest.harness_exit_code,
+        "harness_event_count": run.digest.harness_event_count,
     })
 }
 
@@ -361,7 +382,10 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
 }
 
 fn scenario_failure_label(failure: &ScenarioFailure) -> Option<&str> {
-    failure.events.iter().find_map(|event| event.label.as_deref())
+    failure
+        .events
+        .iter()
+        .find_map(|event| event.label.as_deref())
 }
 
 fn scenario_failure_actions(message: &str) -> Option<String> {

@@ -22,6 +22,14 @@ impl KoboSpan {
         }
     }
 
+    pub fn generated(file_id: FileId) -> Self {
+        Self {
+            start: 0,
+            end: 1,
+            file_id,
+        }
+    }
+
     /// Constructs a `KoboSpan` from a `proc_macro2::Span`.
     ///
     /// `proc_macro2::Span` has limited source info outside a proc-macro context.

@@ -9,8 +9,6 @@ use serde_json::{json, Value};
 use crate::ErrorFormat;
 
 use super::session::build_session;
-use super::sim_model;
-
 pub(super) fn cmd_lsp_diagnostics(
     file: &Path,
     format: ErrorFormat,
@@ -62,58 +60,10 @@ fn artifact_backed_diagnostics(
     let source_hash = kobo_sim_core::digest::stable_hash(entry.source());
     let source_path = cli_relative_path(file)?;
     let witnesses = matching_witnesses(&source_path, &source_hash)?;
-    if witnesses.is_empty() {
-        return fallback_semantic_diagnostics(file_id, entry.source(), file);
-    }
     Ok(witnesses
         .into_iter()
         .filter_map(|artifact| diagnostic_from_witness(file_id, entry.source(), artifact).ok())
         .collect())
-}
-
-fn fallback_semantic_diagnostics(
-    file_id: kobo_ir::FileId,
-    source: &str,
-    file: &Path,
-) -> anyhow::Result<Vec<KDiagnostic>> {
-    let document = sim_model::parse_document(source.to_owned());
-    let Some(target) = document.scenarios.first().map(|scenario| scenario.name.as_str()) else {
-        return Ok(Vec::new());
-    };
-    let run = kobo_sim_core::run_full_depth(
-        source,
-        target,
-        kobo_sim_core::EngineMode::SemanticOnly,
-        kobo_sim_core::ScenarioOptions {
-            profile: "checked".to_owned(),
-            seed: 0,
-            inject: None,
-            event_budget: None,
-        },
-    )?;
-    let Some(failure) = run.failure.as_ref() else {
-        return Ok(Vec::new());
-    };
-    let span = KoboSpan::new(
-        failure.primary_start as u32,
-        failure.primary_end.max(failure.primary_start + 1) as u32,
-        file_id,
-    );
-    let witness_path = std::env::current_dir()
-        .context("failed to determine current directory")?
-        .join(".kobo")
-        .join("witnesses")
-        .join(format!("{}-0.kwit", sanitize_witness_name(target)));
-    let diagnostic = KDiagnostic::new(
-        failure.code,
-        Severity::Error,
-        DiagLabel::primary(span, label_for_code(failure.code)),
-        failure.message.clone(),
-        DiagDecision(decision_for_code(failure.code).to_owned()),
-    )
-    .with_run(format!("kobo replay {}", witness_path.display()));
-    let _ = file;
-    Ok(vec![diagnostic])
 }
 
 struct WitnessArtifact {
@@ -121,7 +71,10 @@ struct WitnessArtifact {
     json: Value,
 }
 
-fn matching_witnesses(source_path: &str, source_hash: &str) -> anyhow::Result<Vec<WitnessArtifact>> {
+fn matching_witnesses(
+    source_path: &str,
+    source_hash: &str,
+) -> anyhow::Result<Vec<WitnessArtifact>> {
     let witness_dir = std::env::current_dir()
         .context("failed to determine current directory")?
         .join(".kobo")
@@ -145,6 +98,14 @@ fn matching_witnesses(source_path: &str, source_hash: &str) -> anyhow::Result<Ve
             continue;
         }
         if json["source"]["path"].as_str() != Some(source_path) {
+            continue;
+        }
+        if json["schema_version"].as_u64() != Some(1) {
+            continue;
+        }
+        if json["replay_guarantee"].as_str() == Some("exact")
+            && json["execution_digest"]["agreement"].as_str() != Some("matched")
+        {
             continue;
         }
         matches.push(WitnessArtifact { path, json });
@@ -174,11 +135,7 @@ fn diagnostic_from_witness(
     .with_run(format!("kobo replay {}", artifact.path.display())))
 }
 
-fn primary_span_from_witness(
-    file_id: kobo_ir::FileId,
-    source: &str,
-    witness: &Value,
-) -> KoboSpan {
+fn primary_span_from_witness(file_id: kobo_ir::FileId, source: &str, witness: &Value) -> KoboSpan {
     if let Some(start) = witness["obligations"]
         .as_array()
         .and_then(|items| items.first())
@@ -242,11 +199,4 @@ fn cli_relative_path(file: &Path) -> anyhow::Result<String> {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/"))
-}
-
-fn sanitize_witness_name(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect()
 }

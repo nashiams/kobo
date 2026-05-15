@@ -55,3 +55,71 @@ fn production_depth_error_policy_is_not_post_codegen_text_rewrite() {
         "build must consume compiler-owned error policy sites"
     );
 }
+
+#[test]
+fn full_depth_harness_must_not_copy_semantic_hash() {
+    let harness = read("../../crates/compiler/kobo-sim-core/src/harness.rs");
+
+    assert!(
+        !harness.contains("harness_trace_hash = semantic_hash.clone()"),
+        "full-depth harness must derive harness_trace_hash from actual harness output"
+    );
+    assert!(
+        !harness.contains("agreement = \"matched\".to_owned()"),
+        "agreement must be computed by comparing semantic and harness event streams"
+    );
+    assert!(
+        harness.contains("Command::new") || harness.contains("std::process::Command"),
+        "full-depth harness must compile/run generated Rust through a real process"
+    );
+}
+
+#[test]
+fn semantic_engine_must_not_lower_from_syn_file() {
+    let lower = read("../../crates/compiler/kobo-sim-core/src/lower.rs");
+
+    assert!(
+        !lower.contains("parsed.syn_file()"),
+        "semantic engine must consume compiler scenario/KIR facts, not syn_file()"
+    );
+    assert!(
+        !lower.contains("use syn::"),
+        "kobo-sim-core lowering must not depend on syn AST inspection for production-depth mode"
+    );
+}
+
+#[test]
+fn error_policy_must_come_from_codegen_metadata_not_text_offsets() {
+    let codegen = read("../../crates/compiler/kobo-driver/src/pipeline/codegen.rs");
+
+    assert!(
+        !codegen.contains("question_operator_offsets"),
+        "typed/explicit error policy must not scan generated text for '?'"
+    );
+    assert!(
+        !codegen.contains("error_sites(&artifacts.rs_source"),
+        "error policy sites must be emitted by codegen metadata"
+    );
+    assert!(
+        !codegen.contains("error_policy_sites: Vec::new()"),
+        "codegen must populate real error policy sites"
+    );
+}
+
+#[test]
+fn lsp_must_not_invent_witness_paths() {
+    let lsp = read("src/commands/lsp_diagnostics.rs");
+
+    assert!(
+        !lsp.contains("fallback_semantic_diagnostics"),
+        "LSP must not run hidden semantic simulation when no witness exists"
+    );
+    assert!(
+        !lsp.contains("EngineMode::SemanticOnly"),
+        "LSP artifact diagnostics must be based on real .kwit artifacts"
+    );
+    assert!(
+        !lsp.contains("join(format!(\"{}-0.kwit\""),
+        "LSP must not fabricate witness paths"
+    );
+}

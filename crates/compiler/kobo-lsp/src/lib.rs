@@ -92,15 +92,13 @@ fn code_actions_for_code_and_replay(
                 group: "simulation".to_owned(),
                 command: Some("kobo test --sim quick --witness-dir .kobo/witnesses".to_owned()),
             });
-            actions.push(LspCodeAction {
-                title: "Replay witness".to_owned(),
-                group: "replay".to_owned(),
-                command: Some(
-                    replay_command
-                        .unwrap_or("kobo replay .kobo/witnesses/<witness>.kwit")
-                        .to_owned(),
-                ),
-            });
+            if let Some(command) = replay_command {
+                actions.push(LspCodeAction {
+                    title: "Replay witness".to_owned(),
+                    group: "replay".to_owned(),
+                    command: Some(command.to_owned()),
+                });
+            }
         }
         KErrorCode::K0107 => {
             actions.push(LspCodeAction {
@@ -108,15 +106,13 @@ fn code_actions_for_code_and_replay(
                 group: "simulation".to_owned(),
                 command: Some("kobo test --sim quick".to_owned()),
             });
-            actions.push(LspCodeAction {
-                title: "Replay witness".to_owned(),
-                group: "replay".to_owned(),
-                command: Some(
-                    replay_command
-                        .unwrap_or("kobo replay .kobo/witnesses/<witness>.kwit")
-                        .to_owned(),
-                ),
-            });
+            if let Some(command) = replay_command {
+                actions.push(LspCodeAction {
+                    title: "Replay witness".to_owned(),
+                    group: "replay".to_owned(),
+                    command: Some(command.to_owned()),
+                });
+            }
             for choice in ["model", "record", "stub", "outside", "opaque", "debt"] {
                 actions.push(LspCodeAction {
                     title: format!("Boundary policy: {choice}"),

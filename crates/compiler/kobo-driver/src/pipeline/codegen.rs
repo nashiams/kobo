@@ -3,6 +3,10 @@ use std::path::{Path, PathBuf};
 use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
 use kobo_ir::{FileId, KoboSpan, MustCallObligation};
 use kobo_migrate::SolveOutcome;
+use kobo_parser::KoboFile;
+use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
+use syn::{Expr, ExprCall, ExprMethodCall, ExprTry, Path as SynPath};
 
 use crate::filesystem::{map_path_for, output_path_for, write_map_file, write_rs_file};
 use crate::session::CompileSession;
@@ -17,6 +21,7 @@ use super::solver::{
 #[derive(Clone)]
 pub struct CodegenArtifacts {
     pub file_id: FileId,
+    pub kobo_file: KoboFile,
     pub rs_source: String,
     pub rs_path: PathBuf,
     pub map_path: PathBuf,
@@ -126,19 +131,25 @@ pub fn run_codegen_pipeline(
         return Err(());
     }
 
+    let error_policy_sites = collect_error_policy_sites(&kobo_file, &rs_source, kobo_file.file_id);
+
     Ok(CodegenArtifacts {
         file_id: kobo_file.file_id,
+        kobo_file,
         rs_source,
         rs_path,
         map_path,
         source_map: injected_map,
         must_call_obligations: kir.must_call_obligations().to_vec(),
-        error_policy_sites: Vec::new(),
+        error_policy_sites,
     })
 }
 
-pub fn apply_error_policy_sites(mut artifacts: CodegenArtifacts, policy_name: &str) -> CodegenArtifacts {
-    let error_sites = error_sites(&artifacts.rs_source, artifacts.file_id);
+pub fn apply_error_policy_sites(
+    mut artifacts: CodegenArtifacts,
+    policy_name: &str,
+) -> CodegenArtifacts {
+    let error_sites = artifacts.error_policy_sites.clone();
     artifacts.rs_source = match policy_name {
         "ergonomic" => artifacts
             .rs_source
@@ -167,14 +178,21 @@ fn explicit_error_policy_source(source: &str, error_sites: &[ErrorPolicySite]) -
 }
 
 fn typed_error_policy_source(source: &str, error_sites: &[ErrorPolicySite]) -> String {
+    if error_sites.is_empty() {
+        return source.to_owned();
+    }
     if source.contains("enum KoboTypedError") {
         return source.to_owned();
     }
 
-    let rewritten = rewrite_question_error_sites(source, error_sites)
-        .replace("std::io::Error", "KoboTypedError");
+    let rewritten =
+        insert_typed_error_maps(source, error_sites).replace("std::io::Error", "KoboTypedError");
     let mut variants = Vec::new();
-    variants.push(("Io".to_owned(), "io".to_owned(), "std::io::Error".to_owned()));
+    variants.push((
+        "Io".to_owned(),
+        "io".to_owned(),
+        "std::io::Error".to_owned(),
+    ));
     for site in error_sites {
         if !variants
             .iter()
@@ -208,7 +226,7 @@ fn typed_error_policy_source(source: &str, error_sites: &[ErrorPolicySite]) -> S
     )
 }
 
-fn rewrite_question_error_sites(source: &str, error_sites: &[ErrorPolicySite]) -> String {
+fn insert_typed_error_maps(source: &str, error_sites: &[ErrorPolicySite]) -> String {
     if error_sites.is_empty() {
         return source.to_owned();
     }
@@ -219,9 +237,6 @@ fn rewrite_question_error_sites(source: &str, error_sites: &[ErrorPolicySite]) -
         if site.generated_offset > source.len() || site.generated_offset < cursor {
             continue;
         }
-        if expression_already_maps_error(&source[..site.generated_offset]) {
-            continue;
-        }
         output.push_str(&source[cursor..site.generated_offset]);
         output.push_str(&format!(".map_err(KoboTypedError::{})", site.variant));
         cursor = site.generated_offset;
@@ -230,134 +245,107 @@ fn rewrite_question_error_sites(source: &str, error_sites: &[ErrorPolicySite]) -
     output
 }
 
-fn error_sites(source: &str, file_id: FileId) -> Vec<ErrorPolicySite> {
-    question_operator_offsets(source)
+pub(crate) fn collect_error_policy_sites(
+    kobo_file: &KoboFile,
+    generated_source: &str,
+    file_id: FileId,
+) -> Vec<ErrorPolicySite> {
+    let source_sites = source_try_sites(kobo_file);
+    let generated_offsets = generated_try_offsets(generated_source);
+    source_sites
         .into_iter()
-        .map(|offset| {
-            let context = expression_context_before(source, offset);
-            let (operation, variant, source_error) = classify_question_operation(context);
-            ErrorPolicySite {
-                source_span: KoboSpan::new(offset as u32, (offset + 1) as u32, file_id),
-                generated_offset: offset,
-                line: one_based_line_for_offset(source, offset),
+        .enumerate()
+        .filter_map(|(index, source_try)| {
+            let generated_offset = generated_offsets.get(index).copied()?;
+            let (operation, variant, source_error) =
+                classify_try_operation(source_try.expr.as_ref());
+            let source_span = kobo_file.span_from_syn(source_try.span());
+            Some(ErrorPolicySite {
+                source_span: if source_span.is_empty() {
+                    KoboSpan::new(
+                        source_span.start,
+                        source_span.start.saturating_add(1),
+                        file_id,
+                    )
+                } else {
+                    source_span
+                },
+                generated_offset,
+                line: one_based_line_for_offset(generated_source, generated_offset),
                 operation: operation.to_owned(),
                 variant: variant.to_owned(),
                 source_error: source_error.to_owned(),
-            }
+            })
         })
         .collect()
 }
 
-fn classify_question_operation(context: &str) -> (&'static str, &'static str, &'static str) {
-    if context.contains("read_to_string") {
+fn classify_try_operation(expr: &Expr) -> (&'static str, &'static str, &'static str) {
+    if expr_is_call_named(expr, "read_to_string") || expr_is_method_named(expr, "read_to_string") {
         ("read_to_string", "ReadToString", "std::io::Error")
-    } else if context.contains("write(") || context.contains("write_all(") {
+    } else if expr_is_call_named(expr, "write") || expr_is_method_named(expr, "write_all") {
         ("write", "Write", "std::io::Error")
-    } else if context.contains("File::open") || context.contains("OpenOptions::") {
+    } else if expr_is_call_named(expr, "open") {
         ("open", "Open", "std::io::Error")
     } else {
         ("io", "Io", "std::io::Error")
     }
 }
 
-fn question_operator_offsets(source: &str) -> Vec<usize> {
-    let bytes = source.as_bytes();
-    let mut offsets = Vec::new();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'?' => {
-                offsets.push(index);
-                index += 1;
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'/') => {
-                index += 2;
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                index += 2;
-                while index + 1 < bytes.len()
-                    && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-                {
-                    index += 1;
-                }
-                index = (index + 2).min(bytes.len());
-            }
-            b'"' => {
-                index = skip_quoted(bytes, index, b'"');
-            }
-            b'\'' => {
-                index = skip_quoted(bytes, index, b'\'');
-            }
-            b'r' if raw_string_hashes(bytes, index).is_some() => {
-                index = skip_raw_string(bytes, index);
-            }
-            _ => {
-                index += 1;
-            }
-        }
-    }
-    offsets
-}
-
-fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> usize {
-    let mut index = start + 1;
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            index += 2;
-            continue;
-        }
-        if bytes[index] == quote {
-            return index + 1;
-        }
-        index += 1;
-    }
-    bytes.len()
-}
-
-fn raw_string_hashes(bytes: &[u8], start: usize) -> Option<usize> {
-    if bytes.get(start) != Some(&b'r') {
-        return None;
-    }
-    let mut index = start + 1;
-    let mut hashes = 0usize;
-    while bytes.get(index) == Some(&b'#') {
-        hashes += 1;
-        index += 1;
-    }
-    (bytes.get(index) == Some(&b'"')).then_some(hashes)
-}
-
-fn skip_raw_string(bytes: &[u8], start: usize) -> usize {
-    let Some(hashes) = raw_string_hashes(bytes, start) else {
-        return start + 1;
+fn expr_is_call_named(expr: &Expr, expected: &str) -> bool {
+    let Expr::Call(ExprCall { func, .. }) = expr else {
+        return false;
     };
-    let mut index = start + 1 + hashes + 1;
-    while index < bytes.len() {
-        if bytes[index] == b'"'
-            && (0..hashes).all(|hash| bytes.get(index + 1 + hash) == Some(&b'#'))
-        {
-            return (index + 1 + hashes).min(bytes.len());
-        }
-        index += 1;
+    let Expr::Path(path) = func.as_ref() else {
+        return false;
+    };
+    path_last_ident(&path.path).as_deref() == Some(expected)
+}
+
+fn expr_is_method_named(expr: &Expr, expected: &str) -> bool {
+    matches!(expr, Expr::MethodCall(ExprMethodCall { method, .. }) if method == expected)
+}
+
+fn path_last_ident(path: &SynPath) -> Option<String> {
+    path.segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn source_try_sites(kobo_file: &KoboFile) -> Vec<ExprTry> {
+    let mut visitor = TrySiteVisitor::default();
+    visitor.visit_file(kobo_file.syn_file());
+    visitor.sites
+}
+
+fn generated_try_offsets(source: &str) -> Vec<usize> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    let mut visitor = TrySiteVisitor::default();
+    visitor.visit_file(&file);
+    visitor
+        .sites
+        .into_iter()
+        .map(|site| {
+            let end = site.span().end();
+            line_col_to_offset(source, end.line, end.column)
+                .unwrap_or(source.len())
+                .saturating_sub(1)
+        })
+        .collect()
+}
+
+#[derive(Default)]
+struct TrySiteVisitor {
+    sites: Vec<ExprTry>,
+}
+
+impl<'ast> Visit<'ast> for TrySiteVisitor {
+    fn visit_expr_try(&mut self, node: &'ast ExprTry) {
+        self.sites.push(node.clone());
+        visit::visit_expr_try(self, node);
     }
-    bytes.len()
-}
-
-fn expression_context_before(source: &str, offset: usize) -> &str {
-    let prefix = &source[..offset.min(source.len())];
-    let start = prefix
-        .rfind(|ch| matches!(ch, ';' | '\n' | '{' | '}'))
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    prefix[start..].trim()
-}
-
-fn expression_already_maps_error(prefix: &str) -> bool {
-    let context = expression_context_before(prefix, prefix.len());
-    context.contains(".map_err(")
 }
 
 fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
@@ -366,6 +354,20 @@ fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
         .filter(|byte| *byte == b'\n')
         .count()
         + 1
+}
+
+fn line_col_to_offset(source: &str, line: usize, column: usize) -> Option<usize> {
+    if line == 0 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for (index, text) in source.lines().enumerate() {
+        if index + 1 == line {
+            return Some((offset + column).min(source.len()));
+        }
+        offset += text.len() + 1;
+    }
+    None
 }
 
 pub fn run_pipeline(session: &mut CompileSession, input: &Path) -> Result<String, ()> {

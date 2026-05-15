@@ -19,6 +19,7 @@ use kobo_parser::{
 use kobo_transform::{build_kir, TransformOptions};
 
 use crate::config::KoboConfig;
+use crate::pipeline::codegen::collect_error_policy_sites;
 use crate::pipeline::{apply_error_policy_sites, CodegenArtifacts};
 use crate::session::CompileSession;
 
@@ -129,14 +130,16 @@ pub fn run_codegen_for_source_with_policy(
             executor_choice,
         },
     );
+    let error_policy_sites = collect_error_policy_sites(&result.ast, &output.rs_source, FileId(0));
     let artifacts = CodegenArtifacts {
         file_id: FileId(0),
+        kobo_file: result.ast,
         rs_source: output.rs_source,
         rs_path: PathBuf::from("test.rs"),
         map_path: PathBuf::from("test.kobo.map"),
         source_map: output.source_map,
         must_call_obligations: result.kir.must_call_obligations().to_vec(),
-        error_policy_sites: Vec::new(),
+        error_policy_sites,
     };
     Ok(apply_error_policy_sites(artifacts, policy_name))
 }

@@ -193,8 +193,51 @@ fn exact_replay_fails_when_harness_agreement_is_removed() {
         &[s("replay"), path_arg(&witness), s("--error-format=json")],
         &project.root,
     );
-    assert_failure(&replay, "exact replay must reject missing harness agreement");
-    assert_contains(&replay.combined(), "K0117", "engine mismatch must be explicit");
+    assert_failure(
+        &replay,
+        "exact replay must reject missing harness agreement",
+    );
+    assert_contains(
+        &replay.combined(),
+        "K0117",
+        "engine mismatch must be explicit",
+    );
+}
+
+#[test]
+fn replay_detects_harness_trace_divergence_not_only_source_hash_change() {
+    let project = TestProject::new("replay-harness-trace-divergence");
+    let witnesses = emit_witness(&project);
+    assert!(
+        !witnesses.is_empty(),
+        "witness should exist before mutation"
+    );
+    let path = &witnesses[0];
+
+    let mut json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(path).expect("witness should read"))
+            .expect("witness should parse");
+    json["execution_digest"]["harness_trace_hash"] =
+        serde_json::Value::String("different-harness-trace".to_owned());
+    fs::write(path, serde_json::to_string_pretty(&json).unwrap()).expect("mutated witness writes");
+
+    let output = run_kobo(
+        &[s("replay"), path_arg(path), s("--error-format=json")],
+        &project.root,
+    );
+
+    assert_failure(&output, "mutated harness trace must fail replay");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "K0104",
+        "replay must report trace divergence when the harness trace changes",
+    );
+    assert_contains(
+        &text,
+        "harness_trace_hash",
+        "divergence must name the changed trace",
+    );
 }
 
 #[test]

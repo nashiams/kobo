@@ -563,24 +563,16 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
 
 impl ScenarioProgram {
     fn from_document(document: &ScenarioDocument, scenario: &Scenario) -> Self {
-        sim_core::lower::lower_from_parser(&document.source, &scenario.name, &scenario.profile)
-            .map(|lowered| Self {
-                operations: lowered
-                    .operations
-                    .into_iter()
-                    .map(convert_core_operation)
-                    .collect(),
-            })
-            .unwrap_or_else(|_| {
-            let span_end = document.source.len().min(1);
-            Self {
-                operations: vec![ScenarioOperation::UncontrolledEffect {
-                    operation: "semantic scenario lowering failed".to_owned(),
-                    span_start: 0,
-                    span_end,
-                }],
-            }
-        })
+        let span_end = document.source.len().min(1);
+        let _ = scenario;
+        Self {
+            operations: vec![ScenarioOperation::UncontrolledEffect {
+                operation: "legacy CLI simulation path disabled; use kobo-sim-core with driver scenario artifacts"
+                    .to_owned(),
+                span_start: 0,
+                span_end,
+            }],
+        }
     }
 
     fn execution_digest(&self, events: &[SimEvent]) -> ExecutionDigest {
@@ -614,6 +606,7 @@ impl ScenarioProgram {
     }
 }
 
+#[allow(dead_code)]
 fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOperation {
     match operation {
         sim_core::ScenarioOperation::CreateObligation {

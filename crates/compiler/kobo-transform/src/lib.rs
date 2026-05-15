@@ -13,6 +13,7 @@ pub mod lifetime_erase;
 mod method_analysis;
 mod options;
 pub mod patterns;
+pub mod scenario;
 mod small_clone;
 pub(crate) mod strict;
 pub mod strict_async;

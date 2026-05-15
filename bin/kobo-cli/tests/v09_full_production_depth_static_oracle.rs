@@ -75,6 +75,24 @@ fn full_depth_harness_must_not_copy_semantic_hash() {
 }
 
 #[test]
+fn full_depth_harness_must_not_project_events_from_scenario_model() {
+    let harness = read("../../crates/compiler/kobo-sim-core/src/harness.rs");
+
+    assert!(
+        !harness.contains("projected_harness_events"),
+        "full-depth harness must not compile a scenario-projected event printer"
+    );
+    assert!(
+        !harness.contains("generated_rust.contains(\"KOBO_EVENT:\")"),
+        "full-depth harness must instrument generated Rust instead of accepting only pre-instrumented fixtures"
+    );
+    assert!(
+        harness.contains("instrument_generated_rust"),
+        "full-depth harness must build events from instrumented generated Rust behavior"
+    );
+}
+
+#[test]
 fn semantic_engine_must_not_lower_from_syn_file() {
     let lower = read("../../crates/compiler/kobo-sim-core/src/lower.rs");
 
@@ -85,6 +103,22 @@ fn semantic_engine_must_not_lower_from_syn_file() {
     assert!(
         !lower.contains("use syn::"),
         "kobo-sim-core lowering must not depend on syn AST inspection for production-depth mode"
+    );
+}
+
+#[test]
+fn driver_scenario_must_be_kir_owned_not_syn_owned() {
+    let scenario = read("../../crates/compiler/kobo-driver/src/scenario.rs");
+
+    for banned in ["use syn::", "KoboFile", "syn_file()", "ExprMethodCall", "ItemFn"] {
+        assert!(
+            !scenario.contains(banned),
+            "driver scenario extraction must consume KIR/codegen scenario facts, not `{banned}`"
+        );
+    }
+    assert!(
+        scenario.contains("scenario_programs"),
+        "driver scenario extraction must select compiler-owned scenario programs"
     );
 }
 
@@ -103,6 +137,27 @@ fn error_policy_must_come_from_codegen_metadata_not_text_offsets() {
     assert!(
         !codegen.contains("error_policy_sites: Vec::new()"),
         "codegen must populate real error policy sites"
+    );
+}
+
+#[test]
+fn error_policy_must_be_codegen_output_metadata() {
+    let codegen = read("../../crates/compiler/kobo-driver/src/pipeline/codegen.rs");
+
+    for banned in [
+        "collect_error_policy_sites(&kobo_file",
+        "generated_try_offsets",
+        "syn::parse_file",
+        "TrySiteVisitor",
+    ] {
+        assert!(
+            !codegen.contains(banned),
+            "driver codegen must consume kobo-codegen error policy metadata, not `{banned}`"
+        );
+    }
+    assert!(
+        codegen.contains("error_policy_sites"),
+        "driver codegen artifacts must carry codegen-owned error policy metadata"
     );
 }
 

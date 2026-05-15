@@ -4,6 +4,7 @@ use crate::debt::{KirStructDef, WarnEarlyFact};
 use crate::node_id::{CfgBlockId, KirNodeId, KoboAstNodeId};
 use crate::ownership::{OwnershipTier, TierDecision, TransformFacts};
 use crate::resource::ResourceKind;
+use crate::scenario::ScenarioProgram;
 use crate::span::KoboSpan;
 use crate::strict::{CaptureSet, StrictBoundaryFact, StrictFnMode};
 
@@ -157,6 +158,8 @@ pub struct Kir {
     /// S-3: KIR node IDs whose bindings belong to engine struct types.
     /// These are capped at PlainOwned by the solver/codegen.
     engine_ceiling_nodes: HashSet<KirNodeId>,
+    /// Compiler-owned replay scenario facts produced while KIR is built.
+    scenario_programs: Vec<ScenarioProgram>,
 }
 
 // --- Public read API ---
@@ -187,6 +190,7 @@ impl Kir {
             field_capability_views: Vec::new(),
             method_mutability: HashMap::new(),
             engine_ceiling_nodes: HashSet::new(),
+            scenario_programs: Vec::new(),
         }
     }
 
@@ -348,5 +352,13 @@ impl Kir {
 
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    pub fn scenario_programs(&self) -> &[ScenarioProgram] {
+        &self.scenario_programs
+    }
+
+    pub fn set_scenario_programs(&mut self, programs: Vec<ScenarioProgram>) {
+        self.scenario_programs = programs;
     }
 }

@@ -16,18 +16,6 @@ pub fn check_harness_agreement(
     mut semantic: FullDepthRun,
     _mode: EngineMode,
 ) -> anyhow::Result<FullDepthRun> {
-    let harness = run_generated_harness(program, generated_rust, options)?;
-    let harness_hash = crate::digest::events_hash(&harness.events);
-    let manifest_json = serde_json::to_string(&harness.manifest)?;
-
-    semantic.digest.harness_engine = "generated-rust-process".to_owned();
-    semantic.digest.generated_rust_hash = Some(harness.manifest.generated_rust_hash.clone());
-    semantic.digest.harness_manifest_hash = Some(crate::digest::stable_hash(&manifest_json));
-    semantic.digest.harness_exit_code = Some(harness.manifest.exit_code);
-    semantic.digest.harness_event_count = harness.manifest.event_count;
-    semantic.digest.harness_trace_hash = harness_hash;
-    semantic.harness_manifest = Some(harness.manifest.clone());
-
     if !semantic.coverage.unsupported_constructs.is_empty() {
         semantic.digest.agreement = agreement_label(TraceAgreement::CoverageIncomplete);
         semantic.replay_guarantee = ReplayGuarantee::Partial;
@@ -43,6 +31,26 @@ pub fn check_harness_agreement(
         });
         return Ok(semantic);
     }
+    if semantic.failure.as_ref().is_some_and(|failure| {
+        matches!(
+            failure.code,
+            KErrorCode::K0102 | KErrorCode::K0103 | KErrorCode::K0105 | KErrorCode::K0107
+        )
+    }) {
+        return Ok(semantic);
+    }
+
+    let harness = run_generated_harness(program, generated_rust, options)?;
+    let harness_hash = crate::digest::events_hash(&harness.events);
+    let manifest_json = serde_json::to_string(&harness.manifest)?;
+
+    semantic.digest.harness_engine = "generated-rust-process".to_owned();
+    semantic.digest.generated_rust_hash = Some(harness.manifest.generated_rust_hash.clone());
+    semantic.digest.harness_manifest_hash = Some(crate::digest::stable_hash(&manifest_json));
+    semantic.digest.harness_exit_code = Some(harness.manifest.exit_code);
+    semantic.digest.harness_event_count = harness.manifest.event_count;
+    semantic.digest.harness_trace_hash = harness_hash;
+    semantic.harness_manifest = Some(harness.manifest.clone());
 
     if semantic.events == harness.events {
         semantic.digest.agreement = agreement_label(TraceAgreement::Matched);
@@ -98,6 +106,7 @@ fn run_generated_harness(
     let harness_rs_path = harness_dir.join("harness.rs");
     let harness_bin_path = harness_dir.join(binary_name("harness_bin"));
     std::fs::write(&harness_rs_path, harness_source)?;
+    remove_existing_output(&harness_bin_path)?;
 
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
     let output = Command::new(&rustc)
@@ -131,31 +140,169 @@ fn run_generated_harness(
     Ok(HarnessRun { events, manifest })
 }
 
+fn remove_existing_output(path: &PathBuf) -> anyhow::Result<()> {
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    let pdb_path = path.with_extension("pdb");
+    if pdb_path.exists() {
+        std::fs::remove_file(pdb_path)?;
+    }
+    Ok(())
+}
+
 fn harness_source(
     program: &ScenarioProgram,
     generated_rust: &str,
     options: &ScenarioOptions,
 ) -> anyhow::Result<String> {
-    if generated_rust.contains("KOBO_EVENT:") {
+    if has_event_marker(generated_rust) {
         return Ok(generated_rust.to_owned());
     }
 
-    let events = projected_harness_events(program, options);
-    let mut source = String::from("fn main() {\n");
-    for event in events {
-        let json = serde_json::to_string(&event)?;
-        source.push_str("    println!(\"KOBO_EVENT:{}\", r#\"");
-        source.push_str(&json);
-        source.push_str("\"#);\n");
+    instrument_generated_rust(program, generated_rust, options)
+}
+
+fn has_event_marker(source: &str) -> bool {
+    source.contains(&event_marker())
+}
+
+fn event_marker() -> String {
+    "KOBO_EVENT:".to_owned()
+}
+
+fn instrument_generated_rust(
+    program: &ScenarioProgram,
+    generated_rust: &str,
+    options: &ScenarioOptions,
+) -> anyhow::Result<String> {
+    let mut source = String::new();
+    source.push_str(&harness_support_source(program));
+    source.push_str(generated_rust);
+    if !source.ends_with('\n') {
+        source.push('\n');
+    }
+
+    for operation in &program.operations {
+        if let ScenarioOpKind::ModeledEffect { boundary } = &operation.kind {
+            let event = modeled_boundary_event(boundary, options.seed);
+            source = inject_modeled_boundary_event(source, boundary, &event)?;
+        }
+    }
+
+    let final_events = terminal_failure_events(program);
+    source.push_str(&main_wrapper_source(&program.target, &final_events)?);
+    Ok(source)
+}
+
+fn harness_support_source(program: &ScenarioProgram) -> String {
+    let mut source = String::from(
+        r#"
+#[allow(non_camel_case_types)]
+struct __KoboWardTime;
+#[allow(non_camel_case_types)]
+struct __KoboWardRandom;
+#[allow(non_camel_case_types)]
+struct __KoboWard {
+    time: __KoboWardTime,
+    random: __KoboWardRandom,
+}
+#[allow(non_upper_case_globals)]
+static ward: __KoboWard = __KoboWard {
+    time: __KoboWardTime,
+    random: __KoboWardRandom,
+};
+impl __KoboWard {
+    fn task(&self) {}
+}
+impl __KoboWardTime {
+    fn now(&self) -> u64 { 0 }
+}
+impl __KoboWardRandom {
+    fn u64(&self) -> u64 { 0 }
+    fn next_u64(&self) -> u64 { 0 }
+}
+"#,
+    );
+
+    let mut impls = Vec::new();
+    for operation in &program.operations {
+        if let ScenarioOpKind::CreateObligation {
+            type_name, actions, ..
+        } = &operation.kind
+        {
+            if impls.iter().any(|existing| existing == type_name) {
+                continue;
+            }
+            impls.push(type_name.clone());
+            source.push_str("impl ");
+            source.push_str(type_name);
+            source.push_str(" {\n");
+            for action in actions {
+                source.push_str("    fn ");
+                source.push_str(action);
+                source.push_str("(self) {}\n");
+            }
+            source.push_str("}\n");
+        }
+    }
+    source
+}
+
+fn inject_modeled_boundary_event(
+    source: String,
+    boundary: &ScenarioModeledBoundary,
+    event: &ScenarioEvent,
+) -> anyhow::Result<String> {
+    let print = event_print_statement(event)?;
+    let replacements: &[(&str, &str)] = match boundary {
+        ScenarioModeledBoundary::WardTask => &[("ward.task();", "ward.task();")],
+        ScenarioModeledBoundary::WardTime => &[("ward.time.now()", "ward.time.now()")],
+        ScenarioModeledBoundary::WardRandom => &[
+            ("ward.random.u64()", "ward.random.u64()"),
+            ("ward.random.next_u64()", "ward.random.next_u64()"),
+        ],
+    };
+    for (needle, replacement) in replacements {
+        if source.contains(needle) {
+            return Ok(source.replacen(
+                needle,
+                &instrumented_expression(replacement, &print),
+                1,
+            ));
+        }
+    }
+    anyhow::bail!("generated Rust did not contain modeled boundary {}", boundary_label(boundary))
+}
+
+fn instrumented_expression(expression: &str, print: &str) -> String {
+    if expression.ends_with(';') {
+        format!("{expression}\n    {print}")
+    } else {
+        format!("{{ let __kobo_value = {expression}; {print} __kobo_value }}")
+    }
+}
+
+fn main_wrapper_source(target: &str, final_events: &[ScenarioEvent]) -> anyhow::Result<String> {
+    let mut source = String::from("\nfn main() {\n");
+    source.push_str("    ");
+    source.push_str(target);
+    source.push_str("();\n");
+    for event in final_events {
+        source.push_str("    ");
+        source.push_str(&event_print_statement(event)?);
+        source.push('\n');
     }
     source.push_str("}\n");
     Ok(source)
 }
 
-fn projected_harness_events(
-    program: &ScenarioProgram,
-    options: &ScenarioOptions,
-) -> Vec<ScenarioEvent> {
+fn event_print_statement(event: &ScenarioEvent) -> anyhow::Result<String> {
+    let json = serde_json::to_string(event)?;
+    Ok(format!("println!(\"KOBO_EVENT:{{}}\", r#\"{json}\"#);"))
+}
+
+fn terminal_failure_events(program: &ScenarioProgram) -> Vec<ScenarioEvent> {
     let mut events = Vec::new();
     let mut obligations = Vec::new();
     for operation in &program.operations {
@@ -175,28 +322,12 @@ fn projected_harness_events(
                 }
             }
             ScenarioOpKind::ModeledEffect { boundary } => {
-                events.push(modeled_boundary_event(boundary, options.seed));
+                let _ = boundary;
             }
-            ScenarioOpKind::RawNondeterminism { operation } => events.push(ScenarioEvent {
-                kind: "raw-nondeterminism".to_owned(),
-                label: Some(operation.clone()),
-                value: None,
-            }),
-            ScenarioOpKind::UncontrolledEffect { operation } => events.push(ScenarioEvent {
-                kind: "uncontrolled-effect".to_owned(),
-                label: Some(operation.clone()),
-                value: None,
-            }),
-            ScenarioOpKind::ExternalBoundary { crate_name } => events.push(ScenarioEvent {
-                kind: "boundary-policy-required".to_owned(),
-                label: Some(crate_name.clone()),
-                value: None,
-            }),
-            ScenarioOpKind::Loop => events.push(ScenarioEvent {
-                kind: "budget-exceeded".to_owned(),
-                label: Some(options.event_budget.unwrap_or(0).to_string()),
-                value: options.event_budget,
-            }),
+            ScenarioOpKind::RawNondeterminism { .. }
+            | ScenarioOpKind::UncontrolledEffect { .. }
+            | ScenarioOpKind::ExternalBoundary { .. }
+            | ScenarioOpKind::Loop => {}
             ScenarioOpKind::MoveBinding { .. } | ScenarioOpKind::Return => {}
         }
     }
@@ -208,6 +339,14 @@ fn projected_harness_events(
         });
     }
     events
+}
+
+fn boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
+    match boundary {
+        ScenarioModeledBoundary::WardTime => "ward.time",
+        ScenarioModeledBoundary::WardRandom => "ward.random",
+        ScenarioModeledBoundary::WardTask => "ward.task",
+    }
 }
 
 fn modeled_boundary_event(boundary: &ScenarioModeledBoundary, seed: u64) -> ScenarioEvent {

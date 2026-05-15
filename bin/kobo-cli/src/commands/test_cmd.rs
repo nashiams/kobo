@@ -57,7 +57,6 @@ pub(super) fn cmd_test(
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(
-        &artifacts.kobo_file,
         &artifacts,
         &target_name,
         document.source_hash.clone(),

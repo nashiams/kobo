@@ -2,6 +2,7 @@ mod annotate;
 pub mod cargo_gen;
 pub mod clean;
 mod emit;
+mod error_policy;
 pub mod executor;
 pub mod hard_rules;
 mod lower;
@@ -10,6 +11,7 @@ mod sourcemap;
 use std::path::Path;
 
 pub use emit::emit_file;
+pub use error_policy::{collect_error_policy_sites, ErrorPolicySite};
 pub use sourcemap::{
     wrap_source_map, KoboSourceMap, RsSpan, SolverBudgetJson, SolverEvidenceJson, SourceMapEntry,
 };
@@ -30,6 +32,7 @@ pub fn annotate_lock_order(source: &str) -> String {
 pub struct CodegenOutput {
     pub rs_source: String,
     pub source_map: KoboSourceMap,
+    pub error_policy_sites: Vec<ErrorPolicySite>,
 }
 
 /// Options that control code generation behaviour.
@@ -75,9 +78,11 @@ pub fn codegen_file(
         &mut entries,
     );
     let source_map = wrap_source_map(kobo_path, rs_path, entries);
+    let error_policy_sites = collect_error_policy_sites(ast, &rs_source, ast.file_id);
 
     CodegenOutput {
         rs_source,
         source_map,
+        error_policy_sites,
     }
 }

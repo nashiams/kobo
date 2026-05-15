@@ -22,11 +22,14 @@ fn scenario_model_is_derived_from_compiler_facts_not_fixture_names() {
     let source = source_with_name(&suffix);
     let config = KoboConfig::default();
     let compiled = compile_to_kir(&source, &config).expect("compile to KIR");
+    assert!(
+        !compiled.kir.scenario_programs().is_empty(),
+        "KIR must own scenario programs before driver selection"
+    );
     let codegen =
         run_codegen_for_source_with_policy(&source, "default").expect("codegen artifacts");
 
     let scenario = build_scenario_program(
-        &compiled.ast,
         &codegen,
         &format!("handle_{suffix}"),
         "test-source-hash".to_owned(),

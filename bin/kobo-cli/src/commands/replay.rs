@@ -92,7 +92,6 @@ fn replay_v1(
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
         .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(
-        &artifacts.kobo_file,
         &artifacts,
         &target,
         verified_source.hash.clone(),

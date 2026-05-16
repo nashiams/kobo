@@ -4,7 +4,8 @@ use kobo_errors::{DiagLabel, DiagnosticRelatedInfo, KDiagnostic, TextEdit};
 use kobo_ir::{FieldCapabilityField, FieldCapabilityView, FileId, Kir, KoboSpan};
 use kobo_parser::{
     collect_strict_items_from_syn, mode_parse::parse_file_mode, parse_file_recovering,
-    postprocess_strict_markers, preprocess_bridge_blocks_mapped, preprocess_kobo_keywords_mapped,
+    postprocess_strict_markers, preprocess_bridge_blocks_mapped,
+    preprocess_concurrent_sugar_mapped, preprocess_kobo_keywords_mapped,
     preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid, v05_keyword_configs,
     KoboFile, PreprocessSourceMap, RecoveryMode,
 };
@@ -39,15 +40,22 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     }
 
     // v0.5 preprocessing: rewrite @strict → marker attributes before syn parse.
+    // v0.10 preprocessing: rewrite concurrent-state sugar to Kobo attributes.
+    let concurrent_mapped = preprocess_concurrent_sugar_mapped(&source, file_id);
+    let mut rewritten = concurrent_mapped.rewritten;
+    let mut preprocess_source_map = concurrent_mapped.source_map;
+
     let configs = v05_keyword_configs();
-    if let Err(e) = preprocess_strict_reject_invalid(&source, &configs) {
+    if let Err(e) = preprocess_strict_reject_invalid(&rewritten, &configs) {
         eprintln!("kobo: preprocess error: {e}");
         return Err(());
     }
-    let strict_mapped = preprocess_kobo_keywords_mapped(&source, file_id, &configs);
-    let mut rewritten = strict_mapped.rewritten;
+    let strict_mapped = preprocess_kobo_keywords_mapped(&rewritten, file_id, &configs);
+    rewritten = strict_mapped.rewritten;
     let markers = strict_mapped.metadata;
-    let mut preprocess_source_map = strict_mapped.source_map;
+    preprocess_source_map = strict_mapped
+        .source_map
+        .compose_with(&preprocess_source_map);
 
     // v0.8: rewrite spawn { ... } → __kobo_spawn_block!({ ... }) before syn parse.
     let spawn_mapped = preprocess_spawn_blocks_mapped(&rewritten, file_id);

@@ -30,9 +30,17 @@ pub(crate) struct Lowerer<'a> {
     pub(super) in_async_context: bool,
     pub(super) needs_local_set: bool,
     pub(super) strict_counter: StrictGuardCounter,
+    pub(super) iter_snapshot_counter: usize,
+    pub(super) concurrent_support: ConcurrentSupportNeeds,
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
     pub(super) error_policy_markers: Vec<ErrorPolicyMarker>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ConcurrentSupportNeeds {
+    pub(crate) live_cell: bool,
+    pub(crate) view_distance: bool,
 }
 
 impl<'a> Lowerer<'a> {
@@ -50,6 +58,8 @@ impl<'a> Lowerer<'a> {
             in_async_context: false,
             needs_local_set: false,
             strict_counter: StrictGuardCounter::new(),
+            iter_snapshot_counter: 0,
+            concurrent_support: ConcurrentSupportNeeds::default(),
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
             error_policy_markers: Vec::new(),
@@ -74,11 +84,13 @@ impl<'a> Lowerer<'a> {
         Vec<AnnotationNote>,
         Vec<LoweringAnchor>,
         Vec<ErrorPolicyMarker>,
+        ConcurrentSupportNeeds,
     ) {
         (
             self.annotation_notes,
             self.anchors,
             self.error_policy_markers,
+            self.concurrent_support,
         )
     }
 
@@ -408,6 +420,12 @@ impl<'a> Lowerer<'a> {
     ) {
         let mut index = 0usize;
         while index < block.stmts.len() {
+            if self.try_materialize_iterator_mutation(block, index, scopes) {
+                self.lower_stmt(&mut block.stmts[index], scopes);
+                index += 1;
+                continue;
+            }
+
             if self.try_shrink_borrow_alias(block, index, scopes) {
                 index += 1;
                 continue;
@@ -416,6 +434,44 @@ impl<'a> Lowerer<'a> {
             self.lower_stmt(&mut block.stmts[index], scopes);
             index += 1;
         }
+    }
+
+    fn try_materialize_iterator_mutation(
+        &mut self,
+        block: &mut syn::Block,
+        index: usize,
+        _scopes: &mut ScopeStack,
+    ) -> bool {
+        let Some(syn::Stmt::Expr(syn::Expr::ForLoop(for_loop), _)) = block.stmts.get(index) else {
+            return false;
+        };
+        let Some(source_ident) = iterator_source_ident(for_loop.expr.as_ref()) else {
+            return false;
+        };
+        if !block_mutates_binding(&for_loop.body, &source_ident) {
+            return false;
+        }
+
+        let snapshot_ident =
+            quote::format_ident!("__kobo_iter_snapshot_{}", self.iter_snapshot_counter);
+        self.iter_snapshot_counter += 1;
+        let source_expr = (*for_loop.expr).clone();
+        let snapshot_stmt: syn::Stmt = parse_quote! {
+            let #snapshot_ident = #source_expr.cloned().collect::<Vec<_>>();
+        };
+        let mut materialized_loop = for_loop.clone();
+        materialized_loop.expr = Box::new(parse_quote!(#snapshot_ident));
+        let loop_stmt = syn::Stmt::Expr(syn::Expr::ForLoop(materialized_loop), None);
+        let materialized_block = syn::Expr::Block(syn::ExprBlock {
+            attrs: Vec::new(),
+            label: None,
+            block: syn::Block {
+                brace_token: syn::token::Brace::default(),
+                stmts: vec![snapshot_stmt, loop_stmt],
+            },
+        });
+        block.stmts[index] = syn::Stmt::Expr(materialized_block, None);
+        true
     }
 
     pub(super) fn lower_nested_block(&mut self, block: &mut syn::Block, scopes: &mut ScopeStack) {
@@ -717,6 +773,87 @@ fn ident_from_kobo(name: &str) -> Option<syn::Ident> {
         return None;
     }
     Some(syn::Ident::new(name, proc_macro2::Span::call_site()))
+}
+
+fn iterator_source_ident(expr: &syn::Expr) -> Option<syn::Ident> {
+    let syn::Expr::MethodCall(method_call) = expr else {
+        return None;
+    };
+    if method_call.method != "iter" || !method_call.args.is_empty() {
+        return None;
+    }
+    let syn::Expr::Path(path) = method_call.receiver.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+    Some(path.path.segments.first()?.ident.clone())
+}
+
+fn block_mutates_binding(block: &syn::Block, source_ident: &syn::Ident) -> bool {
+    let mut visitor = MutationVisitor {
+        source: source_ident.to_string(),
+        found: false,
+    };
+    syn::visit::Visit::visit_block(&mut visitor, block);
+    visitor.found
+}
+
+struct MutationVisitor {
+    source: String,
+    found: bool,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for MutationVisitor {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if receiver_matches_source(node.receiver.as_ref(), &self.source)
+            && mutating_collection_method(&node.method)
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
+        if receiver_matches_source(node.left.as_ref(), &self.source) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_assign(self, node);
+    }
+}
+
+fn receiver_matches_source(expr: &syn::Expr, source: &str) -> bool {
+    match expr {
+        syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => path
+            .path
+            .segments
+            .first()
+            .is_some_and(|segment| segment.ident == source),
+        syn::Expr::Field(field) => receiver_matches_source(field.base.as_ref(), source),
+        syn::Expr::Index(index) => receiver_matches_source(index.expr.as_ref(), source),
+        syn::Expr::Paren(paren) => receiver_matches_source(paren.expr.as_ref(), source),
+        syn::Expr::Group(group) => receiver_matches_source(group.expr.as_ref(), source),
+        _ => false,
+    }
+}
+
+fn mutating_collection_method(method: &syn::Ident) -> bool {
+    matches!(
+        method.to_string().as_str(),
+        "push"
+            | "pop"
+            | "insert"
+            | "remove"
+            | "clear"
+            | "extend"
+            | "retain"
+            | "resize"
+            | "truncate"
+            | "swap_remove"
+    )
 }
 
 fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {

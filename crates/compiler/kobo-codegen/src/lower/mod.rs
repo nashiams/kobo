@@ -45,7 +45,9 @@ pub(crate) fn lower(
     let mut lowerer = Lowerer::new(ast, &plan, kir, options);
     lowerer.lower_items(&mut file.items);
     plan.insert_support_items(&mut file);
-    let (mut lowerer_notes, lowerer_anchors, error_policy_markers) = lowerer.into_parts();
+    let (mut lowerer_notes, lowerer_anchors, error_policy_markers, concurrent_support) =
+        lowerer.into_parts();
+    support::insert_concurrent_support_items(&mut file, concurrent_support);
     let mut notes = plan.annotation_notes().to_vec();
     notes.append(&mut lowerer_notes);
     let anchors = LoweringAnchorMap::new(lowerer_anchors, plan.support_item_count());

@@ -22,6 +22,16 @@ impl super::Lowerer<'_> {
                 self.lower_binary_operand(binary.right.as_mut(), scopes);
             }
             syn::Expr::Block(block) => {
+                if util::has_kobo_attr(&block.attrs, "critical_section") {
+                    util::strip_kobo_attrs(&mut block.attrs);
+                    let marker: syn::Stmt = parse_quote! {
+                        let __kobo_critical_section = ();
+                    };
+                    block.block.stmts.insert(0, marker);
+                    self.lower_nested_block(&mut block.block, scopes);
+                    return;
+                }
+
                 // P5: detect @strict blocks by span-matching against ast.strict_blocks().
                 // The span uses the INNER block's span (node.block.span()), which is stable
                 // across postprocess_strict_markers (Contract C06, Trap 17).

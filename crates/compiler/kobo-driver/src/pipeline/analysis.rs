@@ -254,7 +254,7 @@ fn async_violation_diagnostic_parts(
             "no async executor configured".to_owned(),
             "async code was detected but no executor dependency such as tokio or async-std was found"
                 .to_owned(),
-            "add tokio or async-std to [dependencies] in Cargo.toml".to_owned(),
+            "add tokio or async-std to [dependencies] in Cargo.toml; if a guard is live across an await, drop the guard before .await or restructure with a block scope".to_owned(),
         ),
         AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
             KErrorCode::K0063,

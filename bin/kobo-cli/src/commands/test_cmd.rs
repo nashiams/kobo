@@ -19,6 +19,7 @@ pub(super) fn cmd_test(
     seed: Option<u64>,
     events: Option<&str>,
     inject: Option<&str>,
+    fuzz: bool,
     event_budget: Option<u64>,
     witness_dir: Option<&Path>,
     error_format: ErrorFormat,
@@ -55,12 +56,22 @@ pub(super) fn cmd_test(
         inject: inject.map(str::to_owned),
         event_budget: event_budget.or_else(|| default_budget(sim_profile)),
     };
-    let run = kobo_sim_core::run_full_depth_from_program(
-        &scenario_program,
-        &artifacts.rs_source,
-        &options,
-        engine,
-    )?;
+    let fuzz_plan = fuzz.then(|| FuzzPlan::new(seed));
+    let run = match fuzz_plan.as_ref() {
+        Some(plan) => run_fuzz_portfolio(
+            &scenario_program,
+            &artifacts.rs_source,
+            &options,
+            engine,
+            plan,
+        )?,
+        None => kobo_sim_core::run_full_depth_from_program(
+            &scenario_program,
+            &artifacts.rs_source,
+            &options,
+            engine,
+        )?,
+    };
 
     let mut witness_path = None;
     if run.failure.is_some() || witness_dir.is_some() {
@@ -71,13 +82,14 @@ pub(super) fn cmd_test(
             sim_profile,
             seed,
             inject,
+            fuzz_plan.as_ref(),
             witness_dir,
             &run,
         )?);
     }
 
     if events == Some("json") {
-        print_events(file, sim_profile, seed, &run)?;
+        print_events(file, sim_profile, seed, fuzz_plan.as_ref(), &run)?;
         return Ok(());
     }
 
@@ -107,6 +119,28 @@ pub(super) fn cmd_test(
 struct ProfileRoles {
     guarantee_profile: String,
     backend_profile: String,
+}
+
+struct FuzzPlan {
+    base_seed: u64,
+    cases: Vec<FuzzCase>,
+}
+
+struct FuzzCase {
+    index: usize,
+    seed: u64,
+}
+
+impl FuzzPlan {
+    fn new(base_seed: u64) -> Self {
+        let cases = (0..8)
+            .map(|index| FuzzCase {
+                index,
+                seed: derive_fuzz_seed(base_seed, index),
+            })
+            .collect();
+        Self { base_seed, cases }
+    }
 }
 
 fn parse_sim_profile(sim: Option<&str>) -> anyhow::Result<&str> {
@@ -157,6 +191,94 @@ fn default_budget(sim_profile: &str) -> Option<u64> {
     }
 }
 
+fn run_fuzz_portfolio(
+    scenario_program: &kobo_ir::ScenarioProgram,
+    generated_rust: &str,
+    options: &kobo_sim_core::ScenarioOptions,
+    engine: EngineMode,
+    plan: &FuzzPlan,
+) -> anyhow::Result<FullDepthRun> {
+    let mut combined_events = Vec::new();
+    let mut last_run = None;
+
+    for case in &plan.cases {
+        combined_events.push(ScenarioEvent {
+            kind: "fuzz-case".to_owned(),
+            label: Some(format!(
+                "seed={};case={};derived_seed={}",
+                plan.base_seed, case.index, case.seed
+            )),
+            value: Some(case.seed),
+        });
+        let mut case_options = options.clone();
+        case_options.seed = case.seed;
+        let mut run = kobo_sim_core::run_full_depth_from_program(
+            scenario_program,
+            generated_rust,
+            &case_options,
+            engine.clone(),
+        )?;
+        combined_events.extend(run.events.iter().cloned());
+        if run.failure.is_some() {
+            run.events = combined_events;
+            refresh_digest_for_events(&mut run)?;
+            return Ok(run);
+        }
+        last_run = Some(run);
+    }
+
+    let mut run = last_run.unwrap_or_else(|| FullDepthRun {
+        target: scenario_program.target.clone(),
+        profile: options.profile.clone(),
+        replay_guarantee: ReplayGuarantee::Exact,
+        events: Vec::new(),
+        failure: None,
+        coverage: kobo_sim_core::ScenarioCoverage {
+            unsupported_constructs: Vec::new(),
+            reason: None,
+        },
+        digest: kobo_sim_core::ExecutionDigest {
+            semantic_engine: "semantic-sim".to_owned(),
+            harness_engine: "generated-rust-harness".to_owned(),
+            model_version: "v0.10".to_owned(),
+            scenario_ir_hash: scenario_program.source_hash.clone(),
+            operation_count: 0,
+            semantic_trace_hash: String::new(),
+            harness_trace_hash: String::new(),
+            agreement: "matched".to_owned(),
+            generated_rust_hash: None,
+            harness_manifest_hash: None,
+            harness_exit_code: None,
+            harness_event_count: 0,
+        },
+        modeled_boundaries: Vec::new(),
+        opaque_boundaries: Vec::new(),
+        obligations: Vec::new(),
+        boundary_decisions: Vec::new(),
+        harness_manifest: None,
+    });
+    run.events = combined_events;
+    refresh_digest_for_events(&mut run)?;
+    Ok(run)
+}
+
+fn refresh_digest_for_events(run: &mut FullDepthRun) -> anyhow::Result<()> {
+    let serialized = serde_json::to_string(&events_json(&run.events))?;
+    let trace_hash = kobo_sim_core::digest::stable_hash(&serialized);
+    run.digest.operation_count = run.events.len();
+    run.digest.semantic_trace_hash = trace_hash.clone();
+    run.digest.harness_trace_hash = trace_hash;
+    run.digest.harness_event_count = run.events.len();
+    Ok(())
+}
+
+fn derive_fuzz_seed(base_seed: u64, index: usize) -> u64 {
+    base_seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407)
+        .wrapping_add(index as u64)
+}
+
 fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
     match value {
         "semantic" => Ok(EngineMode::SemanticOnly),
@@ -170,6 +292,7 @@ fn print_events(
     file: &Path,
     sim_profile: &str,
     seed: u64,
+    fuzz_plan: Option<&FuzzPlan>,
     run: &FullDepthRun,
 ) -> anyhow::Result<()> {
     println!(
@@ -180,6 +303,7 @@ fn print_events(
             "sim_profile": sim_profile,
             "backend_profile": run.profile,
             "scheduler": scheduler_json(sim_profile, seed, run),
+            "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
             "events": events_json(&run.events),
         }))?
@@ -194,6 +318,7 @@ fn write_run_witness(
     sim_profile: &str,
     seed: u64,
     inject: Option<&str>,
+    fuzz_plan: Option<&FuzzPlan>,
     witness_dir: Option<&Path>,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
@@ -229,6 +354,7 @@ fn write_run_witness(
         "guarantee_profile": guarantee_profile,
         "expanded_policy": expanded_policy_json(guarantee_profile),
         "seed": seed,
+        "fuzz": fuzz_plan_json(fuzz_plan),
         "injections": injections_json(inject),
         "backend_profile": run.profile,
         "backend": backend_for_profile(&run.profile),
@@ -421,6 +547,29 @@ fn injections_json(inject: Option<&str>) -> serde_json::Value {
     serde_json::json!({
         "hooks": hooks,
     })
+}
+
+fn fuzz_plan_json(plan: Option<&FuzzPlan>) -> serde_json::Value {
+    match plan {
+        Some(plan) => serde_json::json!({
+            "enabled": true,
+            "base_seed": plan.base_seed,
+            "case_count": plan.cases.len(),
+            "cases": plan
+                .cases
+                .iter()
+                .map(|case| serde_json::json!({
+                    "index": case.index,
+                    "seed": case.seed,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+        None => serde_json::json!({
+            "enabled": false,
+            "case_count": 0,
+            "cases": [],
+        }),
+    }
 }
 
 fn witness_directory(file: &Path, witness_dir: Option<&Path>) -> anyhow::Result<PathBuf> {

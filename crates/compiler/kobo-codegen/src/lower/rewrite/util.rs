@@ -15,6 +15,19 @@ pub(super) fn strip_kobo_attrs(attrs: &mut Vec<syn::Attribute>) {
     });
 }
 
+pub(super) fn has_kobo_attr(attrs: &[syn::Attribute], name: &str) -> bool {
+    attrs.iter().any(|attr| is_kobo_attr(attr, name))
+}
+
+pub(super) fn is_kobo_attr(attr: &syn::Attribute, name: &str) -> bool {
+    let mut segments = attr.path().segments.iter();
+    matches!(
+        (segments.next(), segments.next(), segments.next()),
+        (Some(first), Some(second), None)
+            if first.ident == "kobo" && second.ident == name
+    )
+}
+
 /// Build a `borrow()` or `borrow_mut()` receiver expression based on whether
 /// the method being called is a mutating method.
 ///

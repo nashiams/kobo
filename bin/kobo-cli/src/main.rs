@@ -218,6 +218,8 @@ pub(crate) enum KoboCommand {
         events: Option<String>,
         #[arg(long, value_name = "HOOKS")]
         inject: Option<String>,
+        #[arg(long, help = "Run deterministic generated stateful-input cases")]
+        fuzz: bool,
         #[arg(long = "event-budget", value_name = "N")]
         event_budget: Option<u64>,
         #[arg(long = "witness-dir", value_name = "DIR")]

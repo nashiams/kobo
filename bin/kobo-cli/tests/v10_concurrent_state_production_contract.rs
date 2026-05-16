@@ -37,10 +37,27 @@ fn generated_queue_ops() {
     let json = first_json(&output, "fuzz event JSON");
     assert_eq!(json["sim_profile"], "deep");
     assert_eq!(json["backend_profile"], "stateful-input");
+    assert_eq!(json["fuzz"]["runner"], "proptest");
+    assert_eq!(json["fuzz"]["strategy"], "proptest-stateful-input");
     assert_contains(
         &json["events"].to_string(),
         "fuzz-case",
         "event stream should include generated fuzz cases",
+    );
+    assert_contains(
+        &json["events"].to_string(),
+        "stateful-input-op",
+        "fuzzing should generate stateful scenario operations, not only rerun seeds",
+    );
+    assert_contains(
+        &json["events"].to_string(),
+        "ward.storage.write",
+        "generated fuzz operations should target modeled scenario data sources",
+    );
+    assert_contains(
+        &json["events"].to_string(),
+        "fuzz-shrink-candidate",
+        "fuzzing should expose shrink candidates for replay-preserving minimization",
     );
     assert_contains(
         &json["events"].to_string(),
@@ -55,6 +72,22 @@ fn concurrent_state_sugar_lowers_through_compiler_owned_generated_rust() {
     let file = project.main_file(
         r#"
 fn state_surface() {
+    #[kobo::shared]
+    struct SharedState {
+        #[kobo::counter]
+        hits: u64,
+        #[kobo::live]
+        route: String,
+        ordinary: String,
+    }
+
+    let state = SharedState {
+        hits: 0,
+        route: String::from("blue"),
+        ordinary: String::from("plain"),
+    };
+    let _state_route = state.route.load();
+
     @counter hits: u64 = 0;
     hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -107,6 +140,16 @@ fn state_surface() {
     );
     assert_contains(
         &text,
+        "arc_swap::ArcSwap",
+        "@live should use the real ArcSwap backend rather than a lock-backed shim",
+    );
+    assert_not_contains(
+        &text,
+        "RwLock<std::sync::Arc",
+        "@live should not claim wait-free reads while using an RwLock-backed cell",
+    );
+    assert_contains(
+        &text,
         "KoboViewDistance::new(128)",
         "@view_distance should lower to an inspectable helper",
     );
@@ -117,13 +160,43 @@ fn state_surface() {
     );
     assert_contains(
         &text,
+        "hits: std::sync::atomic::AtomicU64",
+        "#[kobo::shared] struct fields should support per-field counter wrapping",
+    );
+    assert_contains(
+        &text,
+        "route: KoboArcSwap<String>",
+        "#[kobo::shared] struct fields should support per-field live-cell wrapping",
+    );
+    assert_contains(
+        &text,
+        "hits: std::sync::atomic::AtomicU64::new(0)",
+        "struct initializers should wrap counter fields, not leave invalid raw values",
+    );
+    assert_contains(
+        &text,
+        "route: KoboArcSwap::from_pointee(String::from(\"blue\"))",
+        "struct initializers should wrap live fields, not leave invalid raw values",
+    );
+    assert_contains(
+        &text,
         "small as u64",
         "script-mode numeric widening should insert an explicit cast",
     );
     assert_contains(
         &text,
+        "numeric-cast-debt",
+        "numeric widening should leave an inspectable debt note for review",
+    );
+    assert_contains(
+        &text,
         "__kobo_iter_snapshot",
         "iterator mutation conflict should materialize a snapshot boundary",
+    );
+    assert_contains(
+        &text,
+        "iterator-materialization-debt",
+        "iterator materialization should leave an inspectable debt note",
     );
     assert_contains(
         &text,
@@ -176,6 +249,32 @@ async fn wait_for_io() {}
         &text,
         "block scope",
         "K0062 should suggest a lock-scope split/refactor",
+    );
+}
+
+#[test]
+fn live_cell_build_compiles_without_user_arc_swap_dependency() {
+    let project = TestProject::new("v10-live-cell-build");
+    let file = project.main_file(
+        r#"
+fn main() {
+    @live route: String = String::from("blue");
+    let _loaded = route.load();
+}
+"#,
+    );
+
+    let output = run_kobo(&[s("build"), path_arg(&file)], &project.root);
+
+    assert_success(
+        &output,
+        "real ArcSwap-backed live cell should compile through Kobo's rustc path",
+    );
+    let source = project.read("src/main.kobo");
+    assert_not_contains(
+        &source,
+        "arc_swap",
+        "user source must not require the generated live-cell backend dependency",
     );
 }
 

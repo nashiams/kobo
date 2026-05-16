@@ -66,33 +66,23 @@ fn live_cell_items() -> Vec<syn::Item> {
     vec![
         parse_quote! {
             struct KoboArcSwap<T> {
-                inner: std::sync::RwLock<std::sync::Arc<T>>,
+                inner: arc_swap::ArcSwap<T>,
             }
         },
         parse_quote! {
             impl<T> KoboArcSwap<T> {
                 fn from_pointee(value: T) -> Self {
                     Self {
-                        inner: std::sync::RwLock::new(std::sync::Arc::new(value)),
+                        inner: arc_swap::ArcSwap::from_pointee(value),
                     }
                 }
 
                 fn load(&self) -> std::sync::Arc<T> {
-                    match self.inner.read() {
-                        Ok(guard) => guard.clone(),
-                        Err(poisoned) => poisoned.into_inner().clone(),
-                    }
+                    self.inner.load_full()
                 }
 
                 fn store(&self, value: std::sync::Arc<T>) {
-                    match self.inner.write() {
-                        Ok(mut guard) => {
-                            *guard = value;
-                        }
-                        Err(poisoned) => {
-                            *poisoned.into_inner() = value;
-                        }
-                    }
+                    self.inner.store(value);
                 }
             }
         },

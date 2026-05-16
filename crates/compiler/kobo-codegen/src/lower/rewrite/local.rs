@@ -12,6 +12,12 @@ enum ConcurrentLocalSugar {
     ViewDistance,
 }
 
+struct NumericWideningCast {
+    expr: syn::Expr,
+    source_type: String,
+    target_type: String,
+}
+
 impl super::Lowerer<'_> {
     pub(super) fn lower_local(&mut self, local: &mut syn::Local, scopes: &mut ScopeStack) {
         let concurrent_sugar = concurrent_local_sugar(local);
@@ -63,8 +69,9 @@ impl super::Lowerer<'_> {
         scopes: &mut ScopeStack,
     ) -> bool {
         if let Some(cast) = numeric_widening_cast(local, scopes) {
+            self.record_numeric_cast_note(binding, &cast);
             if let Some(init) = &mut local.init {
-                *init.expr = cast;
+                *init.expr = cast.expr;
                 return false;
             }
         }
@@ -92,6 +99,27 @@ impl super::Lowerer<'_> {
 
         self.lower_expr(init.expr.as_mut(), scopes);
         false
+    }
+
+    fn record_numeric_cast_note(
+        &mut self,
+        binding: &kobo_parser::KoboBinding,
+        cast: &NumericWideningCast,
+    ) {
+        let Some(node) = self.plan.node_for_binding(binding) else {
+            return;
+        };
+        let (kobo_line, _) = self.ast.line_col(binding.span);
+        self.annotation_notes
+            .push(super::super::plan::AnnotationNote {
+                node,
+                binding_name: binding.ident.to_string(),
+                kobo_line,
+                reason: format!(
+                    "numeric-cast-debt: safe widening {} -> {} inserted for review",
+                    cast.source_type, cast.target_type
+                ),
+            });
     }
 
     fn lower_concurrent_sugar_local(
@@ -187,7 +215,7 @@ fn rewrite_local_type(local: &mut syn::Local, ty: syn::Type) {
     }
 }
 
-fn numeric_widening_cast(local: &syn::Local, scopes: &ScopeStack) -> Option<syn::Expr> {
+fn numeric_widening_cast(local: &syn::Local, scopes: &ScopeStack) -> Option<NumericWideningCast> {
     let (target_ty, target_name) = local_numeric_type(local)?;
     let init = local.init.as_ref()?;
     let source_ident = expr_path_ident(init.expr.as_ref())?;
@@ -195,7 +223,11 @@ fn numeric_widening_cast(local: &syn::Local, scopes: &ScopeStack) -> Option<syn:
     if !is_safe_numeric_widening(source_name, &target_name) {
         return None;
     }
-    Some(parse_quote!(#source_ident as #target_ty))
+    Some(NumericWideningCast {
+        expr: parse_quote!(#source_ident as #target_ty),
+        source_type: source_name.to_owned(),
+        target_type: target_name,
+    })
 }
 
 fn local_numeric_type(local: &syn::Local) -> Option<(syn::Type, String)> {

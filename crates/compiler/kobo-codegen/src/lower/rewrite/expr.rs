@@ -8,6 +8,13 @@ use super::super::binding::{binding_tier_from_expr, wrapper_binding_from_expr};
 use super::super::strict::lower_strict_block;
 use super::{util, ScopeStack};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConcurrentFieldSugar {
+    Counter,
+    Live,
+    ViewDistance,
+}
+
 impl super::Lowerer<'_> {
     pub(super) fn lower_expr(&mut self, expr: &mut syn::Expr, scopes: &mut ScopeStack) {
         match expr {
@@ -371,7 +378,11 @@ impl super::Lowerer<'_> {
 
     fn lower_struct_expr(&mut self, expr_struct: &mut syn::ExprStruct, scopes: &mut ScopeStack) {
         for field in &mut expr_struct.fields {
+            let field_sugar = self.concurrent_field_sugar(&expr_struct.path, &field.member);
             self.lower_expr(&mut field.expr, scopes);
+            if let Some(sugar) = field_sugar {
+                wrap_concurrent_field_initializer(&mut field.expr, sugar);
+            }
         }
 
         if let Some(rest) = &mut expr_struct.rest {
@@ -379,8 +390,87 @@ impl super::Lowerer<'_> {
         }
     }
 
+    fn concurrent_field_sugar(
+        &self,
+        struct_path: &syn::Path,
+        member: &syn::Member,
+    ) -> Option<ConcurrentFieldSugar> {
+        let struct_name = struct_path.segments.last()?.ident.to_string();
+        let field_name = match member {
+            syn::Member::Named(ident) => ident.to_string(),
+            syn::Member::Unnamed(_) => return None,
+        };
+        find_struct_field_sugar(&self.ast.inner.items, &struct_name, &field_name)
+    }
+
     fn lower_while_expr(&mut self, expr_while: &mut syn::ExprWhile, scopes: &mut ScopeStack) {
         self.lower_expr(expr_while.cond.as_mut(), scopes);
         self.lower_nested_block(&mut expr_while.body, scopes);
     }
+}
+
+fn concurrent_field_sugar_from_attrs(attrs: &[syn::Attribute]) -> Option<ConcurrentFieldSugar> {
+    if util::has_kobo_attr(attrs, "counter") {
+        Some(ConcurrentFieldSugar::Counter)
+    } else if util::has_kobo_attr(attrs, "live") {
+        Some(ConcurrentFieldSugar::Live)
+    } else if util::has_kobo_attr(attrs, "view_distance") {
+        Some(ConcurrentFieldSugar::ViewDistance)
+    } else {
+        None
+    }
+}
+
+fn find_struct_field_sugar(
+    items: &[syn::Item],
+    struct_name: &str,
+    field_name: &str,
+) -> Option<ConcurrentFieldSugar> {
+    items.iter().find_map(|item| match item {
+        syn::Item::Struct(item_struct) => {
+            if item_struct.ident != struct_name {
+                return None;
+            }
+            item_struct.fields.iter().find_map(|field| {
+                if field.ident.as_ref().is_none_or(|ident| ident != field_name) {
+                    return None;
+                }
+                concurrent_field_sugar_from_attrs(&field.attrs)
+            })
+        }
+        syn::Item::Fn(function) => {
+            find_struct_field_sugar_in_block(&function.block, struct_name, field_name)
+        }
+        syn::Item::Impl(item_impl) => item_impl.items.iter().find_map(|impl_item| {
+            let syn::ImplItem::Fn(method) = impl_item else {
+                return None;
+            };
+            find_struct_field_sugar_in_block(&method.block, struct_name, field_name)
+        }),
+        _ => None,
+    })
+}
+
+fn find_struct_field_sugar_in_block(
+    block: &syn::Block,
+    struct_name: &str,
+    field_name: &str,
+) -> Option<ConcurrentFieldSugar> {
+    block.stmts.iter().find_map(|stmt| {
+        let syn::Stmt::Item(item) = stmt else {
+            return None;
+        };
+        find_struct_field_sugar(std::slice::from_ref(item), struct_name, field_name)
+    })
+}
+
+fn wrap_concurrent_field_initializer(expr: &mut syn::Expr, sugar: ConcurrentFieldSugar) {
+    let original = expr.clone();
+    *expr = match sugar {
+        ConcurrentFieldSugar::Counter => {
+            parse_quote!(std::sync::atomic::AtomicU64::new(#original))
+        }
+        ConcurrentFieldSugar::Live => parse_quote!(KoboArcSwap::from_pointee(#original)),
+        ConcurrentFieldSugar::ViewDistance => parse_quote!(KoboViewDistance::new(#original)),
+    };
 }

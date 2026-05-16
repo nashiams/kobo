@@ -144,10 +144,7 @@ impl<'a> Lowerer<'a> {
                 self.record_item_anchor(&item_static.ident, LoweringAnchorKind::Static)
             }
             syn::Item::Struct(item_struct) => {
-                util::strip_kobo_attrs(&mut item_struct.attrs);
-                for field in &mut item_struct.fields {
-                    util::strip_kobo_attrs(&mut field.attrs);
-                }
+                self.lower_struct_item(item_struct);
             }
             syn::Item::Impl(item_impl) => self.lower_impl_block(item_impl),
             syn::Item::Type(item_type) => {
@@ -157,6 +154,23 @@ impl<'a> Lowerer<'a> {
                 util::strip_kobo_attrs(&mut item_enum.attrs);
             }
             _ => {}
+        }
+    }
+
+    fn lower_struct_item(&mut self, item_struct: &mut syn::ItemStruct) {
+        util::strip_kobo_attrs(&mut item_struct.attrs);
+        for field in &mut item_struct.fields {
+            if util::has_kobo_attr(&field.attrs, "counter") {
+                field.ty = parse_quote!(std::sync::atomic::AtomicU64);
+            } else if util::has_kobo_attr(&field.attrs, "live") {
+                self.concurrent_support.live_cell = true;
+                let original_ty = field.ty.clone();
+                field.ty = parse_quote!(KoboArcSwap<#original_ty>);
+            } else if util::has_kobo_attr(&field.attrs, "view_distance") {
+                self.concurrent_support.view_distance = true;
+                field.ty = parse_quote!(KoboViewDistance);
+            }
+            util::strip_kobo_attrs(&mut field.attrs);
         }
     }
 
@@ -451,6 +465,7 @@ impl<'a> Lowerer<'a> {
         if !block_mutates_binding(&for_loop.body, &source_ident) {
             return false;
         }
+        self.record_iterator_materialization_note(&source_ident);
 
         let snapshot_ident =
             quote::format_ident!("__kobo_iter_snapshot_{}", self.iter_snapshot_counter);
@@ -472,6 +487,32 @@ impl<'a> Lowerer<'a> {
         });
         block.stmts[index] = syn::Stmt::Expr(materialized_block, None);
         true
+    }
+
+    fn record_iterator_materialization_note(&mut self, source_ident: &syn::Ident) {
+        let Some(binding) = self
+            .ast
+            .iter_bindings()
+            .find(|binding| binding.ident == *source_ident)
+        else {
+            return;
+        };
+        let Some(node) = self.plan.node_for_binding(binding) else {
+            return;
+        };
+        if self.annotation_notes.iter().any(|note| {
+            note.node == node && note.reason.starts_with("iterator-materialization-debt")
+        }) {
+            return;
+        }
+        let (kobo_line, _) = self.ast.line_col(binding.span);
+        self.annotation_notes.push(AnnotationNote {
+            node,
+            binding_name: binding.ident.to_string(),
+            kobo_line,
+            reason: "iterator-materialization-debt: materialized iter() snapshot before mutation"
+                .to_owned(),
+        });
     }
 
     pub(super) fn lower_nested_block(&mut self, block: &mut syn::Block, scopes: &mut ScopeStack) {

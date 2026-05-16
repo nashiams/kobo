@@ -642,6 +642,10 @@ fn phase_10_edge_backend_registry_lists_backends_without_executing_them() {
     let output = run(&strings(&["sim", "backends", "--json"]));
     assert_success(&output, "phase 10 backend registry listing");
     let text = output.combined();
+    let value: Value = serde_json::from_str(&output.stdout).expect("backend JSON should parse");
+    assert_eq!(value["v085_metadata_registry"]["version"], "v0.8.5");
+    assert_eq!(value["v085_metadata_registry"]["executed"], false);
+    assert_eq!(value["v085_metadata_registry"]["metadata_only"], true);
     for backend in [
         "Loom",
         "Shuttle",

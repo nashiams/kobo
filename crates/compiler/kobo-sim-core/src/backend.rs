@@ -3,10 +3,18 @@ use crate::core::{ModeledBoundary, ScenarioOperation};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendCapability {
     pub name: &'static str,
+    pub display_name: &'static str,
     pub executes_in_v10: bool,
     pub integration_level: &'static str,
     pub scenario_execution: &'static str,
     pub role: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataBackendCapability {
+    pub name: &'static str,
+    pub display_name: &'static str,
+    pub backend_fit: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +55,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
     &[
         BackendCapability {
             name: "generated-rust-process",
+            display_name: "generated-rust-process",
             executes_in_v10: true,
             integration_level: "generated-scenario",
             scenario_execution: "compiler-owned-generated-rust",
@@ -54,6 +63,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         },
         BackendCapability {
             name: "proptest",
+            display_name: "proptest",
             executes_in_v10: true,
             integration_level: "input-generation",
             scenario_execution: "stateful-generated-inputs",
@@ -61,6 +71,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         },
         BackendCapability {
             name: "loom",
+            display_name: "Loom",
             executes_in_v10: true,
             integration_level: "generated-scenario",
             scenario_execution: "lowered-scenario-loom",
@@ -69,13 +80,31 @@ pub fn capabilities() -> &'static [BackendCapability] {
         },
         BackendCapability {
             name: "shuttle",
+            display_name: "Shuttle",
             executes_in_v10: false,
             integration_level: "metadata-only",
             scenario_execution: "not-linked",
             role: "async backend profile metadata; external crate adapter not linked",
         },
         BackendCapability {
+            name: "turmoil",
+            display_name: "Turmoil",
+            executes_in_v10: false,
+            integration_level: "metadata-only",
+            scenario_execution: "not-linked",
+            role: "external network backend metadata; external crate adapter not linked",
+        },
+        BackendCapability {
+            name: "madsim",
+            display_name: "Madsim",
+            executes_in_v10: false,
+            integration_level: "metadata-only",
+            scenario_execution: "not-linked",
+            role: "external distributed backend metadata; external crate adapter not linked",
+        },
+        BackendCapability {
             name: "network-design",
+            display_name: "network-design",
             executes_in_v10: true,
             integration_level: "modeled-island",
             scenario_execution: "in-process-network-state-machine",
@@ -83,10 +112,46 @@ pub fn capabilities() -> &'static [BackendCapability] {
         },
         BackendCapability {
             name: "failpoints",
+            display_name: "failpoints",
             executes_in_v10: true,
             integration_level: "modeled-island",
             scenario_execution: "compiler-owned-failure-hooks",
             role: "compiler-owned failure injection hooks",
+        },
+    ]
+}
+
+pub fn v085_metadata_capabilities() -> &'static [MetadataBackendCapability] {
+    &[
+        MetadataBackendCapability {
+            name: "loom",
+            display_name: "Loom",
+            backend_fit: "sync concurrency interleavings",
+        },
+        MetadataBackendCapability {
+            name: "shuttle",
+            display_name: "Shuttle",
+            backend_fit: "async spawn/select schedule exploration",
+        },
+        MetadataBackendCapability {
+            name: "turmoil",
+            display_name: "Turmoil",
+            backend_fit: "network schedule exploration metadata",
+        },
+        MetadataBackendCapability {
+            name: "madsim",
+            display_name: "Madsim",
+            backend_fit: "distributed schedule exploration metadata",
+        },
+        MetadataBackendCapability {
+            name: "proptest",
+            display_name: "proptest",
+            backend_fit: "input and property exploration",
+        },
+        MetadataBackendCapability {
+            name: "failpoints",
+            display_name: "failpoints",
+            backend_fit: "manual failure injection points",
         },
     ]
 }

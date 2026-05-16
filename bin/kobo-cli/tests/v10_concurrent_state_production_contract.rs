@@ -1,5 +1,8 @@
 mod v09_common;
 
+use std::fs;
+
+use serde_json::Value;
 use v09_common::{
     assert_contains, assert_not_contains, assert_success, first_json, path_arg, run_kobo, s,
     TestProject,
@@ -63,6 +66,76 @@ fn generated_queue_ops() {
         &json["events"].to_string(),
         "seed=41",
         "fuzz metadata should be derived from the requested base seed",
+    );
+}
+
+#[test]
+fn fuzz_harness_agreement_is_independent() {
+    let project = TestProject::new("v10-fuzz-independent");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "stateful-input")]
+fn generated_queue_ops() {
+    ward.random.u64();
+    ward.storage.write("message");
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--fuzz"),
+            s("--seed"),
+            s("41"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "fuzzed stateful-input witness should write");
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("fuzz witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    let events = witness["events"].to_string();
+    assert_contains(
+        &events,
+        "fuzz-case",
+        "witness should retain the fuzz-driver event stream",
+    );
+    assert_contains(
+        &events,
+        "stateful-input-op",
+        "witness should retain generated stateful input operations",
+    );
+    assert_eq!(witness["replay_guarantee"].as_str(), Some("partial"));
+    assert_eq!(witness["exactness"].as_str(), Some("partial"));
+    let fuzz_driver_trace_hash = witness["execution_digest"]["fuzz_driver_trace_hash"]
+        .as_str()
+        .expect("fuzz-driver evidence must have its own digest");
+    assert!(
+        !fuzz_driver_trace_hash.is_empty(),
+        "fuzz-driver evidence must have its own digest: {witness}"
+    );
+    assert_ne!(
+        witness["execution_digest"]["semantic_trace_hash"].as_str(),
+        Some(fuzz_driver_trace_hash),
+        "CLI fuzz aggregation must not replace the semantic trace hash"
+    );
+    assert_ne!(
+        witness["execution_digest"]["harness_trace_hash"].as_str(),
+        Some(fuzz_driver_trace_hash),
+        "CLI fuzz aggregation must not replace the generated-harness trace hash"
     );
 }
 

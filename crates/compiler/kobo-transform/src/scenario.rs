@@ -5,7 +5,6 @@ use kobo_ir::{
     ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
-use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{
     Block, Expr, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath, ExprStruct, File,
@@ -61,7 +60,6 @@ fn lower_function(
         call_depth: 0,
     };
     let mut env = BindingEnv::default();
-    lowerer.record_function_coverage(function);
     lowerer.execute_block(&function.block, &mut env);
     lowerer.operations.push(ScenarioOp {
         span: KoboSpan::generated(ast.file_id),
@@ -150,13 +148,6 @@ impl BindingEnv {
 }
 
 impl<'a> ScenarioLowerer<'a> {
-    fn record_function_coverage(&mut self, function: &'a ItemFn) {
-        let tokens = function.block.to_token_stream().to_string();
-        if tokens.contains("select") && tokens.contains('!') {
-            self.record_unsupported_construct("tokio::select!");
-        }
-    }
-
     fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) {
         for statement in &block.stmts {
             self.execute_statement(statement, env);

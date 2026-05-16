@@ -48,13 +48,12 @@ pub(super) fn cmd_test(
     let mut session = super::session::build_session(file, Some(KoboMode::Checked))?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
-    let mut scenario_program = kobo_driver::build_scenario_program(
+    let scenario_program = kobo_driver::build_scenario_program(
         &artifacts,
         &target_name,
         document.source_hash.clone(),
         &profile_roles.backend_profile,
     )?;
-    attach_source_coverage(&mut scenario_program, &document.source);
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
         profile: profile_roles.backend_profile.clone(),
@@ -257,15 +256,6 @@ fn resolve_profile_roles(
     }
 }
 
-fn attach_source_coverage(program: &mut ScenarioProgram, source: &str) {
-    if source.contains("select!") || source.contains("select !") || source.contains(":: select !") {
-        let label = "tokio::select!".to_owned();
-        if !program.coverage.unsupported_constructs.contains(&label) {
-            program.coverage.unsupported_constructs.push(label);
-        }
-    }
-}
-
 fn default_budget(sim_profile: &str) -> Option<u64> {
     match sim_profile {
         "quick" => Some(64),
@@ -284,19 +274,13 @@ fn run_fuzz_portfolio(
     plan: &FuzzPlan,
 ) -> anyhow::Result<FullDepthRun> {
     let mut combined_events = Vec::new();
+    let mut fuzz_driver_events = Vec::new();
     let mut last_run = None;
 
     for case in &plan.cases {
-        combined_events.push(ScenarioEvent {
-            kind: "fuzz-case".to_owned(),
-            label: Some(format!(
-                "seed={};case={};derived_seed={};strategy=proptest-stateful-input",
-                plan.base_seed, case.index, case.seed
-            )),
-            value: Some(case.seed),
-        });
-        combined_events.extend(fuzz_operation_events(case));
-        combined_events.extend(fuzz_shrink_candidate_events(case));
+        let case_fuzz_events = fuzz_driver_events_for_case(case, plan.base_seed);
+        fuzz_driver_events.extend(case_fuzz_events.iter().cloned());
+        combined_events.extend(case_fuzz_events);
         let mut case_options = options.clone();
         case_options.seed = case.seed;
         let mut run = kobo_sim_core::run_full_depth_from_program(
@@ -307,8 +291,7 @@ fn run_fuzz_portfolio(
         )?;
         combined_events.extend(run.events.iter().cloned());
         if run.failure.is_some() {
-            run.events = combined_events;
-            refresh_digest_for_events(&mut run)?;
+            attach_fuzz_driver_evidence(&mut run, combined_events, &fuzz_driver_events)?;
             return Ok(run);
         }
         last_run = Some(run);
@@ -332,6 +315,8 @@ fn run_fuzz_portfolio(
             operation_count: 0,
             semantic_trace_hash: String::new(),
             harness_trace_hash: String::new(),
+            fuzz_driver_trace_hash: None,
+            fuzz_driver_event_count: 0,
             agreement: "matched".to_owned(),
             generated_rust_hash: None,
             harness_manifest_hash: None,
@@ -344,9 +329,22 @@ fn run_fuzz_portfolio(
         boundary_decisions: Vec::new(),
         harness_manifest: None,
     });
-    run.events = combined_events;
-    refresh_digest_for_events(&mut run)?;
+    attach_fuzz_driver_evidence(&mut run, combined_events, &fuzz_driver_events)?;
     Ok(run)
+}
+
+fn fuzz_driver_events_for_case(case: &FuzzCase, base_seed: u64) -> Vec<ScenarioEvent> {
+    let mut events = vec![ScenarioEvent {
+        kind: "fuzz-case".to_owned(),
+        label: Some(format!(
+            "seed={base_seed};case={};derived_seed={};strategy=proptest-stateful-input",
+            case.index, case.seed
+        )),
+        value: Some(case.seed),
+    }];
+    events.extend(fuzz_operation_events(case));
+    events.extend(fuzz_shrink_candidate_events(case));
+    events
 }
 
 fn fuzz_operation_events(case: &FuzzCase) -> Vec<ScenarioEvent> {
@@ -381,13 +379,21 @@ fn fuzz_shrink_candidate_events(case: &FuzzCase) -> Vec<ScenarioEvent> {
         .collect()
 }
 
-fn refresh_digest_for_events(run: &mut FullDepthRun) -> anyhow::Result<()> {
-    let serialized = serde_json::to_string(&events_json(&run.events))?;
-    let trace_hash = kobo_sim_core::digest::stable_hash(&serialized);
-    run.digest.operation_count = run.events.len();
-    run.digest.semantic_trace_hash = trace_hash.clone();
-    run.digest.harness_trace_hash = trace_hash;
-    run.digest.harness_event_count = run.events.len();
+fn attach_fuzz_driver_evidence(
+    run: &mut FullDepthRun,
+    combined_events: Vec<ScenarioEvent>,
+    fuzz_driver_events: &[ScenarioEvent],
+) -> anyhow::Result<()> {
+    let serialized = serde_json::to_string(&events_json(fuzz_driver_events))?;
+    run.events = combined_events;
+    run.digest.fuzz_driver_trace_hash = Some(kobo_sim_core::digest::stable_hash(&serialized));
+    run.digest.fuzz_driver_event_count = fuzz_driver_events.len();
+    if run.replay_guarantee == ReplayGuarantee::Exact {
+        run.replay_guarantee = ReplayGuarantee::Partial;
+    }
+    if run.digest.agreement == "matched" {
+        run.digest.agreement = "matched+fuzz-driver-partial".to_owned();
+    }
     Ok(())
 }
 
@@ -622,6 +628,8 @@ fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
         "event_hash": run.digest.semantic_trace_hash,
         "semantic_trace_hash": run.digest.semantic_trace_hash,
         "harness_trace_hash": run.digest.harness_trace_hash,
+        "fuzz_driver_trace_hash": run.digest.fuzz_driver_trace_hash,
+        "fuzz_driver_event_count": run.digest.fuzz_driver_event_count,
         "agreement": run.digest.agreement,
         "generated_rust_hash": run.digest.generated_rust_hash,
         "harness_manifest_hash": run.digest.harness_manifest_hash,
@@ -1347,6 +1355,10 @@ fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String 
     material.push_str(&run.digest.semantic_trace_hash);
     material.push(':');
     material.push_str(&run.digest.harness_trace_hash);
+    if let Some(fuzz_driver_trace_hash) = run.digest.fuzz_driver_trace_hash.as_deref() {
+        material.push(':');
+        material.push_str(fuzz_driver_trace_hash);
+    }
     kobo_sim_core::digest::stable_hash(&material)
 }
 

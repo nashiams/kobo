@@ -59,6 +59,22 @@ fn durable_queue() {
         "boundary_policies",
         "witness must serialize boundary policies",
     );
+    let witness_json: serde_json::Value =
+        serde_json::from_str(&witness).expect("witness JSON should parse");
+    let harness_path = witness_json["harness_manifest"]["harness_rs_path"]
+        .as_str()
+        .expect("storage witness should include harness source");
+    let harness_source = fs::read_to_string(harness_path).expect("harness source should read");
+    assert_contains(
+        &harness_source,
+        "std::fs::OpenOptions",
+        "storage facade must execute through the generated Rust filesystem harness",
+    );
+    assert_contains(
+        &harness_source,
+        "sync_all",
+        "storage commit/flush/fsync should touch durable filesystem APIs",
+    );
 
     let replay = run_kobo(
         &[

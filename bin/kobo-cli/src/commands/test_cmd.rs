@@ -597,6 +597,9 @@ fn write_run_witness(
         "backend": backend_for_profile(&run.profile),
         "backend_replay": backend_replay_token,
         "backend_replay_token": backend_replay_token,
+        "ecosystem_scope": ecosystem_scope(run),
+        "full_ecosystem_exploration": full_ecosystem_exploration(run),
+        "replay_contract": replay_contract_json(run),
         "scheduler": scheduler_json(sim_profile, seed, run),
         "execution_digest": execution_digest_json(run),
         "harness_manifest": run.harness_manifest.clone(),
@@ -623,6 +626,34 @@ fn write_run_witness(
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
     Ok(witness_path)
+}
+
+fn replay_contract_json(run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "scope": ecosystem_scope(run),
+        "full_ecosystem_exploration": full_ecosystem_exploration(run),
+        "facades": run
+            .harness_manifest
+            .as_ref()
+            .map(|manifest| manifest.facades.clone())
+            .unwrap_or_default(),
+        "semantic_engine": run.digest.semantic_engine,
+        "harness_engine": run.digest.harness_engine,
+        "agreement": run.digest.agreement,
+    })
+}
+
+fn ecosystem_scope(run: &FullDepthRun) -> String {
+    run.harness_manifest
+        .as_ref()
+        .map(|manifest| manifest.execution_scope.clone())
+        .unwrap_or_else(|| "semantic-only".to_owned())
+}
+
+fn full_ecosystem_exploration(run: &FullDepthRun) -> bool {
+    run.harness_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.full_ecosystem_exploration)
 }
 
 fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
@@ -1345,7 +1376,8 @@ fn backend_for_profile(profile: &str) -> &'static str {
         "sync" => "loom",
         "stateful-input" => "proptest",
         "failpoint" => "failpoints",
-        "network" | "network-design" => "network-design",
+        "network" | "network-design" => "turmoil",
+        "distributed" | "madsim" => "madsim",
         _ => "shuttle",
     }
 }

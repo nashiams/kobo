@@ -1,8 +1,15 @@
 mod v09_common;
 
+use std::fs;
+use std::time::Duration;
+
+use serde_json::Value;
 use v09_common::{
-    assert_contains, assert_failure, assert_success, path_arg, run_kobo, s, TestProject,
+    assert_contains, assert_failure, assert_success, path_arg, run_kobo, run_kobo_with_timeout, s,
+    TestProject,
 };
+
+const NETWORK_REPLAY_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[test]
 fn modeled_network_drop_delay_reorder_events_are_serialized() {
@@ -19,7 +26,7 @@ fn network_island() {
 "#,
     );
 
-    let output = run_kobo(
+    let output = run_kobo_with_timeout(
         &[
             s("test"),
             s("--sim"),
@@ -27,12 +34,15 @@ fn network_island() {
             s("--seed"),
             s("21"),
             s("--events=json"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
             path_arg(&file),
         ],
         &project.root,
+        NETWORK_REPLAY_TIMEOUT,
     );
 
-    assert_success(&output, "modeled in-process network island should run");
+    assert_success(&output, "generated loopback network harness should run");
     let text = output.combined();
     for event in [
         "network-send",
@@ -46,6 +56,23 @@ fn network_island() {
             "network event stream should include modeled hooks",
         );
     }
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("network success should still write a witness when requested");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    let harness_path = witness["harness_manifest"]["harness_rs_path"]
+        .as_str()
+        .expect("network witness should include harness source");
+    let harness_source = fs::read_to_string(harness_path).expect("harness source should read");
+    assert_contains(
+        &harness_source,
+        "std::net::UdpSocket",
+        "network facade must execute through the generated Rust loopback network harness",
+    );
 }
 
 #[test]

@@ -2,7 +2,9 @@ use kobo_ir::{
     FileId, KoboSpan, ScenarioCoverageFacts, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind,
     ScenarioProgram,
 };
-use kobo_sim_core::{run_semantics_from_program, ReplayGuarantee, ScenarioOptions};
+use kobo_sim_core::{
+    run_full_depth, run_semantics_from_program, EngineMode, ReplayGuarantee, ScenarioOptions,
+};
 
 #[test]
 fn compiler_semantics_tracks_scenario_operations_and_obligation() {
@@ -59,6 +61,7 @@ fn compiler_semantics_reports_coverage_gap_for_unmodeled_construct() {
         coverage: ScenarioCoverageFacts {
             unsupported_constructs: vec!["tokio::select!".to_owned()],
             opaque_boundaries: Vec::new(),
+            call_graph_sccs: Vec::new(),
         },
     };
 
@@ -73,4 +76,34 @@ fn compiler_semantics_reports_coverage_gap_for_unmodeled_construct() {
             .any(|item| item.contains("tokio::select")),
         "coverage gap should name tokio::select"
     );
+}
+
+#[test]
+fn source_level_full_depth_replay_compiles_source_without_driver_program() {
+    let source = r#"
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "sync")]
+fn direct_source_scenario() {
+    let delivery = Delivery {};
+    delivery.ack();
+}
+"#;
+
+    let run = run_full_depth(
+        source,
+        "direct_source_scenario",
+        EngineMode::Both,
+        ScenarioOptions {
+            profile: "sync".to_owned(),
+            ..ScenarioOptions::default()
+        },
+    )
+    .expect("source-level full-depth replay should compile source directly");
+
+    assert_eq!(run.target, "direct_source_scenario");
+    assert_eq!(run.replay_guarantee, ReplayGuarantee::Exact);
+    assert_eq!(run.digest.semantic_engine, "driver-kir-scenario");
+    assert_eq!(run.digest.harness_engine, "generated-rust-loom-process");
 }

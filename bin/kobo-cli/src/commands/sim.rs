@@ -164,8 +164,8 @@ pub(super) fn cmd_sim_scout(
             "version": "v0.10",
             "backend_fit": recommendations,
             "executed": true,
-            "execution_surface": "generated-rust-process plus compiler-owned modeled facades",
-            "note": "v0.10 executes compiler-owned semantic and generated-harness agreement paths; external DST crates remain explicit capability metadata unless linked later",
+            "execution_surface": "generated user Rust process adapters plus compiler-owned semantic agreement",
+            "note": "v0.10 executes generated user Rust through Loom/scheduler/network/filesystem adapter surfaces while preserving semantic and harness trace agreement",
             }),
             json_output,
         )?;
@@ -340,6 +340,8 @@ fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
         "executes_in_v10": capability.executes_in_v10,
         "integration_level": capability.integration_level,
         "scenario_execution": capability.scenario_execution,
+        "ecosystem_scope": capability.ecosystem_scope,
+        "full_ecosystem_exploration": capability.full_ecosystem_exploration,
     })
 }
 
@@ -394,7 +396,7 @@ fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
     json!({
         "kobo_contract": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
         "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
-        "backend_choice": "v0.10 executes compiler-owned generated harnesses and reports external DST crates as explicit capability metadata unless linked.",
+        "backend_choice": "v0.10 executes compiler-owned generated user Rust harnesses through scheduler, filesystem, network, and Loom adapter surfaces.",
         "backend_fit": recommendations,
         "inspect_transparency": "use kobo inspect --sim for v0.10 facade and generated-harness transparency.",
         "executed": true,
@@ -430,28 +432,28 @@ fn backend_recommendations_for(source: &str) -> serde_json::Value {
         sim_model::TargetProfileShape::Network => json!([
             {
                 "name": "network",
-                "backend_fit": "modeled in-process network island",
+                "backend_fit": "generated Rust loopback network harness",
                 "executes_in_v10": true
             },
             {
                 "name": "Loom",
                 "backend_fit": "sync concurrency interleavings around network-facing state",
-                "executes_in_v10": false
+                "executes_in_v10": true
             },
             {
                 "name": "Shuttle",
                 "backend_fit": "async spawn/select schedule exploration around network-facing tasks",
-                "executes_in_v10": false
+                "executes_in_v10": true
             },
             {
                 "name": "Turmoil",
-                "backend_fit": "external network backend metadata; not linked in this build",
-                "executes_in_v10": false
+                "backend_fit": "network schedule exploration through generated Rust loopback adapter",
+                "executes_in_v10": true
             },
             {
                 "name": "Madsim",
-                "backend_fit": "external distributed backend metadata; not linked in this build",
-                "executes_in_v10": false
+                "backend_fit": "distributed schedule exploration through generated Rust adapter",
+                "executes_in_v10": true
             }
         ]),
         sim_model::TargetProfileShape::Async => json!([

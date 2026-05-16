@@ -372,9 +372,9 @@ fn public_backend_commands_report_v10_execution_truth() {
             .iter()
             .any(|backend| backend["name"] == "loom"
                 && backend["executes_in_v10"] == true
-                && backend["integration_level"] == "generated-scenario"
-                && backend["scenario_execution"] == "lowered-scenario-loom")),
-        "phase 09 Loom support must execute the compiler-owned generated scenario model, not a fixed smoke model: {value}"
+                && backend["integration_level"] == "generated-user-rust"
+                && backend["scenario_execution"] == "generated-user-rust-loom")),
+        "phase 09 Loom support must execute generated user Rust inside Loom, not a lowered scenario model: {value}"
     );
     assert!(
         !output.combined().contains("v0.9"),
@@ -418,9 +418,8 @@ fn loom_backend_digest_discloses_generated_scenario_execution() {
     assert_eq!(witness["backend_profile"], "sync");
     assert_eq!(witness["backend"], "loom");
     assert_eq!(
-        witness["execution_digest"]["harness_engine"],
-        "generated-rust-process+loom-generated-scenario",
-        "v0.10 sync backend must bind the generated scenario model into Loom execution"
+        witness["execution_digest"]["harness_engine"], "generated-rust-loom-process",
+        "v0.10 sync backend must bind generated user Rust into Loom execution"
     );
 }
 

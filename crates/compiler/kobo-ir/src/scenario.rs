@@ -126,4 +126,12 @@ pub struct ScenarioBoundary {
 pub struct ScenarioCoverageFacts {
     pub unsupported_constructs: Vec<String>,
     pub opaque_boundaries: Vec<String>,
+    #[serde(default)]
+    pub call_graph_sccs: Vec<ScenarioCallGraphScc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioCallGraphScc {
+    pub functions: Vec<String>,
+    pub is_recursive: bool,
 }

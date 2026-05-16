@@ -1,7 +1,7 @@
 use kobo_errors::KErrorCode;
 use kobo_ir::ScenarioProgram;
 
-use crate::error::{Result, SimCoreError};
+use crate::error::Result;
 use crate::harness_manifest::HarnessManifest;
 use crate::network::NetworkModel;
 use crate::storage::StorageModel;
@@ -237,8 +237,10 @@ pub enum ScenarioOperation {
     },
 }
 
-pub fn run_compiler_semantics(_source: &str, _target: &str) -> Result<FullDepthRun> {
-    Err(SimCoreError::SourceLoweringUnavailable)
+pub fn run_compiler_semantics(source: &str, target: &str) -> Result<FullDepthRun> {
+    let options = ScenarioOptions::default();
+    let artifacts = crate::source::compile_source_for_replay(source, target, &options.profile)?;
+    run_semantics_from_program(&artifacts.program, &options)
 }
 
 pub fn run_semantics_from_program(
@@ -250,12 +252,18 @@ pub fn run_semantics_from_program(
 }
 
 pub fn run_full_depth(
-    _source: &str,
-    _target: &str,
-    _mode: EngineMode,
-    _options: ScenarioOptions,
+    source: &str,
+    target: &str,
+    mode: EngineMode,
+    options: ScenarioOptions,
 ) -> Result<FullDepthRun> {
-    Err(SimCoreError::SourceFullDepthUnavailable)
+    let artifacts = crate::source::compile_source_for_replay(source, target, &options.profile)?;
+    run_full_depth_from_program(
+        &artifacts.program,
+        &artifacts.generated_rust,
+        &options,
+        mode,
+    )
 }
 
 pub fn run_full_depth_from_program(

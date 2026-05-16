@@ -19,6 +19,15 @@ pub fn check_harness_agreement(
     mut semantic: FullDepthRun,
     _mode: EngineMode,
 ) -> Result<FullDepthRun> {
+    if semantic.failure.as_ref().is_some_and(|failure| {
+        matches!(
+            failure.code,
+            KErrorCode::K0102 | KErrorCode::K0103 | KErrorCode::K0105 | KErrorCode::K0107
+        )
+    }) {
+        return Ok(semantic);
+    }
+
     if !semantic.coverage.unsupported_constructs.is_empty() {
         semantic.digest.agreement = agreement_label(TraceAgreement::CoverageIncomplete);
         semantic.replay_guarantee = ReplayGuarantee::Partial;
@@ -34,31 +43,21 @@ pub fn check_harness_agreement(
         });
         return Ok(semantic);
     }
-    if semantic.failure.as_ref().is_some_and(|failure| {
-        matches!(
-            failure.code,
-            KErrorCode::K0102 | KErrorCode::K0103 | KErrorCode::K0105 | KErrorCode::K0107
-        )
-    }) {
-        return Ok(semantic);
-    }
 
     let harness = run_generated_harness(program, generated_rust, options)?;
     let mut harness_hash = crate::digest::events_hash(&harness.events);
     let manifest_json = serde_json::to_string(&harness.manifest)
         .map_err(|source| SimCoreError::json("serialize harness manifest", source))?;
-    let lowered_for_backend = crate::lower::lower_from_program(program, &semantic.profile);
     let backend_execution = crate::backend::execute_profile(
         &semantic.profile,
         options.seed,
         &semantic.digest.semantic_trace_hash,
-        &lowered_for_backend.operations,
+        &harness_hash,
+        &harness.manifest.generated_rust_hash,
+        &harness.events,
     );
 
-    semantic.digest.harness_engine = backend_execution
-        .as_ref()
-        .map(|execution| format!("generated-rust-process+{}", execution.engine))
-        .unwrap_or_else(|| "generated-rust-process".to_owned());
+    semantic.digest.harness_engine = harness.engine.clone();
     if let Some(execution) = backend_execution {
         harness_hash =
             crate::digest::stable_hash(&format!("{}:{}", harness_hash, execution.token_material));
@@ -96,6 +95,7 @@ pub fn check_harness_agreement(
 struct HarnessRun {
     events: Vec<ScenarioEvent>,
     manifest: HarnessManifest,
+    engine: String,
 }
 
 struct HarnessObligation {
@@ -129,16 +129,113 @@ fn run_generated_harness(
     std::fs::create_dir_all(&harness_dir)
         .map_err(|source| SimCoreError::io("create harness directory", source))?;
     let harness_source = harness_source(program, generated_rust, options)?;
-    let harness_rs_path = harness_dir.join("harness.rs");
-    let harness_bin_path = harness_dir.join(binary_name("harness_bin"));
+    let uses_loom = options.profile == "sync";
+    let harness_rs_path = if uses_loom {
+        harness_dir.join("src").join("main.rs")
+    } else {
+        harness_dir.join("harness.rs")
+    };
+    if let Some(parent) = harness_rs_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|source| SimCoreError::io("create harness source directory", source))?;
+    }
     std::fs::write(&harness_rs_path, harness_source)
         .map_err(|source| SimCoreError::io("write generated harness source", source))?;
+    let process = if uses_loom {
+        run_loom_cargo_harness(&harness_dir)?
+    } else {
+        run_rustc_harness(&harness_dir, &harness_rs_path)?
+    };
+    let events = parse_harness_events(&process.stdout)?;
+    let engine = if uses_loom {
+        "generated-rust-loom-process"
+    } else {
+        "generated-rust-process"
+    };
+    let manifest = HarnessManifest {
+        source_hash: program.source_hash.clone(),
+        generated_rust_hash,
+        execution_scope: harness_execution_scope(options).to_owned(),
+        full_ecosystem_exploration: false,
+        facades: harness_facades(program),
+        harness_dir: harness_dir.display().to_string(),
+        harness_rs_path: harness_rs_path.display().to_string(),
+        command: process.command,
+        exit_code: process.exit_code,
+        stdout_hash: crate::digest::stable_hash(&process.stdout),
+        stderr_hash: crate::digest::stable_hash(&process.stderr),
+        event_count: events.len(),
+    };
+    let manifest_path = harness_dir.join("manifest.json");
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|source| SimCoreError::json("serialize harness manifest", source))?;
+    std::fs::write(&manifest_path, manifest_json)
+        .map_err(|source| SimCoreError::io("write harness manifest", source))?;
+    Ok(HarnessRun {
+        events,
+        manifest,
+        engine: engine.to_owned(),
+    })
+}
+
+fn harness_execution_scope(options: &ScenarioOptions) -> &'static str {
+    match options.profile.as_str() {
+        "sync" => "generated-user-rust-loom",
+        "network" | "network-design" => "generated-user-rust-os-facade",
+        "async" | "distributed" | "madsim" => "generated-user-rust-adapter",
+        _ => "generated-user-rust",
+    }
+}
+
+fn harness_facades(program: &ScenarioProgram) -> Vec<String> {
+    let mut facades = Vec::new();
+    for operation in &program.operations {
+        match &operation.kind {
+            ScenarioOpKind::ModeledEffect { boundary } => match boundary {
+                ScenarioModeledBoundary::WardTime => facades.push("time-facade".to_owned()),
+                ScenarioModeledBoundary::WardRandom => facades.push("random-facade".to_owned()),
+                ScenarioModeledBoundary::WardTask => {
+                    facades.push("scheduler-task-facade".to_owned());
+                    facades.push("tokio-spawn-facade".to_owned());
+                }
+            },
+            ScenarioOpKind::StorageEvent { .. } => {
+                facades.push("storage-filesystem-facade".to_owned());
+            }
+            ScenarioOpKind::NetworkEvent { .. } => {
+                facades.push("network-loopback-facade".to_owned());
+            }
+            ScenarioOpKind::ExternalBoundary {
+                crate_name, policy, ..
+            } if is_replay_owned_boundary(policy) => {
+                facades.push(format!(
+                    "external-boundary-{}-facade:{crate_name}",
+                    policy.as_str()
+                ));
+            }
+            _ => {}
+        }
+    }
+    facades.sort();
+    facades.dedup();
+    facades
+}
+
+struct HarnessProcess {
+    command: Vec<String>,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_rustc_harness(harness_dir: &PathBuf, harness_rs_path: &PathBuf) -> Result<HarnessProcess> {
+    let harness_bin_path = harness_dir.join(binary_name("harness_bin"));
     remove_existing_output(&harness_bin_path)?;
 
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
     let output = Command::new(&rustc)
         .arg("--edition=2021")
-        .arg(&harness_rs_path)
+        .arg(harness_rs_path)
         .arg("-o")
         .arg(&harness_bin_path)
         .output()
@@ -151,26 +248,68 @@ fn run_generated_harness(
     let run_output = Command::new(&harness_bin_path)
         .output()
         .map_err(|source| SimCoreError::io("run generated harness", source))?;
-    let stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
-    let events = parse_harness_events(&stdout)?;
-    let manifest = HarnessManifest {
-        source_hash: program.source_hash.clone(),
-        generated_rust_hash,
-        harness_dir: harness_dir.display().to_string(),
-        harness_rs_path: harness_rs_path.display().to_string(),
+    Ok(HarnessProcess {
         command: vec![harness_bin_path.display().to_string()],
         exit_code: run_output.status.code().unwrap_or(-1),
-        stdout_hash: crate::digest::stable_hash(&stdout),
-        stderr_hash: crate::digest::stable_hash(&stderr),
-        event_count: events.len(),
-    };
-    let manifest_path = harness_dir.join("manifest.json");
-    let manifest_json = serde_json::to_string_pretty(&manifest)
-        .map_err(|source| SimCoreError::json("serialize harness manifest", source))?;
-    std::fs::write(&manifest_path, manifest_json)
-        .map_err(|source| SimCoreError::io("write harness manifest", source))?;
-    Ok(HarnessRun { events, manifest })
+        stdout: String::from_utf8_lossy(&run_output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&run_output.stderr).to_string(),
+    })
+}
+
+fn run_loom_cargo_harness(harness_dir: &PathBuf) -> Result<HarnessProcess> {
+    let manifest_path = harness_dir.join("Cargo.toml");
+    std::fs::write(&manifest_path, loom_cargo_manifest())
+        .map_err(|source| SimCoreError::io("write loom harness manifest", source))?;
+    let target_dir = harness_dir.join("target");
+    if target_dir.exists() {
+        std::fs::remove_dir_all(&target_dir)
+            .map_err(|source| SimCoreError::io("remove stale loom harness target", source))?;
+    }
+
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let output = Command::new(&cargo)
+        .arg("run")
+        .arg("--quiet")
+        .arg("--offline")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()
+        .map_err(|source| SimCoreError::io("run loom harness cargo", source))?;
+    if target_dir.exists() {
+        std::fs::remove_dir_all(&target_dir)
+            .map_err(|source| SimCoreError::io("remove loom harness target", source))?;
+    }
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(SimCoreError::HarnessCompileFailed { stderr });
+    }
+    Ok(HarnessProcess {
+        command: vec![
+            cargo,
+            "run".to_owned(),
+            "--quiet".to_owned(),
+            "--offline".to_owned(),
+            "--manifest-path".to_owned(),
+            manifest_path.display().to_string(),
+        ],
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+fn loom_cargo_manifest() -> &'static str {
+    r#"[workspace]
+
+[package]
+name = "kobo_generated_loom_harness"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+loom = "0.7"
+"#
 }
 
 fn remove_existing_output(path: &PathBuf) -> Result<()> {
@@ -232,7 +371,11 @@ fn instrument_generated_rust(
     }
 
     let final_events = terminal_failure_events(program, options);
-    source.push_str(&main_wrapper_source(&program.target, &final_events)?);
+    source.push_str(&main_wrapper_source(
+        &program.target,
+        &final_events,
+        options,
+    )?);
     Ok(source)
 }
 
@@ -393,7 +536,40 @@ fn storage_support_source(program: &ScenarioProgram, options: &ScenarioOptions) 
         methods.push("write".to_owned());
         methods.push("crash_after_write".to_owned());
     }
-    let mut source = String::from("impl __KoboWardStorage {\n");
+    let mut source = String::from(
+        r#"
+fn __kobo_storage_root() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("kobo-generated-storage-{}", std::process::id()))
+}
+
+fn __kobo_storage_journal_path() -> std::path::PathBuf {
+    let root = __kobo_storage_root();
+    let _ = std::fs::create_dir_all(&root);
+    root.join("journal.log")
+}
+
+fn __kobo_storage_write_record() {
+    let path = __kobo_storage_journal_path();
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = std::io::Write::write_all(&mut file, b"kobo-storage-record\n");
+    }
+}
+
+fn __kobo_storage_commit_record() {
+    let path = __kobo_storage_journal_path();
+    if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.sync_all();
+    }
+}
+
+fn __kobo_storage_recover_record() {
+    let path = __kobo_storage_journal_path();
+    let _ = std::fs::read(path);
+}
+
+"#,
+    );
+    source.push_str("impl __KoboWardStorage {\n");
     for method in methods {
         source.push_str("    fn ");
         source.push_str(&method);
@@ -402,6 +578,8 @@ fn storage_support_source(program: &ScenarioProgram, options: &ScenarioOptions) 
         } else {
             source.push_str("(&self) {\n        ");
         }
+        source.push_str(&storage_runtime_statement(&method));
+        source.push_str("\n        ");
         source.push_str(&event_print_statements(
             &crate::storage::events_for_action(&method, options.seed),
         )?);
@@ -409,6 +587,23 @@ fn storage_support_source(program: &ScenarioProgram, options: &ScenarioOptions) 
     }
     source.push_str("}\n");
     Ok(source)
+}
+
+fn storage_runtime_statement(method: &str) -> &'static str {
+    match normalized_storage_method(method).as_str() {
+        "write" | "append" | "journal" => "__kobo_storage_write_record();",
+        "commit" | "flush" | "fsync" => "__kobo_storage_commit_record();",
+        "recover" | "replay" => "__kobo_storage_recover_record();",
+        _ => "",
+    }
+}
+
+fn normalized_storage_method(method: &str) -> String {
+    method
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn network_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
@@ -424,11 +619,30 @@ fn network_support_source(program: &ScenarioProgram, options: &ScenarioOptions) 
     if methods.is_empty() {
         methods.extend(["send", "delay", "reorder", "drop"].map(str::to_owned));
     }
-    let mut source = String::from("impl __KoboWardNetwork {\n");
+    let mut source = String::from(
+        r#"
+fn __kobo_network_loopback() {
+    let Ok(socket) = std::net::UdpSocket::bind("127.0.0.1:0") else {
+        return;
+    };
+    let Ok(address) = socket.local_addr() else {
+        return;
+    };
+    let _ = socket.set_nonblocking(true);
+    let _ = socket.send_to(b"kobo-network-frame", address);
+    let mut buffer = [0_u8; 64];
+    let _ = socket.recv_from(&mut buffer);
+}
+
+"#,
+    );
+    source.push_str("impl __KoboWardNetwork {\n");
     for method in methods {
         source.push_str("    fn ");
         source.push_str(&method);
         source.push_str("<T>(&self, _value: T) {\n        ");
+        source.push_str(network_runtime_statement(&method));
+        source.push_str("\n        ");
         source.push_str(&event_print_statements(
             &crate::network::harness_events_for_action(&method, options.seed),
         )?);
@@ -436,6 +650,21 @@ fn network_support_source(program: &ScenarioProgram, options: &ScenarioOptions) 
     }
     source.push_str("}\n");
     Ok(source)
+}
+
+fn network_runtime_statement(method: &str) -> &'static str {
+    match normalized_network_method(method).as_str() {
+        "send" | "receive" => "__kobo_network_loopback();",
+        _ => "",
+    }
+}
+
+fn normalized_network_method(method: &str) -> String {
+    method
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 fn inject_modeled_boundary_event(
@@ -470,15 +699,32 @@ fn instrumented_expression(expression: &str, print: &str) -> String {
     }
 }
 
-fn main_wrapper_source(target: &str, final_events: &[ScenarioEvent]) -> Result<String> {
-    let mut source = String::from("\nfn main() {\n");
+fn main_wrapper_source(
+    target: &str,
+    final_events: &[ScenarioEvent],
+    options: &ScenarioOptions,
+) -> Result<String> {
+    let mut source = if options.profile == "sync" {
+        String::from("\nfn main() {\n    loom::model(|| {\n")
+    } else {
+        String::from("\nfn main() {\n")
+    };
     source.push_str("    ");
+    if options.profile == "sync" {
+        source.push_str("    ");
+    }
     source.push_str(target);
     source.push_str("();\n");
     for event in final_events {
         source.push_str("    ");
+        if options.profile == "sync" {
+            source.push_str("    ");
+        }
         source.push_str(&event_print_statement(event)?);
         source.push('\n');
+    }
+    if options.profile == "sync" {
+        source.push_str("    });\n");
     }
     source.push_str("}\n");
     Ok(source)

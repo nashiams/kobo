@@ -38,8 +38,8 @@ pub use ownership::{
 };
 pub use resource::ResourceKind;
 pub use scenario::{
-    ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCoverageFacts, ScenarioModeledBoundary,
-    ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCallGraphScc, ScenarioCoverageFacts,
+    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 pub use solution_map::SolutionMap;
 pub use span::KoboSpan;

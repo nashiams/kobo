@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_sim_core::backend;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::sim_model;
 
@@ -318,25 +318,49 @@ fn safe_identifier(value: &str) -> String {
 pub(super) fn cmd_sim_backends(json_output: bool) -> anyhow::Result<()> {
     let backends = backend::capabilities()
         .iter()
-        .map(|capability| {
-            json!({
-                "name": capability.name,
-                "role": capability.role,
-                "executes_in_v10": capability.executes_in_v10,
-                "integration_level": capability.integration_level,
-                "scenario_execution": capability.scenario_execution,
-            })
-        })
+        .map(backend_capability_json)
         .collect::<Vec<_>>();
     print_value(
         json!({
             "version": "v0.10",
             "executed": true,
             "execution_surface": "generated-rust-process plus compiler-owned modeled facades",
+            "v085_metadata_registry": v085_metadata_registry_json(),
             "backends": backends,
         }),
         json_output,
     )
+}
+
+fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
+    json!({
+        "name": capability.name,
+        "display_name": capability.display_name,
+        "role": capability.role,
+        "executes_in_v10": capability.executes_in_v10,
+        "integration_level": capability.integration_level,
+        "scenario_execution": capability.scenario_execution,
+    })
+}
+
+fn v085_metadata_registry_json() -> Value {
+    let backends = backend::v085_metadata_capabilities()
+        .iter()
+        .map(|capability| {
+            json!({
+                "name": capability.name,
+                "display_name": capability.display_name,
+                "backend_fit": capability.backend_fit,
+                "metadata_only": true,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "version": "v0.8.5",
+        "executed": false,
+        "metadata_only": true,
+        "backends": backends,
+    })
 }
 
 fn scout_source(source: &str, file: &Path) -> serde_json::Value {

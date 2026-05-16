@@ -694,3 +694,82 @@ fn select_boundary_refuses_exact_until_modeled() {
         );
     }
 }
+
+#[test]
+fn select_coverage_is_compiler_owned() {
+    let text_only_project = TestProject::new("v10-select-text-only");
+    let text_only = text_only_project.main_file(
+        r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {}
+
+#[kobo::scenario(profile = "async")]
+fn text_only_select_reference() {
+    // tokio::select! in a comment must not affect replay coverage.
+    let _doc = "tokio::select! in a string must not affect replay coverage";
+    let tx = Transaction {};
+    let _lost = tx;
+}
+"#,
+    );
+    let text_only_output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("31"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            s("--error-format=json"),
+            path_arg(&text_only),
+        ],
+        &text_only_project.root,
+    );
+    assert_failure(
+        &text_only_output,
+        "text-only select reference should fail for liveness, not coverage",
+    );
+    assert_not_contains(
+        &text_only_output.combined(),
+        "K0116",
+        "comment/string select text must not produce unsupported select coverage",
+    );
+    let text_only_witness = read_first_witness(&text_only_project);
+    assert_not_contains(
+        &text_only_witness["coverage"]["unsupported_constructs"].to_string(),
+        "tokio::select!",
+        "witness coverage must come from parsed/lowered facts, not source text",
+    );
+
+    let parsed_project = TestProject::new("v10-select-parsed");
+    let parsed_output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("31"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            s("--error-format=json"),
+            path_arg(&fixture("trap_select_boundary.kobo")),
+        ],
+        &parsed_project.root,
+    );
+    assert_failure(
+        &parsed_output,
+        "parsed tokio::select! should still downgrade exact replay",
+    );
+    assert_contains(
+        &parsed_output.combined(),
+        "K0116",
+        "actual parsed select macro should produce unsupported select coverage",
+    );
+    let parsed_witness = read_first_witness(&parsed_project);
+    assert_contains(
+        &parsed_witness["coverage"]["unsupported_constructs"].to_string(),
+        "tokio::select!",
+        "parsed select coverage must remain compiler-owned and visible",
+    );
+}

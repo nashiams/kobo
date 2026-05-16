@@ -95,13 +95,12 @@ fn replay_v1(
         super::session::build_session(&verified_source.path, Some(KoboMode::Checked))?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
         .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
-    let mut scenario_program = kobo_driver::build_scenario_program(
+    let scenario_program = kobo_driver::build_scenario_program(
         &artifacts,
         &target,
         verified_source.hash.clone(),
         profile,
     )?;
-    attach_source_coverage(&mut scenario_program, &verified_source.source);
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
         profile: profile.to_owned(),
@@ -244,15 +243,6 @@ fn witness_target_scenario(witness: &Value) -> anyhow::Result<String> {
     Ok(scenario.to_owned())
 }
 
-fn attach_source_coverage(program: &mut kobo_ir::ScenarioProgram, source: &str) {
-    if source.contains("select!") || source.contains("select !") || source.contains(":: select !") {
-        let label = "tokio::select!".to_owned();
-        if !program.coverage.unsupported_constructs.contains(&label) {
-            program.coverage.unsupported_constructs.push(label);
-        }
-    }
-}
-
 fn failure_json(source_path: &str, source: &str, run: &kobo_sim_core::FullDepthRun) -> Value {
     let Some(failure) = run.failure.as_ref() else {
         return Value::Null;
@@ -287,6 +277,8 @@ fn execution_digest_json(run: &kobo_sim_core::FullDepthRun) -> Value {
         "event_hash": run.digest.semantic_trace_hash.as_str(),
         "semantic_trace_hash": run.digest.semantic_trace_hash.as_str(),
         "harness_trace_hash": run.digest.harness_trace_hash.as_str(),
+        "fuzz_driver_trace_hash": run.digest.fuzz_driver_trace_hash.as_deref(),
+        "fuzz_driver_event_count": run.digest.fuzz_driver_event_count,
         "agreement": run.digest.agreement.as_str(),
         "generated_rust_hash": run.digest.generated_rust_hash.as_deref(),
         "harness_manifest_hash": run.digest.harness_manifest_hash.as_deref(),
@@ -421,6 +413,10 @@ fn replay_token(source_identity: &str, seed: u64, run: &kobo_sim_core::FullDepth
     material.push_str(&run.digest.semantic_trace_hash);
     material.push(':');
     material.push_str(&run.digest.harness_trace_hash);
+    if let Some(fuzz_driver_trace_hash) = run.digest.fuzz_driver_trace_hash.as_deref() {
+        material.push(':');
+        material.push_str(fuzz_driver_trace_hash);
+    }
     kobo_sim_core::digest::stable_hash(&material)
 }
 

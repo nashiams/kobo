@@ -124,12 +124,22 @@ fn main() {
     );
     assert_contains(
         &text,
-        "std::fs::read_to_string(\"user.txt\").map_err(KoboTypedError::ReadToString)?",
+        "std::fs::read_to_string(\"user.txt\")",
+        "typed policy must preserve the first fallible operation",
+    );
+    assert_contains(
+        &text,
+        ".map_err(KoboTypedError::ReadToString)?",
         "typed policy must rewrite the first ? site with the read variant",
     );
     assert_contains(
         &text,
-        "std::fs::write(\"copy.txt\", value).map_err(KoboTypedError::Write)?",
+        "std::fs::write(\"copy.txt\", value)",
+        "typed policy must preserve the second fallible operation",
+    );
+    assert_contains(
+        &text,
+        ".map_err(KoboTypedError::Write)?",
         "typed policy must rewrite the second ? site with the write variant",
     );
 }

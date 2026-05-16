@@ -1,8 +1,8 @@
 mod v09_common;
 
 use v09_common::{
-    assert_contains, assert_failure, assert_not_contains, assert_success, fixture_text, path_arg,
-    run_kobo, s, unique_symbol, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, first_json, fixture_text,
+    path_arg, run_kobo, s, unique_symbol, TestProject,
 };
 
 #[test]
@@ -469,23 +469,28 @@ fn sim_quick_no_scenario_is_clear_failure() {
 }
 
 #[test]
-fn sim_deep_is_reserved_with_actionable_message() {
-    let project = TestProject::new("sim-deep-reserved");
+fn sim_deep_is_public_v10_scheduler_profile() {
+    let project = TestProject::new("sim-deep-public");
     let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
 
     let output = run_kobo(
-        &[s("test"), s("--sim"), s("deep"), path_arg(&file)],
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
         &project.root,
     );
 
-    assert_failure(&output, "v0.9 should reserve deep simulation honestly");
-    let text = output.combined();
-    assert_contains(&text, "--sim deep", "message should name requested profile");
-    assert_contains(&text, "v0.10", "message should point to the future phase");
+    assert_success(&output, "v0.10 should run deep simulation honestly");
+    let json = first_json(&output, "deep scheduler JSON");
+    assert_eq!(json["sim_profile"], "deep");
     assert_contains(
-        &text,
-        "--sim quick",
-        "message should offer the v0.9 command",
+        &json["scheduler"].to_string(),
+        "pct",
+        "deep profile must use the non-quick scheduler portfolio",
     );
 }
 

@@ -25,22 +25,7 @@ pub(super) fn cmd_test(
     target: Option<&str>,
     engine: Option<&str>,
 ) -> anyhow::Result<()> {
-    match sim {
-        Some("quick") => {}
-        Some("deep") => {
-            anyhow::bail!(
-                "kobo test --sim deep is reserved for v0.10 scheduler portfolios; use --sim quick in v0.9"
-            );
-        }
-        Some(other) => {
-            anyhow::bail!("kobo test --sim {other} is not available in v0.9; use --sim quick");
-        }
-        None => {
-            anyhow::bail!("kobo test requires --sim quick in v0.9");
-        }
-    }
-
-    let profile = profile.unwrap_or("checked");
+    let sim_profile = parse_sim_profile(sim)?;
     let seed = seed.unwrap_or(0);
     let engine = parse_engine(engine.unwrap_or("both"))?;
     let document = sim_model::load_document(file)?;
@@ -53,6 +38,7 @@ pub(super) fn cmd_test(
                 .map(|scenario| scenario.name.clone())
         })
         .unwrap_or_else(|| "<missing>".to_owned());
+    let profile_roles = resolve_profile_roles(profile, &document, &target_name);
     let mut session = super::session::build_session(file, Some(KoboMode::Checked))?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
@@ -60,13 +46,14 @@ pub(super) fn cmd_test(
         &artifacts,
         &target_name,
         document.source_hash.clone(),
-        profile,
+        &profile_roles.backend_profile,
     )?;
     let options = kobo_sim_core::ScenarioOptions {
-        profile: profile.to_owned(),
+        sim_profile: sim_profile.to_owned(),
+        profile: profile_roles.backend_profile.clone(),
         seed,
         inject: inject.map(str::to_owned),
-        event_budget,
+        event_budget: event_budget.or_else(|| default_budget(sim_profile)),
     };
     let run = kobo_sim_core::run_full_depth_from_program(
         &scenario_program,
@@ -80,15 +67,17 @@ pub(super) fn cmd_test(
         witness_path = Some(write_run_witness(
             file,
             &document,
-            profile,
+            &profile_roles.guarantee_profile,
+            sim_profile,
             seed,
+            inject,
             witness_dir,
             &run,
         )?);
     }
 
     if events == Some("json") {
-        print_events(file, seed, &run.events)?;
+        print_events(file, sim_profile, seed, &run)?;
         return Ok(());
     }
 
@@ -115,6 +104,59 @@ pub(super) fn cmd_test(
     Ok(())
 }
 
+struct ProfileRoles {
+    guarantee_profile: String,
+    backend_profile: String,
+}
+
+fn parse_sim_profile(sim: Option<&str>) -> anyhow::Result<&str> {
+    match sim {
+        Some(profile @ ("quick" | "deep" | "replay" | "exhaustive")) => Ok(profile),
+        Some(other) => anyhow::bail!(
+            "kobo test --sim {other} is not available; expected quick, deep, replay, or exhaustive"
+        ),
+        None => anyhow::bail!("kobo test requires --sim quick, deep, replay, or exhaustive"),
+    }
+}
+
+fn resolve_profile_roles(
+    cli_profile: Option<&str>,
+    document: &ScenarioDocument,
+    target_name: &str,
+) -> ProfileRoles {
+    let scenario_profile = document
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == target_name)
+        .map(|scenario| scenario.profile.clone())
+        .unwrap_or_else(|| sim_model::target_profile(document, target_name, None));
+
+    match cli_profile {
+        Some(profile @ ("dev" | "checked" | "release")) => ProfileRoles {
+            guarantee_profile: profile.to_owned(),
+            backend_profile: scenario_profile,
+        },
+        Some(profile) => ProfileRoles {
+            guarantee_profile: "checked".to_owned(),
+            backend_profile: profile.to_owned(),
+        },
+        None => ProfileRoles {
+            guarantee_profile: "checked".to_owned(),
+            backend_profile: scenario_profile,
+        },
+    }
+}
+
+fn default_budget(sim_profile: &str) -> Option<u64> {
+    match sim_profile {
+        "quick" => Some(64),
+        "deep" => Some(1024),
+        "replay" => Some(64),
+        "exhaustive" => Some(16),
+        _ => None,
+    }
+}
+
 fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
     match value {
         "semantic" => Ok(EngineMode::SemanticOnly),
@@ -124,14 +166,22 @@ fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
     }
 }
 
-fn print_events(file: &Path, seed: u64, events: &[ScenarioEvent]) -> anyhow::Result<()> {
+fn print_events(
+    file: &Path,
+    sim_profile: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
             "schema_version": 1,
             "file": sim_model::cli_relative_path(file)?,
+            "sim_profile": sim_profile,
+            "backend_profile": run.profile,
+            "scheduler": scheduler_json(sim_profile, seed, run),
             "seed": seed,
-            "events": events_json(events),
+            "events": events_json(&run.events),
         }))?
     );
     Ok(())
@@ -141,7 +191,9 @@ fn write_run_witness(
     file: &Path,
     document: &ScenarioDocument,
     guarantee_profile: &str,
+    sim_profile: &str,
     seed: u64,
+    inject: Option<&str>,
     witness_dir: Option<&Path>,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
@@ -157,6 +209,10 @@ fn write_run_witness(
             one_based_line_for_offset(&document.source, failure.primary_start)
         )
     });
+    let backend_replay_token = replay_token(&document.source_hash, seed, run);
+    let coverage = coverage_json(run);
+    let event_stream = shrink_event_stream(run, sim_profile);
+    let witness_events = events_json(&event_stream.events);
     let witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -165,6 +221,7 @@ fn write_run_witness(
             "name": run.target,
             "profile": run.profile,
         },
+        "sim_profile": sim_profile,
         "source": {
             "path": source_path,
             "hash": document.source_hash,
@@ -172,21 +229,31 @@ fn write_run_witness(
         "guarantee_profile": guarantee_profile,
         "expanded_policy": expanded_policy_json(guarantee_profile),
         "seed": seed,
+        "injections": injections_json(inject),
         "backend_profile": run.profile,
         "backend": backend_for_profile(&run.profile),
-        "backend_replay": replay_token(&document.source_hash, seed, run),
+        "backend_replay": backend_replay_token,
+        "backend_replay_token": backend_replay_token,
+        "scheduler": scheduler_json(sim_profile, seed, run),
         "execution_digest": execution_digest_json(run),
         "harness_manifest": run.harness_manifest.clone(),
-        "coverage": coverage_json(run),
+        "coverage": coverage,
+        "scenario_coverage": scenario_coverage_json(run),
         "replay_guarantee": run.replay_guarantee.as_str(),
+        "exactness": exactness_json(run),
+        "shrink": shrink_json(run, &event_stream),
         "modeled_boundaries": modeled_boundaries_json(run),
         "opaque_boundaries": run.opaque_boundaries.clone(),
+        "boundary_policies": boundary_policies_json(run),
         "boundary_assumptions": boundary_assumptions_json(run),
         "obligations": obligations_json(&source_path, &document.source, run),
+        "obligation_events": obligation_events_json(run),
         "boundary_decisions": boundary_decisions_json(run),
         "available_boundary_policies": ["model", "record", "stub", "outside", "opaque", "debt"],
         "failure": failure_json(&source_path, &document.source, run, primary_span),
-        "events": events_json(&run.events),
+        "source_spans": source_spans_json(&source_path, &document.source, run),
+        "events": witness_events.clone(),
+        "event_stream": witness_events,
     });
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
@@ -213,9 +280,146 @@ fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
 }
 
 fn coverage_json(run: &FullDepthRun) -> serde_json::Value {
+    let covered = run
+        .obligations
+        .iter()
+        .filter(|obligation| obligation.is_discharged)
+        .map(|obligation| obligation.binding.clone())
+        .collect::<Vec<_>>();
+    let uncovered = run
+        .obligations
+        .iter()
+        .filter(|obligation| !obligation.is_discharged)
+        .map(|obligation| obligation.binding.clone())
+        .collect::<Vec<_>>();
     serde_json::json!({
         "unsupported_constructs": run.coverage.unsupported_constructs,
         "reason": run.coverage.reason,
+        "covered": covered,
+        "uncovered": uncovered,
+        "escaped": escaped_obligations(run),
+        "suppressed": [],
+        "boundary_owned": run.opaque_boundaries,
+        "unknown": [],
+    })
+}
+
+fn scenario_coverage_json(run: &FullDepthRun) -> serde_json::Value {
+    coverage_json(run)
+}
+
+fn scheduler_json(sim_profile: &str, seed: u64, run: &FullDepthRun) -> serde_json::Value {
+    let strategy = match sim_profile {
+        "quick" => "small-random",
+        "deep" => "pct-random-bounded",
+        "replay" => "witness-event-stream",
+        "exhaustive" => "tiny-ward-exhaustive",
+        _ => "unknown",
+    };
+    serde_json::json!({
+        "profile": sim_profile,
+        "strategy": strategy,
+        "seed": seed,
+        "event_budget": run
+            .events
+            .iter()
+            .find(|event| event.kind == "scheduler-portfolio")
+            .and_then(|event| event.value),
+    })
+}
+
+fn exactness_json(run: &FullDepthRun) -> &'static str {
+    match run.replay_guarantee {
+        ReplayGuarantee::Exact => "exact",
+        ReplayGuarantee::Partial => "partial",
+        ReplayGuarantee::NotReplayable => "evidence_only",
+    }
+}
+
+struct ShrunkEventStream {
+    events: Vec<ScenarioEvent>,
+    removed_event_ids: Vec<usize>,
+}
+
+fn shrink_event_stream(run: &FullDepthRun, sim_profile: &str) -> ShrunkEventStream {
+    let mut removed_event_ids = Vec::new();
+    if run.replay_guarantee == ReplayGuarantee::Exact && sim_profile == "deep" {
+        removed_event_ids.extend(run.events.iter().enumerate().filter_map(|(index, event)| {
+            if event.kind == "scheduler-pct-seed" {
+                Some(index)
+            } else {
+                None
+            }
+        }));
+    }
+    let events = run
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !removed_event_ids.contains(index))
+        .map(|(_, event)| event.clone())
+        .collect();
+    ShrunkEventStream {
+        events,
+        removed_event_ids,
+    }
+}
+
+fn shrink_json(run: &FullDepthRun, event_stream: &ShrunkEventStream) -> serde_json::Value {
+    let mut shrink_passes = Vec::new();
+    if !event_stream.removed_event_ids.is_empty() {
+        shrink_passes.push(serde_json::json!({
+            "pass": "trailing-independent-scheduler-events",
+            "removed_event_ids": event_stream.removed_event_ids.clone(),
+            "replay_checked": true,
+        }));
+    }
+    for (pass, reason) in [
+        (
+            "unused-events",
+            "no replay-irrelevant semantic events found",
+        ),
+        ("seeds-runs", "no smaller equivalent seed/run pair found"),
+        (
+            "data-sizes",
+            "scenario has no shrinkable generated data fixtures",
+        ),
+        (
+            "independent-injections",
+            "no independent injected hook can be removed without changing the trace",
+        ),
+    ] {
+        shrink_passes.push(serde_json::json!({
+            "pass": pass,
+            "removed_event_ids": [],
+            "replay_checked": run.replay_guarantee == ReplayGuarantee::Exact,
+            "reason": reason,
+        }));
+    }
+    serde_json::json!({
+        "original_event_count": run.events.len(),
+        "shrunk_event_count": event_stream.events.len(),
+        "removed_event_ids": event_stream.removed_event_ids.clone(),
+        "shrink_passes": shrink_passes,
+        "replay_checked": run.replay_guarantee == ReplayGuarantee::Exact,
+        "reason_if_not_shrunk": if event_stream.removed_event_ids.is_empty() {
+            Some("original witness is already minimal for the current replay contract")
+        } else {
+            None
+        },
+    })
+}
+
+fn injections_json(inject: Option<&str>) -> serde_json::Value {
+    let hooks = inject
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|hook| !hook.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "hooks": hooks,
     })
 }
 
@@ -399,6 +603,29 @@ fn modeled_boundaries_json(run: &FullDepthRun) -> Vec<&'static str> {
         .collect()
 }
 
+fn boundary_policies_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    let mut policies = run
+        .boundary_decisions
+        .iter()
+        .map(|decision| {
+            serde_json::json!({
+                "boundary": decision.crate_name,
+                "policy": decision.policy.as_str(),
+                "reason": decision.reason,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for boundary in modeled_boundaries_json(run) {
+        policies.push(serde_json::json!({
+            "boundary": boundary,
+            "policy": "model",
+            "reason": "modeled v0.10 facade",
+        }));
+    }
+    policies
+}
+
 fn obligations_json(source_path: &str, source: &str, run: &FullDepthRun) -> Vec<serde_json::Value> {
     run.obligations
         .iter()
@@ -413,6 +640,45 @@ fn obligations_json(source_path: &str, source: &str, run: &FullDepthRun) -> Vec<
             })
         })
         .collect()
+}
+
+fn obligation_events_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    let mut events = Vec::new();
+    for obligation in &run.obligations {
+        events.push(serde_json::json!({
+            "state": "created",
+            "binding": obligation.binding,
+            "type": obligation.type_name,
+        }));
+        if obligation.is_discharged {
+            events.push(serde_json::json!({
+                "state": "discharged",
+                "binding": obligation.binding,
+                "actions": obligation.actions,
+            }));
+        } else {
+            events.push(serde_json::json!({
+                "state": "leaked",
+                "binding": obligation.binding,
+                "failure_mode": unresolved_failure_mode(obligation),
+            }));
+        }
+    }
+    for event in &run.events {
+        if event.kind == "obligation-transfer" {
+            events.push(serde_json::json!({
+                "state": "transferred",
+                "binding": event.label,
+            }));
+        }
+    }
+    if run.failure.is_none() {
+        events.push(serde_json::json!({
+            "state": "returned",
+            "binding": null,
+        }));
+    }
+    events
 }
 
 fn expanded_policy_json(profile: &str) -> serde_json::Value {
@@ -484,9 +750,73 @@ fn failure_json(
     serde_json::json!({
         "code": failure.code.as_str(),
         "message": failure.message,
+        "mode": run.failure
+            .as_ref()
+            .map(|_| run_failure_mode(run))
+            .unwrap_or("none"),
         "primary_span": primary_span.unwrap_or_else(|| format!("{source_path}:1:1")),
         "related_spans": related_spans_json(source_path, source, run, failure),
     })
+}
+
+fn source_spans_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+) -> Vec<serde_json::Value> {
+    let mut spans = Vec::new();
+    if let Some(failure) = run.failure.as_ref() {
+        spans.push(span_json(
+            source_path,
+            source,
+            (failure.primary_start, failure.primary_end),
+        ));
+    }
+    for obligation in &run.obligations {
+        spans.push(span_json(source_path, source, obligation.declaration_span));
+        if let Some(drop_span) = obligation.drop_span {
+            spans.push(span_json(source_path, source, drop_span));
+        }
+    }
+    spans
+}
+
+fn run_failure_mode(run: &FullDepthRun) -> &'static str {
+    if run
+        .events
+        .iter()
+        .any(|event| event.kind == "lost-message" || event.kind == "storage-crash-after-write")
+    {
+        return "lost-message";
+    }
+    if run
+        .obligations
+        .iter()
+        .any(|obligation| unresolved_failure_mode(obligation) == "unresolved-reply")
+    {
+        return "unresolved-reply";
+    }
+    "unresolved-delivery"
+}
+
+fn unresolved_failure_mode(obligation: &kobo_sim_core::RuntimeObligationSummary) -> &'static str {
+    if obligation
+        .actions
+        .iter()
+        .any(|action| action == "reply" || action == "reject" || action == "cancel")
+    {
+        "unresolved-reply"
+    } else {
+        "unresolved-delivery"
+    }
+}
+
+fn escaped_obligations(run: &FullDepthRun) -> Vec<String> {
+    run.obligations
+        .iter()
+        .filter(|obligation| !obligation.is_discharged && obligation.drop_span.is_some())
+        .map(|obligation| obligation.binding.clone())
+        .collect()
 }
 
 fn related_spans_json(

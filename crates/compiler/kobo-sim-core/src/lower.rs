@@ -29,6 +29,12 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                         action: action.clone(),
                     })
                 }
+                ScenarioOpKind::Transfer { binding, callee } => Some(ScenarioOperation::Transfer {
+                    binding: binding.clone(),
+                    callee: callee.clone(),
+                    span_start,
+                    span_end,
+                }),
                 ScenarioOpKind::MoveBinding { binding } => Some(ScenarioOperation::MoveBinding {
                     binding: binding.clone(),
                     span_start,
@@ -41,6 +47,16 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                         span_end,
                     })
                 }
+                ScenarioOpKind::StorageEvent { action } => Some(ScenarioOperation::StorageEvent {
+                    action: action.clone(),
+                    span_start,
+                    span_end,
+                }),
+                ScenarioOpKind::NetworkEvent { action } => Some(ScenarioOperation::NetworkEvent {
+                    action: action.clone(),
+                    span_start,
+                    span_end,
+                }),
                 ScenarioOpKind::RawNondeterminism { operation } => {
                     Some(ScenarioOperation::RawNondeterminism {
                         operation: operation.clone(),

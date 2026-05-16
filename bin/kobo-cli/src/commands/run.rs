@@ -188,25 +188,30 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
     };
     let mut output = String::new();
     output.push_str(&format!(
-        "// kobo: {command} v0.9 checked simulation MVP transparency path\n"
+        "// kobo: {command} v0.10 simulation facade transparency path built on the v0.9 checked simulation MVP\n"
     ));
     output.push_str(
         "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",
     );
-    output.push_str("// kobo: backend harness: reserved for v0.10 adapter execution\n");
-    output.push_str(
-        "// kobo: possible engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n",
-    );
+    output.push_str("// kobo: simulation facade surfaces: time, random, spawn, task, select, sync, storage, network, failpoint\n");
+    output.push_str("// kobo: generated facades apply only to sim/replay builds and inspectable harness artifacts\n");
+    output.push_str("// kobo: possible backend adapter engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n");
     if harness {
-        output.push_str(
-            "// kobo: no backend harness is generated in the v0.9 checked simulation MVP\n",
-        );
+        output.push_str("// kobo: backend adapter boundary: generated harness owns backend-native imports; user source remains normal\n");
     } else {
-        output
-            .push_str("// kobo: use --harness to inspect the reserved harness transparency path\n");
+        output.push_str("// kobo: use --harness to inspect generated backend adapter boundaries\n");
     }
     if source.contains("kobo::scenario") {
         output.push_str("// kobo: scenario metadata detected; scout can explain backend fit\n");
+    }
+    if source.contains("tokio::spawn") || source.contains("async fn") {
+        output.push_str("// kobo: async facade: spawn/task/select/cancellation schedule points are modeled in sim\n");
+    }
+    if source.contains("ward.storage") {
+        output.push_str("// kobo: storage facade: crash/write/recover hooks are modeled in sim\n");
+    }
+    if source.contains("ward.network") || source.contains("reqwest::") {
+        output.push_str("// kobo: network facade: modeled ports can drop, delay, reorder, or require boundary policy\n");
     }
     output
 }

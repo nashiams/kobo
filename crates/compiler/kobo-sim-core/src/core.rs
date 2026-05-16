@@ -12,6 +12,7 @@ pub enum EngineMode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScenarioOptions {
+    pub sim_profile: String,
     pub profile: String,
     pub seed: u64,
     pub inject: Option<String>,
@@ -21,6 +22,7 @@ pub struct ScenarioOptions {
 impl Default for ScenarioOptions {
     fn default() -> Self {
         Self {
+            sim_profile: "quick".to_owned(),
             profile: "checked".to_owned(),
             seed: 0,
             inject: None,
@@ -147,6 +149,8 @@ pub enum ModeledBoundary {
     WardTime,
     WardRandom,
     WardTask,
+    WardStorage,
+    WardNetwork,
 }
 
 impl ModeledBoundary {
@@ -155,6 +159,8 @@ impl ModeledBoundary {
             Self::WardTime => "ward.time",
             Self::WardRandom => "ward.random",
             Self::WardTask => "ward.task",
+            Self::WardStorage => "ward.storage",
+            Self::WardNetwork => "ward.network",
         }
     }
 }
@@ -172,6 +178,12 @@ pub enum ScenarioOperation {
         binding: String,
         action: String,
     },
+    Transfer {
+        binding: String,
+        callee: String,
+        span_start: usize,
+        span_end: usize,
+    },
     MoveBinding {
         binding: String,
         span_start: usize,
@@ -179,6 +191,16 @@ pub enum ScenarioOperation {
     },
     ModeledEffect {
         boundary: ModeledBoundary,
+        span_start: usize,
+        span_end: usize,
+    },
+    StorageEvent {
+        action: String,
+        span_start: usize,
+        span_end: usize,
+    },
+    NetworkEvent {
+        action: String,
         span_start: usize,
         span_end: usize,
     },
@@ -340,6 +362,12 @@ impl<'a> Runtime<'a> {
                 ScenarioOperation::Discharge { binding, action } => {
                     self.discharge(binding, action);
                 }
+                ScenarioOperation::Transfer {
+                    binding,
+                    callee,
+                    span_start,
+                    span_end,
+                } => self.record_transfer(binding, callee, (*span_start, *span_end)),
                 ScenarioOperation::MoveBinding {
                     binding,
                     span_start,
@@ -359,6 +387,16 @@ impl<'a> Runtime<'a> {
                     span_start,
                     span_end,
                 } => self.record_modeled_effect(boundary.clone(), (*span_start, *span_end)),
+                ScenarioOperation::StorageEvent {
+                    action,
+                    span_start,
+                    span_end,
+                } => self.record_storage_event(action, (*span_start, *span_end)),
+                ScenarioOperation::NetworkEvent {
+                    action,
+                    span_start,
+                    span_end,
+                } => self.record_network_event(action, (*span_start, *span_end)),
                 ScenarioOperation::RawNondeterminism {
                     operation,
                     span_start,
@@ -404,15 +442,16 @@ impl<'a> Runtime<'a> {
                 } => self.set_failure_once(ScenarioFailure {
                     code: KErrorCode::K0105,
                     message: format!(
-                        "sim quick profile exceeded event budget {}",
-                        self.options.event_budget.unwrap_or(0)
+                        "sim {} profile exceeded event budget {}",
+                        self.options.sim_profile,
+                        scheduler_budget(self.options)
                     ),
                     primary_start: *span_start,
                     primary_end: *span_end,
                     events: vec![ScenarioEvent {
                         kind: "budget-exceeded".to_owned(),
-                        label: Some(self.options.event_budget.unwrap_or(0).to_string()),
-                        value: self.options.event_budget,
+                        label: Some(self.options.sim_profile.clone()),
+                        value: Some(scheduler_budget(self.options)),
                     }],
                 }),
             }
@@ -483,6 +522,57 @@ impl<'a> Runtime<'a> {
                 _ => {}
             }
         }
+    }
+
+    fn record_transfer(&mut self, binding: &str, callee: &str, _span: (usize, usize)) {
+        self.events.push(ScenarioEvent {
+            kind: "obligation-transfer".to_owned(),
+            label: Some(format!("{binding}->{callee}")),
+            value: None,
+        });
+    }
+
+    fn record_storage_event(&mut self, action: &str, span: (usize, usize)) {
+        if !self
+            .modeled_boundaries
+            .contains(&ModeledBoundary::WardStorage)
+        {
+            self.modeled_boundaries.push(ModeledBoundary::WardStorage);
+        }
+        let event_kind = format!("storage-{}", normalize_event_part(action));
+        self.events.push(ScenarioEvent {
+            kind: event_kind.clone(),
+            label: Some("ward.storage".to_owned()),
+            value: Some(self.options.seed),
+        });
+        if action.contains("crash") {
+            self.set_failure_once(ScenarioFailure {
+                code: KErrorCode::K0100,
+                message: "storage facade found lost-message after ack before durable commit"
+                    .to_owned(),
+                primary_start: span.0,
+                primary_end: span.1,
+                events: vec![ScenarioEvent {
+                    kind: "lost-message".to_owned(),
+                    label: Some(event_kind),
+                    value: None,
+                }],
+            });
+        }
+    }
+
+    fn record_network_event(&mut self, action: &str, _span: (usize, usize)) {
+        if !self
+            .modeled_boundaries
+            .contains(&ModeledBoundary::WardNetwork)
+        {
+            self.modeled_boundaries.push(ModeledBoundary::WardNetwork);
+        }
+        self.events.push(ScenarioEvent {
+            kind: format!("network-{}", normalize_event_part(action)),
+            label: Some("ward.network".to_owned()),
+            value: Some(self.options.seed),
+        });
     }
 
     fn record_cancel_hook(&mut self, boundary: &ModeledBoundary, span: (usize, usize)) {
@@ -563,6 +653,7 @@ impl<'a> Runtime<'a> {
         if let Some(failure) = self.failure.as_ref() {
             self.events.extend(failure.events.clone());
         }
+        self.events.extend(scheduler_events(self.options));
         let obligations = self
             .obligations
             .iter()
@@ -657,5 +748,64 @@ fn modeled_effect_event(boundary: &ModeledBoundary, seed: u64) -> ScenarioEvent 
             label: Some("ward.task".to_owned()),
             value: Some(seed),
         },
+        ModeledBoundary::WardStorage => ScenarioEvent {
+            kind: "storage-boundary".to_owned(),
+            label: Some("ward.storage".to_owned()),
+            value: Some(seed),
+        },
+        ModeledBoundary::WardNetwork => ScenarioEvent {
+            kind: "network-boundary".to_owned(),
+            label: Some("ward.network".to_owned()),
+            value: Some(seed),
+        },
     }
+}
+
+pub(crate) fn scheduler_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {
+    let budget = scheduler_budget(options);
+    let mut events = vec![ScenarioEvent {
+        kind: "scheduler-portfolio".to_owned(),
+        label: Some(options.sim_profile.clone()),
+        value: Some(budget),
+    }];
+    if options.sim_profile == "deep" {
+        events.push(ScenarioEvent {
+            kind: "scheduler-pct-seed".to_owned(),
+            label: Some("deep".to_owned()),
+            value: Some(options.seed.rotate_left(7)),
+        });
+    }
+    if options.sim_profile == "exhaustive" {
+        events.push(ScenarioEvent {
+            kind: "scheduler-exhaustive-cap".to_owned(),
+            label: Some("tiny-ward".to_owned()),
+            value: Some(budget),
+        });
+    }
+    events
+}
+
+pub(crate) fn scheduler_budget(options: &ScenarioOptions) -> u64 {
+    options
+        .event_budget
+        .unwrap_or(match options.sim_profile.as_str() {
+            "quick" => 64,
+            "deep" => 1024,
+            "replay" => 64,
+            "exhaustive" => 16,
+            _ => 64,
+        })
+}
+
+fn normalize_event_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }

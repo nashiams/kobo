@@ -17,7 +17,8 @@ pub(super) fn cmd_lsp_diagnostics(
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, Some(KoboMode::Checked))?;
     let _ = run_check_pipeline(&mut session, file);
-    let extra_diagnostics = artifact_backed_diagnostics(&session, file)?;
+    let mut extra_diagnostics = artifact_backed_diagnostics(&session, file)?;
+    extra_diagnostics.extend(replay_boundary_diagnostics(&session, file)?);
 
     match format {
         ErrorFormat::Json => {
@@ -31,6 +32,106 @@ pub(super) fn cmd_lsp_diagnostics(
         }
         ErrorFormat::Human => anyhow::bail!("lsp-diagnostics currently supports --format=json"),
     }
+}
+
+fn replay_boundary_diagnostics(
+    session: &kobo_driver::CompileSession,
+    file: &Path,
+) -> anyhow::Result<Vec<KDiagnostic>> {
+    if session
+        .visible_diagnostics()
+        .any(|diagnostic| diagnostic.code == KErrorCode::K0107)
+    {
+        return Ok(Vec::new());
+    }
+    let source = std::fs::read_to_string(file)?;
+    let Some(boundary) = external_replay_boundary(&source) else {
+        return Ok(Vec::new());
+    };
+    let Some((file_id, _)) = session.file_set().iter_files().next() else {
+        return Ok(Vec::new());
+    };
+    let span = KoboSpan::new(
+        boundary.span_start as u32,
+        boundary.span_end as u32,
+        file_id,
+    );
+    Ok(vec![KDiagnostic::new(
+        KErrorCode::K0107,
+        Severity::Warning,
+        DiagLabel::primary(
+            span,
+            format!(
+                "unmodeled external boundary `{}`; choose model, record, stub, outside, opaque, or debt",
+                boundary.crate_name
+            ),
+        ),
+        format!(
+            "unmodeled external boundary `{}`; choose model, record, stub, outside, opaque, or debt. Available policies: model, record, stub, outside, opaque, debt.",
+            boundary.crate_name
+        ),
+        DiagDecision("select an explicit boundary policy for replay-critical evidence".to_owned()),
+    )])
+}
+
+struct ExternalReplayBoundary {
+    crate_name: String,
+    span_start: usize,
+    span_end: usize,
+}
+
+fn external_replay_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    direct_client_boundary(source).or_else(|| imported_client_boundary(source))
+}
+
+fn direct_client_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        if let Some(separator) = line.find("::Client::new") {
+            let prefix = &line[..separator];
+            let path_start = prefix
+                .char_indices()
+                .rev()
+                .find(|(_, ch)| !(ch.is_ascii_alphanumeric() || *ch == '_' || *ch == ':'))
+                .map(|(index, _)| index + 1)
+                .unwrap_or(0);
+            let path = &prefix[path_start..];
+            let crate_name = path.split("::").next().unwrap_or(path).to_owned();
+            return Some(ExternalReplayBoundary {
+                span_start: line_offset + path_start,
+                span_end: line_offset + path_start + crate_name.len(),
+                crate_name,
+            });
+        }
+        line_offset += line.len() + 1;
+    }
+    None
+}
+
+fn imported_client_boundary(source: &str) -> Option<ExternalReplayBoundary> {
+    if !source.contains("Client::new") {
+        return None;
+    }
+    let mut line_offset = 0usize;
+    for line in source.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("use ") else {
+            line_offset += line.len() + 1;
+            continue;
+        };
+        let Some(separator) = rest.find("::Client") else {
+            line_offset += line.len() + 1;
+            continue;
+        };
+        let path = rest[..separator].trim();
+        let crate_name = path.split("::").next().unwrap_or(path).to_owned();
+        let local_start = line.find(&crate_name).unwrap_or(0);
+        return Some(ExternalReplayBoundary {
+            span_start: line_offset + local_start,
+            span_end: line_offset + local_start + crate_name.len(),
+            crate_name,
+        });
+    }
+    None
 }
 
 fn print_lsp_payload(

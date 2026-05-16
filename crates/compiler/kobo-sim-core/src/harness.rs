@@ -177,7 +177,7 @@ fn instrument_generated_rust(
     options: &ScenarioOptions,
 ) -> anyhow::Result<String> {
     let mut source = String::new();
-    source.push_str(&harness_support_source(program));
+    source.push_str(&harness_support_source(program, options)?);
     source.push_str(generated_rust);
     if !source.ends_with('\n') {
         source.push('\n');
@@ -190,12 +190,15 @@ fn instrument_generated_rust(
         }
     }
 
-    let final_events = terminal_failure_events(program);
+    let final_events = terminal_failure_events(program, options);
     source.push_str(&main_wrapper_source(&program.target, &final_events)?);
     Ok(source)
 }
 
-fn harness_support_source(program: &ScenarioProgram) -> String {
+fn harness_support_source(
+    program: &ScenarioProgram,
+    options: &ScenarioOptions,
+) -> anyhow::Result<String> {
     let mut source = String::from(
         r#"
 #[allow(non_camel_case_types)]
@@ -203,14 +206,22 @@ struct __KoboWardTime;
 #[allow(non_camel_case_types)]
 struct __KoboWardRandom;
 #[allow(non_camel_case_types)]
+struct __KoboWardStorage;
+#[allow(non_camel_case_types)]
+struct __KoboWardNetwork;
+#[allow(non_camel_case_types)]
 struct __KoboWard {
     time: __KoboWardTime,
     random: __KoboWardRandom,
+    storage: __KoboWardStorage,
+    network: __KoboWardNetwork,
 }
 #[allow(non_upper_case_globals)]
 static ward: __KoboWard = __KoboWard {
     time: __KoboWardTime,
     random: __KoboWardRandom,
+    storage: __KoboWardStorage,
+    network: __KoboWardNetwork,
 };
 impl __KoboWard {
     fn task(&self) {}
@@ -224,6 +235,9 @@ impl __KoboWardRandom {
 }
 "#,
     );
+
+    source.push_str(&storage_support_source(program, options)?);
+    source.push_str(&network_support_source(program, options)?);
 
     let mut impls = Vec::new();
     for operation in &program.operations {
@@ -246,7 +260,78 @@ impl __KoboWardRandom {
             source.push_str("}\n");
         }
     }
-    source
+    Ok(source)
+}
+
+fn storage_support_source(
+    program: &ScenarioProgram,
+    options: &ScenarioOptions,
+) -> anyhow::Result<String> {
+    let mut methods = Vec::new();
+    for operation in &program.operations {
+        if let ScenarioOpKind::StorageEvent { action } = &operation.kind {
+            if methods.iter().any(|existing| existing == action) {
+                continue;
+            }
+            methods.push(action.clone());
+        }
+    }
+    if methods.is_empty() {
+        methods.push("write".to_owned());
+        methods.push("crash_after_write".to_owned());
+    }
+    let mut source = String::from("impl __KoboWardStorage {\n");
+    for method in methods {
+        let event = ScenarioEvent {
+            kind: format!("storage-{}", normalize_event_part(&method)),
+            label: Some("ward.storage".to_owned()),
+            value: Some(options.seed),
+        };
+        source.push_str("    fn ");
+        source.push_str(&method);
+        if method.contains("crash") || method.contains("recover") {
+            source.push_str("(&self) {\n        ");
+        } else {
+            source.push_str("<T>(&self, _value: T) {\n        ");
+        }
+        source.push_str(&event_print_statement(&event)?);
+        source.push_str("\n    }\n");
+    }
+    source.push_str("}\n");
+    Ok(source)
+}
+
+fn network_support_source(
+    program: &ScenarioProgram,
+    options: &ScenarioOptions,
+) -> anyhow::Result<String> {
+    let mut methods = Vec::new();
+    for operation in &program.operations {
+        if let ScenarioOpKind::NetworkEvent { action } = &operation.kind {
+            if methods.iter().any(|existing| existing == action) {
+                continue;
+            }
+            methods.push(action.clone());
+        }
+    }
+    if methods.is_empty() {
+        methods.extend(["send", "delay", "reorder", "drop"].map(str::to_owned));
+    }
+    let mut source = String::from("impl __KoboWardNetwork {\n");
+    for method in methods {
+        let event = ScenarioEvent {
+            kind: format!("network-{}", normalize_event_part(&method)),
+            label: Some("ward.network".to_owned()),
+            value: Some(options.seed),
+        };
+        source.push_str("    fn ");
+        source.push_str(&method);
+        source.push_str("<T>(&self, _value: T) {\n        ");
+        source.push_str(&event_print_statement(&event)?);
+        source.push_str("\n    }\n");
+    }
+    source.push_str("}\n");
+    Ok(source)
 }
 
 fn inject_modeled_boundary_event(
@@ -301,7 +386,10 @@ fn event_print_statement(event: &ScenarioEvent) -> anyhow::Result<String> {
     Ok(format!("println!(\"KOBO_EVENT:{{}}\", r#\"{json}\"#);"))
 }
 
-fn terminal_failure_events(program: &ScenarioProgram) -> Vec<ScenarioEvent> {
+fn terminal_failure_events(
+    program: &ScenarioProgram,
+    options: &ScenarioOptions,
+) -> Vec<ScenarioEvent> {
     let mut events = Vec::new();
     let mut obligations = Vec::new();
     for operation in &program.operations {
@@ -320,9 +408,24 @@ fn terminal_failure_events(program: &ScenarioProgram) -> Vec<ScenarioEvent> {
                     }
                 }
             }
+            ScenarioOpKind::Transfer { binding, callee } => events.push(ScenarioEvent {
+                kind: "obligation-transfer".to_owned(),
+                label: Some(format!("{binding}->{callee}")),
+                value: None,
+            }),
             ScenarioOpKind::ModeledEffect { boundary } => {
                 let _ = boundary;
             }
+            ScenarioOpKind::StorageEvent { action } => {
+                if action.contains("crash") {
+                    events.push(ScenarioEvent {
+                        kind: "lost-message".to_owned(),
+                        label: Some(format!("storage-{}", normalize_event_part(action))),
+                        value: None,
+                    });
+                }
+            }
+            ScenarioOpKind::NetworkEvent { .. } => {}
             ScenarioOpKind::RawNondeterminism { .. }
             | ScenarioOpKind::UncontrolledEffect { .. }
             | ScenarioOpKind::ExternalBoundary { .. }
@@ -330,6 +433,27 @@ fn terminal_failure_events(program: &ScenarioProgram) -> Vec<ScenarioEvent> {
             ScenarioOpKind::MoveBinding { .. } | ScenarioOpKind::Return => {}
         }
     }
+    if has_cancel_injection(options) {
+        if let Some((binding, _, _)) = obligations.iter().find(|(_, _, discharged)| !*discharged) {
+            events.push(ScenarioEvent {
+                kind: "failure-injection-cancel".to_owned(),
+                label: Some(binding.clone()),
+                value: None,
+            });
+            events.extend(crate::core::scheduler_events(options));
+            return events;
+        }
+        if let Some(boundary) = first_modeled_boundary(program) {
+            events.push(ScenarioEvent {
+                kind: "failure-injection-cancel".to_owned(),
+                label: Some(boundary.to_owned()),
+                value: None,
+            });
+            events.extend(crate::core::scheduler_events(options));
+            return events;
+        }
+    }
+
     if let Some((binding, _, _)) = obligations.iter().find(|(_, _, discharged)| !*discharged) {
         events.push(ScenarioEvent {
             kind: "liveness-token-drop".to_owned(),
@@ -337,7 +461,28 @@ fn terminal_failure_events(program: &ScenarioProgram) -> Vec<ScenarioEvent> {
             value: None,
         });
     }
+    events.extend(crate::core::scheduler_events(options));
     events
+}
+
+fn has_cancel_injection(options: &ScenarioOptions) -> bool {
+    options
+        .inject
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .any(|hook| hook == "cancel")
+}
+
+fn first_modeled_boundary(program: &ScenarioProgram) -> Option<&'static str> {
+    program.operations.iter().find_map(|operation| {
+        if let ScenarioOpKind::ModeledEffect { boundary } = &operation.kind {
+            Some(boundary_label(boundary))
+        } else {
+            None
+        }
+    })
 }
 
 fn boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
@@ -346,6 +491,19 @@ fn boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
         ScenarioModeledBoundary::WardRandom => "ward.random",
         ScenarioModeledBoundary::WardTask => "ward.task",
     }
+}
+
+fn normalize_event_part(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn modeled_boundary_event(boundary: &ScenarioModeledBoundary, seed: u64) -> ScenarioEvent {

@@ -357,6 +357,13 @@ impl<'a> ScenarioLowerer<'a> {
             if let Some(argument_binding) =
                 expr_path_ident(argument).and_then(|name| env.resolve(&name))
             {
+                self.operations.push(ScenarioOp {
+                    span: self.span(call),
+                    kind: ScenarioOpKind::Transfer {
+                        binding: argument_binding.clone(),
+                        callee: function_name.clone(),
+                    },
+                });
                 helper_env.bind(parameter.clone(), argument_binding);
             }
             if let Some(value) = self.eval_bool(argument, env) {
@@ -383,6 +390,9 @@ impl<'a> ScenarioLowerer<'a> {
             });
             return;
         }
+        if self.record_storage_or_network_event(call) {
+            return;
+        }
         if let Some(boundary) = modeled_boundary(call) {
             self.operations.push(ScenarioOp {
                 span: self.span(call),
@@ -394,6 +404,29 @@ impl<'a> ScenarioLowerer<'a> {
         for argument in &call.args {
             self.execute_expr(argument, env);
         }
+    }
+
+    fn record_storage_or_network_event(&mut self, call: &'a ExprMethodCall) -> bool {
+        let receiver = call.receiver.as_ref();
+        if receiver_has_ward_member(receiver, "storage") {
+            self.operations.push(ScenarioOp {
+                span: self.span(call),
+                kind: ScenarioOpKind::StorageEvent {
+                    action: call.method.to_string(),
+                },
+            });
+            return true;
+        }
+        if receiver_has_ward_member(receiver, "network") {
+            self.operations.push(ScenarioOp {
+                span: self.span(call),
+                kind: ScenarioOpKind::NetworkEvent {
+                    action: call.method.to_string(),
+                },
+            });
+            return true;
+        }
+        false
     }
 
     fn eval_bool(&self, expr: &'a Expr, env: &BindingEnv) -> Option<bool> {

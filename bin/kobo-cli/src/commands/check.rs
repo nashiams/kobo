@@ -33,6 +33,7 @@ pub(super) fn cmd_check(
     include_budgeted: bool,
 ) -> anyhow::Result<()> {
     reject_invalid_field_capability_views(file, error_format, color_mode)?;
+    reject_malformed_scenario_attributes(file, error_format)?;
     let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
         let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
         let loaded = policy::load_effective_policy(Some(file), profile)?;
@@ -71,6 +72,7 @@ pub(super) fn cmd_check(
             let emitted_machine_checked_diagnostic = error_format == ErrorFormat::Json
                 && session.mode().is_checked()
                 && session.visible_diagnostics().next().is_some();
+            let emitted_replay_blocking_diagnostic = has_replay_blocking_diagnostic(&session);
 
             if pipeline {
                 // S-14: Run middleware ordering heuristic.
@@ -88,7 +90,7 @@ pub(super) fn cmd_check(
                 );
             }
 
-            if emitted_machine_checked_diagnostic {
+            if emitted_machine_checked_diagnostic || emitted_replay_blocking_diagnostic {
                 return Err(super::diagnostics_emitted());
             }
 
@@ -116,6 +118,35 @@ pub(super) fn cmd_check(
             Err(super::diagnostics_emitted())
         }
     }
+}
+
+fn reject_malformed_scenario_attributes(
+    file: &Path,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let source = std::fs::read_to_string(file)?;
+    if !source.contains("kobo::scenario()") {
+        return Ok(());
+    }
+    let message =
+        "malformed scenario attribute: use #[kobo::scenario(profile = \"async\")] or remove it";
+    match error_format {
+        ErrorFormat::Json => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "code": "K0116",
+                "message": message,
+            }))?
+        ),
+        ErrorFormat::Human => eprintln!("error: {message}"),
+    }
+    anyhow::bail!("{message}")
+}
+
+fn has_replay_blocking_diagnostic(session: &kobo_driver::CompileSession) -> bool {
+    session
+        .visible_diagnostics()
+        .any(|diagnostic| matches!(diagnostic.code, KErrorCode::K0102 | KErrorCode::K0103))
 }
 
 fn reject_invalid_field_capability_views(

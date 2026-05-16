@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -79,6 +80,7 @@ fn replay_v1(
         anyhow::bail!("{guarantee} replay cannot claim exact replay");
     }
 
+    validate_shrink_metadata(witness, error_format)?;
     validate_exact_witness_contract(witness, error_format)?;
     let verified_source = verify_source_identity(witness, witness_path, error_format)?;
     let target = witness_target_scenario(witness)?;
@@ -87,6 +89,8 @@ fn replay_v1(
         .as_str()
         .or_else(|| witness["guarantee_profile"].as_str())
         .unwrap_or("checked");
+    let sim_profile = witness["sim_profile"].as_str().unwrap_or("quick");
+    let inject = witness_injections(witness);
     let mut session =
         super::session::build_session(&verified_source.path, Some(KoboMode::Checked))?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
@@ -98,9 +102,10 @@ fn replay_v1(
         profile,
     )?;
     let options = kobo_sim_core::ScenarioOptions {
+        sim_profile: sim_profile.to_owned(),
         profile: profile.to_owned(),
         seed,
-        inject: None,
+        inject,
         event_budget: None,
     };
     let run = kobo_sim_core::run_full_depth_from_program(
@@ -117,7 +122,7 @@ fn replay_v1(
         "execution_digest": execution_digest_json(&run),
         "harness_manifest": run.harness_manifest.clone(),
         "failure": failure_json(source_display, &verified_source.source, &run),
-        "events": events_json(&run.events),
+        "events": replay_events_json(witness, &run.events)?,
     });
     let observed = serde_json::json!({
         "backend": witness["backend"].clone(),
@@ -141,6 +146,53 @@ fn replay_v1(
             "events": run.events.len(),
         }))?
     );
+    Ok(())
+}
+
+fn validate_shrink_metadata(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
+    if witness["exactness"].as_str() != Some("exact") {
+        return Ok(());
+    }
+    if witness["shrink"].is_null() {
+        return Ok(());
+    }
+    if witness["shrink"]["replay_checked"].as_bool() == Some(false) {
+        let payload = serde_json::json!({
+            "code": "K0106",
+            "message": "witness shrink is unsafe: replay_checked=false cannot replace an exact witness",
+            "shrink": witness["shrink"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0106 witness shrink is unsafe");
+    }
+    let Some(removed_ids) = witness["shrink"]["removed_event_ids"].as_array() else {
+        return Ok(());
+    };
+    let original_event_count = witness["shrink"]["original_event_count"].as_u64();
+    let shrunk_event_count = witness["shrink"]["shrunk_event_count"].as_u64();
+    if original_event_count
+        .zip(shrunk_event_count)
+        .is_some_and(|(original, shrunk)| {
+            original < shrunk || original - shrunk != removed_ids.len() as u64
+        })
+    {
+        let payload = serde_json::json!({
+            "code": "K0106",
+            "message": "witness shrink metadata does not match event counts",
+            "shrink": witness["shrink"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0106 witness shrink metadata is inconsistent");
+    }
+    if removed_ids.iter().any(|id| id.as_u64().is_none()) {
+        let payload = serde_json::json!({
+            "code": "K0106",
+            "message": "witness shrink removed_event_ids must be numeric",
+            "shrink": witness["shrink"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0106 witness shrink metadata is invalid");
+    }
     Ok(())
 }
 
@@ -254,17 +306,51 @@ fn related_spans_json(
         .collect()
 }
 
-fn events_json(events: &[kobo_sim_core::ScenarioEvent]) -> Vec<Value> {
-    events
+fn replay_events_json(
+    witness: &Value,
+    events: &[kobo_sim_core::ScenarioEvent],
+) -> anyhow::Result<Vec<Value>> {
+    let removed = removed_event_ids(witness)?;
+    Ok(events
         .iter()
-        .map(|event| {
+        .enumerate()
+        .filter(|(index, _)| !removed.contains(index))
+        .map(|(_, event)| {
             serde_json::json!({
                 "kind": event.kind,
                 "label": event.label,
                 "value": event.value,
             })
         })
+        .collect())
+}
+
+fn removed_event_ids(witness: &Value) -> anyhow::Result<BTreeSet<usize>> {
+    let Some(values) = witness["shrink"]["removed_event_ids"].as_array() else {
+        return Ok(BTreeSet::new());
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|id| id as usize)
+                .ok_or_else(|| anyhow::anyhow!("removed_event_ids must be numeric"))
+        })
         .collect()
+}
+
+fn witness_injections(witness: &Value) -> Option<String> {
+    witness["injections"]["hooks"]
+        .as_array()
+        .map(|hooks| {
+            hooks
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .filter(|hooks| !hooks.is_empty())
 }
 
 fn replay_token(source_identity: &str, seed: u64, run: &kobo_sim_core::FullDepthRun) -> String {

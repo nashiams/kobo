@@ -27,11 +27,21 @@ pub enum ScenarioOpKind {
         binding: String,
         action: String,
     },
+    Transfer {
+        binding: String,
+        callee: String,
+    },
     MoveBinding {
         binding: String,
     },
     ModeledEffect {
         boundary: ScenarioModeledBoundary,
+    },
+    StorageEvent {
+        action: String,
+    },
+    NetworkEvent {
+        action: String,
     },
     RawNondeterminism {
         operation: String,

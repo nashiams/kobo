@@ -1,0 +1,9 @@
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "async")]
+fn tiny_ward() {
+    let delivery = Delivery {};
+    ward.task();
+    delivery.ack();
+}

@@ -95,12 +95,13 @@ fn replay_v1(
         super::session::build_session(&verified_source.path, Some(KoboMode::Checked))?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
         .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
-    let scenario_program = kobo_driver::build_scenario_program(
+    let mut scenario_program = kobo_driver::build_scenario_program(
         &artifacts,
         &target,
         verified_source.hash.clone(),
         profile,
     )?;
+    attach_source_coverage(&mut scenario_program, &verified_source.source);
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
         profile: profile.to_owned(),
@@ -114,6 +115,7 @@ fn replay_v1(
         &options,
         kobo_sim_core::EngineMode::Both,
     )?;
+    validate_removed_events_replay_safe(witness, &run.events, error_format)?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
     let expected = serde_json::json!({
@@ -242,6 +244,15 @@ fn witness_target_scenario(witness: &Value) -> anyhow::Result<String> {
     Ok(scenario.to_owned())
 }
 
+fn attach_source_coverage(program: &mut kobo_ir::ScenarioProgram, source: &str) {
+    if source.contains("select!") || source.contains("select !") || source.contains(":: select !") {
+        let label = "tokio::select!".to_owned();
+        if !program.coverage.unsupported_constructs.contains(&label) {
+            program.coverage.unsupported_constructs.push(label);
+        }
+    }
+}
+
 fn failure_json(source_path: &str, source: &str, run: &kobo_sim_core::FullDepthRun) -> Value {
     let Some(failure) = run.failure.as_ref() else {
         return Value::Null;
@@ -311,12 +322,18 @@ fn replay_events_json(
     events: &[kobo_sim_core::ScenarioEvent],
 ) -> anyhow::Result<Vec<Value>> {
     let removed = removed_event_ids(witness)?;
-    Ok(events
+    let filtered = events
         .iter()
         .enumerate()
         .filter(|(index, _)| !removed.contains(index))
-        .map(|(_, event)| {
+        .map(|(_, event)| event)
+        .collect::<Vec<_>>();
+    Ok(filtered
+        .iter()
+        .enumerate()
+        .map(|(id, event)| {
             serde_json::json!({
+                "id": id,
                 "kind": event.kind,
                 "label": event.label,
                 "value": event.value,
@@ -338,6 +355,46 @@ fn removed_event_ids(witness: &Value) -> anyhow::Result<BTreeSet<usize>> {
                 .ok_or_else(|| anyhow::anyhow!("removed_event_ids must be numeric"))
         })
         .collect()
+}
+
+fn validate_removed_events_replay_safe(
+    witness: &Value,
+    events: &[kobo_sim_core::ScenarioEvent],
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    for removed_id in removed_event_ids(witness)? {
+        let Some(event) = events.get(removed_id) else {
+            let payload = serde_json::json!({
+                "code": "K0106",
+                "message": "witness shrink removed_event_ids references a missing event",
+                "removed_event_id": removed_id,
+            });
+            emit_replay_issue(&payload, error_format)?;
+            anyhow::bail!("K0106 witness shrink removed a missing event");
+        };
+        if !is_replay_irrelevant_event(&event.kind) {
+            let payload = serde_json::json!({
+                "code": "K0106",
+                "message": "witness shrink removed replay-critical semantic evidence",
+                "removed_event_id": removed_id,
+                "event": {
+                    "kind": event.kind,
+                    "label": event.label,
+                    "value": event.value,
+                },
+            });
+            emit_replay_issue(&payload, error_format)?;
+            anyhow::bail!("K0106 witness shrink removed semantic evidence");
+        }
+    }
+    Ok(())
+}
+
+fn is_replay_irrelevant_event(kind: &str) -> bool {
+    matches!(
+        kind,
+        "scheduler-pct-seed" | "network-delayed" | "network-reordered" | "fuzz-shrink-candidate"
+    )
 }
 
 fn witness_injections(witness: &Value) -> Option<String> {
@@ -398,8 +455,10 @@ fn validate_exact_witness_contract(
     let semantic_engine = digest["semantic_engine"].as_str();
     let harness_engine = digest["harness_engine"].as_str();
     let agreement = digest["agreement"].as_str();
+    let has_generated_harness =
+        harness_engine.is_some_and(|engine| engine.starts_with("generated-rust-process"));
     if semantic_engine != Some("driver-kir-scenario")
-        || harness_engine != Some("generated-rust-process")
+        || !has_generated_harness
         || agreement != Some("matched")
     {
         let payload = serde_json::json!({

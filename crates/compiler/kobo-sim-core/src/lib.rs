@@ -1,9 +1,13 @@
+pub mod backend;
 pub mod core;
 pub mod coverage;
 pub mod digest;
 pub mod harness;
 pub mod harness_manifest;
 pub mod lower;
+pub mod network;
+pub mod scheduler;
+pub mod storage;
 
 pub use core::{
     run_compiler_semantics, run_full_depth, run_full_depth_from_program,

@@ -48,12 +48,13 @@ pub(super) fn cmd_test(
     let mut session = super::session::build_session(file, Some(KoboMode::Checked))?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
-    let scenario_program = kobo_driver::build_scenario_program(
+    let mut scenario_program = kobo_driver::build_scenario_program(
         &artifacts,
         &target_name,
         document.source_hash.clone(),
         &profile_roles.backend_profile,
     )?;
+    attach_source_coverage(&mut scenario_program, &document.source);
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
         profile: profile_roles.backend_profile.clone(),
@@ -253,6 +254,15 @@ fn resolve_profile_roles(
             guarantee_profile: "checked".to_owned(),
             backend_profile: scenario_profile,
         },
+    }
+}
+
+fn attach_source_coverage(program: &mut ScenarioProgram, source: &str) {
+    if source.contains("select!") || source.contains("select !") || source.contains(":: select !") {
+        let label = "tokio::select!".to_owned();
+        if !program.coverage.unsupported_constructs.contains(&label) {
+            program.coverage.unsupported_constructs.push(label);
+        }
     }
 }
 
@@ -577,7 +587,9 @@ fn write_run_witness(
         "execution_digest": execution_digest_json(run),
         "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage,
+        "operation_coverage": operation_coverage_json(run),
         "scenario_coverage": scenario_coverage_json(run),
+        "function_summaries": function_summaries_json(run),
         "replay_guarantee": run.replay_guarantee.as_str(),
         "exactness": exactness_json(run),
         "shrink": shrink_json(run, &event_stream),
@@ -647,6 +659,36 @@ fn scenario_coverage_json(run: &FullDepthRun) -> serde_json::Value {
     coverage_json(run)
 }
 
+fn operation_coverage_json(run: &FullDepthRun) -> serde_json::Value {
+    let mut modeled = run
+        .events
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
+    modeled.sort();
+    modeled.dedup();
+    serde_json::json!({
+        "modeled": modeled,
+        "unsupported": run.coverage.unsupported_constructs,
+        "boundary_owned": run.opaque_boundaries,
+    })
+}
+
+fn function_summaries_json(run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!([{
+        "function": run.target,
+        "creates": run.obligations.iter().map(|obligation| obligation.binding.clone()).collect::<Vec<_>>(),
+        "transfers": run.events.iter().filter_map(|event| {
+            (event.kind == "obligation-transfer").then(|| event.label.clone()).flatten()
+        }).collect::<Vec<_>>(),
+        "discharges": run.obligations.iter().filter(|obligation| obligation.is_discharged).map(|obligation| obligation.binding.clone()).collect::<Vec<_>>(),
+        "leaks": run.obligations.iter().filter(|obligation| !obligation.is_discharged).map(|obligation| obligation.binding.clone()).collect::<Vec<_>>(),
+        "returns": [],
+        "escapes": escaped_obligations(run),
+        "suppressed": [],
+    }])
+}
+
 fn scheduler_json(sim_profile: &str, seed: u64, run: &FullDepthRun) -> serde_json::Value {
     let strategy = match sim_profile {
         "quick" => "small-random",
@@ -684,7 +726,7 @@ fn shrink_event_stream(run: &FullDepthRun, sim_profile: &str) -> ShrunkEventStre
     let mut removed_event_ids = Vec::new();
     if run.replay_guarantee == ReplayGuarantee::Exact && sim_profile == "deep" {
         removed_event_ids.extend(run.events.iter().enumerate().filter_map(|(index, event)| {
-            if event.kind == "scheduler-pct-seed" {
+            if is_replay_irrelevant_event(&event.kind) {
                 Some(index)
             } else {
                 None
@@ -706,10 +748,20 @@ fn shrink_event_stream(run: &FullDepthRun, sim_profile: &str) -> ShrunkEventStre
 
 fn shrink_json(run: &FullDepthRun, event_stream: &ShrunkEventStream) -> serde_json::Value {
     let mut shrink_passes = Vec::new();
-    if !event_stream.removed_event_ids.is_empty() {
+    let scheduler_ids = removed_event_ids_for_kinds(run, event_stream, &["scheduler-pct-seed"]);
+    if !scheduler_ids.is_empty() {
         shrink_passes.push(serde_json::json!({
             "pass": "trailing-independent-scheduler-events",
-            "removed_event_ids": event_stream.removed_event_ids.clone(),
+            "removed_event_ids": scheduler_ids,
+            "replay_checked": true,
+        }));
+    }
+    let network_ids =
+        removed_event_ids_for_kinds(run, event_stream, &["network-delayed", "network-reordered"]);
+    if !network_ids.is_empty() {
+        shrink_passes.push(serde_json::json!({
+            "pass": "independent-network-ordering",
+            "removed_event_ids": network_ids,
             "replay_checked": true,
         }));
     }
@@ -747,6 +799,30 @@ fn shrink_json(run: &FullDepthRun, event_stream: &ShrunkEventStream) -> serde_js
             None
         },
     })
+}
+
+fn removed_event_ids_for_kinds(
+    run: &FullDepthRun,
+    event_stream: &ShrunkEventStream,
+    kinds: &[&str],
+) -> Vec<usize> {
+    event_stream
+        .removed_event_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            run.events
+                .get(*id)
+                .is_some_and(|event| kinds.contains(&event.kind.as_str()))
+        })
+        .collect()
+}
+
+fn is_replay_irrelevant_event(kind: &str) -> bool {
+    matches!(
+        kind,
+        "scheduler-pct-seed" | "network-delayed" | "network-reordered" | "fuzz-shrink-candidate"
+    )
 }
 
 fn injections_json(inject: Option<&str>) -> serde_json::Value {
@@ -1248,8 +1324,10 @@ fn boundary_decisions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
 fn events_json(events: &[ScenarioEvent]) -> Vec<serde_json::Value> {
     events
         .iter()
-        .map(|event| {
+        .enumerate()
+        .map(|(id, event)| {
             serde_json::json!({
+                "id": id,
                 "kind": event.kind,
                 "label": event.label,
                 "value": event.value,

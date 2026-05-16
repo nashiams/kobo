@@ -2,7 +2,7 @@ use kobo_ir::{ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
 
 use crate::core::{LoweredScenario, ModeledBoundary, ScenarioCoverage, ScenarioOperation};
 
-pub const MODEL_VERSION: &str = "v0.9-driver-kir-scenario-full-depth-2";
+pub const MODEL_VERSION: &str = "v0.10-driver-kir-scenario-prod-depth-1";
 
 pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> LoweredScenario {
     let operations = program

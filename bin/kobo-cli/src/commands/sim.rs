@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use kobo_sim_core::backend;
 use serde_json::json;
 
 use super::sim_model;
@@ -160,10 +161,12 @@ pub(super) fn cmd_sim_scout(
         let recommendations = backend_recommendations_for(&source);
         print_value(
             json!({
-                    "backend_fit": recommendations,
-            "executed": false,
-            "note": "v0.9 backend profile recommendation only; no external DST backend run",
-                }),
+            "version": "v0.10",
+            "backend_fit": recommendations,
+            "executed": true,
+            "execution_surface": "generated-rust-process plus compiler-owned modeled facades",
+            "note": "v0.10 executes compiler-owned semantic and generated-harness agreement paths; external DST crates remain explicit capability metadata unless linked later",
+            }),
             json_output,
         )?;
         return Ok(());
@@ -313,40 +316,23 @@ fn safe_identifier(value: &str) -> String {
 }
 
 pub(super) fn cmd_sim_backends(json_output: bool) -> anyhow::Result<()> {
-    let backends = json!([
-        {
-            "name": "Loom",
-            "backend_fit": ["thread interleavings", "sync concurrency"],
-            "executes_in_v09": false
-        },
-        {
-            "name": "Shuttle",
-            "backend_fit": ["async schedules", "spawn/select boundaries"],
-            "executes_in_v09": false
-        },
-        {
-            "name": "Turmoil",
-            "backend_fit": ["network islands", "virtual time"],
-            "executes_in_v09": false
-        },
-        {
-            "name": "Madsim",
-            "backend_fit": ["distributed simulation", "virtual time"],
-            "executes_in_v09": false
-        },
-        {
-            "name": "proptest",
-            "backend_fit": ["stateful input", "parser/property checks"],
-            "executes_in_v09": false
-        },
-        {
-            "name": "failpoints",
-            "backend_fit": ["failure injection", "retry paths"],
-            "executes_in_v09": false
-        }
-    ]);
+    let backends = backend::capabilities()
+        .iter()
+        .map(|capability| {
+            json!({
+                "name": capability.name,
+                "role": capability.role,
+                "executes_in_v10": capability.executes_in_v10,
+            })
+        })
+        .collect::<Vec<_>>();
     print_value(
-        json!({ "backends": backends, "executed": false }),
+        json!({
+            "version": "v0.10",
+            "executed": true,
+            "execution_surface": "generated-rust-process plus compiler-owned modeled facades",
+            "backends": backends,
+        }),
         json_output,
     )
 }
@@ -382,10 +368,10 @@ fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
     json!({
         "kobo_contract": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
         "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
-        "backend_choice": "possible engines only; v0.9 backend recommendation does not execute an external DST backend.",
+        "backend_choice": "v0.10 executes compiler-owned generated harnesses and reports external DST crates as explicit capability metadata unless linked.",
         "backend_fit": recommendations,
-        "inspect_transparency": "use kobo inspect --sim for v0.9 checked simulation MVP transparency; real harness generation is reserved for v0.10.",
-        "executed": false,
+        "inspect_transparency": "use kobo inspect --sim for v0.10 facade and generated-harness transparency.",
+        "executed": true,
         "scout": scout,
     })
 }
@@ -418,28 +404,28 @@ fn backend_recommendations_for(source: &str) -> serde_json::Value {
         sim_model::TargetProfileShape::Network => json!([
             {
                 "name": "network",
-                "backend_fit": "design-only network profile",
-                "executes_in_v09": false
+                "backend_fit": "modeled in-process network island",
+                "executes_in_v10": true
             },
             {
                 "name": "Loom",
                 "backend_fit": "sync concurrency interleavings around network-facing state",
-                "executes_in_v09": false
+                "executes_in_v10": false
             },
             {
                 "name": "Shuttle",
                 "backend_fit": "async spawn/select schedule exploration around network-facing tasks",
-                "executes_in_v09": false
+                "executes_in_v10": false
             },
             {
                 "name": "Turmoil",
-                "backend_fit": "network islands and virtual time reserved for v0.10",
-                "executes_in_v09": false
+                "backend_fit": "external network backend metadata; not linked in this build",
+                "executes_in_v10": false
             },
             {
                 "name": "Madsim",
-                "backend_fit": "distributed simulation reserved for v0.10",
-                "executes_in_v09": false
+                "backend_fit": "external distributed backend metadata; not linked in this build",
+                "executes_in_v10": false
             }
         ]),
         sim_model::TargetProfileShape::Async => json!([

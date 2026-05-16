@@ -54,9 +54,48 @@ pub enum ScenarioOpKind {
     },
     ExternalBoundary {
         crate_name: String,
+        policy: ScenarioBoundaryPolicy,
+        reason: Option<String>,
     },
     Loop,
     Return,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ScenarioBoundaryPolicy {
+    Model,
+    Record,
+    Stub,
+    Outside,
+    Opaque,
+    Debt,
+    Unselected,
+}
+
+impl ScenarioBoundaryPolicy {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Record => "record",
+            Self::Stub => "stub",
+            Self::Outside => "outside",
+            Self::Opaque => "opaque",
+            Self::Debt => "debt",
+            Self::Unselected => "unselected",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value {
+            "model" => Self::Model,
+            "record" => Self::Record,
+            "stub" => Self::Stub,
+            "outside" => Self::Outside,
+            "opaque" => Self::Opaque,
+            "debt" => Self::Debt,
+            _ => Self::Unselected,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -100,7 +100,17 @@ impl FunctionSummaryBuilder {
                     builder.summary_mut(&owner).discharges.push(binding.clone());
                     builder.discharged_bindings.insert(binding.clone());
                 }
-                ScenarioOpKind::ExternalBoundary { crate_name } => {
+                ScenarioOpKind::ExternalBoundary {
+                    crate_name, policy, ..
+                } => {
+                    if matches!(
+                        policy,
+                        kobo_ir::ScenarioBoundaryPolicy::Model
+                            | kobo_ir::ScenarioBoundaryPolicy::Record
+                            | kobo_ir::ScenarioBoundaryPolicy::Stub
+                    ) {
+                        continue;
+                    }
                     builder
                         .summary_mut(&program.target)
                         .escapes
@@ -196,8 +206,10 @@ fn operation_coverage_label(operation: &kobo_ir::ScenarioOp) -> String {
         ScenarioOpKind::UncontrolledEffect { operation } => {
             format!("uncontrolled-effect.{operation}")
         }
-        ScenarioOpKind::ExternalBoundary { crate_name } => {
-            format!("external-boundary.{crate_name}")
+        ScenarioOpKind::ExternalBoundary {
+            crate_name, policy, ..
+        } => {
+            format!("external-boundary.{}.{}", policy.as_str(), crate_name)
         }
         ScenarioOpKind::Loop => "loop".to_owned(),
         ScenarioOpKind::Return => "return".to_owned(),

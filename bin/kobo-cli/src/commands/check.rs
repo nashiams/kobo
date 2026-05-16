@@ -9,7 +9,7 @@ use kobo_errors::{
     DiagnosticOutputFormat, DiagnosticRenderer, DiagnosticSuggestion, DiagnosticSuppression,
     KDiagnostic, KErrorCode, Severity, SuggestionApplicability,
 };
-use kobo_ir::{FileSetBuilder, KoboMode, KoboSpan};
+use kobo_ir::{FileSetBuilder, GuaranteePolicy, KoboSpan};
 
 use crate::{ErrorFormat, GuaranteeProfileArg, PolicyOutputFormat};
 
@@ -20,7 +20,7 @@ use super::{
 
 pub(super) fn cmd_check(
     file: &Path,
-    cli_mode: Option<KoboMode>,
+    cli_policy: Option<GuaranteePolicy>,
     guarantee_profile: Option<GuaranteeProfileArg>,
     print_policy: Option<PolicyOutputFormat>,
     pipeline: bool,
@@ -34,7 +34,7 @@ pub(super) fn cmd_check(
 ) -> anyhow::Result<()> {
     reject_invalid_field_capability_views(file, error_format, color_mode)?;
     reject_malformed_scenario_attributes(file, error_format)?;
-    let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
+    let effective_policy = if guarantee_profile.is_some() || print_policy.is_some() {
         let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
         let loaded = policy::load_effective_policy(Some(file), profile)?;
         if let Some(downgrade) = loaded.downgrade() {
@@ -49,7 +49,11 @@ pub(super) fn cmd_check(
         None
     };
 
-    let mut session = build_session(file, cli_mode)?;
+    let session_policy = effective_policy
+        .as_ref()
+        .map(|policy| policy.compiler_policy().clone())
+        .or(cli_policy);
+    let mut session = build_session(file, session_policy)?;
     session.config.enable_parse_recovery = recover_parse;
     if pipeline {
         eprintln!("[kobo] --pipeline: running full solver pipeline diagnostics");
@@ -70,7 +74,7 @@ pub(super) fn cmd_check(
                 include_budgeted,
             )?;
             let emitted_machine_checked_diagnostic = error_format == ErrorFormat::Json
-                && session.mode().is_checked()
+                && session.guarantee_policy().is_checked()
                 && session.visible_diagnostics().next().is_some();
             let emitted_replay_blocking_diagnostic = has_replay_blocking_diagnostic(&session);
 
@@ -95,7 +99,7 @@ pub(super) fn cmd_check(
             }
 
             if print_policy.is_none() {
-                if let Some(policy) = guarantee_policy.as_ref() {
+                if let Some(policy) = effective_policy.as_ref() {
                     policy::emit_policy_summary(policy);
                 }
             }
@@ -502,8 +506,8 @@ fn project_boundary_policy_diagnostics(
             reason: Some(reason),
             ..
         }) => {
-            let severity =
-                resolve_severity(KErrorCode::K0108, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0108, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(
                 KDiagnostic::new(
                     KErrorCode::K0108,
@@ -557,7 +561,7 @@ fn project_contextual_suggestions(
     session: &mut kobo_driver::CompileSession,
     file: &Path,
 ) -> anyhow::Result<()> {
-    if !(session.mode().is_checked() || session.mode().is_strict()) {
+    if !(session.guarantee_policy().is_checked() || session.guarantee_policy().is_release()) {
         return Ok(());
     }
 
@@ -578,8 +582,8 @@ fn project_contextual_suggestions(
                 diagnostic.suggestions.push(suggestion);
             }
         } else if let Some(span) = first_file_span(session, &source, "tokio::spawn") {
-            let severity =
-                resolve_severity(KErrorCode::K0061, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0061, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(
                 KDiagnostic::new(
                     KErrorCode::K0061,
@@ -602,8 +606,8 @@ fn project_contextual_suggestions(
 
     if source.contains("kobo::must_call") && source.contains("return") {
         if let Some(span) = first_file_span(session, &source, "must_call") {
-            let severity =
-                resolve_severity(KErrorCode::K0100, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0100, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(
                 KDiagnostic::new(
                     KErrorCode::K0100,
@@ -637,7 +641,8 @@ fn push_async_shared_card(session: &mut kobo_driver::CompileSession, source: &st
     let Some(span) = first_file_span(session, source, "tokio::spawn") else {
         return;
     };
-    let severity = resolve_severity(KErrorCode::K0061, session.mode()).unwrap_or(Severity::Warning);
+    let severity = resolve_severity(KErrorCode::K0061, session.guarantee_policy())
+        .unwrap_or(Severity::Warning);
     session
         .diagnostics
         .push(
@@ -676,7 +681,8 @@ fn push_boundary_prompt(
     span: kobo_ir::KoboSpan,
     message: String,
 ) {
-    let severity = resolve_severity(KErrorCode::K0107, session.mode()).unwrap_or(Severity::Warning);
+    let severity = resolve_severity(KErrorCode::K0107, session.guarantee_policy())
+        .unwrap_or(Severity::Warning);
     session.diagnostics.push(KDiagnostic::new(
         KErrorCode::K0107,
         severity,

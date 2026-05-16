@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::{KErrorCode, Severity};
+use kobo_ir::{GuaranteeLevel, GuaranteePolicy};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticRegistry {
@@ -115,22 +116,12 @@ impl DiagnosticStatus {
 }
 
 impl SeverityPolicy {
-    pub const fn resolve(self, mode: kobo_ir::KoboMode) -> Option<Severity> {
+    pub const fn resolve(self, policy: &GuaranteePolicy) -> Option<Severity> {
         match self {
             Self::Always(severity) => Some(severity),
-            Self::OwnershipModeDependent => match mode {
-                kobo_ir::KoboMode::Script => None,
-                kobo_ir::KoboMode::Checked => Some(Severity::Warning),
-                kobo_ir::KoboMode::Strict => Some(Severity::Error),
-            },
-            Self::AsyncModeDependent => match mode {
-                kobo_ir::KoboMode::Script | kobo_ir::KoboMode::Checked => Some(Severity::Warning),
-                kobo_ir::KoboMode::Strict => Some(Severity::Error),
-            },
-            Self::ScriptDebtCheckedWarningStrictError => match mode {
-                kobo_ir::KoboMode::Script | kobo_ir::KoboMode::Checked => Some(Severity::Warning),
-                kobo_ir::KoboMode::Strict => Some(Severity::Error),
-            },
+            Self::OwnershipModeDependent => ownership_severity(policy),
+            Self::AsyncModeDependent => async_severity(policy),
+            Self::ScriptDebtCheckedWarningStrictError => debt_severity(policy),
             Self::HiddenUntilActive => None,
         }
     }
@@ -145,6 +136,32 @@ impl SeverityPolicy {
             Self::ScriptDebtCheckedWarningStrictError => "script-debt-checked-warning-strict-error",
             Self::HiddenUntilActive => "hidden-until-active",
         }
+    }
+}
+
+const fn ownership_severity(policy: &GuaranteePolicy) -> Option<Severity> {
+    match policy.ownership_severity_level() {
+        GuaranteeLevel::Off | GuaranteeLevel::Record => None,
+        GuaranteeLevel::Checked => Some(Severity::Warning),
+        GuaranteeLevel::Strict => Some(Severity::Error),
+    }
+}
+
+const fn async_severity(policy: &GuaranteePolicy) -> Option<Severity> {
+    match policy.async_severity_level() {
+        GuaranteeLevel::Off | GuaranteeLevel::Record | GuaranteeLevel::Checked => {
+            Some(Severity::Warning)
+        }
+        GuaranteeLevel::Strict => Some(Severity::Error),
+    }
+}
+
+const fn debt_severity(policy: &GuaranteePolicy) -> Option<Severity> {
+    match policy.debt_severity_level() {
+        GuaranteeLevel::Off | GuaranteeLevel::Record | GuaranteeLevel::Checked => {
+            Some(Severity::Warning)
+        }
+        GuaranteeLevel::Strict => Some(Severity::Error),
     }
 }
 

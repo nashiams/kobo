@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use kobo_ir::KoboMode;
+use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
 use serde_json::Value;
 
 use crate::ErrorFormat;
@@ -92,8 +92,10 @@ fn replay_v1(
         .unwrap_or("checked");
     let sim_profile = witness["sim_profile"].as_str().unwrap_or("quick");
     let inject = witness_injections(witness);
-    let mut session =
-        super::session::build_session(&verified_source.path, Some(KoboMode::Checked))?;
+    let mut session = super::session::build_session(
+        &verified_source.path,
+        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
         .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(
@@ -264,6 +266,9 @@ fn failure_json(source_path: &str, source: &str, run: &kobo_sim_core::FullDepthR
 }
 
 fn witness_failure_json(witness: &Value) -> Value {
+    if witness["failure"].is_null() {
+        return Value::Null;
+    }
     serde_json::json!({
         "code": witness["failure"]["code"].clone(),
         "primary_span": witness["failure"]["primary_span"].clone(),
@@ -578,11 +583,14 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             &["boundary_assumptions"][..],
             &["obligations"][..],
             &["boundary_decisions"][..],
-            &["failure", "code"][..],
-            &["failure", "primary_span"][..],
-            &["failure", "related_spans"][..],
+            &["failure"][..],
             &["events"][..],
         ];
+        if !witness["failure"].is_null() {
+            required.push(&["failure", "code"][..]);
+            required.push(&["failure", "primary_span"][..]);
+            required.push(&["failure", "related_spans"][..]);
+        }
         if witness["replay_guarantee"].as_str() == Some("exact") {
             required.push(&["source", "path"][..]);
             required.push(&["source", "hash"][..]);

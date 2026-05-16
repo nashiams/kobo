@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use kobo_errors::ColorMode;
-use kobo_ir::KoboMode;
+use kobo_ir::GuaranteeProfile;
 
 #[derive(Parser, Debug)]
 #[command(name = "kobo", about = "The Kobo compiler")]
@@ -446,11 +446,11 @@ impl GuaranteeProfileArg {
         }
     }
 
-    pub(crate) const fn compiler_compatibility_mode(self) -> KoboMode {
+    pub(crate) const fn compiler_profile(self) -> GuaranteeProfile {
         match self {
-            Self::Dev => KoboMode::Script,
-            Self::Checked => KoboMode::Checked,
-            Self::Release => KoboMode::Strict,
+            Self::Dev => GuaranteeProfile::Dev,
+            Self::Checked => GuaranteeProfile::Checked,
+            Self::Release => GuaranteeProfile::Release,
         }
     }
 }
@@ -476,14 +476,6 @@ pub(crate) fn resolve_guarantee_profile(
     } else {
         profile
     }
-}
-
-/// Temporary adapter while driver internals still route severity through
-/// `KoboMode`. Public callers must resolve guarantee profiles first.
-pub(crate) fn compiler_compatibility_mode(
-    profile: Option<GuaranteeProfileArg>,
-) -> Option<KoboMode> {
-    profile.map(GuaranteeProfileArg::compiler_compatibility_mode)
 }
 
 fn main() -> std::process::ExitCode {

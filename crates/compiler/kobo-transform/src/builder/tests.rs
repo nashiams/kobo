@@ -1717,10 +1717,10 @@ fn main() {
 // v0.7 Test Enforcement — S-26: Per-module mode (CLI override)
 // ---------------------------------------------------------------------------
 
-/// S-26 #19: CLI overrides file mode.
+/// Legacy mode directives are compatibility input for guarantee profiles.
 #[test]
-fn test_cli_mode_overrides_file_mode() {
-    // File says "script" but build_kir uses a Strict mode from config.
+fn test_cli_profile_overrides_legacy_file_mode() {
+    // File says "script"; current profile override is applied outside TransformOptions.
     let source = r#"//! kobo:mode = script
 fn main() {
     let x = String::from("hello");
@@ -2045,8 +2045,8 @@ fn main() {
 "#;
     // Use strict mode tier decision
     let options = TransformOptions::default();
-    // Strict mode is passed via KoboMode, not TransformOptions.
-    // We test via the builder: in strict mode, tier stays PlainOwned.
+    // Release-profile override is enforced outside TransformOptions.
+    // This builder-level test keeps the tier decision isolated.
     let decision = tier_decision_for_binding_with_options(source, "x", 0, options);
     // In non-strict (script) mode, the shared binding should get RcShared or similar.
     // The strict override is enforced at codegen level (mode check).

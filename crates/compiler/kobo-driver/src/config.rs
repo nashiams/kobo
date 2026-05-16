@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-pub use kobo_ir::KoboMode;
+pub use kobo_ir::{
+    ErrorPolicy, GuaranteeDimension, GuaranteeLevel, GuaranteePolicy, GuaranteeProfile, LegacyMode,
+};
 
 /// Workspace and crate-local configuration after all layers have been merged.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KoboConfig {
-    pub mode: KoboMode,
+    pub guarantee_policy: GuaranteePolicy,
     pub hot_borrow_threshold: u64,
     pub solver_cluster_limit: usize,
     pub solver_budget_seconds: f64,
@@ -46,7 +48,12 @@ struct RawKoboConfig {
     copy_types: RawCopyTypesSection,
     #[serde(default)]
     mutating_methods: RawMutatingMethodsSection,
-    mode: Option<KoboMode>,
+    #[serde(default)]
+    guarantees: RawGuaranteesSection,
+    #[serde(default)]
+    profiles: HashMap<String, RawProfileSection>,
+    mode: Option<LegacyMode>,
+    profile: Option<GuaranteeProfile>,
     hot_borrow_threshold: Option<u64>,
     solver_cluster_limit: Option<usize>,
     solver_budget_seconds: Option<f64>,
@@ -59,7 +66,8 @@ struct RawKoboConfig {
 
 #[derive(Debug, Default, Deserialize)]
 struct RawKoboSection {
-    mode: Option<KoboMode>,
+    mode: Option<LegacyMode>,
+    profile: Option<GuaranteeProfile>,
     output_dir: Option<PathBuf>,
     enable_parse_recovery: Option<bool>,
 }
@@ -104,6 +112,21 @@ struct RawMutatingMethodsSection {
     methods: Vec<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RawProfileSection {
+    #[serde(default)]
+    guarantees: RawGuaranteesSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawGuaranteesSection {
+    ownership: Option<GuaranteeLevel>,
+    liveness: Option<GuaranteeLevel>,
+    replay: Option<GuaranteeLevel>,
+    boundaries: Option<GuaranteeLevel>,
+    errors: Option<ErrorPolicy>,
+}
+
 /// Errors produced while loading or parsing `Kobo.toml`.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -126,7 +149,7 @@ pub enum ConfigError {
 impl Default for KoboConfig {
     fn default() -> Self {
         Self {
-            mode: KoboMode::Script,
+            guarantee_policy: GuaranteePolicy::default(),
             hot_borrow_threshold: 10_000,
             solver_cluster_limit: 2048,
             solver_budget_seconds: 5.0,
@@ -193,8 +216,21 @@ fn read_optional_config(config_path: &Path) -> Result<Option<RawKoboConfig>, Con
 
 impl RawKoboConfig {
     fn merge_into(self, config: &mut KoboConfig, config_dir: &Path) {
-        if let Some(mode) = self.mode.or(self.kobo.mode) {
-            config.mode = mode;
+        if let Some(profile) = self.profile.or(self.kobo.profile).or_else(|| {
+            self.mode
+                .or(self.kobo.mode)
+                .map(LegacyMode::guarantee_profile)
+        }) {
+            config.guarantee_policy = GuaranteePolicy::for_profile(profile);
+        }
+        self.guarantees.apply_to(&mut config.guarantee_policy);
+        if let Some(profile_config) = self
+            .profiles
+            .get(config.guarantee_policy.profile().as_str())
+        {
+            profile_config
+                .guarantees
+                .apply_to(&mut config.guarantee_policy);
         }
 
         if let Some(hot_borrow_threshold) = self
@@ -264,6 +300,34 @@ impl RawKoboConfig {
     }
 }
 
+impl RawGuaranteesSection {
+    fn apply_to(&self, policy: &mut GuaranteePolicy) {
+        if let Some(level) = self.ownership {
+            policy
+                .guarantees_mut()
+                .set_level(GuaranteeDimension::Ownership, level);
+        }
+        if let Some(level) = self.liveness {
+            policy
+                .guarantees_mut()
+                .set_level(GuaranteeDimension::Liveness, level);
+        }
+        if let Some(level) = self.replay {
+            policy
+                .guarantees_mut()
+                .set_level(GuaranteeDimension::Replay, level);
+        }
+        if let Some(level) = self.boundaries {
+            policy
+                .guarantees_mut()
+                .set_level(GuaranteeDimension::Boundaries, level);
+        }
+        if let Some(errors) = self.errors {
+            policy.guarantees_mut().set_errors(errors);
+        }
+    }
+}
+
 fn resolve_output_dir(config_dir: &Path, output_dir: PathBuf) -> PathBuf {
     if output_dir.is_absolute() {
         output_dir
@@ -291,7 +355,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::{load_config, load_config_for, KoboMode};
+    use super::{load_config, load_config_for, GuaranteeProfile};
 
     static TEST_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -331,7 +395,7 @@ mod tests {
         let workspace_root = TestDir::new("defaults");
         let config = load_config(workspace_root.path()).unwrap();
 
-        assert_eq!(config.mode, KoboMode::Script);
+        assert_eq!(config.guarantee_policy.profile(), GuaranteeProfile::Dev);
         assert_eq!(config.hot_borrow_threshold, 10_000);
         assert_eq!(config.solver_cluster_limit, 2048);
         assert_eq!(config.small_struct_clone_threshold_bytes, 128);
@@ -378,7 +442,7 @@ output_dir = "generated"
 
         let config = load_config_for(&crate_dir, workspace_root.path()).unwrap();
 
-        assert_eq!(config.mode, KoboMode::Strict);
+        assert_eq!(config.guarantee_policy.profile(), GuaranteeProfile::Release);
         assert_eq!(config.hot_borrow_threshold, 1200);
         assert_eq!(config.solver_cluster_limit, 400);
         assert_eq!(config.solver_budget_seconds, 7.5);

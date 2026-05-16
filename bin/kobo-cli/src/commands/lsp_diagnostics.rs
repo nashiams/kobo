@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_driver::run_check_pipeline;
 use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
-use kobo_ir::{KoboMode, KoboSpan};
+use kobo_ir::{GuaranteePolicy, GuaranteeProfile, KoboSpan};
 use serde_json::{json, Value};
 
 use crate::ErrorFormat;
@@ -15,7 +15,10 @@ pub(super) fn cmd_lsp_diagnostics(
     _no_project_ok: bool,
     include_actions: bool,
 ) -> anyhow::Result<()> {
-    let mut session = build_session(file, Some(KoboMode::Checked))?;
+    let mut session = build_session(
+        file,
+        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
     let _ = run_check_pipeline(&mut session, file);
     let mut extra_diagnostics = artifact_backed_diagnostics(&session, file)?;
     extra_diagnostics.extend(replay_boundary_diagnostics(&session, file)?);

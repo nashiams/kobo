@@ -1,6 +1,7 @@
 use anyhow::Context;
-use kobo_driver::{load_config, run_codegen_pipeline, KoboMode};
+use kobo_driver::{load_config, run_codegen_pipeline};
 use kobo_errors::{ColorMode, KErrorCode, Severity};
+use kobo_ir::GuaranteePolicy;
 
 use std::path::Path;
 
@@ -12,7 +13,7 @@ use super::{
 };
 
 pub(super) fn cmd_build(
-    cli_mode: Option<KoboMode>,
+    cli_policy: Option<GuaranteePolicy>,
     guarantee_profile: Option<GuaranteeProfileArg>,
     print_policy: Option<PolicyOutputFormat>,
     error_format: ErrorFormat,
@@ -23,7 +24,7 @@ pub(super) fn cmd_build(
     if let Some(file) = file {
         return cmd_build_file(
             file,
-            cli_mode,
+            cli_policy,
             guarantee_profile,
             print_policy,
             error_format,
@@ -42,8 +43,8 @@ pub(super) fn cmd_build(
     let cwd = std::env::current_dir().context("failed to get current directory")?;
     let mut config = load_config(&cwd)?;
 
-    if let Some(mode) = cli_mode {
-        config.mode = mode;
+    if let Some(policy) = cli_policy {
+        config.guarantee_policy = policy;
     }
 
     let output = kobo_driver::run_build_pipeline(&config, &cwd)?;
@@ -63,7 +64,7 @@ pub(super) fn cmd_build(
 
 fn cmd_build_file(
     file: &Path,
-    cli_mode: Option<KoboMode>,
+    cli_policy: Option<GuaranteePolicy>,
     guarantee_profile: Option<GuaranteeProfileArg>,
     print_policy: Option<PolicyOutputFormat>,
     error_format: ErrorFormat,
@@ -86,7 +87,11 @@ fn cmd_build_file(
         None
     };
 
-    let mut session = build_session(file, cli_mode)?;
+    let session_policy = guarantee_policy
+        .as_ref()
+        .map(|policy| policy.compiler_policy().clone())
+        .or(cli_policy);
+    let mut session = build_session(file, session_policy)?;
     let mut artifacts = run_codegen_pipeline(&mut session, file).map_err(|()| {
         render_diagnostics_with_format(&session, error_format, color_mode);
         super::diagnostics_emitted()
@@ -96,7 +101,7 @@ fn cmd_build_file(
     }
     let _error_policy_sites = artifacts.error_policy_sites.len();
     render_diagnostics_with_format(&session, error_format, color_mode);
-    let strict_ownership_line = if session.mode().is_strict() {
+    let strict_ownership_line = if session.guarantee_policy().is_release() {
         session
             .visible_diagnostics()
             .find(|diagnostic| diagnostic.code == KErrorCode::K0032)

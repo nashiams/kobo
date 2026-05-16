@@ -1,6 +1,8 @@
 use std::fs;
 
-use kobo_driver::{run_check_pipeline, CompileSession, KoboConfig, KoboMode};
+use kobo_driver::{
+    run_check_pipeline, CompileSession, GuaranteePolicy, GuaranteeProfile, KoboConfig,
+};
 use kobo_errors::KErrorCode;
 
 #[test]
@@ -54,7 +56,7 @@ fn log(s: String) {
     fs::write(&file, source).unwrap();
 
     let mut config = KoboConfig::default();
-    config.mode = KoboMode::Checked;
+    config.guarantee_policy = GuaranteePolicy::for_profile(GuaranteeProfile::Checked);
     config.enable_parse_recovery = true;
     let mut session = CompileSession::new(config);
 

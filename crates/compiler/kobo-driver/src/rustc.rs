@@ -36,7 +36,7 @@ pub fn compile_and_remap(
     if output.status.success() {
         // v0.6 G4 [R6-02]: Capture warnings on success path in checked mode.
         // Script mode skips warning parsing (conservative — no noise to filter).
-        let rustc_warnings = if session.mode().is_checked() {
+        let rustc_warnings = if session.guarantee_policy().is_checked() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             parse_rustc_diagnostics(&stderr).warnings
         } else {

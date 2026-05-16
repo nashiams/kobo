@@ -1,30 +1,21 @@
-use kobo_ir::{Kir, KoboMode};
+use kobo_ir::{GuaranteePolicy, Kir};
 
-/// Resolves the effective mode for a file.
-///
-/// Priority: CLI flag > file attribute (`//! kobo:mode = …`) > Kobo.toml [S-26].
-pub fn effective_mode(
-    cli_mode: Option<KoboMode>,
-    file_mode: Option<KoboMode>,
-    config_mode: KoboMode,
-) -> KoboMode {
-    cli_mode.or(file_mode).unwrap_or(config_mode)
+pub fn effective_guarantee_policy(
+    cli_policy: Option<GuaranteePolicy>,
+    file_policy: Option<GuaranteePolicy>,
+    config_policy: GuaranteePolicy,
+) -> GuaranteePolicy {
+    cli_policy.or(file_policy).unwrap_or(config_policy)
 }
 
-/// S-21: Apply lifetime erasure to Rust source in Script/Checked mode.
-///
-/// Rewrites reference parameters (`&T`, `&mut T`, `&str`) to owned types
-/// (`T`, `T`, `String`). Intended for Script-mode prototyping where the
-/// user opts in to simplified ownership.
-///
-/// Call this on the codegen output when `--erase-lifetimes` is requested.
-pub fn apply_lifetime_erasure(source: &str, mode: KoboMode) -> String {
-    kobo_transform::lifetime_erase::rewrite_fn_signature(source, mode)
+/// S-21: Apply lifetime erasure to Rust source in dev/checked profiles.
+pub fn apply_lifetime_erasure(source: &str, policy: &GuaranteePolicy) -> String {
+    kobo_transform::lifetime_erase::rewrite_fn_signature(source, policy)
 }
 
 /// S-21: Report clone debt introduced by public-signature lifetime erasure.
-pub fn lifetime_erasure_debt_report(source: &str, mode: KoboMode) -> String {
-    let result = kobo_transform::lifetime_erase::analyze_source(source, mode);
+pub fn lifetime_erasure_debt_report(source: &str, policy: &GuaranteePolicy) -> String {
+    let result = kobo_transform::lifetime_erase::analyze_source(source, policy);
     kobo_transform::lifetime_erase::format_clone_debt(&result.clone_sites)
 }
 
@@ -43,50 +34,57 @@ pub fn extract_before_borrow_rewrite(source: &str, kir: &Kir) -> (String, usize)
 
 #[cfg(test)]
 mod tests {
-    use super::effective_mode;
-    use kobo_ir::KoboMode;
+    use super::effective_guarantee_policy;
+    use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
 
-    /// S-26: CLI flag takes highest priority.
     #[test]
     fn cli_overrides_file_and_config() {
-        let result = effective_mode(
-            Some(KoboMode::Strict),
-            Some(KoboMode::Checked),
-            KoboMode::Script,
+        let result = effective_guarantee_policy(
+            Some(GuaranteePolicy::for_profile(GuaranteeProfile::Release)),
+            Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+            GuaranteePolicy::for_profile(GuaranteeProfile::Dev),
         );
-        assert_eq!(result, KoboMode::Strict);
+        assert_eq!(result.profile(), GuaranteeProfile::Release);
     }
 
-    /// S-26: File attribute overrides Kobo.toml when no CLI flag.
     #[test]
     fn file_overrides_config() {
-        let result = effective_mode(None, Some(KoboMode::Checked), KoboMode::Script);
-        assert_eq!(result, KoboMode::Checked);
+        let result = effective_guarantee_policy(
+            None,
+            Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+            GuaranteePolicy::for_profile(GuaranteeProfile::Dev),
+        );
+        assert_eq!(result.profile(), GuaranteeProfile::Checked);
     }
 
-    /// S-26: Config (Kobo.toml) is the fallback.
     #[test]
     fn config_is_fallback() {
-        let result = effective_mode(None, None, KoboMode::Checked);
-        assert_eq!(result, KoboMode::Checked);
+        let result = effective_guarantee_policy(
+            None,
+            None,
+            GuaranteePolicy::for_profile(GuaranteeProfile::Checked),
+        );
+        assert_eq!(result.profile(), GuaranteeProfile::Checked);
     }
 
-    /// S-26: CLI overrides file attribute even when both are set.
     #[test]
     fn cli_overrides_file_when_both_set() {
-        let result = effective_mode(
-            Some(KoboMode::Script),
-            Some(KoboMode::Strict),
-            KoboMode::Checked,
+        let result = effective_guarantee_policy(
+            Some(GuaranteePolicy::for_profile(GuaranteeProfile::Dev)),
+            Some(GuaranteePolicy::for_profile(GuaranteeProfile::Release)),
+            GuaranteePolicy::for_profile(GuaranteeProfile::Checked),
         );
-        assert_eq!(result, KoboMode::Script);
+        assert_eq!(result.profile(), GuaranteeProfile::Dev);
     }
 
-    /// S-26: No file attribute + no CLI → uses config.
     #[test]
     fn no_file_no_cli_uses_config() {
-        let result = effective_mode(None, None, KoboMode::Script);
-        assert_eq!(result, KoboMode::Script);
+        let result = effective_guarantee_policy(
+            None,
+            None,
+            GuaranteePolicy::for_profile(GuaranteeProfile::Dev),
+        );
+        assert_eq!(result.profile(), GuaranteeProfile::Dev);
     }
 
     /// S-8: spawn {} generates tokio::spawn(async move { ... }).

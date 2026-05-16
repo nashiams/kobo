@@ -2,8 +2,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -98,16 +100,13 @@ impl CliOutput {
 }
 
 pub fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
-    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("kobo command should launch");
-    CliOutput {
-        status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-    }
+    run_kobo_with_timeout(args, cwd, Duration::from_secs(60))
+}
+
+pub fn run_kobo_with_timeout(args: &[String], cwd: &Path, timeout: Duration) -> CliOutput {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kobo"));
+    command.args(args).current_dir(cwd);
+    run_command_with_timeout(command, timeout)
 }
 
 pub fn run_kobo_with_env(args: &[String], cwd: &Path, envs: &[(&str, &str)]) -> CliOutput {
@@ -116,7 +115,49 @@ pub fn run_kobo_with_env(args: &[String], cwd: &Path, envs: &[(&str, &str)]) -> 
     for (key, value) in envs {
         command.env(key, value);
     }
-    let output = command.output().expect("kobo command should launch");
+    run_command_with_timeout(command, Duration::from_secs(60))
+}
+
+fn run_command_with_timeout(mut command: Command, timeout: Duration) -> CliOutput {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().expect("kobo command should launch");
+    let started_at = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .expect("kobo command status should be observable")
+            .is_some()
+        {
+            let output = child
+                .wait_with_output()
+                .expect("kobo command output should be readable");
+            return output_to_cli(output);
+        }
+        if started_at.elapsed() >= timeout {
+            return kill_timed_out_child(child, timeout);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn kill_timed_out_child(mut child: Child, timeout: Duration) -> CliOutput {
+    let process_id = child.id();
+    let _ = child.kill();
+    let output = child
+        .wait_with_output()
+        .expect("timed out kobo command output should be readable");
+    let mut cli_output = output_to_cli(output);
+    if !cli_output.stderr.is_empty() && !cli_output.stderr.ends_with('\n') {
+        cli_output.stderr.push('\n');
+    }
+    cli_output.stderr.push_str(&format!(
+        "kobo command timed out after {}s; killed process {process_id}\n",
+        timeout.as_secs()
+    ));
+    cli_output
+}
+
+fn output_to_cli(output: std::process::Output) -> CliOutput {
     CliOutput {
         status: output.status,
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),

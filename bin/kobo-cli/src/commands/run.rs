@@ -7,7 +7,7 @@ use kobo_driver::{
     load_config, run_and_compile, run_and_compile_with_lifetime_erasure, run_codegen_pipeline,
     run_kir_phase, CodegenArtifacts,
 };
-use kobo_ir::{KoboMode, MustCallObligation};
+use kobo_ir::{GuaranteePolicy, MustCallObligation};
 
 use super::{
     ownership_analysis, policy,
@@ -17,7 +17,7 @@ use crate::{ErrorFormat, GuaranteeProfileArg};
 
 pub(super) fn cmd_run(
     file: &Path,
-    cli_mode: Option<KoboMode>,
+    cli_policy: Option<GuaranteePolicy>,
     guarantee_profile: Option<GuaranteeProfileArg>,
     erase_lifetimes: bool,
 ) -> anyhow::Result<()> {
@@ -31,7 +31,11 @@ pub(super) fn cmd_run(
     } else {
         None
     };
-    let mut session = build_session(file, cli_mode)?;
+    let session_policy = guarantee_policy
+        .as_ref()
+        .map(|policy| policy.compiler_policy().clone())
+        .or(cli_policy);
+    let mut session = build_session(file, session_policy)?;
 
     let compile_result = if erase_lifetimes {
         run_and_compile_with_lifetime_erasure(&mut session, file)
@@ -56,7 +60,7 @@ pub(super) fn cmd_run(
     // appear without requiring the user to set KOBO_DIAG=1 manually.
     // We propagate KOBO_CHECKED_MODE=1 to the child so kobo-diag::DiagOwner
     // knows to emit on Drop even without the manual opt-in env var.
-    if session.mode().is_checked() {
+    if session.guarantee_policy().is_checked() {
         run_cmd.env("KOBO_CHECKED_MODE", "1");
     }
     let run_status = run_cmd
@@ -72,7 +76,7 @@ pub(super) fn cmd_run(
 
 pub(super) fn cmd_inspect(
     file: &Path,
-    cli_mode: Option<KoboMode>,
+    cli_policy: Option<GuaranteePolicy>,
     clean: bool,
     erase_lifetimes: bool,
     scenario_metadata: bool,
@@ -83,7 +87,7 @@ pub(super) fn cmd_inspect(
     trait_default: Option<&str>,
     audit: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut session = build_session(file, cli_mode)?;
+    let mut session = build_session(file, cli_policy.clone())?;
 
     if audit == Some("json") {
         let source = std::fs::read_to_string(file)
@@ -98,7 +102,7 @@ pub(super) fn cmd_inspect(
         let output = simulation_transparency_output(&source, harness);
         eprintln!(
             "// effective guarantee profile: {}",
-            profile_name(session.mode())
+            session.guarantee_profile().as_str()
         );
         print!("{output}");
         return Ok(());
@@ -109,14 +113,14 @@ pub(super) fn cmd_inspect(
             project_config,
             source_files,
             main_output,
-        } = build_inspect_cargo_output(file, cli_mode, erase_lifetimes)?;
+        } = build_inspect_cargo_output(file, cli_policy.clone(), erase_lifetimes)?;
 
         kobo_codegen::cargo_gen::generate_cargo_project(&project_config, &source_files, dir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         eprintln!("cargo project generated at {}", dir.display());
         eprintln!(
             "// effective guarantee profile: {}",
-            profile_name(session.mode())
+            session.guarantee_profile().as_str()
         );
         print!("{main_output}");
         return Ok(());
@@ -135,7 +139,7 @@ pub(super) fn cmd_inspect(
 
     // S-21: Apply lifetime erasure when requested for compatibility-profile output.
     let rs_source = if erase_lifetimes {
-        kobo_driver::apply_lifetime_erasure(&rs_source, session.mode())
+        kobo_driver::apply_lifetime_erasure(&rs_source, session.guarantee_policy())
     } else {
         rs_source
     };
@@ -162,18 +166,10 @@ pub(super) fn cmd_inspect(
     // S-26 compatibility: show the profile-equivalent view of legacy mode resolution.
     eprintln!(
         "// effective guarantee profile: {}",
-        profile_name(session.mode())
+        session.guarantee_profile().as_str()
     );
     print!("{output}");
     Ok(())
-}
-
-fn profile_name(mode: KoboMode) -> &'static str {
-    match mode {
-        KoboMode::Script => "dev",
-        KoboMode::Checked => "checked",
-        KoboMode::Strict => "release",
-    }
 }
 
 fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
@@ -510,12 +506,12 @@ struct InspectCargoOutput {
 
 fn build_inspect_cargo_output(
     file: &Path,
-    cli_mode: Option<KoboMode>,
+    cli_policy: Option<GuaranteePolicy>,
     erase_lifetimes: bool,
 ) -> anyhow::Result<InspectCargoOutput> {
     let absolute_file = absolute_input_path(file)?;
     let Some(project_root) = find_nearest_kobo_project_root(&absolute_file) else {
-        return build_single_file_inspect_cargo_output(file, cli_mode, erase_lifetimes);
+        return build_single_file_inspect_cargo_output(file, cli_policy, erase_lifetimes);
     };
 
     let driver_config = load_config(&project_root)
@@ -525,7 +521,7 @@ fn build_inspect_cargo_output(
     let mut kobo_files = Vec::new();
     collect_kobo_files(&src_dir, &mut kobo_files);
     if kobo_files.is_empty() {
-        return build_single_file_inspect_cargo_output(file, cli_mode, erase_lifetimes);
+        return build_single_file_inspect_cargo_output(file, cli_policy, erase_lifetimes);
     }
 
     let canonical_input = absolute_file
@@ -535,7 +531,7 @@ fn build_inspect_cargo_output(
     let mut main_output = None;
 
     for kobo_file in kobo_files {
-        let mut session = build_session(&kobo_file, cli_mode)?;
+        let mut session = build_session(&kobo_file, cli_policy.clone())?;
         let CodegenArtifacts { rs_source, .. } = run_codegen_pipeline(&mut session, &kobo_file)
             .map_err(|()| {
                 render_diagnostics(&session);
@@ -544,7 +540,7 @@ fn build_inspect_cargo_output(
         render_diagnostics(&session);
 
         let rs_source = if erase_lifetimes {
-            kobo_driver::apply_lifetime_erasure(&rs_source, session.mode())
+            kobo_driver::apply_lifetime_erasure(&rs_source, session.guarantee_policy())
         } else {
             rs_source
         };
@@ -574,10 +570,10 @@ fn build_inspect_cargo_output(
 
 fn build_single_file_inspect_cargo_output(
     file: &Path,
-    cli_mode: Option<KoboMode>,
+    cli_policy: Option<GuaranteePolicy>,
     erase_lifetimes: bool,
 ) -> anyhow::Result<InspectCargoOutput> {
-    let mut session = build_session(file, cli_mode)?;
+    let mut session = build_session(file, cli_policy)?;
     let CodegenArtifacts { rs_source, .. } =
         run_codegen_pipeline(&mut session, file).map_err(|()| {
             render_diagnostics(&session);
@@ -586,7 +582,7 @@ fn build_single_file_inspect_cargo_output(
     render_diagnostics(&session);
 
     let rs_source = if erase_lifetimes {
-        kobo_driver::apply_lifetime_erasure(&rs_source, session.mode())
+        kobo_driver::apply_lifetime_erasure(&rs_source, session.guarantee_policy())
     } else {
         rs_source
     };

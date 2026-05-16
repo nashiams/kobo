@@ -1,4 +1,4 @@
-use kobo_ir::KoboMode;
+use kobo_ir::{GuaranteeProfile, LegacyMode};
 
 /// Errors that can occur when parsing the file-level mode attribute.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,16 +17,13 @@ pub enum ModeParseError {
 pub struct LegacyModeDirective {
     pub line: usize,
     pub value: String,
-    pub mode: KoboMode,
+    pub legacy_mode: LegacyMode,
+    pub profile: GuaranteeProfile,
 }
 
 impl LegacyModeDirective {
     pub const fn profile_name(&self) -> &'static str {
-        match self.mode {
-            KoboMode::Script => "dev",
-            KoboMode::Checked => "checked",
-            KoboMode::Strict => "release",
-        }
+        self.profile.as_str()
     }
 }
 
@@ -61,8 +58,8 @@ impl std::error::Error for ModeParseError {}
 /// Returns `Ok(None)` if no mode attribute is found.
 /// Returns `Ok(Some(mode))` if exactly one valid attribute is found.
 /// Returns `Err` on invalid mode string or duplicate attributes.
-pub fn parse_file_mode(source: &str) -> Result<Option<KoboMode>, ModeParseError> {
-    Ok(parse_legacy_mode_directive(source)?.map(|directive| directive.mode))
+pub fn parse_file_mode(source: &str) -> Result<Option<GuaranteeProfile>, ModeParseError> {
+    Ok(parse_legacy_mode_directive(source)?.map(|directive| directive.profile))
 }
 
 /// Scans the first 10 lines for a legacy `//! kobo:mode = ...` directive.
@@ -84,11 +81,12 @@ pub fn parse_legacy_mode_directive(
                 let mode_str = mode_str.trim();
                 if let Some(value) = mode_str.strip_prefix('=') {
                     let value = value.trim();
-                    let mode: KoboMode =
+                    let legacy_mode: LegacyMode =
                         value.parse().map_err(|_| ModeParseError::InvalidMode {
                             line: line_num,
                             value: value.to_owned(),
                         })?;
+                    let profile = legacy_mode.guarantee_profile();
 
                     if let Some(first) = &found {
                         return Err(ModeParseError::DuplicateMode {
@@ -99,7 +97,8 @@ pub fn parse_legacy_mode_directive(
                     found = Some(LegacyModeDirective {
                         line: line_num,
                         value: value.to_owned(),
-                        mode,
+                        legacy_mode,
+                        profile,
                     });
                 }
             }

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_driver::{load_config_for, run_check_pipeline, CompileSession};
 use kobo_errors::DiagnosticLspPayload;
-use kobo_ir::KoboMode;
+use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -67,9 +67,9 @@ fn build_lsp_session(file: &Path) -> anyhow::Result<CompileSession> {
     let crate_dir = find_crate_dir(file, &workspace_root);
     let mut config = load_config_for(&crate_dir, &workspace_root)
         .with_context(|| format!("failed to load config for {}", file.display()))?;
-    config.mode = KoboMode::Checked;
+    config.guarantee_policy = GuaranteePolicy::for_profile(GuaranteeProfile::Checked);
     let mut session = CompileSession::new(config);
-    session.cli_mode_override = true;
+    session.cli_profile_override = true;
     Ok(session)
 }
 

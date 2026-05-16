@@ -5,7 +5,9 @@ use kobo_errors::{
     diagnostic_to_json_value, ColorMode, DiagDecision, DiagLabel, DiagnosticOutputFormat,
     DiagnosticRenderer, KDiagnostic, KErrorCode, Severity,
 };
-use kobo_ir::{FileSetBuilder, KoboMode, KoboSpan, ScenarioOpKind, ScenarioProgram};
+use kobo_ir::{
+    FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KoboSpan, ScenarioOpKind, ScenarioProgram,
+};
 use kobo_sim_core::{EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure};
 use proptest::prelude::{any, Strategy};
 use proptest::strategy::ValueTree;
@@ -46,7 +48,10 @@ pub(super) fn cmd_test(
         })
         .unwrap_or_else(|| "<missing>".to_owned());
     let profile_roles = resolve_profile_roles(profile, &document, &target_name);
-    let mut session = super::session::build_session(file, Some(KoboMode::Checked))?;
+    let mut session = super::session::build_session(
+        file,
+        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(

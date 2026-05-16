@@ -1,18 +1,22 @@
 use std::collections::HashMap;
 
 use kobo_ir::{
-    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioCoverageFacts, ScenarioModeledBoundary,
-    ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCoverageFacts,
+    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
+use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
-    Block, Expr, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath, ExprStruct, File,
-    Item, ItemFn, Lit, Local, Macro, Pat, PatIdent, PatType, Path, Stmt,
+    Block, Expr, ExprAsync, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath,
+    ExprStruct, File, Item, ItemFn, ItemUse, Lit, Local, Macro, MetaNameValue, Pat, PatIdent,
+    PatType, Path, Stmt, UseTree,
 };
 
 type BindingMap = HashMap<String, String>;
 type BoolMap = HashMap<String, bool>;
+type ImportMap = HashMap<String, String>;
+type BoundaryPolicyMap = HashMap<String, BoundaryPolicyFact>;
 
 #[derive(Default)]
 struct BindingEnv {
@@ -20,10 +24,18 @@ struct BindingEnv {
     bools: BoolMap,
 }
 
+#[derive(Clone, Debug)]
+struct BoundaryPolicyFact {
+    policy: ScenarioBoundaryPolicy,
+    reason: Option<String>,
+}
+
 struct ScenarioLowerer<'a> {
     ast: &'a KoboFile,
     must_call_types: &'a HashMap<String, Vec<String>>,
     functions: &'a HashMap<String, &'a ItemFn>,
+    imports: &'a ImportMap,
+    boundary_policies: &'a BoundaryPolicyMap,
     operations: Vec<ScenarioOp>,
     coverage: ScenarioCoverageFacts,
     call_depth: usize,
@@ -37,17 +49,30 @@ pub fn build_scenario_programs(
     let _ = fallback_profile;
     let file = ast.syn_file();
     let functions = collect_functions(file);
+    let imports = collect_use_crate_aliases(file);
+    let boundary_policies = collect_boundary_policies(file);
     let must_call_types = must_call_type_map(file, must_call_obligations);
 
     functions
         .values()
-        .map(|function| lower_function(ast, &functions, &must_call_types, function))
+        .map(|function| {
+            lower_function(
+                ast,
+                &functions,
+                &imports,
+                &boundary_policies,
+                &must_call_types,
+                function,
+            )
+        })
         .collect()
 }
 
 fn lower_function(
     ast: &KoboFile,
     functions: &HashMap<String, &ItemFn>,
+    imports: &ImportMap,
+    boundary_policies: &BoundaryPolicyMap,
     must_call_types: &HashMap<String, Vec<String>>,
     function: &ItemFn,
 ) -> ScenarioProgram {
@@ -55,6 +80,8 @@ fn lower_function(
         ast,
         must_call_types,
         functions,
+        imports,
+        boundary_policies,
         operations: Vec::new(),
         coverage: ScenarioCoverageFacts::default(),
         call_depth: 0,
@@ -65,23 +92,17 @@ fn lower_function(
         span: KoboSpan::generated(ast.file_id),
         kind: ScenarioOpKind::Return,
     });
+    let boundaries = boundaries_from_operations(&lowerer.operations);
+    let operations = lowerer.operations;
+    let coverage = lowerer.coverage;
 
     ScenarioProgram {
         file_id: ast.file_id,
         target: function.sig.ident.to_string(),
         source_hash: String::new(),
-        operations: lowerer.operations,
-        boundaries: lowerer
-            .coverage
-            .opaque_boundaries
-            .iter()
-            .map(|name| ScenarioBoundary {
-                span: KoboSpan::generated(ast.file_id),
-                name: name.clone(),
-                decision: "unselected".to_owned(),
-            })
-            .collect(),
-        coverage: lowerer.coverage,
+        operations,
+        boundaries,
+        coverage,
     }
 }
 
@@ -127,6 +148,99 @@ fn must_call_type_map(
             _ => None,
         })
         .collect()
+}
+
+fn collect_use_crate_aliases(file: &File) -> ImportMap {
+    let mut imports = HashMap::new();
+    for item in &file.items {
+        let Item::Use(item_use) = item else {
+            continue;
+        };
+        collect_use_tree_aliases(&item_use.tree, None, &mut imports);
+    }
+    imports
+}
+
+fn collect_use_tree_aliases(tree: &UseTree, crate_name: Option<String>, imports: &mut ImportMap) {
+    match tree {
+        UseTree::Path(path) => {
+            let root = crate_name.unwrap_or_else(|| path.ident.to_string());
+            collect_use_tree_aliases(&path.tree, Some(root), imports);
+        }
+        UseTree::Name(name) => {
+            if let Some(root) = crate_name {
+                imports.insert(name.ident.to_string(), root);
+            }
+        }
+        UseTree::Rename(rename) => {
+            imports.insert(
+                rename.rename.to_string(),
+                crate_name.unwrap_or_else(|| rename.ident.to_string()),
+            );
+        }
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                collect_use_tree_aliases(tree, crate_name.clone(), imports);
+            }
+        }
+        UseTree::Glob(_) => {}
+    }
+}
+
+fn collect_boundary_policies(file: &File) -> BoundaryPolicyMap {
+    let mut policies = HashMap::new();
+    for item in &file.items {
+        let Item::Use(item_use) = item else {
+            continue;
+        };
+        if let Some(policy) = boundary_policy_from_use(item_use) {
+            policies.insert(policy.0, policy.1);
+        }
+    }
+    policies
+}
+
+fn boundary_policy_from_use(item_use: &ItemUse) -> Option<(String, BoundaryPolicyFact)> {
+    item_use.attrs.iter().find_map(|attr| {
+        if !path_ends_with(attr.path(), &["kobo", "boundary"]) {
+            return None;
+        }
+        parse_boundary_attr(attr)
+    })
+}
+
+fn parse_boundary_attr(attr: &syn::Attribute) -> Option<(String, BoundaryPolicyFact)> {
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let entries = list
+        .parse_args_with(Punctuated::<MetaNameValue, syn::Token![,]>::parse_terminated)
+        .ok()?;
+    let mut crate_name = None;
+    let mut policy = ScenarioBoundaryPolicy::Unselected;
+    let mut reason = None;
+
+    for entry in entries {
+        let Some(key) = path_last_ident(&entry.path) else {
+            continue;
+        };
+        let syn::Expr::Lit(ExprLit {
+            lit: Lit::Str(value),
+            ..
+        }) = entry.value
+        else {
+            continue;
+        };
+        match key.as_str() {
+            "crate" => crate_name = Some(value.value()),
+            "policy" => policy = ScenarioBoundaryPolicy::from_str(&value.value()),
+            "reason" => reason = Some(value.value()),
+            _ => {}
+        }
+    }
+
+    let crate_name = crate_name?;
+    Some((crate_name, BoundaryPolicyFact { policy, reason }))
 }
 
 impl BindingEnv {
@@ -222,6 +336,7 @@ impl<'a> ScenarioLowerer<'a> {
             Expr::Call(call) => self.execute_call(call, env),
             Expr::If(expr_if) => self.execute_if(expr_if, env),
             Expr::Match(expr_match) => self.execute_match(expr_match, env),
+            Expr::Async(expr_async) => self.execute_async(expr_async, env),
             Expr::Await(await_expr) => self.execute_expr(await_expr.base.as_ref(), env),
             Expr::Block(block) => self.execute_block(&block.block, env),
             Expr::Loop(expr_loop) => self.operations.push(ScenarioOp {
@@ -281,6 +396,18 @@ impl<'a> ScenarioLowerer<'a> {
         call: &'a ExprCall,
         env: &mut BindingEnv,
     ) -> bool {
+        if is_tokio_spawn(&path.path) {
+            self.operations.push(ScenarioOp {
+                span: self.span(call),
+                kind: ScenarioOpKind::ModeledEffect {
+                    boundary: ScenarioModeledBoundary::WardTask,
+                },
+            });
+            if let Some(argument) = call.args.first() {
+                self.execute_expr(argument, env);
+            }
+            return true;
+        }
         if path_ends_with(&path.path, &["drop"]) {
             if let Some(binding) = call
                 .args
@@ -320,16 +447,57 @@ impl<'a> ScenarioLowerer<'a> {
             return true;
         }
         if path_ends_with(&path.path, &["Client", "new"]) {
+            let crate_name = self.external_crate_name(&path.path);
+            let policy = self.boundary_policy_for(&crate_name);
+            if !is_replay_owned_policy(&policy.policy) {
+                self.record_opaque_boundary(&crate_name);
+            }
             self.operations.push(ScenarioOp {
                 span: self.span(call),
                 kind: ScenarioOpKind::ExternalBoundary {
-                    crate_name: path_first_ident(&path.path)
-                        .unwrap_or_else(|| "external".to_owned()),
+                    crate_name,
+                    policy: policy.policy,
+                    reason: policy.reason,
                 },
             });
             return true;
         }
         false
+    }
+
+    fn execute_async(&mut self, expr_async: &'a ExprAsync, env: &mut BindingEnv) {
+        self.execute_block(&expr_async.block, env);
+    }
+
+    fn external_crate_name(&self, path: &Path) -> String {
+        let Some(first_ident) = path_first_ident(path) else {
+            return "external".to_owned();
+        };
+        self.imports
+            .get(&first_ident)
+            .cloned()
+            .unwrap_or(first_ident)
+    }
+
+    fn boundary_policy_for(&self, crate_name: &str) -> BoundaryPolicyFact {
+        self.boundary_policies
+            .get(crate_name)
+            .cloned()
+            .unwrap_or_else(|| BoundaryPolicyFact {
+                policy: ScenarioBoundaryPolicy::Unselected,
+                reason: None,
+            })
+    }
+
+    fn record_opaque_boundary(&mut self, crate_name: &str) {
+        if !self
+            .coverage
+            .opaque_boundaries
+            .iter()
+            .any(|boundary| boundary == crate_name)
+        {
+            self.coverage.opaque_boundaries.push(crate_name.to_owned());
+        }
     }
 
     fn execute_helper_call(
@@ -514,6 +682,30 @@ impl<'a> ScenarioLowerer<'a> {
     }
 }
 
+fn boundaries_from_operations(operations: &[ScenarioOp]) -> Vec<ScenarioBoundary> {
+    let mut boundaries = Vec::new();
+    for operation in operations {
+        let ScenarioOpKind::ExternalBoundary {
+            crate_name, policy, ..
+        } = &operation.kind
+        else {
+            continue;
+        };
+        if boundaries
+            .iter()
+            .any(|boundary: &ScenarioBoundary| boundary.name == *crate_name)
+        {
+            continue;
+        }
+        boundaries.push(ScenarioBoundary {
+            span: operation.span,
+            name: crate_name.clone(),
+            decision: policy.as_str().to_owned(),
+        });
+    }
+    boundaries
+}
+
 fn matches_bool_pat(pat: &Pat, value: Option<bool>) -> bool {
     match (pat, value) {
         (
@@ -561,6 +753,19 @@ fn modeled_boundary(call: &ExprMethodCall) -> Option<ScenarioModeledBoundary> {
         return Some(ScenarioModeledBoundary::WardTask);
     }
     None
+}
+
+fn is_tokio_spawn(path: &Path) -> bool {
+    path_ends_with(path, &["tokio", "spawn"])
+}
+
+fn is_replay_owned_policy(policy: &ScenarioBoundaryPolicy) -> bool {
+    matches!(
+        policy,
+        ScenarioBoundaryPolicy::Model
+            | ScenarioBoundaryPolicy::Record
+            | ScenarioBoundaryPolicy::Stub
+    )
 }
 
 fn receiver_has_ward_member(expr: &Expr, member: &str) -> bool {

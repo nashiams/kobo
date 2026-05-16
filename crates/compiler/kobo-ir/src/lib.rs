@@ -1,4 +1,5 @@
 pub mod debt;
+mod guarantee_policy;
 mod kir;
 mod mode;
 mod node_id;
@@ -16,12 +17,16 @@ pub use debt::{
     FieldTypeShape, KirStructDef, KirStructFieldDef, WarnEarlyFact, WarnEarlyPattern,
     WrapperInventory,
 };
+pub use guarantee_policy::{
+    ErrorPolicy, GuaranteeDimension, GuaranteeDowngrade, GuaranteeLevel, GuaranteePolicy,
+    GuaranteeProfile, GuaranteeSet,
+};
 pub use kir::{BorrowKind, NodeKind, UseKind};
 pub use kir::{
     FieldCapabilityField, FieldCapabilityView, Kir, KirNode, MigrateSite, MigrateTarget,
     MustCallAction, MustCallAttrError, MustCallObligation, RelaxAttrError,
 };
-pub use mode::KoboMode;
+pub use mode::LegacyMode;
 pub use node_id::{
     CfgBlockId, FileEntry, FileId, FileSet, FileSetBuilder, KirNodeId, KoboAstNodeId, NodeIdGen,
 };
@@ -33,8 +38,8 @@ pub use ownership::{
 };
 pub use resource::ResourceKind;
 pub use scenario::{
-    ScenarioBoundary, ScenarioCoverageFacts, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind,
-    ScenarioProgram,
+    ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCoverageFacts, ScenarioModeledBoundary,
+    ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 pub use solution_map::SolutionMap;
 pub use span::KoboSpan;

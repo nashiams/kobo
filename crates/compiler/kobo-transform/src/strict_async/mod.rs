@@ -1,6 +1,6 @@
 pub mod guard_liveness;
 
-use kobo_ir::{AsyncViolationFact, AsyncViolationKind, Kir, KoboMode};
+use kobo_ir::{AsyncViolationFact, AsyncViolationKind, GuaranteePolicy, Kir};
 
 use crate::cfg::{build_cfg, compute_send_requirements, SendRequirements};
 
@@ -15,7 +15,7 @@ use crate::cfg::{build_cfg, compute_send_requirements, SendRequirements};
 /// The driver converts these facts to KDiagnostics with proper severity.
 pub fn check_strict_async(
     kir: &Kir,
-    mode: KoboMode,
+    policy: &GuaranteePolicy,
     has_executor: bool,
 ) -> Vec<AsyncViolationFact> {
     let cfg = build_cfg(kir);
@@ -63,7 +63,7 @@ pub fn check_strict_async(
         }
 
         // K0063: strict mode — any non-trivial wrapping in async context
-        if mode == KoboMode::Strict && needs_send && shared.needs_sharing {
+        if policy.is_release() && needs_send && shared.needs_sharing {
             violations.push(AsyncViolationFact {
                 span: binding.span,
                 kind: AsyncViolationKind::StrictAsyncViolation {

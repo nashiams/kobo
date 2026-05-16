@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use kobo_errors::KErrorCode;
-use kobo_ir::{ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
+use kobo_ir::{ScenarioBoundaryPolicy, ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
 
 use crate::core::{
     EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure, ScenarioOptions,
@@ -213,13 +213,19 @@ fn instrument_generated_rust(
 ) -> Result<String> {
     let mut source = String::new();
     source.push_str(&harness_support_source(program, options)?);
-    source.push_str(generated_rust);
+    source.push_str(&strip_harness_only_attrs(generated_rust));
     if !source.ends_with('\n') {
         source.push('\n');
     }
 
     for operation in &program.operations {
         if let ScenarioOpKind::ModeledEffect { boundary } = &operation.kind {
+            if boundary == &ScenarioModeledBoundary::WardTask
+                && source.contains("tokio::spawn")
+                && !source.contains("ward.task();")
+            {
+                continue;
+            }
             let events = modeled_boundary_events(boundary, options);
             source = inject_modeled_boundary_event(source, boundary, &events)?;
         }
@@ -228,6 +234,27 @@ fn instrument_generated_rust(
     let final_events = terminal_failure_events(program, options);
     source.push_str(&main_wrapper_source(&program.target, &final_events)?);
     Ok(source)
+}
+
+fn strip_harness_only_attrs(source: &str) -> String {
+    let mut output = String::new();
+    let mut skipping_kobo_attr = false;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if skipping_kobo_attr {
+            if trimmed.ends_with(']') {
+                skipping_kobo_attr = false;
+            }
+            continue;
+        }
+        if trimmed.starts_with("#[kobo::boundary") {
+            skipping_kobo_attr = !trimmed.ends_with(']');
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    output
 }
 
 fn harness_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
@@ -270,6 +297,8 @@ impl __KoboWardRandom {
 
     source.push_str(&storage_support_source(program, options)?);
     source.push_str(&network_support_source(program, options)?);
+    source.push_str(&external_boundary_support_source(program, options)?);
+    source.push_str(&tokio_support_source(program, options)?);
 
     let mut impls = Vec::new();
     for operation in &program.operations {
@@ -292,6 +321,61 @@ impl __KoboWardRandom {
             source.push_str("}\n");
         }
     }
+    Ok(source)
+}
+
+fn external_boundary_support_source(
+    program: &ScenarioProgram,
+    options: &ScenarioOptions,
+) -> Result<String> {
+    let mut source = String::new();
+    let mut crate_names = Vec::new();
+    for operation in &program.operations {
+        let ScenarioOpKind::ExternalBoundary {
+            crate_name, policy, ..
+        } = &operation.kind
+        else {
+            continue;
+        };
+        if !is_replay_owned_boundary(policy)
+            || crate_names.iter().any(|existing| existing == crate_name)
+            || !is_rust_identifier(crate_name)
+        {
+            continue;
+        }
+        crate_names.push(crate_name.clone());
+        let event = ScenarioEvent {
+            kind: format!("boundary-{}", policy.as_str()),
+            label: Some(crate_name.clone()),
+            value: Some(options.seed),
+        };
+        source.push_str("mod ");
+        source.push_str(crate_name);
+        source.push_str(" {\n");
+        source.push_str("    pub struct Client;\n");
+        source.push_str("    impl Client {\n");
+        source.push_str("        pub fn new() -> Self {\n            ");
+        source.push_str(&event_print_statement(&event)?);
+        source.push_str("\n            Client\n        }\n    }\n}\n");
+    }
+    Ok(source)
+}
+
+fn tokio_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
+    if !program.operations.iter().any(|operation| {
+        matches!(
+            operation.kind,
+            ScenarioOpKind::ModeledEffect {
+                boundary: ScenarioModeledBoundary::WardTask
+            }
+        )
+    }) {
+        return Ok(String::new());
+    }
+    let events = modeled_boundary_events(&ScenarioModeledBoundary::WardTask, options);
+    let mut source = String::from("mod tokio {\n    pub fn spawn<F>(_future: F) {\n        ");
+    source.push_str(&event_print_statements(&events)?);
+    source.push_str("\n    }\n}\n");
     Ok(source)
 }
 
@@ -550,6 +634,26 @@ fn has_cancel_injection(options: &ScenarioOptions) -> bool {
         .split(',')
         .map(str::trim)
         .any(|hook| hook == "cancel")
+}
+
+fn is_replay_owned_boundary(policy: &ScenarioBoundaryPolicy) -> bool {
+    matches!(
+        policy,
+        ScenarioBoundaryPolicy::Model
+            | ScenarioBoundaryPolicy::Record
+            | ScenarioBoundaryPolicy::Stub
+    )
+}
+
+fn is_rust_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn first_modeled_boundary(program: &ScenarioProgram) -> Option<&'static str> {

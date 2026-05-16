@@ -1,6 +1,6 @@
 use std::fs;
 
-use kobo_driver::{KoboConfig, KoboMode, QuerySession};
+use kobo_driver::{GuaranteePolicy, GuaranteeProfile, KoboConfig, QuerySession};
 use kobo_errors::KErrorCode;
 
 #[test]
@@ -96,7 +96,7 @@ fn relevant_config_change_invalidates_affected_downstream_queries_without_repars
         .expect("script diagnostics should compute");
 
     let mut checked = KoboConfig::default();
-    checked.mode = KoboMode::Checked;
+    checked.guarantee_policy = GuaranteePolicy::for_profile(GuaranteeProfile::Checked);
     query.set_config(checked);
     let checked_diagnostics = query
         .diagnostics(&file)
@@ -113,11 +113,11 @@ fn relevant_config_change_invalidates_affected_downstream_queries_without_repars
     let metrics = query.metrics();
     assert_eq!(
         metrics.parse_executions, 1,
-        "mode-only config changes must reuse parse output"
+        "policy-only config changes must reuse parse output"
     );
     assert_eq!(
         metrics.analysis_executions, 2,
-        "mode-dependent diagnostics must recompute"
+        "policy-dependent diagnostics must recompute"
     );
     assert_eq!(metrics.diagnostics_executions, 2);
 

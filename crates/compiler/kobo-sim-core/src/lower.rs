@@ -1,6 +1,8 @@
-use kobo_ir::{ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
+use kobo_ir::{ScenarioBoundaryPolicy, ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
 
-use crate::core::{LoweredScenario, ModeledBoundary, ScenarioCoverage, ScenarioOperation};
+use crate::core::{
+    BoundaryPolicyChoice, LoweredScenario, ModeledBoundary, ScenarioCoverage, ScenarioOperation,
+};
 
 pub const MODEL_VERSION: &str = "v0.10-driver-kir-scenario-modeled-island-1";
 
@@ -76,13 +78,17 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                         span_end,
                     })
                 }
-                ScenarioOpKind::ExternalBoundary { crate_name } => {
-                    Some(ScenarioOperation::ExternalBoundary {
-                        crate_name: crate_name.clone(),
-                        span_start,
-                        span_end,
-                    })
-                }
+                ScenarioOpKind::ExternalBoundary {
+                    crate_name,
+                    policy,
+                    reason,
+                } => Some(ScenarioOperation::ExternalBoundary {
+                    crate_name: crate_name.clone(),
+                    policy: boundary_policy(policy),
+                    reason: reason.clone(),
+                    span_start,
+                    span_end,
+                }),
                 ScenarioOpKind::Loop => Some(ScenarioOperation::Loop {
                     span_start,
                     span_end,
@@ -99,6 +105,18 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
             unsupported_constructs: program.coverage.unsupported_constructs.clone(),
             reason: None,
         },
+    }
+}
+
+fn boundary_policy(policy: &ScenarioBoundaryPolicy) -> BoundaryPolicyChoice {
+    match policy {
+        ScenarioBoundaryPolicy::Model => BoundaryPolicyChoice::Model,
+        ScenarioBoundaryPolicy::Record => BoundaryPolicyChoice::Record,
+        ScenarioBoundaryPolicy::Stub => BoundaryPolicyChoice::Stub,
+        ScenarioBoundaryPolicy::Outside => BoundaryPolicyChoice::Outside,
+        ScenarioBoundaryPolicy::Opaque => BoundaryPolicyChoice::Opaque,
+        ScenarioBoundaryPolicy::Debt => BoundaryPolicyChoice::Debt,
+        ScenarioBoundaryPolicy::Unselected => BoundaryPolicyChoice::Unselected,
     }
 }
 

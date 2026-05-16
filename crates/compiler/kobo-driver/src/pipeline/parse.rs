@@ -32,8 +32,9 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     match parse_legacy_mode_directive(&source) {
         Ok(Some(directive)) => {
             push_legacy_mode_directive_diagnostic(session, &source, file_id, &directive);
-            if !session.cli_mode_override {
-                session.config.mode = directive.mode;
+            if !session.cli_profile_override {
+                session.config.guarantee_policy =
+                    kobo_ir::GuaranteePolicy::for_profile(directive.profile);
             }
         }
         Ok(None) => {}

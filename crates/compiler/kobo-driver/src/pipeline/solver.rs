@@ -35,8 +35,8 @@ pub(super) fn project_solver_diagnostics(
                 .and_then(|id| kir.get_node(id))
                 .map(|n| n.span)
                 .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
-            let severity =
-                resolve_severity(KErrorCode::K0083, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0083, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0083,
                 severity,
@@ -59,8 +59,8 @@ pub(super) fn project_solver_diagnostics(
                 .and_then(|id| kir.get_node(*id))
                 .map(|n| n.span)
                 .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
-            let severity =
-                resolve_severity(KErrorCode::K0080, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0080, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0080,
                 severity,
@@ -82,8 +82,8 @@ pub(super) fn project_solver_diagnostics(
                 .and_then(|id| kir.get_node(*id))
                 .map(|n| n.span)
                 .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
-            let severity =
-                resolve_severity(KErrorCode::K0081, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0081, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0081,
                 severity,
@@ -105,8 +105,8 @@ pub(super) fn project_solver_diagnostics(
         }
         SolveOutcome::BudgetExceeded(report) => {
             let span = kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0));
-            let severity =
-                resolve_severity(KErrorCode::K0082, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0082, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0082,
                 severity,
@@ -134,8 +134,8 @@ pub(super) fn project_solver_diagnostics(
                 .get_node(report.crossing_node)
                 .map(|n| n.span)
                 .unwrap_or(kobo_ir::KoboSpan::new(0, 0, kobo_ir::FileId(0)));
-            let severity =
-                resolve_severity(KErrorCode::K0090, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0090, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0090,
                 severity,
@@ -208,8 +208,8 @@ pub(super) fn project_engine_ceiling_diagnostics(
     adjustments: &[EngineCeilingAdjustment],
 ) {
     for adjustment in adjustments {
-        let severity =
-            resolve_severity(KErrorCode::K0031, session.mode()).unwrap_or(Severity::Warning);
+        let severity = resolve_severity(KErrorCode::K0031, session.guarantee_policy())
+            .unwrap_or(Severity::Warning);
         session.diagnostics.push(KDiagnostic::new(
             KErrorCode::K0031,
             severity,

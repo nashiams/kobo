@@ -4,8 +4,8 @@ use kobo_errors::{
     ModeBehavior, Severity, SuggestionApplicability, SuggestionPolicy, TextEdit,
 };
 use kobo_ir::{
-    FileId, FileSetBuilder, KirNodeId, KoboMode, KoboSpan, StrictBoundaryFact,
-    StrictBoundaryViolation,
+    FileId, FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KirNodeId, KoboSpan,
+    StrictBoundaryFact, StrictBoundaryViolation,
 };
 
 #[test]
@@ -289,26 +289,30 @@ fn every_emitted_active_code_is_registered_and_marked_active() {
 }
 
 #[test]
-fn registry_drives_mode_dependent_severity() {
-    assert_eq!(resolve_severity(KErrorCode::K0001, KoboMode::Script), None);
+fn registry_drives_policy_dependent_severity() {
+    let dev = GuaranteePolicy::for_profile(GuaranteeProfile::Dev);
+    let checked = GuaranteePolicy::for_profile(GuaranteeProfile::Checked);
+    let release = GuaranteePolicy::for_profile(GuaranteeProfile::Release);
+
+    assert_eq!(resolve_severity(KErrorCode::K0001, &dev), None);
     assert_eq!(
-        resolve_severity(KErrorCode::K0001, KoboMode::Checked),
+        resolve_severity(KErrorCode::K0001, &checked),
         Some(Severity::Warning)
     );
     assert_eq!(
-        resolve_severity(KErrorCode::K0001, KoboMode::Strict),
+        resolve_severity(KErrorCode::K0001, &release),
         Some(Severity::Error)
     );
     assert_eq!(
-        resolve_severity(KErrorCode::K0100, KoboMode::Script),
+        resolve_severity(KErrorCode::K0100, &dev),
         Some(Severity::Warning)
     );
     assert_eq!(
-        resolve_severity(KErrorCode::K0100, KoboMode::Checked),
+        resolve_severity(KErrorCode::K0100, &checked),
         Some(Severity::Warning)
     );
     assert_eq!(
-        resolve_severity(KErrorCode::K0100, KoboMode::Strict),
+        resolve_severity(KErrorCode::K0100, &release),
         Some(Severity::Error)
     );
 }

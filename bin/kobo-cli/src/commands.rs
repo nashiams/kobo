@@ -19,10 +19,13 @@ mod sim;
 mod sim_model;
 mod test_cmd;
 mod watch;
+mod witness_evidence;
 
 use std::fmt as std_fmt;
 
-use crate::{compiler_compatibility_mode, resolve_guarantee_profile, KoboCommand, SimCommand};
+use kobo_ir::GuaranteePolicy;
+
+use crate::{resolve_guarantee_profile, GuaranteeProfileArg, KoboCommand, SimCommand};
 
 #[derive(Debug)]
 pub(crate) struct DiagnosticExit;
@@ -63,7 +66,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
             check::cmd_check(
                 &file,
-                compiler_compatibility_mode(guarantee_profile),
+                cli_policy(guarantee_profile),
                 guarantee_profile,
                 print_policy,
                 pipeline,
@@ -93,7 +96,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
             run::cmd_run(
                 &file,
-                compiler_compatibility_mode(guarantee_profile),
+                cli_policy(guarantee_profile),
                 guarantee_profile,
                 erase_lifetimes,
             )
@@ -113,7 +116,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             audit,
         } => run::cmd_inspect(
             &file,
-            compiler_compatibility_mode(resolve_guarantee_profile(checked, strict, None)),
+            cli_policy(resolve_guarantee_profile(checked, strict, None)),
             clean,
             erase_lifetimes,
             scenario_metadata,
@@ -258,7 +261,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         } => {
             let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
             build::cmd_build(
-                compiler_compatibility_mode(guarantee_profile),
+                cli_policy(guarantee_profile),
                 guarantee_profile,
                 print_policy,
                 error_format,
@@ -298,4 +301,8 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         } => watch::cmd_watch(&file, simple, build),
         KoboCommand::Explain { code, verbose } => explain::cmd_explain(&code, verbose),
     }
+}
+
+fn cli_policy(profile: Option<GuaranteeProfileArg>) -> Option<GuaranteePolicy> {
+    profile.map(|profile| GuaranteePolicy::for_profile(profile.compiler_profile()))
 }

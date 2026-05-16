@@ -3,7 +3,9 @@ use std::path::Path;
 
 use kobo_codegen::executor::select_executor;
 use kobo_codegen::{codegen_file, CodegenOptions};
-use kobo_ir::{AsyncViolationKind, FileId, KoboMode, NodeIdGen, SolutionMap};
+use kobo_ir::{
+    AsyncViolationKind, FileId, GuaranteePolicy, GuaranteeProfile, NodeIdGen, SolutionMap,
+};
 use kobo_parser::parse_file;
 
 use crate::options::TransformOptions;
@@ -35,6 +37,10 @@ fn build_codegen_output(source: &str, deps: HashMap<String, toml::Value>) -> Str
     output.rs_source
 }
 
+fn policy(profile: GuaranteeProfile) -> GuaranteePolicy {
+    GuaranteePolicy::for_profile(profile)
+}
+
 // --- K0060: Non-Send binding in async context ---
 
 /// Contract Test 11.1: Non-async code produces zero async violations.
@@ -48,7 +54,7 @@ fn main() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     assert!(
         violations.is_empty(),
         "sync code should have no async violations, got {:?}",
@@ -68,7 +74,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     // Local-only binding in async: no sharing → no K0060
     assert!(
         violations.is_empty(),
@@ -90,7 +96,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Strict, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Release), true);
     let has_strict_violation = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::StrictAsyncViolation { .. }));
@@ -114,7 +120,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     let has_strict_violation = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::StrictAsyncViolation { .. }));
@@ -140,7 +146,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     let has_non_send = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::NonSendCapture { .. }));
@@ -163,7 +169,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     assert!(
         violations.is_empty(),
         "copy type in async should have no violations, got {:?}",
@@ -184,8 +190,8 @@ async fn process() {
 }
 "#,
     );
-    let script_violations = check_strict_async(&kir, KoboMode::Script, true);
-    let checked_violations = check_strict_async(&kir, KoboMode::Checked, true);
+    let script_violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
+    let checked_violations = check_strict_async(&kir, &policy(GuaranteeProfile::Checked), true);
     // K0060 should appear in both modes (severity differs, but fact is same)
     let script_k0060 = script_violations
         .iter()
@@ -217,7 +223,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Strict, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Release), true);
     // Strict mode must emit K0063 for ANY shared binding in async
     let k0063_count = violations
         .iter()
@@ -242,7 +248,7 @@ fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Strict, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Release), true);
     assert!(
         violations.is_empty(),
         "strict mode sync fn should have no async violations"
@@ -267,7 +273,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     let has_non_sync = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::NonSyncShared { .. }));
@@ -292,7 +298,7 @@ async fn process() {
 "#,
     );
     // has_executor = false → should emit K0062
-    let violations = check_strict_async(&kir, KoboMode::Script, false);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), false);
     let has_missing_executor = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::MissingExecutor));
@@ -315,7 +321,7 @@ async fn process() {
 "#,
     );
     // has_executor = true → should NOT emit K0062
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     let has_missing_executor = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::MissingExecutor));
@@ -346,7 +352,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     // Should have K0060 (non-send) but NOT K0063 (strict).
     let has_k0060 = violations
         .iter()
@@ -371,7 +377,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     let has_k0060 = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::NonSendCapture { .. }));
@@ -395,7 +401,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Strict, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Release), true);
     let has_k0063 = violations
         .iter()
         .any(|v| matches!(&v.kind, AsyncViolationKind::StrictAsyncViolation { .. }));
@@ -413,7 +419,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Strict, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Release), true);
     assert!(
         violations.is_empty(),
         "A10: Strict + local-only should have no violations, got {:?}",
@@ -435,7 +441,7 @@ async fn process() {
 }
 "#,
     );
-    let violations = check_strict_async(&kir, KoboMode::Strict, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Release), true);
     // In strict mode, any sharing violation → K0063.
     let has_k0063 = violations
         .iter()
@@ -727,7 +733,7 @@ async fn process() {
 }
 "#;
     let kir = build_test_kir(source);
-    let violations = check_strict_async(&kir, KoboMode::Script, true);
+    let violations = check_strict_async(&kir, &policy(GuaranteeProfile::Dev), true);
     assert!(
         !violations
             .iter()

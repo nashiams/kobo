@@ -417,7 +417,7 @@ pub(super) fn cmd_debt_borrows(file: &Path, json: bool) -> anyhow::Result<()> {
         .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read {}", file.display()))?;
-    let lifetime_debt = lifetime_erasure_debt_report(&source, session.mode());
+    let lifetime_debt = lifetime_erasure_debt_report(&source, session.guarantee_policy());
 
     let tf = kir.transform_facts();
     let mut all_overlaps = Vec::new();

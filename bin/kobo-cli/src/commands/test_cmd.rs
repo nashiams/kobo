@@ -5,7 +5,9 @@ use kobo_errors::{
     diagnostic_to_json_value, ColorMode, DiagDecision, DiagLabel, DiagnosticOutputFormat,
     DiagnosticRenderer, KDiagnostic, KErrorCode, Severity,
 };
-use kobo_ir::{FileSetBuilder, KoboMode, KoboSpan, ScenarioOpKind, ScenarioProgram};
+use kobo_ir::{
+    FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KoboSpan, ScenarioOpKind, ScenarioProgram,
+};
 use kobo_sim_core::{EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure};
 use proptest::prelude::{any, Strategy};
 use proptest::strategy::ValueTree;
@@ -16,6 +18,7 @@ use proptest::test_runner::{
 use crate::ErrorFormat;
 
 use super::sim_model::{self, ScenarioDocument};
+use super::witness_evidence;
 
 pub(super) fn cmd_test(
     file: &Path,
@@ -45,7 +48,10 @@ pub(super) fn cmd_test(
         })
         .unwrap_or_else(|| "<missing>".to_owned());
     let profile_roles = resolve_profile_roles(profile, &document, &target_name);
-    let mut session = super::session::build_session(file, Some(KoboMode::Checked))?;
+    let mut session = super::session::build_session(
+        file,
+        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(
@@ -87,6 +93,7 @@ pub(super) fn cmd_test(
         witness_path = Some(write_run_witness(
             file,
             &document,
+            &scenario_program,
             &profile_roles.guarantee_profile,
             sim_profile,
             seed,
@@ -543,6 +550,7 @@ fn print_events(
 fn write_run_witness(
     file: &Path,
     document: &ScenarioDocument,
+    scenario_program: &ScenarioProgram,
     guarantee_profile: &str,
     sim_profile: &str,
     seed: u64,
@@ -593,9 +601,9 @@ fn write_run_witness(
         "execution_digest": execution_digest_json(run),
         "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage,
-        "operation_coverage": operation_coverage_json(run),
+        "operation_coverage": witness_evidence::operation_coverage_json(scenario_program, run),
         "scenario_coverage": scenario_coverage_json(run),
-        "function_summaries": function_summaries_json(run),
+        "function_summaries": witness_evidence::function_summaries_json(scenario_program, run),
         "replay_guarantee": run.replay_guarantee.as_str(),
         "exactness": exactness_json(run),
         "shrink": shrink_json(run, &event_stream),
@@ -665,36 +673,6 @@ fn coverage_json(run: &FullDepthRun) -> serde_json::Value {
 
 fn scenario_coverage_json(run: &FullDepthRun) -> serde_json::Value {
     coverage_json(run)
-}
-
-fn operation_coverage_json(run: &FullDepthRun) -> serde_json::Value {
-    let mut modeled = run
-        .events
-        .iter()
-        .map(|event| event.kind.clone())
-        .collect::<Vec<_>>();
-    modeled.sort();
-    modeled.dedup();
-    serde_json::json!({
-        "modeled": modeled,
-        "unsupported": run.coverage.unsupported_constructs,
-        "boundary_owned": run.opaque_boundaries,
-    })
-}
-
-fn function_summaries_json(run: &FullDepthRun) -> serde_json::Value {
-    serde_json::json!([{
-        "function": run.target,
-        "creates": run.obligations.iter().map(|obligation| obligation.binding.clone()).collect::<Vec<_>>(),
-        "transfers": run.events.iter().filter_map(|event| {
-            (event.kind == "obligation-transfer").then(|| event.label.clone()).flatten()
-        }).collect::<Vec<_>>(),
-        "discharges": run.obligations.iter().filter(|obligation| obligation.is_discharged).map(|obligation| obligation.binding.clone()).collect::<Vec<_>>(),
-        "leaks": run.obligations.iter().filter(|obligation| !obligation.is_discharged).map(|obligation| obligation.binding.clone()).collect::<Vec<_>>(),
-        "returns": [],
-        "escapes": escaped_obligations(run),
-        "suppressed": [],
-    }])
 }
 
 fn scheduler_json(sim_profile: &str, seed: u64, run: &FullDepthRun) -> serde_json::Value {

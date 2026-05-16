@@ -1,6 +1,6 @@
 use std::fmt;
 
-use kobo_ir::KoboMode;
+use kobo_ir::GuaranteePolicy;
 
 macro_rules! define_error_codes {
     ($( $code:ident => $label:literal, )* ) => {
@@ -255,20 +255,24 @@ impl KErrorCode {
     }
 }
 
-/// Resolve the severity of a K-code diagnostic based on compile mode.
+/// Resolve the severity of a K-code diagnostic based on compiler guarantee policy.
 ///
-/// Single source of truth for severity routing: registry metadata plus mode policy.
+/// Single source of truth for severity routing: registry metadata plus guarantee policy.
 /// Returns `None` for diagnostics that should not be emitted in the given mode.
-pub fn resolve_severity(code: KErrorCode, mode: KoboMode) -> Option<Severity> {
+pub fn resolve_severity(code: KErrorCode, policy: &GuaranteePolicy) -> Option<Severity> {
     crate::diagnostic_registry()
         .get(code)
-        .and_then(|entry| entry.severity_policy.resolve(mode))
+        .and_then(|entry| entry.severity_policy.resolve(policy))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{resolve_severity, KErrorCode, Severity};
-    use kobo_ir::KoboMode;
+    use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
+
+    fn policy(profile: GuaranteeProfile) -> GuaranteePolicy {
+        GuaranteePolicy::for_profile(profile)
+    }
 
     #[test]
     fn precursor_code_uses_dash_suffix() {
@@ -298,13 +302,16 @@ mod tests {
 
     #[test]
     fn k0001_script_is_silent() {
-        assert_eq!(resolve_severity(KErrorCode::K0001, KoboMode::Script), None);
+        assert_eq!(
+            resolve_severity(KErrorCode::K0001, &policy(GuaranteeProfile::Dev)),
+            None
+        );
     }
 
     #[test]
     fn k0001_checked_is_warning() {
         assert_eq!(
-            resolve_severity(KErrorCode::K0001, KoboMode::Checked),
+            resolve_severity(KErrorCode::K0001, &policy(GuaranteeProfile::Checked)),
             Some(Severity::Warning)
         );
     }
@@ -312,21 +319,28 @@ mod tests {
     #[test]
     fn k0001_strict_is_error() {
         assert_eq!(
-            resolve_severity(KErrorCode::K0001, KoboMode::Strict),
+            resolve_severity(KErrorCode::K0001, &policy(GuaranteeProfile::Release)),
             Some(Severity::Error)
         );
     }
 
     #[test]
     fn k0002_script_is_silent() {
-        assert_eq!(resolve_severity(KErrorCode::K0002, KoboMode::Script), None);
+        assert_eq!(
+            resolve_severity(KErrorCode::K0002, &policy(GuaranteeProfile::Dev)),
+            None
+        );
     }
 
     #[test]
     fn perf_advisory_k0020_always_warning() {
-        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+        for policy in [
+            policy(GuaranteeProfile::Dev),
+            policy(GuaranteeProfile::Checked),
+            policy(GuaranteeProfile::Release),
+        ] {
             assert_eq!(
-                resolve_severity(KErrorCode::K0020, mode),
+                resolve_severity(KErrorCode::K0020, &policy),
                 Some(Severity::Warning)
             );
         }
@@ -334,9 +348,13 @@ mod tests {
 
     #[test]
     fn strict_boundary_k0041_always_error() {
-        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+        for policy in [
+            policy(GuaranteeProfile::Dev),
+            policy(GuaranteeProfile::Checked),
+            policy(GuaranteeProfile::Release),
+        ] {
             assert_eq!(
-                resolve_severity(KErrorCode::K0041, mode),
+                resolve_severity(KErrorCode::K0041, &policy),
                 Some(Severity::Error)
             );
         }
@@ -351,15 +369,15 @@ mod tests {
             KErrorCode::K0063,
         ] {
             assert_eq!(
-                resolve_severity(code, KoboMode::Script),
+                resolve_severity(code, &policy(GuaranteeProfile::Dev)),
                 Some(Severity::Warning)
             );
             assert_eq!(
-                resolve_severity(code, KoboMode::Checked),
+                resolve_severity(code, &policy(GuaranteeProfile::Checked)),
                 Some(Severity::Warning)
             );
             assert_eq!(
-                resolve_severity(code, KoboMode::Strict),
+                resolve_severity(code, &policy(GuaranteeProfile::Release)),
                 Some(Severity::Error)
             );
         }
@@ -374,17 +392,25 @@ mod tests {
             KErrorCode::K0080P3,
             KErrorCode::K0080P4,
         ] {
-            for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
-                assert_eq!(resolve_severity(code, mode), Some(Severity::Note));
+            for policy in [
+                policy(GuaranteeProfile::Dev),
+                policy(GuaranteeProfile::Checked),
+                policy(GuaranteeProfile::Release),
+            ] {
+                assert_eq!(resolve_severity(code, &policy), Some(Severity::Note));
             }
         }
     }
 
     #[test]
     fn rustc_remap_k0099_always_error() {
-        for mode in [KoboMode::Script, KoboMode::Checked, KoboMode::Strict] {
+        for policy in [
+            policy(GuaranteeProfile::Dev),
+            policy(GuaranteeProfile::Checked),
+            policy(GuaranteeProfile::Release),
+        ] {
             assert_eq!(
-                resolve_severity(KErrorCode::K0099, mode),
+                resolve_severity(KErrorCode::K0099, &policy),
                 Some(Severity::Error)
             );
         }

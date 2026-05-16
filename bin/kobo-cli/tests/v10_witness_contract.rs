@@ -109,6 +109,83 @@ fn unsafe_shrink_metadata_is_rejected_with_k0106() {
 }
 
 #[test]
+fn exact_replay_rejects_mutated_function_summaries() {
+    let project = TestProject::new("v10-mutated-function-summaries");
+    let witness_path = emit_v10_witness(&project);
+    let mut witness: Value =
+        serde_json::from_str(&fs::read_to_string(&witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    witness["function_summaries"] = serde_json::json!([{
+        "function": "forged",
+        "creates": [],
+        "transfers": [],
+        "discharges": ["reply"],
+        "leaks": [],
+        "returns": [],
+        "escapes": [],
+        "suppressed": []
+    }]);
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).unwrap(),
+    )
+    .expect("mutated witness should write");
+
+    let output = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "exact replay must reject forged function summaries",
+    );
+    assert_contains(
+        &output.combined(),
+        "function_summaries",
+        "replay divergence should name function_summaries",
+    );
+}
+
+#[test]
+fn exact_replay_rejects_mutated_operation_coverage() {
+    let project = TestProject::new("v10-mutated-operation-coverage");
+    let witness_path = emit_v10_witness(&project);
+    let mut witness: Value =
+        serde_json::from_str(&fs::read_to_string(&witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    witness["operation_coverage"]["modeled"] = serde_json::json!(["forged-coverage"]);
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).unwrap(),
+    )
+    .expect("mutated witness should write");
+
+    let output = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "exact replay must reject forged operation coverage",
+    );
+    assert_contains(
+        &output.combined(),
+        "operation_coverage",
+        "replay divergence should name operation_coverage",
+    );
+}
+
+#[test]
 fn deep_witness_shrinks_scheduler_events_and_replays_exactly() {
     let project = TestProject::new("v10-shrunk-witness");
     let file = project.main_file(

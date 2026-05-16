@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use kobo_errors::KDiagnostic;
-use kobo_ir::{FileId, FileSet, FileSetBuilder, KoboMode, KoboSpan, NodeIdGen};
+use kobo_ir::{
+    FileId, FileSet, FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KoboSpan, NodeIdGen,
+};
 
 use crate::config::KoboConfig;
 
@@ -14,14 +16,14 @@ pub struct CompileSession {
     pub id_gen: NodeIdGen,
     pub diagnostics: Vec<KDiagnostic>,
     /// True when DiagOwner instrumentation is active for this session.
-    /// Checked mode forces this to true regardless of KOBO_DIAG env var [Contract R03].
-    /// Script mode still respects KOBO_DIAG=1 for opt-in instrumentation.
+    /// Checked guarantee profile forces this to true regardless of KOBO_DIAG.
+    /// Dev profile still respects KOBO_DIAG=1 for opt-in instrumentation.
     pub diag_enabled: bool,
     /// Byte-offset spans of functions annotated with `#[kobo::relax]` in the source file.
     /// Used at render time to suppress `Severity::Warning` diagnostics in checked mode [G5].
     pub relaxed_fn_ranges: Vec<KoboSpan>,
-    /// True when the mode was set by a CLI flag. CLI overrides file attribute [S-26].
-    pub cli_mode_override: bool,
+    /// True when the guarantee profile was set by a CLI flag.
+    pub cli_profile_override: bool,
     /// Struct names annotated with `#[kobo::engine]` in the source. Used by the
     /// solver to impose PlainOwned ceiling constraints on engine resources [S-3].
     pub engine_struct_names: Vec<String>,
@@ -40,8 +42,8 @@ pub enum PoisonStatus {
 impl CompileSession {
     pub fn new(config: KoboConfig) -> Self {
         // Mode check before env var — KOBO_DIAG=0 does NOT override checked mode [Trap 1].
-        let diag_enabled =
-            config.mode.diag_always_active() || std::env::var("KOBO_DIAG").as_deref() == Ok("1");
+        let diag_enabled = config.guarantee_policy.diag_always_active()
+            || std::env::var("KOBO_DIAG").as_deref() == Ok("1");
         Self {
             config,
             file_set_builder: FileSetBuilder::new(),
@@ -49,16 +51,19 @@ impl CompileSession {
             diagnostics: Vec::new(),
             diag_enabled,
             relaxed_fn_ranges: Vec::new(),
-            cli_mode_override: false,
+            cli_profile_override: false,
             engine_struct_names: Vec::new(),
             poisoned_spans: Vec::new(),
             suppressed_diagnostics: Vec::new(),
         }
     }
 
-    /// The compile mode for this session. Single source of truth is config.mode [Trap 15].
-    pub fn mode(&self) -> KoboMode {
-        self.config.mode
+    pub fn guarantee_policy(&self) -> &GuaranteePolicy {
+        &self.config.guarantee_policy
+    }
+
+    pub fn guarantee_profile(&self) -> GuaranteeProfile {
+        self.config.guarantee_policy.profile()
     }
 
     pub fn file_set(&self) -> &FileSet {
@@ -169,9 +174,9 @@ mod tests {
     use super::*;
     use crate::config::KoboConfig;
 
-    fn session_with_mode(mode: KoboMode) -> CompileSession {
+    fn session_with_profile(profile: GuaranteeProfile) -> CompileSession {
         let config = KoboConfig {
-            mode,
+            guarantee_policy: GuaranteePolicy::for_profile(profile),
             ..Default::default()
         };
         // Force KOBO_DIAG to unset for deterministic results
@@ -180,9 +185,9 @@ mod tests {
     }
 
     #[test]
-    fn script_mode_no_env_diag_disabled() {
+    fn dev_profile_no_env_diag_disabled() {
         std::env::remove_var("KOBO_DIAG");
-        let session = session_with_mode(KoboMode::Script);
+        let session = session_with_profile(GuaranteeProfile::Dev);
         assert!(
             !session.diag_enabled,
             "script+no-env must be diag_enabled=false"
@@ -190,10 +195,10 @@ mod tests {
     }
 
     #[test]
-    fn script_mode_kobo_diag_1_enables_diag() {
+    fn dev_profile_kobo_diag_1_enables_diag() {
         std::env::set_var("KOBO_DIAG", "1");
         let config = KoboConfig {
-            mode: KoboMode::Script,
+            guarantee_policy: GuaranteePolicy::for_profile(GuaranteeProfile::Dev),
             ..Default::default()
         };
         let session = CompileSession::new(config);
@@ -205,9 +210,9 @@ mod tests {
     }
 
     #[test]
-    fn checked_mode_no_env_diag_enabled() {
+    fn checked_profile_no_env_diag_enabled() {
         std::env::remove_var("KOBO_DIAG");
-        let session = session_with_mode(KoboMode::Checked);
+        let session = session_with_profile(GuaranteeProfile::Checked);
         assert!(
             session.diag_enabled,
             "checked mode must be diag_enabled=true regardless of env"
@@ -215,10 +220,10 @@ mod tests {
     }
 
     #[test]
-    fn checked_mode_kobo_diag_1_still_enabled() {
+    fn checked_profile_kobo_diag_1_still_enabled() {
         std::env::set_var("KOBO_DIAG", "1");
         let config = KoboConfig {
-            mode: KoboMode::Checked,
+            guarantee_policy: GuaranteePolicy::for_profile(GuaranteeProfile::Checked),
             ..Default::default()
         };
         let session = CompileSession::new(config);
@@ -227,11 +232,11 @@ mod tests {
     }
 
     #[test]
-    fn checked_mode_kobo_diag_0_still_enabled() {
+    fn checked_profile_kobo_diag_0_still_enabled() {
         // KOBO_DIAG=0 must NOT override checked mode [Contract R03 / Trap 1].
         std::env::set_var("KOBO_DIAG", "0");
         let config = KoboConfig {
-            mode: KoboMode::Checked,
+            guarantee_policy: GuaranteePolicy::for_profile(GuaranteeProfile::Checked),
             ..Default::default()
         };
         let session = CompileSession::new(config);
@@ -243,9 +248,9 @@ mod tests {
     }
 
     #[test]
-    fn strict_mode_diag_disabled() {
+    fn release_profile_diag_disabled() {
         std::env::remove_var("KOBO_DIAG");
-        let session = session_with_mode(KoboMode::Strict);
+        let session = session_with_profile(GuaranteeProfile::Release);
         assert!(
             !session.diag_enabled,
             "strict mode has no Rc/RefCell wrappers — no DiagOwner"
@@ -253,9 +258,9 @@ mod tests {
     }
 
     #[test]
-    fn mode_accessor_returns_config_mode() {
-        let session = session_with_mode(KoboMode::Checked);
-        assert_eq!(session.mode(), KoboMode::Checked);
+    fn policy_accessor_returns_config_policy() {
+        let session = session_with_profile(GuaranteeProfile::Checked);
+        assert_eq!(session.guarantee_profile(), GuaranteeProfile::Checked);
     }
 }
 

@@ -2,12 +2,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use kobo_ir::KoboMode;
+use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
 use serde_json::Value;
 
 use crate::ErrorFormat;
 
 use super::sim_model;
+use super::witness_evidence;
 
 pub(super) fn cmd_replay(
     file: &Path,
@@ -91,8 +92,10 @@ fn replay_v1(
         .unwrap_or("checked");
     let sim_profile = witness["sim_profile"].as_str().unwrap_or("quick");
     let inject = witness_injections(witness);
-    let mut session =
-        super::session::build_session(&verified_source.path, Some(KoboMode::Checked))?;
+    let mut session = super::session::build_session(
+        &verified_source.path,
+        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
         .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(
@@ -122,6 +125,8 @@ fn replay_v1(
         "backend_replay": replay_token(&verified_source.hash, seed, &run),
         "execution_digest": execution_digest_json(&run),
         "harness_manifest": run.harness_manifest.clone(),
+        "operation_coverage": witness_evidence::operation_coverage_json(&scenario_program, &run),
+        "function_summaries": witness_evidence::function_summaries_json(&scenario_program, &run),
         "failure": failure_json(source_display, &verified_source.source, &run),
         "events": replay_events_json(witness, &run.events)?,
     });
@@ -130,6 +135,8 @@ fn replay_v1(
         "backend_replay": witness["backend_replay"].clone(),
         "execution_digest": witness["execution_digest"].clone(),
         "harness_manifest": witness["harness_manifest"].clone(),
+        "operation_coverage": witness["operation_coverage"].clone(),
+        "function_summaries": witness["function_summaries"].clone(),
         "failure": witness_failure_json(witness),
         "events": witness["events"].clone(),
     });
@@ -259,6 +266,9 @@ fn failure_json(source_path: &str, source: &str, run: &kobo_sim_core::FullDepthR
 }
 
 fn witness_failure_json(witness: &Value) -> Value {
+    if witness["failure"].is_null() {
+        return Value::Null;
+    }
     serde_json::json!({
         "code": witness["failure"]["code"].clone(),
         "primary_span": witness["failure"]["primary_span"].clone(),
@@ -573,11 +583,14 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             &["boundary_assumptions"][..],
             &["obligations"][..],
             &["boundary_decisions"][..],
-            &["failure", "code"][..],
-            &["failure", "primary_span"][..],
-            &["failure", "related_spans"][..],
+            &["failure"][..],
             &["events"][..],
         ];
+        if !witness["failure"].is_null() {
+            required.push(&["failure", "code"][..]);
+            required.push(&["failure", "primary_span"][..]);
+            required.push(&["failure", "related_spans"][..]);
+        }
         if witness["replay_guarantee"].as_str() == Some("exact") {
             required.push(&["source", "path"][..]);
             required.push(&["source", "hash"][..]);
@@ -591,6 +604,8 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["execution_digest", "harness_exit_code"][..]);
             required.push(&["harness_manifest", "harness_rs_path"][..]);
             required.push(&["harness_manifest", "stdout_hash"][..]);
+            required.push(&["operation_coverage", "modeled"][..]);
+            required.push(&["function_summaries"][..]);
         }
         for path in required {
             if value_at(witness, path).is_none() {

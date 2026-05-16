@@ -18,7 +18,7 @@
 /// Does NOT apply to:
 /// - Static references (&'static T → kept as-is)
 /// - Raw pointers (*const T, *mut T → kept as-is)
-use kobo_ir::{FileId, KoboMode, KoboSpan};
+use kobo_ir::{FileId, GuaranteePolicy, KoboSpan};
 
 /// A site where a clone was inserted due to lifetime erasure.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,8 +55,8 @@ impl LifetimeErasureResult {
     }
 }
 
-fn lifetime_erasure_enabled(mode: KoboMode) -> bool {
-    mode.is_script() || mode.is_checked()
+fn lifetime_erasure_enabled(policy: &GuaranteePolicy) -> bool {
+    policy.is_dev() || policy.is_checked()
 }
 
 /// Erase a reference type to its owned equivalent.
@@ -172,8 +172,11 @@ fn count_usages_in_block(block: &syn::Block, name: &str) -> usize {
 /// - Mode is Strict
 /// - The item is not a function
 /// - No references to erase
-pub fn erase_lifetimes(item: &syn::Item, mode: KoboMode) -> Option<LifetimeErasureResult> {
-    if !lifetime_erasure_enabled(mode) {
+pub fn erase_lifetimes(
+    item: &syn::Item,
+    policy: &GuaranteePolicy,
+) -> Option<LifetimeErasureResult> {
+    if !lifetime_erasure_enabled(policy) {
         return None;
     }
 
@@ -213,13 +216,13 @@ pub fn erase_lifetimes(item: &syn::Item, mode: KoboMode) -> Option<LifetimeErasu
 }
 
 /// Analyze all functions in a source file for lifetime erasure clone/debt data.
-pub fn analyze_source(source: &str, mode: KoboMode) -> LifetimeErasureResult {
+pub fn analyze_source(source: &str, policy: &GuaranteePolicy) -> LifetimeErasureResult {
     let mut combined = LifetimeErasureResult {
         clone_sites: Vec::new(),
         erased_params: Vec::new(),
     };
 
-    if !lifetime_erasure_enabled(mode) {
+    if !lifetime_erasure_enabled(policy) {
         return combined;
     }
 
@@ -228,7 +231,7 @@ pub fn analyze_source(source: &str, mode: KoboMode) -> LifetimeErasureResult {
     };
 
     for item in &file.items {
-        if let Some(result) = erase_lifetimes(item, mode) {
+        if let Some(result) = erase_lifetimes(item, policy) {
             combined.merge(result);
         }
     }
@@ -241,8 +244,8 @@ pub fn analyze_source(source: &str, mode: KoboMode) -> LifetimeErasureResult {
 /// This is the source-level transformation: replaces &str with String, etc.
 /// Uses syn parsing to identify reference types, then does source-level text replacement.
 /// Rule 8: Return types borrowing from erased params are also erased.
-pub fn rewrite_fn_signature(source: &str, mode: KoboMode) -> String {
-    if !lifetime_erasure_enabled(mode) {
+pub fn rewrite_fn_signature(source: &str, policy: &GuaranteePolicy) -> String {
+    if !lifetime_erasure_enabled(policy) {
         return source.to_owned();
     }
 
@@ -383,6 +386,11 @@ pub fn format_clone_debt(clone_sites: &[CloneSite]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kobo_ir::GuaranteeProfile;
+
+    fn policy(profile: GuaranteeProfile) -> GuaranteePolicy {
+        GuaranteePolicy::for_profile(profile)
+    }
 
     #[test]
     fn ref_str_to_string() {
@@ -391,7 +399,7 @@ fn greet(name: &str) {
     println!("Hello, {}", name);
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(output.contains("fn greet(name: String)"), "got: {output}");
     }
 
@@ -402,7 +410,7 @@ fn sum(items: &[i32]) -> i32 {
     items.iter().sum()
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("fn sum(items: Vec<i32>)")
                 || output.contains("fn sum(items : Vec < i32 >)"),
@@ -417,7 +425,7 @@ fn greet(name: &str) {
     println!("Hello, {}", name);
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Checked);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Checked));
         assert!(
             output.contains("String") && !output.contains("&str"),
             "Checked mode should erase public &str, got: {output}"
@@ -431,7 +439,7 @@ fn greet(name: &str) {
     println!("Hello, {}", name);
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Strict);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Release));
         assert!(
             output.contains("&str"),
             "Strict mode should keep &str, got: {output}"
@@ -448,7 +456,7 @@ fn process(data: &str) {
 }
 "#;
         let file = syn::parse_file(input).unwrap();
-        let result = erase_lifetimes(&file.items[0], KoboMode::Script);
+        let result = erase_lifetimes(&file.items[0], &policy(GuaranteeProfile::Dev));
         let result = result.expect("Should have erasure result");
         // data is used 3 times in the body → 2 clones (last can move)
         assert_eq!(
@@ -471,7 +479,7 @@ fn label(s: &'static str) {
     println!("{}", s);
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("&'static str") || output.contains("& 'static str"),
             "Static refs should be preserved, got: {output}"
@@ -485,7 +493,7 @@ fn take(config: &Config) {
     use_config(config);
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("config: Config") || output.contains("config : Config"),
             "got: {output}"
@@ -523,7 +531,7 @@ fn name(data: &str) -> &str {
     data
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("-> String"),
             "Return type &str should become String, got: {output}"
@@ -541,7 +549,7 @@ fn items(data: &[i32]) -> &[i32] {
     data
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("-> Vec<i32>") || output.contains("-> Vec < i32 >"),
             "Return type &[i32] should become Vec<i32>, got: {output}"
@@ -555,7 +563,7 @@ fn get_config(cfg: &Config) -> &Config {
     cfg
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("-> Config"),
             "Return type &Config should become Config, got: {output}"
@@ -569,7 +577,7 @@ fn label() -> &'static str {
     "hello"
 }
 "#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("&'static str") || output.contains("& 'static str"),
             "Return &'static str should be preserved, got: {output}"
@@ -584,7 +592,7 @@ fn first(items: &[u8]) -> &u8 {
 }
 "#;
         let file = syn::parse_file(input).unwrap();
-        let result = erase_lifetimes(&file.items[0], KoboMode::Script);
+        let result = erase_lifetimes(&file.items[0], &policy(GuaranteeProfile::Dev));
         let result = result.expect("Should have erasure result");
         // The erased_params should include the return type erasure
         assert!(
@@ -603,7 +611,7 @@ fn first(items: &[u8]) -> &u8 {
     #[test]
     fn static_lifetime_always_preserved() {
         let input = r#"fn get_name() -> &'static str { "hello" }"#;
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("&'static str"),
             "&'static must be preserved, got: {output}"
@@ -614,7 +622,7 @@ fn first(items: &[u8]) -> &u8 {
     #[test]
     fn ref_str_becomes_string_script() {
         let input = "fn greet(name: &str) { }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(output.contains("String"), "got: {output}");
         assert!(!output.contains("&str"), "got: {output}");
     }
@@ -623,7 +631,7 @@ fn first(items: &[u8]) -> &u8 {
     #[test]
     fn ref_slice_becomes_vec_script() {
         let input = "fn sum(items: &[f64]) -> f64 { 0.0 }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("Vec<f64>") || output.contains("Vec < f64 >"),
             "got: {output}"
@@ -634,7 +642,7 @@ fn first(items: &[u8]) -> &u8 {
     #[test]
     fn ref_struct_becomes_owned() {
         let input = "fn process(config: &Config) { }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             output.contains("config: Config") || output.contains("config : Config"),
             "got: {output}"
@@ -646,7 +654,7 @@ fn first(items: &[u8]) -> &u8 {
     #[test]
     fn return_type_ref_erased() {
         let input = "fn get_data(data: &str) -> &str { data }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         let ref_count = output.matches("&str").count();
         assert_eq!(ref_count, 0, "all &str should be erased, got: {output}");
     }
@@ -655,7 +663,7 @@ fn first(items: &[u8]) -> &u8 {
     #[test]
     fn multiple_ref_params_all_erased() {
         let input = "fn combine(a: &str, b: &str) -> String { format!(\"{}{}\", a, b) }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         let ref_count = output.matches("&str").count();
         assert_eq!(ref_count, 0, "all &str should be erased, got: {output}");
     }
@@ -664,7 +672,7 @@ fn first(items: &[u8]) -> &u8 {
     #[test]
     fn mut_ref_erased() {
         let input = "fn update(data: &mut Vec<i32>) { }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             !output.contains("&mut"),
             "&mut should be erased in Script, got: {output}"
@@ -677,7 +685,7 @@ fn first(items: &[u8]) -> &u8 {
         let code = "struct Foo { x: i32 }";
         let file = syn::parse_file(code).unwrap();
         for item in &file.items {
-            assert!(erase_lifetimes(item, KoboMode::Script).is_none());
+            assert!(erase_lifetimes(item, &policy(GuaranteeProfile::Dev)).is_none());
         }
     }
 
@@ -687,7 +695,7 @@ fn first(items: &[u8]) -> &u8 {
         let code = "fn add(a: i32, b: i32) -> i32 { a + b }";
         let file = syn::parse_file(code).unwrap();
         for item in &file.items {
-            assert!(erase_lifetimes(item, KoboMode::Script).is_none());
+            assert!(erase_lifetimes(item, &policy(GuaranteeProfile::Dev)).is_none());
         }
     }
 
@@ -702,7 +710,7 @@ fn process(data: &str) {
 }
 "#;
         let file = syn::parse_file(input).unwrap();
-        let result = erase_lifetimes(&file.items[0], KoboMode::Script);
+        let result = erase_lifetimes(&file.items[0], &policy(GuaranteeProfile::Dev));
         let result = result.expect("Should have erasure result");
         assert_eq!(
             result.clone_sites.len(),
@@ -744,7 +752,7 @@ fn process(data: &str) {
     #[test]
     fn ref_u8_slice_becomes_vec_u8() {
         let input = "fn process(data: &[u8]) { }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(output.contains("Vec<u8>"), "got: {output}");
     }
 
@@ -752,7 +760,7 @@ fn process(data: &str) {
     #[test]
     fn named_lifetime_erased() {
         let input = "fn process<'a>(data: &'a Config) -> &'a Config { data }";
-        let output = rewrite_fn_signature(input, KoboMode::Script);
+        let output = rewrite_fn_signature(input, &policy(GuaranteeProfile::Dev));
         assert!(
             !output.contains("&'a"),
             "&'a should be erased in Script, got: {output}"

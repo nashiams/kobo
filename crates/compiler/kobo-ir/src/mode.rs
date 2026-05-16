@@ -3,42 +3,31 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 
-/// Compilation mode for the current Kobo session.
-///
-/// Shared vocabulary used by the pipeline, formatter, and driver.
-/// Single source of truth — do NOT create a parallel enum [Contract R01].
+use crate::GuaranteeProfile;
+
+/// Legacy `script|checked|strict` input retained only for compatibility parsing.
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum KoboMode {
+pub enum LegacyMode {
     #[default]
     Script,
     Checked,
     Strict,
 }
 
-impl KoboMode {
-    pub fn is_script(&self) -> bool {
-        *self == KoboMode::Script
-    }
-
-    pub fn is_checked(&self) -> bool {
-        *self == KoboMode::Checked
-    }
-
-    pub fn is_strict(&self) -> bool {
-        *self == KoboMode::Strict
-    }
-
-    /// Whether DiagOwner instrumentation is unconditionally active in this mode.
-    /// Mode check is authoritative; KOBO_DIAG=0 does NOT override checked mode [Contract R03].
-    pub fn diag_always_active(&self) -> bool {
-        matches!(self, KoboMode::Checked)
+impl LegacyMode {
+    pub const fn guarantee_profile(self) -> GuaranteeProfile {
+        match self {
+            Self::Script => GuaranteeProfile::Dev,
+            Self::Checked => GuaranteeProfile::Checked,
+            Self::Strict => GuaranteeProfile::Release,
+        }
     }
 }
 
-impl fmt::Display for KoboMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl fmt::Display for LegacyMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::Script => "script",
             Self::Checked => "checked",
             Self::Strict => "strict",
@@ -46,17 +35,16 @@ impl fmt::Display for KoboMode {
     }
 }
 
-impl FromStr for KoboMode {
+impl FromStr for LegacyMode {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+    fn from_str(source: &str) -> Result<Self, Self::Err> {
+        match source {
             "script" => Ok(Self::Script),
             "checked" => Ok(Self::Checked),
             "strict" => Ok(Self::Strict),
             _ => Err(format!(
-                "invalid mode '{}': valid values are 'script', 'checked', 'strict'",
-                s
+                "invalid mode '{source}': valid values are 'script', 'checked', 'strict'",
             )),
         }
     }

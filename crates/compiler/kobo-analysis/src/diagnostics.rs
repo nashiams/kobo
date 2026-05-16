@@ -6,7 +6,7 @@ use kobo_errors::{
     KDiagnostic,
 };
 use kobo_errors::{KErrorCode, Severity};
-use kobo_ir::{FileSet, Kir, KoboMode, StrictBoundaryViolation, TransformFacts};
+use kobo_ir::{FileSet, GuaranteePolicy, Kir, StrictBoundaryViolation, TransformFacts};
 
 use crate::ownership_facts::{BorrowFact, BorrowKind, HintConflictFact, MoveFact};
 use crate::runner::AnalysisFacts;
@@ -16,7 +16,7 @@ pub fn facts_to_diagnostics(
     transform_facts: &TransformFacts,
     file_set: &FileSet,
     kir: &Kir,
-    mode: KoboMode,
+    policy: &GuaranteePolicy,
 ) -> Vec<KDiagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -24,15 +24,13 @@ pub fn facts_to_diagnostics(
         if move_fact_is_rewritten_as_plain_clone(move_fact, transform_facts) {
             continue;
         }
-        // v0.6: Script mode is silent for K0001 (resolve_severity returns None) [R6-11].
-        if let Some(severity) = resolve_severity(KErrorCode::K0001, mode) {
+        if let Some(severity) = resolve_severity(KErrorCode::K0001, policy) {
             diagnostics.push(move_fact_diagnostic(move_fact, file_set, severity));
         }
     }
 
     for borrow_fact in &facts.borrows {
-        // v0.6: Script mode is silent for K0002 [R6-11].
-        if let Some(severity) = resolve_severity(KErrorCode::K0002, mode) {
+        if let Some(severity) = resolve_severity(KErrorCode::K0002, policy) {
             diagnostics.push(borrow_fact_diagnostic(borrow_fact, file_set, severity));
         }
     }
@@ -40,7 +38,7 @@ pub fn facts_to_diagnostics(
     for hint_conflict in &transform_facts.hint_conflicts {
         if let Some(binding) = transform_facts.binding(hint_conflict.node) {
             // K0025 is always Error (constraint conflict, not perf advisory).
-            let severity = resolve_severity(KErrorCode::K0025, mode).unwrap_or(Severity::Error);
+            let severity = resolve_severity(KErrorCode::K0025, policy).unwrap_or(Severity::Error);
             diagnostics.push(hint_conflict_diagnostic(
                 hint_conflict,
                 binding,

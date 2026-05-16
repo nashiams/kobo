@@ -82,7 +82,7 @@ struct KirKey {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct AnalysisKey {
     kir: KirKey,
-    mode: kobo_ir::KoboMode,
+    guarantee_policy: kobo_ir::GuaranteePolicy,
     diagnostic_config_hash: u64,
 }
 
@@ -323,7 +323,7 @@ impl QuerySession {
     fn analysis_key(&self, kir: KirKey) -> AnalysisKey {
         AnalysisKey {
             kir,
-            mode: self.config.mode,
+            guarantee_policy: self.config.guarantee_policy.clone(),
             diagnostic_config_hash: diagnostic_config_hash(&self.config),
         }
     }
@@ -388,7 +388,7 @@ fn transform_config_hash(config: &KoboConfig) -> u64 {
 }
 
 fn diagnostic_config_hash(config: &KoboConfig) -> u64 {
-    hash_value(&(config.mode, config.hot_borrow_threshold))
+    hash_value(&(config.guarantee_policy.clone(), config.hot_borrow_threshold))
 }
 
 fn solver_config_hash(config: &KoboConfig) -> u64 {
@@ -422,6 +422,10 @@ trait CodegenConfigFingerprint {
 
 impl CodegenConfigFingerprint for KoboConfig {
     fn diag_enabled_fingerprint(&self) -> bool {
-        self.mode.diag_always_active() || std::env::var("KOBO_DIAG").as_deref() == Ok("1")
+        config_diag_enabled(self)
     }
+}
+
+fn config_diag_enabled(config: &KoboConfig) -> bool {
+    config.guarantee_policy.diag_always_active() || std::env::var("KOBO_DIAG").as_deref() == Ok("1")
 }

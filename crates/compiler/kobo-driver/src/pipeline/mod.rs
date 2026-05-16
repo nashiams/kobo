@@ -14,6 +14,6 @@ pub use codegen::{
 pub use compile::{run_and_compile, run_and_compile_with_lifetime_erasure};
 pub use parse::run_kir_phase;
 pub use util::{
-    apply_lifetime_erasure, effective_mode, extract_before_borrow_rewrite,
+    apply_lifetime_erasure, effective_guarantee_policy, extract_before_borrow_rewrite,
     lifetime_erasure_debt_report,
 };

@@ -52,7 +52,7 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
         kir.transform_facts(),
         session.file_set(),
         kir,
-        session.mode(),
+        session.guarantee_policy(),
     ));
 
     project_known_debt_diagnostics(session, kir);
@@ -79,8 +79,8 @@ fn project_known_debt_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for def in kir.struct_defs() {
         if let Some(error_msg) = &def.known_debt_parse_error {
             let span = def.known_debt_span.unwrap_or(def.span);
-            let severity =
-                resolve_severity(KErrorCode::K0025, session.mode()).unwrap_or(Severity::Error);
+            let severity = resolve_severity(KErrorCode::K0025, session.guarantee_policy())
+                .unwrap_or(Severity::Error);
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0025,
                 severity,
@@ -94,8 +94,8 @@ fn project_known_debt_diagnostics(session: &mut CompileSession, kir: &Kir) {
 
 fn project_must_call_attribute_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for error in kir.must_call_attr_errors() {
-        let severity =
-            resolve_severity(KErrorCode::K0114, session.mode()).unwrap_or(Severity::Error);
+        let severity = resolve_severity(KErrorCode::K0114, session.guarantee_policy())
+            .unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
             KErrorCode::K0114,
             severity,
@@ -118,7 +118,8 @@ fn project_relax_attribute_diagnostics(session: &mut CompileSession, kir: &Kir) 
         let severity = if *is_error {
             Severity::Error
         } else {
-            resolve_severity(KErrorCode::K0026, session.mode()).unwrap_or(Severity::Warning)
+            resolve_severity(KErrorCode::K0026, session.guarantee_policy())
+                .unwrap_or(Severity::Warning)
         };
         session.diagnostics.push(KDiagnostic::new(
             KErrorCode::K0026,
@@ -129,9 +130,9 @@ fn project_relax_attribute_diagnostics(session: &mut CompileSession, kir: &Kir) 
         ));
     }
 
-    if session.mode().is_script() && !session.relaxed_fn_ranges.is_empty() {
-        let severity =
-            resolve_severity(KErrorCode::K0026, session.mode()).unwrap_or(Severity::Warning);
+    if session.guarantee_policy().is_dev() && !session.relaxed_fn_ranges.is_empty() {
+        let severity = resolve_severity(KErrorCode::K0026, session.guarantee_policy())
+            .unwrap_or(Severity::Warning);
         for &fn_span in &session.relaxed_fn_ranges.clone() {
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0026,
@@ -151,7 +152,7 @@ fn project_warn_early_diagnostics(session: &mut CompileSession, kir: &Kir) {
             continue;
         }
         let (code, label_text, explanation) = warn_early_diagnostic_parts(&fact.pattern);
-        let severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Note);
+        let severity = resolve_severity(code, session.guarantee_policy()).unwrap_or(Severity::Note);
         session.diagnostics.push(KDiagnostic::new(
             code,
             severity,
@@ -215,11 +216,12 @@ fn warn_early_diagnostic_parts(pattern: &WarnEarlyPattern) -> (KErrorCode, Strin
 fn project_strict_async_diagnostics(session: &mut CompileSession, kir: &Kir) {
     let has_executor = kobo_codegen::executor::select_executor(&session.config.dependencies)
         != kobo_codegen::executor::ExecutorChoice::None;
-    let async_violations = check_strict_async(kir, session.mode(), has_executor);
+    let async_violations = check_strict_async(kir, session.guarantee_policy(), has_executor);
     for violation in &async_violations {
         let (code, label_text, explanation, decision) =
             async_violation_diagnostic_parts(&violation.kind);
-        let severity = resolve_severity(code, session.mode()).unwrap_or(Severity::Error);
+        let severity =
+            resolve_severity(code, session.guarantee_policy()).unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
             code,
             severity,
@@ -292,8 +294,8 @@ fn project_send_root_cause_diagnostics(session: &mut CompileSession, kir: &Kir) 
     };
     let send_diagnostics = analyze_send_violations(&[synthetic_site], transform_facts, kir);
     for diagnostic in &send_diagnostics {
-        let severity =
-            resolve_severity(KErrorCode::K0061, session.mode()).unwrap_or(Severity::Error);
+        let severity = resolve_severity(KErrorCode::K0061, session.guarantee_policy())
+            .unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
             KErrorCode::K0061,
             severity,
@@ -316,8 +318,8 @@ fn project_send_root_cause_diagnostics(session: &mut CompileSession, kir: &Kir) 
 fn project_guard_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
     let guard_violations = detect_guard_across_await(kir);
     for violation in &guard_violations {
-        let severity =
-            resolve_severity(KErrorCode::K0064, session.mode()).unwrap_or(Severity::Warning);
+        let severity = resolve_severity(KErrorCode::K0064, session.guarantee_policy())
+            .unwrap_or(Severity::Warning);
         let label = format!(
             "{:?} `{}` held across .await",
             violation.guard_kind, violation.binding_name
@@ -344,8 +346,8 @@ fn project_cancel_safety_diagnostics(session: &mut CompileSession) {
     for (file_id, entry) in session.file_set().iter_files() {
         let cancel_warnings = scan_source_cancel_safety(entry.source());
         for warning in &cancel_warnings {
-            let severity =
-                resolve_severity(KErrorCode::K0065, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0065, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             let span = kobo_ir::KoboSpan::new(
                 warning.source_offset as u32,
                 (warning.source_offset + warning.method_name.len()) as u32,
@@ -373,8 +375,8 @@ fn project_handler_leak_diagnostics(session: &mut CompileSession) {
     for (file_id, entry) in session.file_set().iter_files() {
         let leak_warnings = scan_source_handler_leaks(entry.source());
         for leak in &leak_warnings {
-            let severity =
-                resolve_severity(KErrorCode::K0067, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0067, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             let span = kobo_ir::KoboSpan::new(
                 leak.source_offset as u32,
                 (leak.source_offset + leak.binding_name.len()) as u32,
@@ -426,8 +428,8 @@ fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &
             .first()
             .copied()
             .unwrap_or(binding.span);
-        let severity =
-            resolve_severity(KErrorCode::K0032, session.mode()).unwrap_or(Severity::Warning);
+        let severity = resolve_severity(KErrorCode::K0032, session.guarantee_policy())
+            .unwrap_or(Severity::Warning);
         session.diagnostics.push(
             KDiagnostic::new(
                 KErrorCode::K0032,
@@ -512,8 +514,8 @@ fn project_nondeterminism_diagnostics(session: &mut CompileSession) {
             let offset = source.find(pattern.operation).unwrap_or(0) as u32;
             let span =
                 kobo_ir::KoboSpan::new(offset, offset + pattern.operation.len() as u32, file_id);
-            let severity =
-                resolve_severity(KErrorCode::K0102, session.mode()).unwrap_or(Severity::Warning);
+            let severity = resolve_severity(KErrorCode::K0102, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
             diagnostics.push(
                 KDiagnostic::new(
                     KErrorCode::K0102,

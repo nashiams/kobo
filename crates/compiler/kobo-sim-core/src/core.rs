@@ -226,6 +226,8 @@ pub enum ScenarioOperation {
     },
     ExternalBoundary {
         crate_name: String,
+        policy: BoundaryPolicyChoice,
+        reason: Option<String>,
         span_start: usize,
         span_end: usize,
     },
@@ -451,9 +453,16 @@ impl<'a> Runtime<'a> {
                 }),
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
+                    policy,
+                    reason,
                     span_start,
                     span_end,
-                } => self.record_external_boundary(crate_name.clone(), (*span_start, *span_end)),
+                } => self.record_external_boundary(
+                    crate_name.clone(),
+                    policy.clone(),
+                    reason.clone(),
+                    (*span_start, *span_end),
+                ),
                 ScenarioOperation::Loop {
                     span_start,
                     span_end,
@@ -623,8 +632,14 @@ impl<'a> Runtime<'a> {
         });
     }
 
-    fn record_external_boundary(&mut self, crate_name: String, span: (usize, usize)) {
-        if !self.opaque_boundaries.contains(&crate_name) {
+    fn record_external_boundary(
+        &mut self,
+        crate_name: String,
+        policy: BoundaryPolicyChoice,
+        reason: Option<String>,
+        span: (usize, usize),
+    ) {
+        if !is_replay_owned_boundary(&policy) && !self.opaque_boundaries.contains(&crate_name) {
             self.opaque_boundaries.push(crate_name.clone());
         }
         if !self
@@ -634,9 +649,17 @@ impl<'a> Runtime<'a> {
         {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
-                policy: BoundaryPolicyChoice::Unselected,
-                reason: None,
+                policy: policy.clone(),
+                reason: reason.clone(),
             });
+        }
+        if is_replay_owned_boundary(&policy) {
+            self.events.push(ScenarioEvent {
+                kind: format!("boundary-{}", policy.as_str()),
+                label: Some(crate_name),
+                value: Some(self.options.seed),
+            });
+            return;
         }
         self.set_failure_once(ScenarioFailure {
             code: KErrorCode::K0107,
@@ -765,6 +788,13 @@ fn unresolved_failure_mode(actions: &[String]) -> &'static str {
     } else {
         "unresolved-delivery"
     }
+}
+
+fn is_replay_owned_boundary(policy: &BoundaryPolicyChoice) -> bool {
+    matches!(
+        policy,
+        BoundaryPolicyChoice::Model | BoundaryPolicyChoice::Record | BoundaryPolicyChoice::Stub
+    )
 }
 
 pub(crate) fn scheduler_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {

@@ -1,164 +1,26 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use kobo_ir::{
+    ErrorPolicy, GuaranteeDimension, GuaranteeDowngrade, GuaranteeLevel, GuaranteePolicy,
+    GuaranteeProfile,
+};
 use toml::Value as TomlValue;
 
 use crate::{ErrorFormat, GuaranteeProfileArg};
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-enum GuaranteeLevel {
-    Off,
-    Record,
-    Checked,
-    Strict,
-}
-
-impl GuaranteeLevel {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Record => "record",
-            Self::Checked => "checked",
-            Self::Strict => "strict",
-        }
-    }
-
-    fn parse(value: &TomlValue) -> Option<Self> {
-        match value.as_str()? {
-            "off" => Some(Self::Off),
-            "record" => Some(Self::Record),
-            "checked" => Some(Self::Checked),
-            "strict" => Some(Self::Strict),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-enum ErrorPolicy {
-    Ergonomic,
-    Typed,
-    Explicit,
-}
-
-impl ErrorPolicy {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Ergonomic => "ergonomic",
-            Self::Typed => "typed",
-            Self::Explicit => "explicit",
-        }
-    }
-
-    fn parse(value: &TomlValue) -> Option<Self> {
-        match value.as_str()? {
-            "ergonomic" => Some(Self::Ergonomic),
-            "typed" => Some(Self::Typed),
-            "explicit" => Some(Self::Explicit),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct GuaranteeSet {
-    ownership: GuaranteeLevel,
-    liveness: GuaranteeLevel,
-    replay: GuaranteeLevel,
-    boundaries: GuaranteeLevel,
-    errors: ErrorPolicy,
-}
-
-impl GuaranteeSet {
-    const fn for_profile(profile: GuaranteeProfileArg) -> Self {
-        match profile {
-            GuaranteeProfileArg::Dev => Self {
-                ownership: GuaranteeLevel::Record,
-                liveness: GuaranteeLevel::Record,
-                replay: GuaranteeLevel::Record,
-                boundaries: GuaranteeLevel::Record,
-                errors: ErrorPolicy::Ergonomic,
-            },
-            GuaranteeProfileArg::Checked => Self {
-                ownership: GuaranteeLevel::Checked,
-                liveness: GuaranteeLevel::Checked,
-                replay: GuaranteeLevel::Checked,
-                boundaries: GuaranteeLevel::Checked,
-                errors: ErrorPolicy::Typed,
-            },
-            GuaranteeProfileArg::Release => Self {
-                ownership: GuaranteeLevel::Strict,
-                liveness: GuaranteeLevel::Checked,
-                replay: GuaranteeLevel::Checked,
-                boundaries: GuaranteeLevel::Strict,
-                errors: ErrorPolicy::Explicit,
-            },
-        }
-    }
-
-    fn apply_table(&mut self, table: &toml::map::Map<String, TomlValue>) {
-        if let Some(value) = table.get("ownership").and_then(GuaranteeLevel::parse) {
-            self.ownership = value;
-        }
-        if let Some(value) = table.get("liveness").and_then(GuaranteeLevel::parse) {
-            self.liveness = value;
-        }
-        if let Some(value) = table.get("replay").and_then(GuaranteeLevel::parse) {
-            self.replay = value;
-        }
-        if let Some(value) = table.get("boundaries").and_then(GuaranteeLevel::parse) {
-            self.boundaries = value;
-        }
-        if let Some(value) = table.get("errors").and_then(ErrorPolicy::parse) {
-            self.errors = value;
-        }
-    }
-
-    fn first_downgrade_from(&self, previous: &Self) -> Option<GuaranteeDowngrade> {
-        if self.ownership < previous.ownership {
-            return Some(GuaranteeDowngrade::new(
-                "ownership",
-                previous.ownership.as_str(),
-                self.ownership.as_str(),
-            ));
-        }
-        if self.liveness < previous.liveness {
-            return Some(GuaranteeDowngrade::new(
-                "liveness",
-                previous.liveness.as_str(),
-                self.liveness.as_str(),
-            ));
-        }
-        if self.replay < previous.replay {
-            return Some(GuaranteeDowngrade::new(
-                "replay",
-                previous.replay.as_str(),
-                self.replay.as_str(),
-            ));
-        }
-        if self.boundaries < previous.boundaries {
-            return Some(GuaranteeDowngrade::new(
-                "boundaries",
-                previous.boundaries.as_str(),
-                self.boundaries.as_str(),
-            ));
-        }
-        if self.errors < previous.errors {
-            return Some(GuaranteeDowngrade::new(
-                "errors",
-                previous.errors.as_str(),
-                self.errors.as_str(),
-            ));
-        }
-        None
-    }
-}
 
 #[derive(Clone, Debug)]
 struct ReleasePolicy {
     deny_new_debt: bool,
     strict_paths: Vec<String>,
     deny_downgrade_without_reason: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct EffectiveGuaranteePolicy {
+    policy: GuaranteePolicy,
+    release: ReleasePolicy,
+    downgrade: Option<GuaranteeDowngrade>,
 }
 
 impl ReleasePolicy {
@@ -190,57 +52,34 @@ impl ReleasePolicy {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(super) struct GuaranteePolicy {
-    profile: GuaranteeProfileArg,
-    guarantees: GuaranteeSet,
-    release: ReleasePolicy,
-    downgrade: Option<GuaranteeDowngrade>,
-}
+impl EffectiveGuaranteePolicy {
+    pub(super) fn compiler_policy(&self) -> &GuaranteePolicy {
+        &self.policy
+    }
 
-impl GuaranteePolicy {
     pub(super) fn downgrade(&self) -> Option<&GuaranteeDowngrade> {
         self.downgrade.as_ref()
     }
 
     pub(super) fn error_policy_name(&self) -> &'static str {
-        self.guarantees.errors.as_str()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct GuaranteeDowngrade {
-    dimension: &'static str,
-    from: &'static str,
-    to: &'static str,
-    reason_required: bool,
-}
-
-impl GuaranteeDowngrade {
-    const fn new(dimension: &'static str, from: &'static str, to: &'static str) -> Self {
-        Self {
-            dimension,
-            from,
-            to,
-            reason_required: true,
-        }
+        self.policy.guarantees().errors().as_str()
     }
 }
 
 pub(super) fn load_effective_policy(
     file: Option<&Path>,
     profile: GuaranteeProfileArg,
-) -> anyhow::Result<GuaranteePolicy> {
+) -> anyhow::Result<EffectiveGuaranteePolicy> {
     let root = policy_root(file)?;
     let manifest = read_manifest(&root)?;
-    let mut guarantees = GuaranteeSet::for_profile(profile);
+    let mut policy = GuaranteePolicy::for_profile(profile.compiler_profile());
     let mut release = ReleasePolicy::default();
 
     if let Some(table) = table_at(&manifest, &["guarantees"]) {
-        guarantees.apply_table(table);
+        apply_guarantees_table(&mut policy, table);
     }
     if let Some(table) = table_at(&manifest, &["profiles", profile.as_str(), "guarantees"]) {
-        guarantees.apply_table(table);
+        apply_guarantees_table(&mut policy, table);
     }
     if let Some(table) = table_at(&manifest, &["ci", "release"]) {
         release.apply_table(table);
@@ -257,36 +96,36 @@ pub(super) fn load_effective_policy(
                 let Some(table) = value.as_table() else {
                     continue;
                 };
-                let before = guarantees.clone();
-                guarantees.apply_table(table);
+                let before = policy.guarantees().clone();
+                apply_guarantees_table(&mut policy, table);
                 let has_reason = table
                     .get("reason")
                     .and_then(TomlValue::as_str)
                     .is_some_and(|reason| !reason.trim().is_empty());
                 if release.deny_downgrade_without_reason && !has_reason {
-                    downgrade = guarantees.first_downgrade_from(&before);
+                    downgrade = policy.guarantees().first_downgrade_from(&before);
                 }
             }
         }
     }
 
-    Ok(GuaranteePolicy {
-        profile,
-        guarantees,
+    Ok(EffectiveGuaranteePolicy {
+        policy,
         release,
         downgrade,
     })
 }
 
-pub(super) fn print_policy_json(policy: &GuaranteePolicy) -> anyhow::Result<()> {
+pub(super) fn print_policy_json(policy: &EffectiveGuaranteePolicy) -> anyhow::Result<()> {
+    let guarantees = policy.policy.guarantees();
     let value = serde_json::json!({
-        "profile": policy.profile.as_str(),
+        "profile": policy.policy.profile().as_str(),
         "guarantees": {
-            "ownership": policy.guarantees.ownership.as_str(),
-            "liveness": policy.guarantees.liveness.as_str(),
-            "replay": policy.guarantees.replay.as_str(),
-            "boundaries": policy.guarantees.boundaries.as_str(),
-            "errors": policy.guarantees.errors.as_str(),
+            "ownership": guarantees.ownership().as_str(),
+            "liveness": guarantees.liveness().as_str(),
+            "replay": guarantees.replay().as_str(),
+            "boundaries": guarantees.boundaries().as_str(),
+            "errors": guarantees.errors().as_str(),
         },
         "ci": {
             "release": {
@@ -300,15 +139,16 @@ pub(super) fn print_policy_json(policy: &GuaranteePolicy) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub(super) fn emit_policy_summary(policy: &GuaranteePolicy) {
+pub(super) fn emit_policy_summary(policy: &EffectiveGuaranteePolicy) {
+    let guarantees = policy.policy.guarantees();
     eprintln!(
         "guarantee profile `{}`: ownership={}, liveness={}, replay={}, boundaries={}, errors={}",
-        policy.profile.as_str(),
-        policy.guarantees.ownership.as_str(),
-        policy.guarantees.liveness.as_str(),
-        policy.guarantees.replay.as_str(),
-        policy.guarantees.boundaries.as_str(),
-        policy.guarantees.errors.as_str()
+        policy.policy.profile().as_str(),
+        guarantees.ownership().as_str(),
+        guarantees.liveness().as_str(),
+        guarantees.replay().as_str(),
+        guarantees.boundaries().as_str(),
+        guarantees.errors().as_str()
     );
 }
 
@@ -339,6 +179,52 @@ pub(super) fn emit_downgrade(
         }
     }
     Ok(())
+}
+
+fn apply_guarantees_table(policy: &mut GuaranteePolicy, table: &toml::map::Map<String, TomlValue>) {
+    if let Some(level) = table
+        .get("ownership")
+        .and_then(TomlValue::as_str)
+        .and_then(GuaranteeLevel::parse)
+    {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Ownership, level);
+    }
+    if let Some(level) = table
+        .get("liveness")
+        .and_then(TomlValue::as_str)
+        .and_then(GuaranteeLevel::parse)
+    {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Liveness, level);
+    }
+    if let Some(level) = table
+        .get("replay")
+        .and_then(TomlValue::as_str)
+        .and_then(GuaranteeLevel::parse)
+    {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Replay, level);
+    }
+    if let Some(level) = table
+        .get("boundaries")
+        .and_then(TomlValue::as_str)
+        .and_then(GuaranteeLevel::parse)
+    {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Boundaries, level);
+    }
+    if let Some(errors) = table
+        .get("errors")
+        .and_then(TomlValue::as_str)
+        .and_then(ErrorPolicy::parse)
+    {
+        policy.guarantees_mut().set_errors(errors);
+    }
 }
 
 fn read_manifest(root: &Path) -> anyhow::Result<TomlValue> {
@@ -409,4 +295,10 @@ fn matches_policy_pattern(relative: &str, pattern: &str) -> bool {
         return relative == prefix || relative.starts_with(&format!("{prefix}/"));
     }
     relative == pattern
+}
+
+impl From<GuaranteeProfileArg> for GuaranteeProfile {
+    fn from(profile: GuaranteeProfileArg) -> Self {
+        profile.compiler_profile()
+    }
 }

@@ -10,7 +10,8 @@ mod session;
 pub mod test_utils;
 
 pub use config::{
-    load_config, load_config_for, parse_kobo_config, ConfigError, KoboConfig, KoboMode,
+    load_config, load_config_for, parse_kobo_config, ConfigError, ErrorPolicy, GuaranteeLevel,
+    GuaranteePolicy, GuaranteeProfile, KoboConfig, LegacyMode,
 };
 pub use errors::DriverError;
 pub use filesystem::{
@@ -19,7 +20,7 @@ pub use filesystem::{
 };
 pub use multi_file::{run_build_pipeline, BuildOutput};
 pub use pipeline::{
-    apply_error_policy_sites, apply_lifetime_erasure, effective_mode,
+    apply_error_policy_sites, apply_lifetime_erasure, effective_guarantee_policy,
     extract_before_borrow_rewrite, lifetime_erasure_debt_report, run_and_compile,
     run_and_compile_with_lifetime_erasure, run_check_pipeline, run_codegen_pipeline, run_kir_phase,
     run_pipeline, run_pipeline_ordering_check, CodegenArtifacts, ErrorPolicySite,

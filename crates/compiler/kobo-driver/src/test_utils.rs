@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use kobo_codegen::{codegen_file, CodegenOptions};
 use kobo_ir::{
-    FileId, Kir, KoboMode, OwnershipTier, SharedBindingFacts, SolutionMap, TierDecision,
-    TransformBindingFacts,
+    FileId, GuaranteePolicy, GuaranteeProfile, Kir, OwnershipTier, SharedBindingFacts, SolutionMap,
+    TierDecision, TransformBindingFacts,
 };
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
@@ -86,17 +86,17 @@ pub fn compile_to_kir(source: &str, config: &KoboConfig) -> Result<CompileResult
     })
 }
 
-/// Compile `.kobo` source in Script mode and return the generated `.rs` source.
+/// Compile `.kobo` source in the dev profile and return the generated `.rs` source.
 ///
 /// Runs the full pipeline: preprocess → parse → transform → codegen.
 pub fn compile_and_inspect(source: &str) -> String {
     compile_and_inspect_with_config(source, KoboConfig::default())
 }
 
-/// Compile in Script mode specifically (for lifetime erasure tests).
+/// Compile in the dev profile specifically (for lifetime erasure tests).
 pub fn compile_and_inspect_script_mode(source: &str) -> String {
     let config = KoboConfig {
-        mode: KoboMode::Script,
+        guarantee_policy: GuaranteePolicy::for_profile(GuaranteeProfile::Dev),
         ..Default::default()
     };
     compile_and_inspect_with_config(source, config)
@@ -155,7 +155,7 @@ pub fn try_compile(source: &str) -> Result<String, String> {
         result.kir.transform_facts(),
         result.session.file_set(),
         &result.kir,
-        result.session.mode(),
+        result.session.guarantee_policy(),
     );
 
     let has_errors = diags

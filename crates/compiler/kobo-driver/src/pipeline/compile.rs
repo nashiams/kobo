@@ -19,7 +19,7 @@ pub fn run_and_compile_with_lifetime_erasure(
     input: &Path,
 ) -> Result<PathBuf, ()> {
     let mut artifacts = run_codegen_pipeline(session, input)?;
-    let erased_source = apply_lifetime_erasure(&artifacts.rs_source, session.mode());
+    let erased_source = apply_lifetime_erasure(&artifacts.rs_source, session.guarantee_policy());
     if erased_source != artifacts.rs_source {
         if let Err(error) = write_rs_file(&artifacts.rs_path, &erased_source) {
             eprintln!("kobo: write error: {error}");
@@ -45,7 +45,7 @@ fn compile_codegen_artifacts(
     // v0.6 G4 §4.4: In checked mode, filter wrapper noise and remap surviving
     // warnings to .kobo spans, then push into session.diagnostics [R6-02].
     // ORDER IS CRITICAL: filter(§4.2) must use .rs spans → remap(§4.3) → merge.
-    if session.mode().is_checked() && !compile_output.rustc_warnings.is_empty() {
+    if session.guarantee_policy().is_checked() && !compile_output.rustc_warnings.is_empty() {
         let kobo_regions = extract_kobo_regions(&artifacts.rs_source);
         let surviving = filter_wrapper_noise(&compile_output.rustc_warnings, &kobo_regions);
         remap_warnings_to_diagnostics(surviving, &artifacts.source_map, artifacts.file_id, session);

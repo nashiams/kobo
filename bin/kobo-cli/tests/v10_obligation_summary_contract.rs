@@ -67,6 +67,68 @@ fn routed_delivery() {
 }
 
 #[test]
+fn helper_discharge_is_a_semantic_function_summary_not_flat_event_projection() {
+    let project = TestProject::new("v10-helper-summary");
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(ack | nack)]
+struct Delivery {}
+
+fn helper(delivery: Delivery) {
+    delivery.ack();
+}
+
+#[kobo::scenario(profile = "async")]
+fn routed_delivery() {
+    let delivery = Delivery {};
+    helper(delivery);
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("19"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "helper discharge should satisfy the obligation");
+    let witness = read_first_witness(&project);
+    let summaries = witness["function_summaries"]
+        .as_array()
+        .expect("function summaries should be an array");
+    let helper_summary = summaries
+        .iter()
+        .find(|summary| summary["function"] == "helper")
+        .unwrap_or_else(|| panic!("helper summary missing from {summaries:?}"));
+    assert_eq!(
+        helper_summary["transfers_in"][0], "delivery",
+        "helper summary should record incoming transfer"
+    );
+    assert_eq!(
+        helper_summary["discharges"][0], "delivery",
+        "helper summary should own the helper discharge"
+    );
+    let target_summary = summaries
+        .iter()
+        .find(|summary| summary["function"] == "routed_delivery")
+        .expect("target summary should exist");
+    assert_eq!(
+        target_summary["transfers"][0], "delivery->helper",
+        "target summary should record the transfer edge"
+    );
+}
+
+#[test]
 fn scenario_coverage_changes_when_obligation_is_not_exercised() {
     let covered = TestProject::new("v10-coverage-covered");
     let covered_file = covered.main_file(

@@ -19,6 +19,7 @@ mod sim;
 mod sim_model;
 mod test_cmd;
 mod watch;
+mod witness_evidence;
 
 use std::fmt as std_fmt;
 

@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::ErrorFormat;
 
 use super::sim_model;
+use super::witness_evidence;
 
 pub(super) fn cmd_replay(
     file: &Path,
@@ -122,6 +123,8 @@ fn replay_v1(
         "backend_replay": replay_token(&verified_source.hash, seed, &run),
         "execution_digest": execution_digest_json(&run),
         "harness_manifest": run.harness_manifest.clone(),
+        "operation_coverage": witness_evidence::operation_coverage_json(&scenario_program, &run),
+        "function_summaries": witness_evidence::function_summaries_json(&scenario_program, &run),
         "failure": failure_json(source_display, &verified_source.source, &run),
         "events": replay_events_json(witness, &run.events)?,
     });
@@ -130,6 +133,8 @@ fn replay_v1(
         "backend_replay": witness["backend_replay"].clone(),
         "execution_digest": witness["execution_digest"].clone(),
         "harness_manifest": witness["harness_manifest"].clone(),
+        "operation_coverage": witness["operation_coverage"].clone(),
+        "function_summaries": witness["function_summaries"].clone(),
         "failure": witness_failure_json(witness),
         "events": witness["events"].clone(),
     });
@@ -591,6 +596,8 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["execution_digest", "harness_exit_code"][..]);
             required.push(&["harness_manifest", "harness_rs_path"][..]);
             required.push(&["harness_manifest", "stdout_hash"][..]);
+            required.push(&["operation_coverage", "modeled"][..]);
+            required.push(&["function_summaries"][..]);
         }
         for path in required {
             if value_at(witness, path).is_none() {

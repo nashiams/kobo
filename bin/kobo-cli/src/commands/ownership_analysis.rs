@@ -54,10 +54,11 @@ pub(super) fn analyze_source(source: &str) -> OwnershipAnalysis {
 
     for (line_index, line) in source.lines().enumerate() {
         let line_number = line_index + 1;
-        let trimmed = line.trim();
+        let code_line = code_view(line);
+        let trimmed = code_line.trim();
         let column = line.find(trimmed).unwrap_or(0) + 1;
 
-        if let Some(column) = clone_column(line) {
+        if let Some(column) = clone_column(trimmed) {
             audit_records.push(AuditRecord {
                 tier: 1,
                 kind: "mechanical",
@@ -128,6 +129,54 @@ pub(super) fn analyze_source(source: &str) -> OwnershipAnalysis {
             hot_paths,
         },
     }
+}
+
+fn code_view(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => break,
+            b'"' => {
+                out.push(' ');
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index += 2;
+                        continue;
+                    }
+                    if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    }
+                    out.push(' ');
+                    index += 1;
+                }
+            }
+            b'\'' => {
+                out.push(' ');
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index += 2;
+                        continue;
+                    }
+                    if bytes[index] == b'\'' {
+                        index += 1;
+                        break;
+                    }
+                    out.push(' ');
+                    index += 1;
+                }
+            }
+            _ => {
+                out.push(bytes[index] as char);
+                index += 1;
+            }
+        }
+    }
+    out
 }
 
 fn clone_column(line: &str) -> Option<usize> {

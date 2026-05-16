@@ -14,6 +14,7 @@ pub(crate) mod channel;
 /// Design: table-driven so v0.6 can add new keywords without forking the
 /// scanner. Per F-03 in the v0.5 design.
 mod collect;
+mod concurrent_sugar;
 mod engine;
 mod handler;
 mod postprocess;
@@ -30,6 +31,10 @@ pub use channel::{
     preprocess_chan_type, validate_channel_dependencies, ChannelInfo, ChannelWarning,
 };
 pub use collect::collect_strict_items_from_syn;
+pub use concurrent_sugar::{
+    preprocess_concurrent_sugar, preprocess_concurrent_sugar_mapped, ConcurrentSugarKind,
+    ConcurrentSugarOccurrence,
+};
 pub use engine::{collect_engine_structs, strip_engine_attributes, EngineInfo};
 pub use handler::validate_handler_attributes;
 pub use postprocess::postprocess_strict_markers;

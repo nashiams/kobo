@@ -58,6 +58,11 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     kir.set_migrate_sites(built.migrate_sites);
     kir.set_must_call_obligations(built.must_call_obligations);
     kir.set_must_call_attr_errors(built.must_call_attr_errors);
+    kir.set_scenario_programs(crate::scenario::build_scenario_programs(
+        ast,
+        kir.must_call_obligations(),
+        "checked",
+    ));
 
     // Phase 4: store method mutability map for codegen borrow/borrow_mut selection.
     kir.set_method_mutability(built.method_mutability);

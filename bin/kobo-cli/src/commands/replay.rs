@@ -1,6 +1,8 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use kobo_ir::KoboMode;
 use serde_json::Value;
 
 use crate::ErrorFormat;
@@ -78,37 +80,55 @@ fn replay_v1(
         anyhow::bail!("{guarantee} replay cannot claim exact replay");
     }
 
+    validate_shrink_metadata(witness, error_format)?;
+    validate_exact_witness_contract(witness, error_format)?;
     let verified_source = verify_source_identity(witness, witness_path, error_format)?;
     let target = witness_target_scenario(witness)?;
-    let document = sim_model::parse_document(verified_source.source.clone());
     let seed = witness["seed"].as_u64().unwrap_or(0);
     let profile = witness["backend_profile"]
         .as_str()
         .or_else(|| witness["guarantee_profile"].as_str())
         .unwrap_or("checked");
-    let run = sim_model::run_quick_target(
-        &document,
-        sim_model::SimulationOptions {
-            profile,
-            seed,
-            inject: None,
-            event_budget: None,
-        },
-        Some(&target),
-    );
+    let sim_profile = witness["sim_profile"].as_str().unwrap_or("quick");
+    let inject = witness_injections(witness);
+    let mut session =
+        super::session::build_session(&verified_source.path, Some(KoboMode::Checked))?;
+    let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
+        .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
+    let scenario_program = kobo_driver::build_scenario_program(
+        &artifacts,
+        &target,
+        verified_source.hash.clone(),
+        profile,
+    )?;
+    let options = kobo_sim_core::ScenarioOptions {
+        sim_profile: sim_profile.to_owned(),
+        profile: profile.to_owned(),
+        seed,
+        inject,
+        event_budget: None,
+    };
+    let run = kobo_sim_core::run_full_depth_from_program(
+        &scenario_program,
+        &artifacts.rs_source,
+        &options,
+        kobo_sim_core::EngineMode::Both,
+    )?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
     let expected = serde_json::json!({
-        "backend": run.backend.as_str(),
-        "backend_replay": sim_model::replay_token(&verified_source.hash, seed, &run),
+        "backend": backend_for_profile(&run.profile),
+        "backend_replay": replay_token(&verified_source.hash, seed, &run),
         "execution_digest": execution_digest_json(&run),
+        "harness_manifest": run.harness_manifest.clone(),
         "failure": failure_json(source_display, &verified_source.source, &run),
-        "events": events_json(&run.events),
+        "events": replay_events_json(witness, &run.events)?,
     });
     let observed = serde_json::json!({
         "backend": witness["backend"].clone(),
         "backend_replay": witness["backend_replay"].clone(),
         "execution_digest": witness["execution_digest"].clone(),
+        "harness_manifest": witness["harness_manifest"].clone(),
         "failure": witness_failure_json(witness),
         "events": witness["events"].clone(),
     });
@@ -121,11 +141,58 @@ fn replay_v1(
         serde_json::to_string(&serde_json::json!({
             "replay": "exact",
             "source": verified_source.path.display().to_string(),
-            "backend": run.backend.as_str(),
+            "backend": backend_for_profile(&run.profile),
             "failure": witness["failure"],
             "events": run.events.len(),
         }))?
     );
+    Ok(())
+}
+
+fn validate_shrink_metadata(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
+    if witness["exactness"].as_str() != Some("exact") {
+        return Ok(());
+    }
+    if witness["shrink"].is_null() {
+        return Ok(());
+    }
+    if witness["shrink"]["replay_checked"].as_bool() == Some(false) {
+        let payload = serde_json::json!({
+            "code": "K0106",
+            "message": "witness shrink is unsafe: replay_checked=false cannot replace an exact witness",
+            "shrink": witness["shrink"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0106 witness shrink is unsafe");
+    }
+    let Some(removed_ids) = witness["shrink"]["removed_event_ids"].as_array() else {
+        return Ok(());
+    };
+    let original_event_count = witness["shrink"]["original_event_count"].as_u64();
+    let shrunk_event_count = witness["shrink"]["shrunk_event_count"].as_u64();
+    if original_event_count
+        .zip(shrunk_event_count)
+        .is_some_and(|(original, shrunk)| {
+            original < shrunk || original - shrunk != removed_ids.len() as u64
+        })
+    {
+        let payload = serde_json::json!({
+            "code": "K0106",
+            "message": "witness shrink metadata does not match event counts",
+            "shrink": witness["shrink"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0106 witness shrink metadata is inconsistent");
+    }
+    if removed_ids.iter().any(|id| id.as_u64().is_none()) {
+        let payload = serde_json::json!({
+            "code": "K0106",
+            "message": "witness shrink removed_event_ids must be numeric",
+            "shrink": witness["shrink"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0106 witness shrink metadata is invalid");
+    }
     Ok(())
 }
 
@@ -175,7 +242,7 @@ fn witness_target_scenario(witness: &Value) -> anyhow::Result<String> {
     Ok(scenario.to_owned())
 }
 
-fn failure_json(source_path: &str, source: &str, run: &sim_model::SimulationRun) -> Value {
+fn failure_json(source_path: &str, source: &str, run: &kobo_sim_core::FullDepthRun) -> Value {
     let Some(failure) = run.failure.as_ref() else {
         return Value::Null;
     };
@@ -198,23 +265,29 @@ fn witness_failure_json(witness: &Value) -> Value {
     })
 }
 
-fn execution_digest_json(run: &sim_model::SimulationRun) -> Value {
-    let Some(digest) = run.execution_digest.as_ref() else {
-        return Value::Null;
-    };
+fn execution_digest_json(run: &kobo_sim_core::FullDepthRun) -> Value {
     serde_json::json!({
-        "engine": digest.engine,
-        "model_version": digest.model_version,
-        "scenario_ir_hash": digest.scenario_ir_hash,
-        "operation_count": digest.operation_count,
-        "event_hash": digest.event_hash,
+        "engine": "semantic-sim",
+        "semantic_engine": run.digest.semantic_engine.as_str(),
+        "harness_engine": run.digest.harness_engine.as_str(),
+        "model_version": run.digest.model_version.as_str(),
+        "scenario_ir_hash": run.digest.scenario_ir_hash.as_str(),
+        "operation_count": run.digest.operation_count,
+        "event_hash": run.digest.semantic_trace_hash.as_str(),
+        "semantic_trace_hash": run.digest.semantic_trace_hash.as_str(),
+        "harness_trace_hash": run.digest.harness_trace_hash.as_str(),
+        "agreement": run.digest.agreement.as_str(),
+        "generated_rust_hash": run.digest.generated_rust_hash.as_deref(),
+        "harness_manifest_hash": run.digest.harness_manifest_hash.as_deref(),
+        "harness_exit_code": run.digest.harness_exit_code,
+        "harness_event_count": run.digest.harness_event_count,
     })
 }
 
 fn related_spans_json(
     source_path: &str,
     source: &str,
-    run: &sim_model::SimulationRun,
+    run: &kobo_sim_core::FullDepthRun,
 ) -> Vec<Value> {
     run.obligations
         .iter()
@@ -233,17 +306,111 @@ fn related_spans_json(
         .collect()
 }
 
-fn events_json(events: &[sim_model::SimEvent]) -> Vec<Value> {
-    events
+fn replay_events_json(
+    witness: &Value,
+    events: &[kobo_sim_core::ScenarioEvent],
+) -> anyhow::Result<Vec<Value>> {
+    let removed = removed_event_ids(witness)?;
+    Ok(events
         .iter()
-        .map(|event| {
+        .enumerate()
+        .filter(|(index, _)| !removed.contains(index))
+        .map(|(_, event)| {
             serde_json::json!({
                 "kind": event.kind,
                 "label": event.label,
                 "value": event.value,
             })
         })
+        .collect())
+}
+
+fn removed_event_ids(witness: &Value) -> anyhow::Result<BTreeSet<usize>> {
+    let Some(values) = witness["shrink"]["removed_event_ids"].as_array() else {
+        return Ok(BTreeSet::new());
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|id| id as usize)
+                .ok_or_else(|| anyhow::anyhow!("removed_event_ids must be numeric"))
+        })
         .collect()
+}
+
+fn witness_injections(witness: &Value) -> Option<String> {
+    witness["injections"]["hooks"]
+        .as_array()
+        .map(|hooks| {
+            hooks
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .filter(|hooks| !hooks.is_empty())
+}
+
+fn replay_token(source_identity: &str, seed: u64, run: &kobo_sim_core::FullDepthRun) -> String {
+    let mut material = String::new();
+    material.push_str(source_identity);
+    material.push(':');
+    material.push_str(&seed.to_string());
+    material.push(':');
+    material.push_str(backend_for_profile(&run.profile));
+    material.push(':');
+    material.push_str(&run.digest.semantic_trace_hash);
+    material.push(':');
+    material.push_str(&run.digest.harness_trace_hash);
+    kobo_sim_core::digest::stable_hash(&material)
+}
+
+fn backend_for_profile(profile: &str) -> &'static str {
+    match profile {
+        "sync" => "loom",
+        "stateful-input" => "proptest",
+        "failpoint" => "failpoints",
+        "network" | "network-design" => "network-design",
+        _ => "shuttle",
+    }
+}
+
+fn validate_exact_witness_contract(
+    witness: &Value,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let unsupported = witness["coverage"]["unsupported_constructs"]
+        .as_array()
+        .map(Vec::is_empty)
+        .unwrap_or(true);
+    if !unsupported {
+        let payload = serde_json::json!({
+            "code": "K0116",
+            "message": "scenario coverage incomplete; exact replay is not allowed",
+            "coverage": witness["coverage"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0116 scenario coverage incomplete");
+    }
+    let digest = &witness["execution_digest"];
+    let semantic_engine = digest["semantic_engine"].as_str();
+    let harness_engine = digest["harness_engine"].as_str();
+    let agreement = digest["agreement"].as_str();
+    if semantic_engine != Some("driver-kir-scenario")
+        || harness_engine != Some("generated-rust-process")
+        || agreement != Some("matched")
+    {
+        let payload = serde_json::json!({
+            "code": "K0117",
+            "message": "semantic trace and harness trace diverged or are missing",
+            "execution_digest": digest.clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0117 exact witness lacks semantic/harness agreement");
+    }
+    Ok(())
 }
 
 fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
@@ -364,6 +531,11 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["execution_digest", "scenario_ir_hash"][..]);
             required.push(&["execution_digest", "operation_count"][..]);
             required.push(&["execution_digest", "event_hash"][..]);
+            required.push(&["execution_digest", "generated_rust_hash"][..]);
+            required.push(&["execution_digest", "harness_manifest_hash"][..]);
+            required.push(&["execution_digest", "harness_exit_code"][..]);
+            required.push(&["harness_manifest", "harness_rs_path"][..]);
+            required.push(&["harness_manifest", "stdout_hash"][..]);
         }
         for path in required {
             if value_at(witness, path).is_none() {

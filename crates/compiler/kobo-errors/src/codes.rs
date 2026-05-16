@@ -155,6 +155,8 @@ define_error_codes! {
     K0114 => "K0114",
     K0115 => "K0115",
     K0116 => "K0116",
+    K0117 => "K0117",
+    K0118 => "K0118",
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -232,7 +234,9 @@ impl KErrorCode {
             Self::K0113 => "parser recovery limit reached",
             Self::K0114 => "malformed must_call attribute",
             Self::K0115 => "invalid kwit witness schema",
-            Self::K0116 => "malformed scenario metadata",
+            Self::K0116 => "scenario coverage incomplete",
+            Self::K0117 => "semantic trace and harness trace diverged",
+            Self::K0118 => "stale or mismatched evidence artifact",
             _ => "reserved Kobo diagnostic slot",
         }
     }

@@ -233,6 +233,12 @@ pub(super) enum AsyncSharedAttrResult {
     HasArguments,
 }
 
+pub(super) enum SharedAttrResult {
+    NotShared,
+    Valid,
+    HasArguments,
+}
+
 /// Parse `#[kobo::async_shared]` from a single attribute.
 pub(super) fn parse_async_shared_attr(attr: &syn::Attribute) -> AsyncSharedAttrResult {
     match &attr.meta {
@@ -244,5 +250,18 @@ pub(super) fn parse_async_shared_attr(attr: &syn::Attribute) -> AsyncSharedAttrR
             AsyncSharedAttrResult::HasArguments
         }
         _ => AsyncSharedAttrResult::NotAsyncShared,
+    }
+}
+
+pub(super) fn parse_shared_attr(attr: &syn::Attribute) -> SharedAttrResult {
+    match &attr.meta {
+        syn::Meta::Path(path) if is_kobo_path(path, "shared") => SharedAttrResult::Valid,
+        syn::Meta::NameValue(nv) if is_kobo_path(&nv.path, "shared") => {
+            SharedAttrResult::HasArguments
+        }
+        syn::Meta::List(list) if is_kobo_path(&list.path, "shared") => {
+            SharedAttrResult::HasArguments
+        }
+        _ => SharedAttrResult::NotShared,
     }
 }

@@ -9,6 +9,18 @@ use v09_common::{
 fn lsp_publishes_k010x_payloads_witness_links_and_actions() {
     let project = TestProject::new("lsp-k010x");
     let file = project.copy_fixture("lsp/replay_http.kobo", "src/main.kobo");
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&sim, "LSP artifact contract needs a real witness first");
 
     let output = run_kobo(
         &[
@@ -50,6 +62,18 @@ fn lsp_publishes_k010x_payloads_witness_links_and_actions() {
 fn lsp_uses_kwit_link_when_failure_has_witness() {
     let project = TestProject::new("lsp-kwit-link");
     let file = project.copy_fixture("lsp/leak_delivery.kobo", "src/main.kobo");
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&sim, "failing scenario should emit a witness before LSP");
 
     let output = run_kobo(
         &[
@@ -164,6 +188,33 @@ fn lsp_ranges_move_when_boundary_call_moves() {
     );
     let first_file = project.write("src/lsp_first.kobo", &first_source);
     let second_file = project.write("src/lsp_second.kobo", &second_source);
+    let first_sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&first_file),
+        ],
+        &project.root,
+    );
+    let second_sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&second_file),
+        ],
+        &project.root,
+    );
+    assert_failure(&first_sim, "first boundary scenario should emit a witness");
+    assert_failure(
+        &second_sim,
+        "second boundary scenario should emit a witness",
+    );
 
     let first = run_kobo(
         &[

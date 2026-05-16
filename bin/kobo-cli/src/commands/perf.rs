@@ -18,10 +18,22 @@ pub(super) fn cmd_perf(
     from: Option<&Path>,
     threshold: Option<u64>,
     format: Option<&str>,
+    evidence: &str,
+    session: Option<&Path>,
 ) -> anyhow::Result<()> {
     let threshold = threshold
         .or_else(|| std::env::var("KOBO_DIAG_THRESHOLD").ok()?.parse().ok())
         .unwrap_or(10_000_u64);
+
+    match evidence {
+        "estimate" => {}
+        "real" => {
+            let session = session.context("--evidence real requires --session <DIR>")?;
+            print!("{}", session_perf_json(file, session, threshold)?);
+            return Ok(());
+        }
+        other => anyhow::bail!("invalid perf evidence `{other}`; expected estimate or real"),
+    }
 
     if format == Some("json") {
         if let Some(log) = from {
@@ -85,6 +97,52 @@ pub(super) fn cmd_perf(
     }
 
     Ok(())
+}
+
+fn session_perf_json(file: &Path, session: &Path, threshold: u64) -> anyhow::Result<String> {
+    let path = session.join("diagowner.jsonl");
+    let text = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "failed to read structured session artifact {}",
+            path.display()
+        )
+    })?;
+    let mut borrow_count = 0_u64;
+    let mut mut_borrow_count = 0_u64;
+    let mut contention = 0_u64;
+    let mut hot_paths = Vec::new();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let value: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("invalid diagowner JSON line in {}", path.display()))?;
+        let entry_borrow = value["borrow_count"].as_u64().unwrap_or(0);
+        let entry_mut = value["mut_borrow_count"].as_u64().unwrap_or(0);
+        let entry_contention = value["contention"]
+            .as_u64()
+            .or_else(|| value["contention_count"].as_u64())
+            .unwrap_or(0);
+        borrow_count += entry_borrow;
+        mut_borrow_count += entry_mut;
+        contention += entry_contention;
+        hot_paths.push(serde_json::json!({
+            "binding": value["binding"].as_str().unwrap_or("<unknown>"),
+            "borrow_count": entry_borrow,
+            "mut_borrow_count": entry_mut,
+            "contention": entry_contention,
+            "line": value["span"]["line"].as_u64().unwrap_or(0),
+            "column": value["span"]["column"].as_u64().unwrap_or(0),
+            "hot": entry_borrow > threshold || entry_mut > threshold,
+        }));
+    }
+    let value = serde_json::json!({
+        "file": cli_relative_path(file)?,
+        "source": "session_diagowner",
+        "borrow_count": borrow_count,
+        "mut_borrow_count": mut_borrow_count,
+        "contention": contention,
+        "hot_paths": hot_paths,
+        "threshold": threshold,
+    });
+    Ok(format!("{}\n", serde_json::to_string(&value)?))
 }
 
 fn source_perf_json(file: &Path, source: &str, threshold: u64) -> anyhow::Result<String> {

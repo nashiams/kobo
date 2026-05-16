@@ -25,7 +25,7 @@ fn production_depth_executor_does_not_call_legacy_line_scanner() {
     }
 
     assert!(
-        production_executor.contains("scenario_program_from_document"),
+        production_executor.contains("kobo_sim_core"),
         "sim quick must route behavior extraction through the semantic operation graph"
     );
     assert!(
@@ -47,7 +47,7 @@ fn typed_error_policy_does_not_rewrite_by_last_question_mark_per_line() {
         );
     }
     assert!(
-        build_rs.contains("question_operator_offsets"),
-        "typed error policy must discover syntactic question operators before rewriting"
+        build_rs.contains("error_policy_sites"),
+        "typed error policy must consume compiler-owned error policy sites"
     );
 }

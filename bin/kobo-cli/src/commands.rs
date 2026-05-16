@@ -17,7 +17,6 @@ mod run;
 mod session;
 mod sim;
 mod sim_model;
-mod sim_semantic;
 mod test_cmd;
 mod watch;
 
@@ -151,7 +150,16 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             from,
             threshold,
             format,
-        } => perf::cmd_perf(&file, from.as_deref(), threshold, format.as_deref()),
+            evidence,
+            session,
+        } => perf::cmd_perf(
+            &file,
+            from.as_deref(),
+            threshold,
+            format.as_deref(),
+            &evidence,
+            session.as_deref(),
+        ),
         KoboCommand::Sim { command } => match command {
             SimCommand::Init {
                 target,
@@ -172,10 +180,12 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             seed,
             events,
             inject,
+            fuzz,
             event_budget,
             witness_dir,
             error_format,
             target,
+            engine,
             file,
         } => test_cmd::cmd_test(
             &file,
@@ -184,10 +194,12 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             seed,
             events.as_deref(),
             inject.as_deref(),
+            fuzz,
             event_budget,
             witness_dir.as_deref(),
             error_format,
             target.as_deref(),
+            engine.as_deref(),
         ),
         KoboCommand::Replay {
             file,

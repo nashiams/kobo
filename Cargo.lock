@@ -59,6 +59,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -300,7 +309,9 @@ dependencies = [
  "kobo-ir",
  "kobo-lsp",
  "kobo-migrate",
+ "kobo-sim-core",
  "proc-macro2",
+ "proptest",
  "serde_json",
  "syn",
  "toml",
@@ -344,6 +355,7 @@ dependencies = [
 name = "kobo-driver"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "kobo-analysis",
  "kobo-codegen",
  "kobo-debt",
@@ -354,6 +366,7 @@ dependencies = [
  "kobo-transform",
  "serde",
  "serde_json",
+ "syn",
  "thiserror",
  "toml",
 ]
@@ -404,6 +417,17 @@ dependencies = [
  "proc-macro2",
  "syn",
  "thiserror",
+]
+
+[[package]]
+name = "kobo-sim-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "kobo-errors",
+ "kobo-ir",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -600,6 +624,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rusty-fork"

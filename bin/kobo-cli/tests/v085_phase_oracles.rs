@@ -906,12 +906,12 @@ async fn service_retry() {
         &sim.combined(),
         &[
             "inspect --sim",
-            "v0.9 checked simulation MVP",
+            "v0.10 simulation facade",
             "Rust-shaped",
             "Cargo-native",
-            "backend harness: reserved",
+            "use --harness",
         ],
-        "inspect --sim must reserve the future transparency path without backend leakage",
+        "inspect --sim must expose the public transparency path without backend leakage",
     );
     assert_not_contains(
         &sim.combined(),
@@ -933,10 +933,10 @@ async fn service_retry() {
         &harness.combined(),
         &[
             "inspect --sim --harness",
-            "reserved",
-            "no backend harness is generated in the v0.9 checked simulation MVP",
+            "backend adapter boundary",
+            "user source remains normal",
         ],
-        "inspect --sim --harness must reserve the command shape honestly",
+        "inspect --sim --harness must expose backend adapter boundaries honestly",
     );
 }
 

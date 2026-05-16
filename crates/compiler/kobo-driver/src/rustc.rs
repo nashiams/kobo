@@ -186,14 +186,15 @@ pub fn extract_kobo_regions(rs_source: &str) -> Vec<(u32, u32)> {
 /// Generated `.rs` files emit `use kobo_diag::DiagOwner;` when diag is active.
 /// Bare `rustc` cannot resolve external crates without `--extern`. We find the
 /// rlib from our own Cargo target directory and pass `--extern kobo_diag=<path>`.
-fn find_kobo_diag_rlib() -> Option<PathBuf> {
+fn find_dependency_rlib(crate_name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     // exe is e.g. target/debug/kobo or target/release/kobo
-    // rlib is in target/debug/deps/libkobo_diag-<hash>.rlib
+    // rlib is in target/debug/deps/lib<crate_name>-<hash>.rlib
     let deps_dir = exe.parent()?.join("deps");
     if !deps_dir.is_dir() {
         return None;
     }
+    let file_prefix = format!("lib{}", crate_name.replace('-', "_"));
     // Find the most recently modified libkobo_diag-*.rlib to avoid ambiguity
     // when multiple hash suffixes exist from rebuilds.
     let mut best: Option<(PathBuf, std::time::SystemTime)> = None;
@@ -201,7 +202,7 @@ fn find_kobo_diag_rlib() -> Option<PathBuf> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("libkobo_diag") && name_str.ends_with(".rlib") {
+            if name_str.starts_with(&file_prefix) && name_str.ends_with(".rlib") {
                 if let Ok(meta) = entry.metadata() {
                     if let Ok(mtime) = meta.modified() {
                         if best.as_ref().is_none_or(|(_, t)| mtime > *t) {
@@ -213,6 +214,21 @@ fn find_kobo_diag_rlib() -> Option<PathBuf> {
         }
     }
     best.map(|(path, _)| path)
+}
+
+fn add_extern_rlib(cmd: &mut Command, crate_name: &str) {
+    if let Some(rlib) = find_dependency_rlib(crate_name) {
+        if let Some(deps_dir) = rlib.parent() {
+            cmd.arg("-L").arg(deps_dir);
+        }
+        cmd.arg(format!("--extern={crate_name}={}", rlib.display()));
+    }
+}
+
+fn generated_source_needs_crate(rs_path: &Path, crate_name: &str) -> bool {
+    std::fs::read_to_string(rs_path)
+        .map(|source| source.contains(&format!("{crate_name}::")))
+        .unwrap_or(false)
 }
 
 fn run_rustc(
@@ -234,12 +250,11 @@ fn run_rustc(
     // `rustc` invocation must resolve this extern crate, or linking fails.
     // We pass --extern kobo_diag=<rlib> and -L <deps_dir> so rustc finds it.
     if session.diag_enabled {
-        if let Some(rlib) = find_kobo_diag_rlib() {
-            if let Some(deps_dir) = rlib.parent() {
-                cmd.arg("-L").arg(deps_dir);
-            }
-            cmd.arg(format!("--extern=kobo_diag={}", rlib.display()));
-        }
+        add_extern_rlib(&mut cmd, "kobo_diag");
+    }
+
+    if generated_source_needs_crate(rs_path, "arc_swap") {
+        add_extern_rlib(&mut cmd, "arc_swap");
     }
 
     cmd.output().map_err(|error| {

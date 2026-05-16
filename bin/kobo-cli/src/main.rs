@@ -78,7 +78,11 @@ pub(crate) enum KoboCommand {
         format: ErrorFormat,
         #[arg(long, help = "Allow diagnostics for a file outside a Kobo project")]
         no_project_ok: bool,
-        #[arg(long, help = "Include action metadata for editor clients")]
+        #[arg(
+            long,
+            alias = "actions",
+            help = "Include action metadata for editor clients"
+        )]
         include_actions: bool,
     },
     /// Reformat a .kobo file when the source map proves the edit is lossless.
@@ -190,6 +194,12 @@ pub(crate) enum KoboCommand {
         /// Output format for source-derived performance evidence.
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
+        /// Select estimate or structured production evidence.
+        #[arg(long, value_name = "KIND", default_value = "estimate")]
+        evidence: String,
+        /// Structured evidence session directory for --evidence real.
+        #[arg(long, value_name = "DIR")]
+        session: Option<PathBuf>,
     },
     /// Simulation and replay evidence helpers.
     Sim {
@@ -208,6 +218,8 @@ pub(crate) enum KoboCommand {
         events: Option<String>,
         #[arg(long, value_name = "HOOKS")]
         inject: Option<String>,
+        #[arg(long, help = "Run deterministic generated stateful-input cases")]
+        fuzz: bool,
         #[arg(long = "event-budget", value_name = "N")]
         event_budget: Option<u64>,
         #[arg(long = "witness-dir", value_name = "DIR")]
@@ -216,6 +228,8 @@ pub(crate) enum KoboCommand {
         error_format: ErrorFormat,
         #[arg(long, value_name = "SCENARIO")]
         target: Option<String>,
+        #[arg(long, value_name = "ENGINE")]
+        engine: Option<String>,
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },

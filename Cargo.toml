@@ -15,6 +15,7 @@ members = [
     "crates/compiler/kobo-errors",
     "crates/compiler/kobo-driver",
     "crates/compiler/kobo-lsp",
+    "crates/compiler/kobo-sim-core",
     "crates/runtime/kobo-diag",
     "bin/kobo-cli",
 ]
@@ -32,3 +33,5 @@ toml        = { version = "0.8" }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = { version = "1" }
 insta       = { version = "1" }
+arc-swap    = { version = "1" }
+proptest    = { version = "1" }

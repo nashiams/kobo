@@ -6,7 +6,7 @@ use proc_macro2::{TokenStream, TokenTree};
 
 use super::attrs::{
     parse_async_shared_attr, parse_migrate_attr, parse_relax_attr, AsyncSharedAttrResult,
-    MigrateAttrResult, RelaxAttrResult,
+    MigrateAttrResult, RelaxAttrResult, SharedAttrResult,
 };
 use super::helpers::{assignment_escape_kind, borrow_kind, is_mutating_method};
 use super::{FunctionCtx, PendingHint, TransformFactsBuilder};
@@ -212,10 +212,15 @@ impl TransformFactsBuilder<'_> {
 
         self.collect_migrate_attrs(&local.attrs, MigrateTarget::LetBinding);
 
-        // BUG 7: detect #[kobo::async_shared] on let bindings.
+        // BUG 7 / v0.10: detect explicit shared-state opt-ins on let bindings.
         for attr in &local.attrs {
             if let AsyncSharedAttrResult::Valid | AsyncSharedAttrResult::HasArguments =
                 parse_async_shared_attr(attr)
+            {
+                self.pending_async_shared = true;
+            }
+            if let SharedAttrResult::Valid | SharedAttrResult::HasArguments =
+                super::attrs::parse_shared_attr(attr)
             {
                 self.pending_async_shared = true;
             }

@@ -1,9 +1,11 @@
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_errors::KErrorCode;
 
-use super::sim_semantic;
+use kobo_sim_core as sim_core;
 
 #[derive(Clone, Debug)]
 pub(super) struct ScenarioDocument {
@@ -88,6 +90,8 @@ pub(super) enum ModeledBoundary {
     WardTime,
     WardRandom,
     WardTask,
+    WardStorage,
+    WardNetwork,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -157,6 +161,8 @@ impl ModeledBoundary {
             Self::WardTime => "ward.time",
             Self::WardRandom => "ward.random",
             Self::WardTask => "ward.task",
+            Self::WardStorage => "ward.storage",
+            Self::WardNetwork => "ward.network",
         }
     }
 }
@@ -204,6 +210,12 @@ pub(super) enum ScenarioOperation {
         binding: String,
         action: String,
     },
+    Transfer {
+        binding: String,
+        callee: String,
+        span_start: usize,
+        span_end: usize,
+    },
     MoveBinding {
         binding: String,
         span_start: usize,
@@ -211,6 +223,16 @@ pub(super) enum ScenarioOperation {
     },
     ModeledEffect {
         boundary: ModeledBoundary,
+        span_start: usize,
+        span_end: usize,
+    },
+    StorageEvent {
+        action: String,
+        span_start: usize,
+        span_end: usize,
+    },
+    NetworkEvent {
+        action: String,
         span_start: usize,
         span_end: usize,
     },
@@ -291,15 +313,6 @@ pub(super) fn load_document(file: &Path) -> anyhow::Result<ScenarioDocument> {
 }
 
 pub(super) fn parse_document(source: String) -> ScenarioDocument {
-    if let Some((must_call_types, scenarios)) = sim_semantic::parse_metadata(&source) {
-        return ScenarioDocument {
-            source_hash: source_hash(&source),
-            must_call_types,
-            scenarios,
-            source,
-        };
-    }
-
     ScenarioDocument {
         source_hash: source_hash(&source),
         must_call_types: parse_must_call_types(&source),
@@ -551,6 +564,12 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
             });
             continue;
         }
+        if trimmed.contains("kobo::concurrent_test") {
+            pending_header = Some(ScenarioHeader {
+                profile: "sync".to_owned(),
+            });
+            continue;
+        }
         let Some(header) = pending_header.take() else {
             continue;
         };
@@ -570,16 +589,16 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
 
 impl ScenarioProgram {
     fn from_document(document: &ScenarioDocument, scenario: &Scenario) -> Self {
-        sim_semantic::scenario_program_from_document(document, scenario).unwrap_or_else(|| {
-            let span_end = document.source.len().min(1);
-            Self {
-                operations: vec![ScenarioOperation::UncontrolledEffect {
-                    operation: "semantic scenario lowering failed".to_owned(),
-                    span_start: 0,
-                    span_end,
-                }],
-            }
-        })
+        let span_end = document.source.len().min(1);
+        let _ = scenario;
+        Self {
+            operations: vec![ScenarioOperation::UncontrolledEffect {
+                operation: "legacy CLI simulation path disabled; use kobo-sim-core with driver scenario artifacts"
+                    .to_owned(),
+                span_start: 0,
+                span_end,
+            }],
+        }
     }
 
     fn execution_digest(&self, events: &[SimEvent]) -> ExecutionDigest {
@@ -605,11 +624,124 @@ impl ScenarioProgram {
 
         ExecutionDigest {
             engine: "semantic-sim".to_owned(),
-            model_version: sim_semantic::MODEL_VERSION.to_owned(),
+            model_version: sim_core::lower::MODEL_VERSION.to_owned(),
             scenario_ir_hash: source_hash(&ir_material),
             operation_count: self.operations.len(),
             event_hash: source_hash(&event_material),
         }
+    }
+}
+
+#[allow(dead_code)]
+fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOperation {
+    match operation {
+        sim_core::ScenarioOperation::CreateObligation {
+            binding,
+            type_name,
+            actions,
+            span_start,
+            span_end,
+        } => ScenarioOperation::CreateObligation {
+            binding,
+            type_name,
+            actions,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::Discharge { binding, action } => {
+            ScenarioOperation::Discharge { binding, action }
+        }
+        sim_core::ScenarioOperation::Transfer {
+            binding,
+            callee,
+            span_start,
+            span_end,
+        } => ScenarioOperation::Transfer {
+            binding,
+            callee,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::MoveBinding {
+            binding,
+            span_start,
+            span_end,
+        } => ScenarioOperation::MoveBinding {
+            binding,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::StorageEvent {
+            action,
+            span_start,
+            span_end,
+        } => ScenarioOperation::StorageEvent {
+            action,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::NetworkEvent {
+            action,
+            span_start,
+            span_end,
+        } => ScenarioOperation::NetworkEvent {
+            action,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::ModeledEffect {
+            boundary,
+            span_start,
+            span_end,
+        } => ScenarioOperation::ModeledEffect {
+            boundary: convert_core_boundary(boundary),
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::RawNondeterminism {
+            operation,
+            span_start,
+            span_end,
+        } => ScenarioOperation::RawNondeterminism {
+            operation,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::UncontrolledEffect {
+            operation,
+            span_start,
+            span_end,
+        } => ScenarioOperation::UncontrolledEffect {
+            operation,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::ExternalBoundary {
+            crate_name,
+            span_start,
+            span_end,
+        } => ScenarioOperation::ExternalBoundary {
+            crate_name,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::Loop {
+            span_start,
+            span_end,
+        } => ScenarioOperation::Loop {
+            span_start,
+            span_end,
+        },
+    }
+}
+
+fn convert_core_boundary(boundary: sim_core::ModeledBoundary) -> ModeledBoundary {
+    match boundary {
+        sim_core::ModeledBoundary::WardTime => ModeledBoundary::WardTime,
+        sim_core::ModeledBoundary::WardRandom => ModeledBoundary::WardRandom,
+        sim_core::ModeledBoundary::WardTask => ModeledBoundary::WardTask,
+        sim_core::ModeledBoundary::WardStorage => ModeledBoundary::WardStorage,
+        sim_core::ModeledBoundary::WardNetwork => ModeledBoundary::WardNetwork,
     }
 }
 
@@ -640,6 +772,21 @@ impl ScenarioOperation {
                 output.push(':');
                 output.push_str(action);
             }
+            Self::Transfer {
+                binding,
+                callee,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("transfer:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(callee);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
             Self::MoveBinding {
                 binding,
                 span_start,
@@ -659,6 +806,30 @@ impl ScenarioOperation {
             } => {
                 output.push_str("modeled:");
                 output.push_str(boundary.as_str());
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::StorageEvent {
+                action,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("storage:");
+                output.push_str(action);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::NetworkEvent {
+                action,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("network:");
+                output.push_str(action);
                 output.push(':');
                 output.push_str(&span_start.to_string());
                 output.push(':');
@@ -753,6 +924,16 @@ impl<'a> SimulationRuntime<'a> {
                 ScenarioOperation::Discharge { binding, action } => {
                     self.discharge_obligation(binding, action);
                 }
+                ScenarioOperation::Transfer {
+                    binding,
+                    callee,
+                    span_start: _,
+                    span_end: _,
+                } => self.events.push(SimEvent {
+                    kind: "obligation-transfer".to_owned(),
+                    label: Some(format!("{binding}->{callee}")),
+                    value: None,
+                }),
                 ScenarioOperation::MoveBinding {
                     binding,
                     span_start,
@@ -765,6 +946,24 @@ impl<'a> SimulationRuntime<'a> {
                 } => {
                     self.record_modeled_effect(boundary.clone(), (*span_start, *span_end));
                 }
+                ScenarioOperation::StorageEvent {
+                    action,
+                    span_start: _,
+                    span_end: _,
+                } => self.events.push(SimEvent {
+                    kind: format!("storage-{action}"),
+                    label: Some("ward.storage".to_owned()),
+                    value: Some(self.seed),
+                }),
+                ScenarioOperation::NetworkEvent {
+                    action,
+                    span_start: _,
+                    span_end: _,
+                } => self.events.push(SimEvent {
+                    kind: format!("network-{action}"),
+                    label: Some("ward.network".to_owned()),
+                    value: Some(self.seed),
+                }),
                 ScenarioOperation::RawNondeterminism {
                     operation,
                     span_start,
@@ -1023,6 +1222,16 @@ fn modeled_effect_event(boundary: ModeledBoundary, seed: u64, has_time_jump: boo
         ModeledBoundary::WardTask => SimEvent {
             kind: "deterministic-task".to_owned(),
             label: Some("ward.task".to_owned()),
+            value: Some(seed),
+        },
+        ModeledBoundary::WardStorage => SimEvent {
+            kind: "storage-boundary".to_owned(),
+            label: Some("ward.storage".to_owned()),
+            value: Some(seed),
+        },
+        ModeledBoundary::WardNetwork => SimEvent {
+            kind: "network-boundary".to_owned(),
+            label: Some("ward.network".to_owned()),
             value: Some(seed),
         },
     }

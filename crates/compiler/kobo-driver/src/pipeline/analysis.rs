@@ -57,7 +57,6 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
 
     project_known_debt_diagnostics(session, kir);
     project_must_call_attribute_diagnostics(session, kir);
-    project_scenario_metadata_diagnostics(session);
     project_nondeterminism_diagnostics(session);
     project_relax_attribute_diagnostics(session, kir);
     project_warn_early_diagnostics(session, kir);
@@ -255,7 +254,7 @@ fn async_violation_diagnostic_parts(
             "no async executor configured".to_owned(),
             "async code was detected but no executor dependency such as tokio or async-std was found"
                 .to_owned(),
-            "add tokio or async-std to [dependencies] in Cargo.toml".to_owned(),
+            "add tokio or async-std to [dependencies] in Cargo.toml; if a guard is live across an await, drop the guard before .await or restructure with a block scope".to_owned(),
         ),
         AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
             KErrorCode::K0063,
@@ -494,33 +493,6 @@ fn source_move_span_for_binding(
     }
 
     None
-}
-
-fn project_scenario_metadata_diagnostics(session: &mut CompileSession) {
-    let mut diagnostics = Vec::new();
-    for (file_id, entry) in session.file_set().iter_files() {
-        let source = entry.source();
-        for line in source.lines() {
-            if !line.contains("kobo::scenario") {
-                continue;
-            }
-            if line.contains("name") && line.contains('"') {
-                continue;
-            }
-            let offset = source.find(line.trim()).unwrap_or(0) as u32;
-            let span = kobo_ir::KoboSpan::new(offset, offset + line.trim().len() as u32, file_id);
-            let severity =
-                resolve_severity(KErrorCode::K0116, session.mode()).unwrap_or(Severity::Error);
-            diagnostics.push(KDiagnostic::new(
-                KErrorCode::K0116,
-                severity,
-                DiagLabel::primary(span, "`#[kobo::scenario]` requires a name"),
-                "malformed scenario metadata: `#[kobo::scenario]` requires `name = \"...\"`",
-                DiagDecision("add a scenario name or remove the attribute".to_owned()),
-            ));
-        }
-    }
-    session.diagnostics.extend(diagnostics);
 }
 
 fn project_nondeterminism_diagnostics(session: &mut CompileSession) {

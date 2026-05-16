@@ -323,6 +323,8 @@ pub(super) fn cmd_sim_backends(json_output: bool) -> anyhow::Result<()> {
                 "name": capability.name,
                 "role": capability.role,
                 "executes_in_v10": capability.executes_in_v10,
+                "integration_level": capability.integration_level,
+                "scenario_execution": capability.scenario_execution,
             })
         })
         .collect::<Vec<_>>();

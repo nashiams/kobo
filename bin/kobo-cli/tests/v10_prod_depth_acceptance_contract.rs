@@ -369,8 +369,11 @@ fn public_backend_commands_report_v10_execution_truth() {
     assert!(
         value["backends"].as_array().is_some_and(|backends| backends
             .iter()
-            .any(|backend| backend["name"] == "loom" && backend["executes_in_v10"] == true)),
-        "phase 09 requires at least one real external DST-style backend to execute: {value}"
+            .any(|backend| backend["name"] == "loom"
+                && backend["executes_in_v10"] == true
+                && backend["integration_level"] == "plumbing-smoke"
+                && backend["scenario_execution"] == "fixed-adapter-model")),
+        "phase 09 Loom support must disclose plumbing-level integration, not user-program execution: {value}"
     );
     assert!(
         !output.combined().contains("v0.9"),
@@ -389,6 +392,34 @@ fn loom_backend_adapter_is_a_real_workspace_dependency() {
         &lock,
         "name = \"loom\"",
         "v0.10 phase 09 must use a real Loom dependency, not only a backend label",
+    );
+}
+
+#[test]
+fn loom_backend_digest_discloses_plumbing_boundary() {
+    let project = TestProject::new("v10-loom-boundary");
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("23"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&fixture("backend_adapter.kobo")),
+        ],
+        &project.root,
+    );
+    assert_failure(&output, "sync backend fixture should emit a witness");
+
+    let witness = read_first_witness(&project);
+    assert_eq!(witness["backend_profile"], "sync");
+    assert_eq!(witness["backend"], "loom");
+    assert_eq!(
+        witness["execution_digest"]["harness_engine"],
+        "generated-rust-process+loom-plumbing-smoke",
+        "v0.10 must not label the fixed Loom adapter as user-scenario Loom execution"
     );
 }
 

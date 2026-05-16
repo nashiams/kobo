@@ -609,16 +609,20 @@ impl<'a> ScenarioLowerer<'a> {
                 return true;
             }
         }
-        if path_ends_with(&path.path, &["SystemTime", "now"])
-            || path_ends_with(&path.path, &["Instant", "now"])
-        {
-            self.raw_nondeterminism("time", call);
+        if path_ends_with(&path.path, &["SystemTime", "now"]) {
+            self.raw_nondeterminism("SystemTime::now", call);
             return true;
         }
-        if path_ends_with(&path.path, &["thread_rng"])
-            || path_first_ident(&path.path).as_deref() == Some("rand")
-        {
-            self.raw_nondeterminism("random", call);
+        if path_ends_with(&path.path, &["Instant", "now"]) {
+            self.raw_nondeterminism("Instant::now", call);
+            return true;
+        }
+        if path_ends_with(&path.path, &["thread_rng"]) {
+            self.raw_nondeterminism("thread_rng", call);
+            return true;
+        }
+        if path_first_ident(&path.path).as_deref() == Some("rand") {
+            self.raw_nondeterminism("rand::", call);
             return true;
         }
         if path_first_ident(&path.path).as_deref() == Some("std")
@@ -640,7 +644,7 @@ impl<'a> ScenarioLowerer<'a> {
                 self.record_opaque_boundary(&crate_name);
             }
             self.operations.push(ScenarioOp {
-                span: self.span(call),
+                span: self.operation_span(call, "Client::new"),
                 kind: ScenarioOpKind::ExternalBoundary {
                     crate_name,
                     policy: policy.policy,
@@ -853,7 +857,7 @@ impl<'a> ScenarioLowerer<'a> {
 
     fn raw_nondeterminism(&mut self, operation: &str, expr: &impl Spanned) {
         self.operations.push(ScenarioOp {
-            span: self.span(expr),
+            span: self.operation_span(expr, operation),
             kind: ScenarioOpKind::RawNondeterminism {
                 operation: operation.to_owned(),
             },
@@ -862,7 +866,7 @@ impl<'a> ScenarioLowerer<'a> {
 
     fn uncontrolled_effect(&mut self, operation: &str, expr: &impl Spanned) {
         self.operations.push(ScenarioOp {
-            span: self.span(expr),
+            span: self.operation_span(expr, operation),
             kind: ScenarioOpKind::UncontrolledEffect {
                 operation: operation.to_owned(),
             },
@@ -877,6 +881,34 @@ impl<'a> ScenarioLowerer<'a> {
             span
         }
     }
+
+    fn operation_span(&self, node: &impl Spanned, needle: &str) -> KoboSpan {
+        let span = self.span(node);
+        let source = self.ast.source();
+        let start = span.start as usize;
+        let end = span.end as usize;
+        if source
+            .get(start..end.min(source.len()))
+            .is_some_and(|snippet| snippet.contains(needle))
+        {
+            return span;
+        }
+        let Some(start) = nearest_occurrence(source, needle, start) else {
+            return span;
+        };
+        KoboSpan::new(
+            start as u32,
+            (start + needle.len()).max(start + 1) as u32,
+            self.ast.file_id,
+        )
+    }
+}
+
+fn nearest_occurrence(source: &str, needle: &str, anchor: usize) -> Option<usize> {
+    source
+        .match_indices(needle)
+        .map(|(index, _)| index)
+        .min_by_key(|index| index.abs_diff(anchor))
 }
 
 fn boundaries_from_operations(operations: &[ScenarioOp]) -> Vec<ScenarioBoundary> {

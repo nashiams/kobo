@@ -2,10 +2,10 @@ use std::io;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimCoreError {
-    #[error("source-based sim-core lowering is not available; build a compiler ScenarioProgram through kobo-driver")]
-    SourceLoweringUnavailable,
-    #[error("source-based full-depth execution is not available; build a ScenarioProgram through kobo-driver")]
-    SourceFullDepthUnavailable,
+    #[error("source replay failed during {stage}: {detail}")]
+    SourceCompileFailed { stage: &'static str, detail: String },
+    #[error("source replay target `{target}` was not found in compiler scenario programs")]
+    SourceScenarioMissing { target: String },
     #[error("generated harness failed to compile: {stderr}")]
     HarnessCompileFailed { stderr: String },
     #[error("sim-core I/O failed while {operation}: {source}")]
@@ -33,5 +33,12 @@ impl SimCoreError {
 
     pub(crate) fn json(operation: &'static str, source: serde_json::Error) -> Self {
         Self::Json { operation, source }
+    }
+
+    pub(crate) fn source_compile(stage: &'static str, detail: impl Into<String>) -> Self {
+        Self::SourceCompileFailed {
+            stage,
+            detail: detail.into(),
+        }
     }
 }

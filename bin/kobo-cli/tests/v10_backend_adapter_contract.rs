@@ -127,3 +127,29 @@ fn ecosystem_backends_are_executable_v10_adapters_not_metadata_only() {
         );
     }
 }
+
+#[test]
+fn ecosystem_backend_registry_does_not_claim_full_external_crate_exploration() {
+    let project = TestProject::new("v10-backend-registry-scope");
+    let output = run_kobo(&[s("sim"), s("backends"), s("--json")], &project.root);
+    assert_success(&output, "backend registry should render");
+    let value: Value = serde_json::from_str(&output.stdout).expect("backend JSON should parse");
+    let backends = value["backends"]
+        .as_array()
+        .expect("backend list should be an array");
+
+    for name in ["shuttle", "turmoil", "madsim"] {
+        let backend = backends
+            .iter()
+            .find(|backend| backend["name"] == name)
+            .unwrap_or_else(|| panic!("backend `{name}` should be listed: {value}"));
+        assert_eq!(
+            backend["full_ecosystem_exploration"], false,
+            "{name} adapter evidence must not claim arbitrary external crate exploration: {backend}"
+        );
+        assert_eq!(
+            backend["ecosystem_scope"], "generated-user-rust-adapter",
+            "{name} should report adapter scope explicitly: {backend}"
+        );
+    }
+}

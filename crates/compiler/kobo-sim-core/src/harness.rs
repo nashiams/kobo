@@ -19,6 +19,15 @@ pub fn check_harness_agreement(
     mut semantic: FullDepthRun,
     _mode: EngineMode,
 ) -> Result<FullDepthRun> {
+    if semantic.failure.as_ref().is_some_and(|failure| {
+        matches!(
+            failure.code,
+            KErrorCode::K0102 | KErrorCode::K0103 | KErrorCode::K0105 | KErrorCode::K0107
+        )
+    }) {
+        return Ok(semantic);
+    }
+
     if !semantic.coverage.unsupported_constructs.is_empty() {
         semantic.digest.agreement = agreement_label(TraceAgreement::CoverageIncomplete);
         semantic.replay_guarantee = ReplayGuarantee::Partial;
@@ -32,14 +41,6 @@ pub fn check_harness_agreement(
             primary_end: 1,
             events: Vec::new(),
         });
-        return Ok(semantic);
-    }
-    if semantic.failure.as_ref().is_some_and(|failure| {
-        matches!(
-            failure.code,
-            KErrorCode::K0102 | KErrorCode::K0103 | KErrorCode::K0105 | KErrorCode::K0107
-        )
-    }) {
         return Ok(semantic);
     }
 
@@ -60,10 +61,6 @@ pub fn check_harness_agreement(
     if let Some(execution) = backend_execution {
         harness_hash =
             crate::digest::stable_hash(&format!("{}:{}", harness_hash, execution.token_material));
-        if semantic.profile != "sync" {
-            semantic.digest.harness_engine =
-                format!("{}+{}", semantic.digest.harness_engine, execution.engine);
-        }
     }
     semantic.digest.generated_rust_hash = Some(harness.manifest.generated_rust_hash.clone());
     semantic.digest.harness_manifest_hash = Some(crate::digest::stable_hash(&manifest_json));
@@ -158,6 +155,9 @@ fn run_generated_harness(
     let manifest = HarnessManifest {
         source_hash: program.source_hash.clone(),
         generated_rust_hash,
+        execution_scope: harness_execution_scope(options).to_owned(),
+        full_ecosystem_exploration: false,
+        facades: harness_facades(program),
         harness_dir: harness_dir.display().to_string(),
         harness_rs_path: harness_rs_path.display().to_string(),
         command: process.command,
@@ -176,6 +176,49 @@ fn run_generated_harness(
         manifest,
         engine: engine.to_owned(),
     })
+}
+
+fn harness_execution_scope(options: &ScenarioOptions) -> &'static str {
+    match options.profile.as_str() {
+        "sync" => "generated-user-rust-loom",
+        "network" | "network-design" => "generated-user-rust-os-facade",
+        "async" | "distributed" | "madsim" => "generated-user-rust-adapter",
+        _ => "generated-user-rust",
+    }
+}
+
+fn harness_facades(program: &ScenarioProgram) -> Vec<String> {
+    let mut facades = Vec::new();
+    for operation in &program.operations {
+        match &operation.kind {
+            ScenarioOpKind::ModeledEffect { boundary } => match boundary {
+                ScenarioModeledBoundary::WardTime => facades.push("time-facade".to_owned()),
+                ScenarioModeledBoundary::WardRandom => facades.push("random-facade".to_owned()),
+                ScenarioModeledBoundary::WardTask => {
+                    facades.push("scheduler-task-facade".to_owned());
+                    facades.push("tokio-spawn-facade".to_owned());
+                }
+            },
+            ScenarioOpKind::StorageEvent { .. } => {
+                facades.push("storage-filesystem-facade".to_owned());
+            }
+            ScenarioOpKind::NetworkEvent { .. } => {
+                facades.push("network-loopback-facade".to_owned());
+            }
+            ScenarioOpKind::ExternalBoundary {
+                crate_name, policy, ..
+            } if is_replay_owned_boundary(policy) => {
+                facades.push(format!(
+                    "external-boundary-{}-facade:{crate_name}",
+                    policy.as_str()
+                ));
+            }
+            _ => {}
+        }
+    }
+    facades.sort();
+    facades.dedup();
+    facades
 }
 
 struct HarnessProcess {

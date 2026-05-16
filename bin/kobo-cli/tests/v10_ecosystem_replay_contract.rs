@@ -80,6 +80,24 @@ fn recorded_gateway() {
     );
     let (witness_path, witness) = read_first_witness(&project);
     assert_eq!(witness["replay_guarantee"], "exact");
+    assert_eq!(witness["full_ecosystem_exploration"], false);
+    assert_eq!(
+        witness["replay_contract"]["scope"],
+        "generated-user-rust-adapter"
+    );
+    assert_eq!(
+        witness["replay_contract"]["full_ecosystem_exploration"],
+        false
+    );
+    assert_contains(
+        &witness["replay_contract"]["facades"].to_string(),
+        "external-boundary-record-facade:reqwest",
+        "record policy should be explicit facade-scoped evidence, not arbitrary reqwest execution",
+    );
+    assert_eq!(
+        witness["harness_manifest"]["full_ecosystem_exploration"],
+        false
+    );
     assert_contains(
         &witness["boundary_policies"].to_string(),
         r#""policy":"record""#,
@@ -91,6 +109,65 @@ fn recorded_gateway() {
         "recorded ecosystem boundary should appear in the replay event stream",
     );
     replay_exact(&project.root, &witness_path);
+}
+
+#[test]
+fn replay_rejects_exact_witness_that_claims_full_ecosystem_exploration() {
+    let project = TestProject::new("v10-full-ecosystem-overclaim");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn generated_scope_only() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("44"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "fixture should create an exact compiler-owned witness",
+    );
+    let (witness_path, mut witness) = read_first_witness(&project);
+    witness["full_ecosystem_exploration"] = serde_json::json!(true);
+    witness["replay_contract"]["full_ecosystem_exploration"] = serde_json::json!(true);
+    witness["harness_manifest"]["full_ecosystem_exploration"] = serde_json::json!(true);
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).expect("witness should serialize"),
+    )
+    .expect("witness should write");
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert!(
+        !replay.status.success(),
+        "replay must reject exact witnesses that overclaim ecosystem coverage: {}",
+        replay.combined()
+    );
+    assert_contains(
+        &replay.combined(),
+        "K0117",
+        "overclaimed full ecosystem scope should be a replay contract error",
+    );
 }
 
 #[test]
@@ -131,6 +208,16 @@ fn spawned_reply() {
     );
     let (witness_path, witness) = read_first_witness(&project);
     assert_eq!(witness["replay_guarantee"], "exact");
+    assert_eq!(witness["full_ecosystem_exploration"], false);
+    assert_eq!(
+        witness["replay_contract"]["scope"],
+        "generated-user-rust-adapter"
+    );
+    assert_contains(
+        &witness["replay_contract"]["facades"].to_string(),
+        "tokio-spawn-facade",
+        "Tokio-shaped replay should disclose the generated Tokio facade",
+    );
     assert_contains(
         &witness["events"].to_string(),
         "deterministic-task",

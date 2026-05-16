@@ -9,6 +9,7 @@ pub struct KoboFile {
     pub file_id: FileId,
     pub inner: syn::File,
     pub items: Vec<KoboAstNode>,
+    source: String,
     source_len: usize,
     line_starts: Vec<usize>,
     bindings: Vec<KoboBinding>,
@@ -124,6 +125,7 @@ impl KoboFile {
             file_id,
             inner,
             items,
+            source: source.to_owned(),
             source_len: source.len(),
             line_starts,
             bindings,
@@ -209,6 +211,10 @@ impl KoboFile {
     /// Total source length in bytes.
     pub fn source_len(&self) -> usize {
         self.source_len
+    }
+
+    pub fn source(&self) -> &str {
+        &self.source
     }
 
     pub fn line_col(&self, span: KoboSpan) -> (usize, usize) {

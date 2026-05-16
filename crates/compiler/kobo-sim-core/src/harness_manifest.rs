@@ -2,6 +2,9 @@
 pub struct HarnessManifest {
     pub source_hash: String,
     pub generated_rust_hash: String,
+    pub execution_scope: String,
+    pub full_ecosystem_exploration: bool,
+    pub facades: Vec<String>,
     pub harness_dir: String,
     pub harness_rs_path: String,
     pub command: Vec<String>,

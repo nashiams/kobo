@@ -463,8 +463,11 @@ dependencies = [
 name = "kobo-sim-core"
 version = "0.1.0"
 dependencies = [
+ "kobo-codegen",
  "kobo-errors",
  "kobo-ir",
+ "kobo-parser",
+ "kobo-transform",
  "loom",
  "serde",
  "serde_json",

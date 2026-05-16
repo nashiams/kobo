@@ -340,6 +340,8 @@ fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
         "executes_in_v10": capability.executes_in_v10,
         "integration_level": capability.integration_level,
         "scenario_execution": capability.scenario_execution,
+        "ecosystem_scope": capability.ecosystem_scope,
+        "full_ecosystem_exploration": capability.full_ecosystem_exploration,
     })
 }
 

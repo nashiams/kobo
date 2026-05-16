@@ -7,6 +7,8 @@ pub struct BackendCapability {
     pub executes_in_v10: bool,
     pub integration_level: &'static str,
     pub scenario_execution: &'static str,
+    pub ecosystem_scope: &'static str,
+    pub full_ecosystem_exploration: bool,
     pub role: &'static str,
 }
 
@@ -33,6 +35,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust",
             scenario_execution: "compiler-owned-generated-rust",
+            ecosystem_scope: "generated-user-rust",
+            full_ecosystem_exploration: false,
             role: "semantic/harness agreement and replay token evidence",
         },
         BackendCapability {
@@ -41,6 +45,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "input-generation",
             scenario_execution: "stateful-generated-inputs",
+            ecosystem_scope: "generated-inputs",
+            full_ecosystem_exploration: false,
             role: "stateful input generation for --fuzz",
         },
         BackendCapability {
@@ -49,6 +55,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust",
             scenario_execution: "generated-user-rust-loom",
+            ecosystem_scope: "real-loom-generated-user-rust",
+            full_ecosystem_exploration: false,
             role: "sync profile wraps generated user Rust in loom::model",
         },
         BackendCapability {
@@ -57,6 +65,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust-adapter",
             scenario_execution: "generated-user-rust-shuttle-scheduler",
+            ecosystem_scope: "generated-user-rust-adapter",
+            full_ecosystem_exploration: false,
             role: "async profile executes generated user Rust with Kobo scheduler evidence",
         },
         BackendCapability {
@@ -65,6 +75,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust-adapter",
             scenario_execution: "generated-user-rust-loopback-network",
+            ecosystem_scope: "generated-user-rust-adapter",
+            full_ecosystem_exploration: false,
             role: "network profile executes generated user Rust with loopback network evidence",
         },
         BackendCapability {
@@ -73,6 +85,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust-adapter",
             scenario_execution: "generated-user-rust-distributed-scheduler",
+            ecosystem_scope: "generated-user-rust-adapter",
+            full_ecosystem_exploration: false,
             role: "distributed profile executes generated user Rust with deterministic scheduler evidence",
         },
         BackendCapability {
@@ -81,6 +95,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust",
             scenario_execution: "generated-user-rust-filesystem",
+            ecosystem_scope: "generated-user-rust-os-facade",
+            full_ecosystem_exploration: false,
             role: "storage facade executes generated Rust filesystem operations",
         },
         BackendCapability {
@@ -89,6 +105,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust",
             scenario_execution: "generated-user-rust-loopback-network",
+            ecosystem_scope: "generated-user-rust-os-facade",
+            full_ecosystem_exploration: false,
             role: "network facade executes generated Rust loopback socket operations",
         },
         BackendCapability {
@@ -97,6 +115,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             executes_in_v10: true,
             integration_level: "generated-user-rust-adapter",
             scenario_execution: "compiler-owned-failure-hooks",
+            ecosystem_scope: "generated-user-rust-adapter",
+            full_ecosystem_exploration: false,
             role: "compiler-owned failure injection hooks",
         },
     ]

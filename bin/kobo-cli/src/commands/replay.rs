@@ -123,6 +123,9 @@ fn replay_v1(
     let expected = serde_json::json!({
         "backend": backend_for_profile(&run.profile),
         "backend_replay": replay_token(&verified_source.hash, seed, &run),
+        "ecosystem_scope": ecosystem_scope(&run),
+        "full_ecosystem_exploration": full_ecosystem_exploration(&run),
+        "replay_contract": replay_contract_json(&run),
         "execution_digest": execution_digest_json(&run),
         "harness_manifest": run.harness_manifest.clone(),
         "operation_coverage": witness_evidence::operation_coverage_json(&scenario_program, &run),
@@ -133,6 +136,9 @@ fn replay_v1(
     let observed = serde_json::json!({
         "backend": witness["backend"].clone(),
         "backend_replay": witness["backend_replay"].clone(),
+        "ecosystem_scope": witness["ecosystem_scope"].clone(),
+        "full_ecosystem_exploration": witness["full_ecosystem_exploration"].clone(),
+        "replay_contract": witness["replay_contract"].clone(),
         "execution_digest": witness["execution_digest"].clone(),
         "harness_manifest": witness["harness_manifest"].clone(),
         "operation_coverage": witness["operation_coverage"].clone(),
@@ -295,6 +301,34 @@ fn execution_digest_json(run: &kobo_sim_core::FullDepthRun) -> Value {
         "harness_exit_code": run.digest.harness_exit_code,
         "harness_event_count": run.digest.harness_event_count,
     })
+}
+
+fn replay_contract_json(run: &kobo_sim_core::FullDepthRun) -> Value {
+    serde_json::json!({
+        "scope": ecosystem_scope(run),
+        "full_ecosystem_exploration": full_ecosystem_exploration(run),
+        "facades": run
+            .harness_manifest
+            .as_ref()
+            .map(|manifest| manifest.facades.clone())
+            .unwrap_or_default(),
+        "semantic_engine": run.digest.semantic_engine.as_str(),
+        "harness_engine": run.digest.harness_engine.as_str(),
+        "agreement": run.digest.agreement.as_str(),
+    })
+}
+
+fn ecosystem_scope(run: &kobo_sim_core::FullDepthRun) -> String {
+    run.harness_manifest
+        .as_ref()
+        .map(|manifest| manifest.execution_scope.clone())
+        .unwrap_or_else(|| "semantic-only".to_owned())
+}
+
+fn full_ecosystem_exploration(run: &kobo_sim_core::FullDepthRun) -> bool {
+    run.harness_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.full_ecosystem_exploration)
 }
 
 fn related_spans_json(
@@ -476,6 +510,45 @@ fn validate_exact_witness_contract(
         emit_replay_issue(&payload, error_format)?;
         anyhow::bail!("K0117 exact witness lacks semantic/harness agreement");
     }
+    validate_exact_scope_contract(witness, error_format)?;
+    Ok(())
+}
+
+fn validate_exact_scope_contract(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
+    let scope = witness["replay_contract"]["scope"].as_str();
+    let top_level_scope = witness["ecosystem_scope"].as_str();
+    let full_ecosystem = witness["replay_contract"]["full_ecosystem_exploration"].as_bool();
+    let top_level_full_ecosystem = witness["full_ecosystem_exploration"].as_bool();
+    let manifest_scope = witness["harness_manifest"]["execution_scope"].as_str();
+    let manifest_full_ecosystem =
+        witness["harness_manifest"]["full_ecosystem_exploration"].as_bool();
+    let supported_scope = scope.is_some_and(|scope| {
+        matches!(
+            scope,
+            "generated-user-rust"
+                | "generated-user-rust-loom"
+                | "generated-user-rust-adapter"
+                | "generated-user-rust-os-facade"
+        )
+    });
+    if !supported_scope
+        || scope != top_level_scope
+        || scope != manifest_scope
+        || full_ecosystem != Some(false)
+        || top_level_full_ecosystem != Some(false)
+        || manifest_full_ecosystem != Some(false)
+    {
+        let payload = serde_json::json!({
+            "code": "K0117",
+            "message": "exact witness must disclose compiler-owned replay scope and must not claim full ecosystem exploration",
+            "replay_contract": witness["replay_contract"].clone(),
+            "ecosystem_scope": witness["ecosystem_scope"].clone(),
+            "full_ecosystem_exploration": witness["full_ecosystem_exploration"].clone(),
+            "harness_manifest": witness["harness_manifest"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0117 exact witness lacks replay scope contract");
+    }
     Ok(())
 }
 
@@ -595,6 +668,11 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
         if witness["replay_guarantee"].as_str() == Some("exact") {
             required.push(&["source", "path"][..]);
             required.push(&["source", "hash"][..]);
+            required.push(&["ecosystem_scope"][..]);
+            required.push(&["full_ecosystem_exploration"][..]);
+            required.push(&["replay_contract", "scope"][..]);
+            required.push(&["replay_contract", "full_ecosystem_exploration"][..]);
+            required.push(&["replay_contract", "facades"][..]);
             required.push(&["execution_digest", "engine"][..]);
             required.push(&["execution_digest", "model_version"][..]);
             required.push(&["execution_digest", "scenario_ir_hash"][..]);
@@ -603,6 +681,9 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["execution_digest", "generated_rust_hash"][..]);
             required.push(&["execution_digest", "harness_manifest_hash"][..]);
             required.push(&["execution_digest", "harness_exit_code"][..]);
+            required.push(&["harness_manifest", "execution_scope"][..]);
+            required.push(&["harness_manifest", "full_ecosystem_exploration"][..]);
+            required.push(&["harness_manifest", "facades"][..]);
             required.push(&["harness_manifest", "harness_rs_path"][..]);
             required.push(&["harness_manifest", "stdout_hash"][..]);
             required.push(&["operation_coverage", "modeled"][..]);

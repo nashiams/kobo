@@ -8,6 +8,7 @@ pub mod harness_manifest;
 pub mod lower;
 pub mod network;
 pub mod scheduler;
+mod source;
 pub mod storage;
 
 pub use core::{

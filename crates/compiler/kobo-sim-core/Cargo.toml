@@ -9,4 +9,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 kobo-errors = { path = "../kobo-errors" }
 kobo-ir = { path = "../kobo-ir" }
+kobo-parser = { path = "../kobo-parser" }
+kobo-transform = { path = "../kobo-transform" }
+kobo-codegen = { path = "../kobo-codegen" }
 loom = { workspace = true }

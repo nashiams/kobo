@@ -750,7 +750,7 @@ fn migration_entries() -> Vec<DiagnosticRegistryEntry> {
     use DiagnosticCategory::{MigrationBoundary, RustcRemap};
     use MachineEditPolicy::{NotApplicable, RefuseByDefault};
     use ModeBehavior::NoModeDependency;
-    use Severity::Error;
+    use Severity::{Error, Warning};
     use SeverityPolicy::Always;
     use SuggestionPolicy::{HelpOnly, ReviewOnly};
 
@@ -780,6 +780,19 @@ fn migration_entries() -> Vec<DiagnosticRegistryEntry> {
             NoModeDependency,
             ReviewOnly,
             RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0096,
+            "legacy-mode-directive-profile-alias",
+            "legacy mode directive is a guarantee profile alias",
+            "A source file used `//! kobo:mode = ...`, which is retained only as a compatibility alias for the equivalent guarantee profile.",
+            "Use `--profile dev|checked|release` or project guarantee policy instead. Kobo source remains one language; gradualness belongs to policy, CI gates, and scoped enforcement.",
+            MigrationBoundary,
+            Warning,
+            Always(Warning),
+            NoModeDependency,
+            HelpOnly,
+            NotApplicable,
         ),
         entry(
             KErrorCode::K0099,

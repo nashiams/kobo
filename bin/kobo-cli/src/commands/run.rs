@@ -10,15 +10,27 @@ use kobo_driver::{
 use kobo_ir::{KoboMode, MustCallObligation};
 
 use super::{
-    ownership_analysis,
+    ownership_analysis, policy,
     session::{build_session, line_number_for_offset, render_diagnostics},
 };
+use crate::{ErrorFormat, GuaranteeProfileArg};
 
 pub(super) fn cmd_run(
     file: &Path,
     cli_mode: Option<KoboMode>,
+    guarantee_profile: Option<GuaranteeProfileArg>,
     erase_lifetimes: bool,
 ) -> anyhow::Result<()> {
+    let guarantee_policy = if let Some(profile) = guarantee_profile {
+        let loaded = policy::load_effective_policy(Some(file), profile)?;
+        if let Some(downgrade) = loaded.downgrade() {
+            policy::emit_downgrade(downgrade, ErrorFormat::Human)?;
+            anyhow::bail!("guarantee policy downgrade requires reason ledger entry");
+        }
+        Some(loaded)
+    } else {
+        None
+    };
     let mut session = build_session(file, cli_mode)?;
 
     let compile_result = if erase_lifetimes {
@@ -32,12 +44,15 @@ pub(super) fn cmd_run(
     })?;
     // v0.6 §3.3b: Render K-code warnings on success path [BUG-01 / R02].
     render_diagnostics(&session);
+    if let Some(policy) = guarantee_policy.as_ref() {
+        policy::emit_policy_summary(policy);
+    }
     if !binary_path.is_file() {
         anyhow::bail!("compiled binary missing at {}", binary_path.display());
     }
 
     let mut run_cmd = Command::new(&binary_path);
-    // Runtime layer [G1 §1.4 / R6-04]: in checked mode DiagOwner output must
+    // Runtime layer [G1 §1.4 / R6-04]: in checked profile DiagOwner output must
     // appear without requiring the user to set KOBO_DIAG=1 manually.
     // We propagate KOBO_CHECKED_MODE=1 to the child so kobo-diag::DiagOwner
     // knows to emit on Drop even without the manual opt-in env var.
@@ -81,7 +96,10 @@ pub(super) fn cmd_inspect(
         let source = std::fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
         let output = simulation_transparency_output(&source, harness);
-        eprintln!("// effective mode: {}", session.mode());
+        eprintln!(
+            "// effective guarantee profile: {}",
+            profile_name(session.mode())
+        );
         print!("{output}");
         return Ok(());
     }
@@ -96,7 +114,10 @@ pub(super) fn cmd_inspect(
         kobo_codegen::cargo_gen::generate_cargo_project(&project_config, &source_files, dir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         eprintln!("cargo project generated at {}", dir.display());
-        eprintln!("// effective mode: {}", session.mode());
+        eprintln!(
+            "// effective guarantee profile: {}",
+            profile_name(session.mode())
+        );
         print!("{main_output}");
         return Ok(());
     }
@@ -112,7 +133,7 @@ pub(super) fn cmd_inspect(
     // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
 
-    // S-21: Apply lifetime erasure when requested (script mode only).
+    // S-21: Apply lifetime erasure when requested for compatibility-profile output.
     let rs_source = if erase_lifetimes {
         kobo_driver::apply_lifetime_erasure(&rs_source, session.mode())
     } else {
@@ -138,10 +159,21 @@ pub(super) fn cmd_inspect(
         append_trait_facade_code(output, &source, profile, trait_default)
     };
 
-    // S-26: Show effective mode so user can verify per-module mode resolution.
-    eprintln!("// effective mode: {}", session.mode());
+    // S-26 compatibility: show the profile-equivalent view of legacy mode resolution.
+    eprintln!(
+        "// effective guarantee profile: {}",
+        profile_name(session.mode())
+    );
     print!("{output}");
     Ok(())
+}
+
+fn profile_name(mode: KoboMode) -> &'static str {
+    match mode {
+        KoboMode::Script => "dev",
+        KoboMode::Checked => "checked",
+        KoboMode::Strict => "release",
+    }
 }
 
 fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {

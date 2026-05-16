@@ -22,13 +22,13 @@ pub(crate) enum KoboCommand {
         #[arg(
             long,
             conflicts_with = "strict",
-            help = "Check in checked mode — ownership advisory warnings"
+            help = "Compatibility alias for --profile checked"
         )]
         checked: bool,
         #[arg(
             long,
             conflicts_with = "checked",
-            help = "Check in release/strict guarantee mode"
+            help = "Compatibility alias for --profile release"
         )]
         strict: bool,
         #[arg(long, value_enum, help = "Select a guarantee policy preset")]
@@ -97,18 +97,20 @@ pub(crate) enum KoboCommand {
         #[arg(
             long,
             conflicts_with = "strict",
-            help = "Run in checked mode — ownership advisory warnings"
+            help = "Compatibility alias for --profile checked"
         )]
         checked: bool,
         #[arg(
             long,
             conflicts_with = "checked",
-            help = "Run in release/strict guarantee mode"
+            help = "Compatibility alias for --profile release"
         )]
         strict: bool,
+        #[arg(long, value_enum, help = "Select a guarantee policy preset")]
+        profile: Option<GuaranteeProfileArg>,
         #[arg(
             long,
-            help = "Erase lifetime parameters before rustc in script/checked mode"
+            help = "Erase lifetime parameters before rustc for dev or checked profiles"
         )]
         erase_lifetimes: bool,
     },
@@ -119,20 +121,20 @@ pub(crate) enum KoboCommand {
         #[arg(
             long,
             conflicts_with = "strict",
-            help = "Inspect in checked mode — ownership advisory warnings"
+            help = "Compatibility alias for --profile checked"
         )]
         checked: bool,
         #[arg(
             long,
             conflicts_with = "checked",
-            help = "Inspect in release/strict guarantee mode"
+            help = "Compatibility alias for --profile release"
         )]
         strict: bool,
         #[arg(long, help = "Strip all Kobo wrappers, output standalone Rust")]
         clean: bool,
         #[arg(
             long,
-            help = "Erase lifetime parameters in script mode (S-21: auto-own references)"
+            help = "Erase lifetime parameters for dev-profile auto-own references"
         )]
         erase_lifetimes: bool,
         #[arg(long, help = "Show indexed scenario metadata")]
@@ -319,9 +321,17 @@ pub(crate) enum KoboCommand {
     },
     /// Build all .kobo files in a Kobo project.
     Build {
-        #[arg(long, conflicts_with = "strict", help = "Build in checked mode")]
+        #[arg(
+            long,
+            conflicts_with = "strict",
+            help = "Compatibility alias for --profile checked"
+        )]
         checked: bool,
-        #[arg(long, conflicts_with = "checked", help = "Build in strict mode")]
+        #[arg(
+            long,
+            conflicts_with = "checked",
+            help = "Compatibility alias for --profile release"
+        )]
         strict: bool,
         #[arg(long, value_enum, help = "Select a guarantee policy preset")]
         profile: Option<GuaranteeProfileArg>,
@@ -436,7 +446,7 @@ impl GuaranteeProfileArg {
         }
     }
 
-    pub(crate) const fn mode(self) -> KoboMode {
+    pub(crate) const fn compiler_compatibility_mode(self) -> KoboMode {
         match self {
             Self::Dev => KoboMode::Script,
             Self::Checked => KoboMode::Checked,
@@ -450,9 +460,10 @@ pub(crate) enum PolicyOutputFormat {
     Json,
 }
 
-/// Resolve CLI mode flags to a KoboMode override.
-/// Returns None when no CLI flag is present — the config file (Kobo.toml) or
-/// default (Script) is used instead [Contract R06: CLI overrides per-crate mode].
+/// Resolve public profile controls to the selected guarantee profile.
+///
+/// `--checked` and `--strict` are kept only as compatibility aliases for users
+/// who have not migrated to `--profile checked|release` yet.
 pub(crate) fn resolve_guarantee_profile(
     checked: bool,
     strict: bool,
@@ -467,12 +478,12 @@ pub(crate) fn resolve_guarantee_profile(
     }
 }
 
-pub(crate) fn resolve_cli_mode(
-    checked: bool,
-    strict: bool,
+/// Temporary adapter while driver internals still route severity through
+/// `KoboMode`. Public callers must resolve guarantee profiles first.
+pub(crate) fn compiler_compatibility_mode(
     profile: Option<GuaranteeProfileArg>,
 ) -> Option<KoboMode> {
-    resolve_guarantee_profile(checked, strict, profile).map(GuaranteeProfileArg::mode)
+    profile.map(GuaranteeProfileArg::compiler_compatibility_mode)
 }
 
 fn main() -> std::process::ExitCode {

@@ -12,6 +12,24 @@ pub enum ModeParseError {
     },
 }
 
+/// Legacy `//! kobo:mode = ...` directive retained as a compatibility alias.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyModeDirective {
+    pub line: usize,
+    pub value: String,
+    pub mode: KoboMode,
+}
+
+impl LegacyModeDirective {
+    pub const fn profile_name(&self) -> &'static str {
+        match self.mode {
+            KoboMode::Script => "dev",
+            KoboMode::Checked => "checked",
+            KoboMode::Strict => "release",
+        }
+    }
+}
+
 impl std::fmt::Display for ModeParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -44,7 +62,17 @@ impl std::error::Error for ModeParseError {}
 /// Returns `Ok(Some(mode))` if exactly one valid attribute is found.
 /// Returns `Err` on invalid mode string or duplicate attributes.
 pub fn parse_file_mode(source: &str) -> Result<Option<KoboMode>, ModeParseError> {
-    let mut found: Option<(usize, KoboMode)> = None;
+    Ok(parse_legacy_mode_directive(source)?.map(|directive| directive.mode))
+}
+
+/// Scans the first 10 lines for a legacy `//! kobo:mode = ...` directive.
+///
+/// The directive is no longer the public source-level model. Callers that apply
+/// it should also emit a migration diagnostic naming the equivalent profile.
+pub fn parse_legacy_mode_directive(
+    source: &str,
+) -> Result<Option<LegacyModeDirective>, ModeParseError> {
+    let mut found: Option<LegacyModeDirective> = None;
 
     for (idx, line) in source.lines().take(10).enumerate() {
         let line_num = idx + 1;
@@ -62,17 +90,21 @@ pub fn parse_file_mode(source: &str) -> Result<Option<KoboMode>, ModeParseError>
                             value: value.to_owned(),
                         })?;
 
-                    if let Some((first_line, _)) = found {
+                    if let Some(first) = &found {
                         return Err(ModeParseError::DuplicateMode {
-                            first_line,
+                            first_line: first.line,
                             second_line: line_num,
                         });
                     }
-                    found = Some((line_num, mode));
+                    found = Some(LegacyModeDirective {
+                        line: line_num,
+                        value: value.to_owned(),
+                        mode,
+                    });
                 }
             }
         }
     }
 
-    Ok(found.map(|(_, mode)| mode))
+    Ok(found)
 }

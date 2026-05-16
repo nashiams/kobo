@@ -1,4 +1,4 @@
-use crate::mode_parse::{parse_file_mode, ModeParseError};
+use crate::mode_parse::{parse_file_mode, parse_legacy_mode_directive, ModeParseError};
 use kobo_ir::KoboMode;
 
 /// S-26 Contract: `//! kobo:mode = script` → Script
@@ -20,6 +20,18 @@ fn parse_checked_mode() {
 fn parse_strict_mode() {
     let source = "//! kobo:mode = strict\nfn main() {}";
     assert_eq!(parse_file_mode(source).unwrap(), Some(KoboMode::Strict));
+}
+
+#[test]
+fn legacy_mode_directive_reports_equivalent_profile() {
+    let source = "//! kobo:mode = strict\nfn main() {}";
+    let directive = parse_legacy_mode_directive(source)
+        .unwrap()
+        .expect("directive should parse");
+    assert_eq!(directive.line, 1);
+    assert_eq!(directive.value, "strict");
+    assert_eq!(directive.mode, KoboMode::Strict);
+    assert_eq!(directive.profile_name(), "release");
 }
 
 /// S-26 Contract: No mode attribute → None

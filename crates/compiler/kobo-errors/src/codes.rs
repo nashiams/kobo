@@ -217,6 +217,7 @@ impl KErrorCode {
             Self::K0085 => "ownership suggestion needs manual review",
             Self::K0090 => "migration cannot continue - value crosses into external crate",
             Self::K0095 => "ownership of macro-generated value cannot be inferred",
+            Self::K0096 => "legacy mode directive is a guarantee profile alias",
             Self::K0099 => "rustc error remapped to Kobo source",
             Self::K0100 => "checked scenario dropped an unresolved liveness token",
             Self::K0101 => "liveness obligation escapes local analysis",

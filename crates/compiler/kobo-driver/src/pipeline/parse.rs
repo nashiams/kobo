@@ -1,10 +1,14 @@
 use std::path::Path;
 
-use kobo_errors::{DiagLabel, DiagnosticRelatedInfo, KDiagnostic, TextEdit};
+use kobo_errors::{
+    DiagLabel, DiagnosticRelatedInfo, DiagnosticSuggestion, KDiagnostic, KErrorCode, Severity,
+    SuggestionApplicability, TextEdit,
+};
 use kobo_ir::{FieldCapabilityField, FieldCapabilityView, FileId, Kir, KoboSpan};
 use kobo_parser::{
-    collect_strict_items_from_syn, mode_parse::parse_file_mode, parse_file_recovering,
-    postprocess_strict_markers, preprocess_bridge_blocks_mapped,
+    collect_strict_items_from_syn,
+    mode_parse::{parse_legacy_mode_directive, LegacyModeDirective},
+    parse_file_recovering, postprocess_strict_markers, preprocess_bridge_blocks_mapped,
     preprocess_concurrent_sugar_mapped, preprocess_kobo_keywords_mapped,
     preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid, v05_keyword_configs,
     KoboFile, PreprocessSourceMap, RecoveryMode,
@@ -25,17 +29,17 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     let file_id = session.register_source_file(input.to_path_buf(), source.clone());
     let field_capability_views = collect_field_capability_views(&source, file_id);
 
-    // S-26: Per-module mode — file attribute overrides Kobo.toml, CLI overrides both.
-    if !session.cli_mode_override {
-        match parse_file_mode(&source) {
-            Ok(Some(file_mode)) => {
-                session.config.mode = file_mode;
+    match parse_legacy_mode_directive(&source) {
+        Ok(Some(directive)) => {
+            push_legacy_mode_directive_diagnostic(session, &source, file_id, &directive);
+            if !session.cli_mode_override {
+                session.config.mode = directive.mode;
             }
-            Ok(None) => {} // no file-level attribute, keep current mode
-            Err(e) => {
-                eprintln!("kobo: {e}");
-                return Err(());
-            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("kobo: {e}");
+            return Err(());
         }
     }
 
@@ -144,6 +148,64 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     }
 
     Ok((kobo_file, kir))
+}
+
+fn push_legacy_mode_directive_diagnostic(
+    session: &mut CompileSession,
+    source: &str,
+    file_id: FileId,
+    directive: &LegacyModeDirective,
+) {
+    let profile = directive.profile_name();
+    let span = legacy_mode_directive_span(source, file_id, directive);
+    let replacement = format!("//! kobo:profile = \"{profile}\"");
+    session.diagnostics.push(
+        KDiagnostic::new(
+            KErrorCode::K0096,
+            Severity::Warning,
+            DiagLabel::primary(span, "`kobo:mode` is a legacy profile alias"),
+            format!(
+                "`//! kobo:mode = {}` still applies as compatibility, but Kobo is one language; gradualness now lives in guarantee policy.",
+                directive.value
+            ),
+            format!("use `--profile {profile}` or project guarantee policy instead"),
+        )
+        .with_help(format!(
+            "legacy `kobo:mode = {}` is equivalent to the `{profile}` guarantee profile",
+            directive.value
+        ))
+        .with_run(format!("kobo check --profile {profile} <file>"))
+        .with_suggestion(DiagnosticSuggestion::new(
+            format!("replace legacy directive with `{replacement}`"),
+            SuggestionApplicability::MachineApplicable,
+            vec![TextEdit::replace(span, replacement)],
+        )),
+    );
+}
+
+fn legacy_mode_directive_span(
+    source: &str,
+    file_id: FileId,
+    directive: &LegacyModeDirective,
+) -> KoboSpan {
+    let mut offset = 0usize;
+    for (index, line) in source.lines().enumerate() {
+        if index + 1 == directive.line {
+            let start_in_line = line.find("kobo:mode").unwrap_or(0);
+            let end_in_line = line
+                .find(&directive.value)
+                .map(|value_start| value_start + directive.value.len())
+                .unwrap_or(line.len());
+            return KoboSpan::new(
+                (offset + start_in_line) as u32,
+                (offset + end_in_line) as u32,
+                file_id,
+            );
+        }
+        offset += line.len() + 1;
+    }
+
+    KoboSpan::new(0, 0, file_id)
 }
 
 fn mask_field_capability_views(source: &str) -> String {

@@ -136,3 +136,57 @@ fn counter_bridge() {
         "deep concurrent test should use the deep scheduler portfolio",
     );
 }
+
+#[test]
+fn scheduler_records_runnable_wakeup_drop_and_cancel_state() {
+    let project = TestProject::new("v10-scheduler-state-machine");
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(reply | reject | cancel)]
+struct ReplyToken {}
+
+#[kobo::scenario(profile = "async")]
+fn async_gateway() {
+    let reply = ReplyToken {};
+    ward.task();
+    let _lost = reply;
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--seed"),
+            s("41"),
+            s("--inject"),
+            s("cancel"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "events=json should expose the cancelled async scheduler path",
+    );
+    let json = first_json(&output, "cancel scheduler JSON");
+    let events = json["events"].to_string();
+    for expected in [
+        "scheduler-task-enqueued",
+        "scheduler-task-wakeup",
+        "scheduler-task-polled",
+        "scheduler-runnable-queue",
+        "scheduler-cancel-path",
+        "scheduler-future-dropped",
+    ] {
+        assert_contains(
+            &events,
+            expected,
+            "scheduler model must expose runnable queue, wakeup, poll, cancellation, and dropped-future state",
+        );
+    }
+}

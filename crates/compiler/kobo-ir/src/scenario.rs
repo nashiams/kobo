@@ -43,6 +43,9 @@ pub enum ScenarioOpKind {
     NetworkEvent {
         action: String,
     },
+    Select {
+        branch_count: u32,
+    },
     RawNondeterminism {
         operation: String,
     },

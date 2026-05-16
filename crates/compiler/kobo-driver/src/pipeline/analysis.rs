@@ -136,9 +136,10 @@ fn project_relax_attribute_diagnostics(session: &mut CompileSession, kir: &Kir) 
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0026,
                 severity,
-                DiagLabel::primary(fn_span, "`#[kobo::relax]` has no effect in script mode"),
-                "`#[kobo::relax]` has no effect in script mode".to_owned(),
-                DiagDecision(String::new()),
+                DiagLabel::primary(fn_span, "`#[kobo::relax]` has no effect in the dev profile"),
+                "`#[kobo::relax]` has no effect while the dev guarantee policy is already advisory"
+                    .to_owned(),
+                DiagDecision("remove the marker or use a stricter guarantee profile".to_owned()),
             ));
         }
     }
@@ -258,9 +259,9 @@ fn async_violation_diagnostic_parts(
         ),
         AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
             KErrorCode::K0063,
-            format!("strict mode: async wrapping not permitted for `{binding_name}`"),
+            format!("release profile: async wrapping not permitted for `{binding_name}`"),
             format!(
-                "in @strict mode, binding `{binding_name}` cannot use ownership wrappers in async context"
+                "inside @strict enforcement, binding `{binding_name}` cannot use ownership wrappers in async context"
             ),
             "use @strict async fn when the async strict protocol is intentional, or move this work into a synchronous helper".to_owned(),
         ),

@@ -1,0 +1,8 @@
+#[kobo::must_call(commit | rollback)]
+struct Transaction {}
+
+#[kobo::scenario(profile = "sync")]
+fn backend_adapter_sync() {
+    let tx = Transaction {};
+    let _lost = tx;
+}

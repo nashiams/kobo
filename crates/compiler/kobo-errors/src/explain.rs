@@ -500,6 +500,13 @@ fn migration_explain_prose(code: crate::KErrorCode) -> Option<ExplainProse> {
             example: "Problem:\nA macro creates a value whose owner is not visible in the Kobo source.\n\n\
                       Fix:\nWrap the macro call and state who owns the generated value.",
         },
+        crate::KErrorCode::K0096 => ExplainProse {
+            fix: "Option 1: Move the setting to `kobo check --profile dev|checked|release`.\n\
+                  Option 2: Record the guarantee policy in Kobo.toml.\n\
+                  Option 3: Replace the legacy directive with `//! kobo:profile = \"release\"` while the source-level profile migration is active.",
+            example: "Problem:\n//! kobo:mode = strict\n\n\
+                      Fix:\nUse `--profile release` or project guarantee policy so the file remains ordinary Kobo source.",
+        },
         crate::KErrorCode::K0099 => ExplainProse {
             fix: "Option 1: Fix the highlighted Kobo source that produced the Rust error.\n\
                   Option 2: Regenerate Rust and source maps together if the span looks stale.\n\

@@ -1,0 +1,17 @@
+#[kobo::must_call(reply | reject | cancel)]
+struct ReplyToken {}
+
+async fn pending_reply() {}
+
+#[kobo::scenario(profile = "async")]
+async fn trap_select_boundary() {
+    let reply = ReplyToken {};
+    tokio::select! {
+        _ = pending_reply() => {
+            reply.reply();
+        }
+        _ = pending_reply() => {
+            let _lost = reply;
+        }
+    }
+}

@@ -1,0 +1,9 @@
+#[kobo::must_call(reply | reject | cancel)]
+struct ReplyToken {}
+
+#[kobo::scenario(profile = "async")]
+fn async_gateway() {
+    let reply = ReplyToken {};
+    ward.task();
+    let _lost = reply;
+}

@@ -22,7 +22,7 @@ mod watch;
 
 use std::fmt as std_fmt;
 
-use crate::{resolve_cli_mode, resolve_guarantee_profile, KoboCommand, SimCommand};
+use crate::{compiler_compatibility_mode, resolve_guarantee_profile, KoboCommand, SimCommand};
 
 #[derive(Debug)]
 pub(crate) struct DiagnosticExit;
@@ -63,7 +63,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
             check::cmd_check(
                 &file,
-                resolve_cli_mode(checked, strict, profile),
+                compiler_compatibility_mode(guarantee_profile),
                 guarantee_profile,
                 print_policy,
                 pipeline,
@@ -87,12 +87,17 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             file,
             checked,
             strict,
+            profile,
             erase_lifetimes,
-        } => run::cmd_run(
-            &file,
-            resolve_cli_mode(checked, strict, None),
-            erase_lifetimes,
-        ),
+        } => {
+            let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
+            run::cmd_run(
+                &file,
+                compiler_compatibility_mode(guarantee_profile),
+                guarantee_profile,
+                erase_lifetimes,
+            )
+        }
         KoboCommand::Inspect {
             file,
             checked,
@@ -108,7 +113,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             audit,
         } => run::cmd_inspect(
             &file,
-            resolve_cli_mode(checked, strict, None),
+            compiler_compatibility_mode(resolve_guarantee_profile(checked, strict, None)),
             clean,
             erase_lifetimes,
             scenario_metadata,
@@ -253,7 +258,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         } => {
             let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
             build::cmd_build(
-                resolve_cli_mode(checked, strict, profile),
+                compiler_compatibility_mode(guarantee_profile),
                 guarantee_profile,
                 print_policy,
                 error_format,

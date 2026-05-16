@@ -1,7 +1,10 @@
 use kobo_errors::KErrorCode;
 use kobo_ir::ScenarioProgram;
 
+use crate::error::{Result, SimCoreError};
 use crate::harness_manifest::HarnessManifest;
+use crate::network::NetworkModel;
+use crate::storage::StorageModel;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineMode {
@@ -204,6 +207,11 @@ pub enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    Select {
+        branch_count: u32,
+        span_start: usize,
+        span_end: usize,
+    },
     RawNondeterminism {
         operation: String,
         span_start: usize,
@@ -225,16 +233,14 @@ pub enum ScenarioOperation {
     },
 }
 
-pub fn run_compiler_semantics(_source: &str, _target: &str) -> anyhow::Result<FullDepthRun> {
-    anyhow::bail!(
-        "source-based sim-core lowering is not available in production-depth mode; use run_semantics_from_program"
-    )
+pub fn run_compiler_semantics(_source: &str, _target: &str) -> Result<FullDepthRun> {
+    Err(SimCoreError::SourceLoweringUnavailable)
 }
 
 pub fn run_semantics_from_program(
     program: &ScenarioProgram,
     options: &ScenarioOptions,
-) -> anyhow::Result<FullDepthRun> {
+) -> Result<FullDepthRun> {
     let lowered = crate::lower::lower_from_program(program, &options.profile);
     Ok(execute_lowered(&program.target, options, lowered))
 }
@@ -244,10 +250,8 @@ pub fn run_full_depth(
     _target: &str,
     _mode: EngineMode,
     _options: ScenarioOptions,
-) -> anyhow::Result<FullDepthRun> {
-    anyhow::bail!(
-        "source-based full-depth execution is not available; build a ScenarioProgram through kobo-driver"
-    )
+) -> Result<FullDepthRun> {
+    Err(SimCoreError::SourceFullDepthUnavailable)
 }
 
 pub fn run_full_depth_from_program(
@@ -255,7 +259,7 @@ pub fn run_full_depth_from_program(
     generated_rust: &str,
     options: &ScenarioOptions,
     mode: EngineMode,
-) -> anyhow::Result<FullDepthRun> {
+) -> Result<FullDepthRun> {
     match mode {
         EngineMode::SemanticOnly => {
             let mut run = run_semantics_from_program(program, options)?;
@@ -314,6 +318,8 @@ struct Runtime<'a> {
     opaque_boundaries: Vec<String>,
     obligations: Vec<RuntimeObligation>,
     boundary_decisions: Vec<BoundaryDecision>,
+    storage: StorageModel,
+    network: NetworkModel,
     failure: Option<ScenarioFailure>,
     applied_injection: bool,
 }
@@ -337,6 +343,8 @@ impl<'a> Runtime<'a> {
             opaque_boundaries: Vec::new(),
             obligations: Vec::new(),
             boundary_decisions: Vec::new(),
+            storage: StorageModel::default(),
+            network: NetworkModel::default(),
             failure: None,
             applied_injection: false,
         }
@@ -360,6 +368,7 @@ impl<'a> Runtime<'a> {
                     is_discharged: false,
                 }),
                 ScenarioOperation::Discharge { binding, action } => {
+                    self.storage.note_obligation_action(action);
                     self.discharge(binding, action);
                 }
                 ScenarioOperation::Transfer {
@@ -397,6 +406,13 @@ impl<'a> Runtime<'a> {
                     span_start,
                     span_end,
                 } => self.record_network_event(action, (*span_start, *span_end)),
+                ScenarioOperation::Select {
+                    branch_count,
+                    span_start: _,
+                    span_end: _,
+                } => self
+                    .events
+                    .extend(crate::scheduler::select_events(*branch_count, self.options)),
                 ScenarioOperation::RawNondeterminism {
                     operation,
                     span_start,
@@ -480,7 +496,18 @@ impl<'a> Runtime<'a> {
             self.modeled_boundaries.push(boundary.clone());
         }
         self.events
-            .push(modeled_effect_event(&boundary, self.options.seed));
+            .extend(crate::scheduler::modeled_boundary_events(
+                &boundary,
+                self.options,
+            ));
+        if let Some(failure) = crate::scheduler::schedule_failure(
+            &boundary,
+            self.options,
+            self.active_obligation(),
+            span,
+        ) {
+            self.set_failure_once(failure);
+        }
         if self.applied_injection {
             return;
         }
@@ -539,40 +566,25 @@ impl<'a> Runtime<'a> {
         {
             self.modeled_boundaries.push(ModeledBoundary::WardStorage);
         }
-        let event_kind = format!("storage-{}", normalize_event_part(action));
-        self.events.push(ScenarioEvent {
-            kind: event_kind.clone(),
-            label: Some("ward.storage".to_owned()),
-            value: Some(self.options.seed),
-        });
-        if action.contains("crash") {
-            self.set_failure_once(ScenarioFailure {
-                code: KErrorCode::K0100,
-                message: "storage facade found lost-message after ack before durable commit"
-                    .to_owned(),
-                primary_start: span.0,
-                primary_end: span.1,
-                events: vec![ScenarioEvent {
-                    kind: "lost-message".to_owned(),
-                    label: Some(event_kind),
-                    value: None,
-                }],
-            });
+        let transition = self.storage.apply_action(action, self.options.seed, span);
+        self.events.extend(transition.events);
+        if let Some(failure) = transition.failure {
+            self.set_failure_once(failure);
         }
     }
 
-    fn record_network_event(&mut self, action: &str, _span: (usize, usize)) {
+    fn record_network_event(&mut self, action: &str, span: (usize, usize)) {
         if !self
             .modeled_boundaries
             .contains(&ModeledBoundary::WardNetwork)
         {
             self.modeled_boundaries.push(ModeledBoundary::WardNetwork);
         }
-        self.events.push(ScenarioEvent {
-            kind: format!("network-{}", normalize_event_part(action)),
-            label: Some("ward.network".to_owned()),
-            value: Some(self.options.seed),
-        });
+        let transition = self.network.apply_action(action, self.options.seed, span);
+        self.events.extend(transition.events);
+        if let Some(failure) = transition.failure {
+            self.set_failure_once(failure);
+        }
     }
 
     fn record_cancel_hook(&mut self, boundary: &ModeledBoundary, span: (usize, usize)) {
@@ -645,6 +657,14 @@ impl<'a> Runtime<'a> {
         }
     }
 
+    fn active_obligation(&self) -> Option<(&str, (usize, usize))> {
+        self.obligations
+            .iter()
+            .rev()
+            .find(|obligation| !obligation.is_discharged)
+            .map(|obligation| (obligation.binding.as_str(), obligation.declaration_span))
+    }
+
     fn finish(mut self, target: &str, lowered: LoweredScenario, agreement: &str) -> FullDepthRun {
         let liveness = self.liveness_failure();
         if self.failure.is_none() {
@@ -714,10 +734,11 @@ impl<'a> Runtime<'a> {
             .find(|obligation| !obligation.is_discharged)?;
         let span = obligation.drop_span.unwrap_or(obligation.declaration_span);
         let actions = obligation.actions.join(", ");
+        let failure_mode = unresolved_failure_mode(&obligation.actions);
         Some(ScenarioFailure {
             code: KErrorCode::K0100,
             message: format!(
-                "checked scenario dropped `{}` without required action; discharge with {actions}",
+                "{failure_mode}: checked scenario dropped `{}` without required action; discharge with {actions}",
                 obligation.binding
             ),
             primary_start: span.0,
@@ -731,81 +752,21 @@ impl<'a> Runtime<'a> {
     }
 }
 
-fn modeled_effect_event(boundary: &ModeledBoundary, seed: u64) -> ScenarioEvent {
-    match boundary {
-        ModeledBoundary::WardTime => ScenarioEvent {
-            kind: "deterministic-time".to_owned(),
-            label: None,
-            value: Some(seed.wrapping_mul(1_000).wrapping_add(17)),
-        },
-        ModeledBoundary::WardRandom => ScenarioEvent {
-            kind: "deterministic-random".to_owned(),
-            label: None,
-            value: Some(seed.rotate_left(13) ^ 0x9e37_79b9_7f4a_7c15_u64),
-        },
-        ModeledBoundary::WardTask => ScenarioEvent {
-            kind: "deterministic-task".to_owned(),
-            label: Some("ward.task".to_owned()),
-            value: Some(seed),
-        },
-        ModeledBoundary::WardStorage => ScenarioEvent {
-            kind: "storage-boundary".to_owned(),
-            label: Some("ward.storage".to_owned()),
-            value: Some(seed),
-        },
-        ModeledBoundary::WardNetwork => ScenarioEvent {
-            kind: "network-boundary".to_owned(),
-            label: Some("ward.network".to_owned()),
-            value: Some(seed),
-        },
+fn unresolved_failure_mode(actions: &[String]) -> &'static str {
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "reply" | "reject" | "cancel"))
+    {
+        "unresolved-reply"
+    } else {
+        "unresolved-delivery"
     }
 }
 
 pub(crate) fn scheduler_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {
-    let budget = scheduler_budget(options);
-    let mut events = vec![ScenarioEvent {
-        kind: "scheduler-portfolio".to_owned(),
-        label: Some(options.sim_profile.clone()),
-        value: Some(budget),
-    }];
-    if options.sim_profile == "deep" {
-        events.push(ScenarioEvent {
-            kind: "scheduler-pct-seed".to_owned(),
-            label: Some("deep".to_owned()),
-            value: Some(options.seed.rotate_left(7)),
-        });
-    }
-    if options.sim_profile == "exhaustive" {
-        events.push(ScenarioEvent {
-            kind: "scheduler-exhaustive-cap".to_owned(),
-            label: Some("tiny-ward".to_owned()),
-            value: Some(budget),
-        });
-    }
-    events
+    crate::scheduler::portfolio_events(options)
 }
 
 pub(crate) fn scheduler_budget(options: &ScenarioOptions) -> u64 {
-    options
-        .event_budget
-        .unwrap_or(match options.sim_profile.as_str() {
-            "quick" => 64,
-            "deep" => 1024,
-            "replay" => 64,
-            "exhaustive" => 16,
-            _ => 64,
-        })
-}
-
-fn normalize_event_part(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect()
+    crate::scheduler::scheduler_budget(options)
 }

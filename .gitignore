@@ -6,6 +6,10 @@
 /tests/fixtures/*.exe
 /tests/fixtures/*.pdb
 /tests/fixtures/*.rs
+/tests/fixtures/v10/*.kwit
+/tests/fixtures/v10/*.map
+/tests/fixtures/v10/*.rs
+**/.kobo/
 
 # Windows and editor noise
 Thumbs.db

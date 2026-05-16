@@ -5,6 +5,7 @@ use kobo_ir::{
     ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
+use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::{
     Block, Expr, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath, ExprStruct, File,
@@ -60,6 +61,7 @@ fn lower_function(
         call_depth: 0,
     };
     let mut env = BindingEnv::default();
+    lowerer.record_function_coverage(function);
     lowerer.execute_block(&function.block, &mut env);
     lowerer.operations.push(ScenarioOp {
         span: KoboSpan::generated(ast.file_id),
@@ -148,6 +150,13 @@ impl BindingEnv {
 }
 
 impl<'a> ScenarioLowerer<'a> {
+    fn record_function_coverage(&mut self, function: &'a ItemFn) {
+        let tokens = function.block.to_token_stream().to_string();
+        if tokens.contains("select") && tokens.contains('!') {
+            self.record_unsupported_construct("tokio::select!");
+        }
+    }
+
     fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) {
         for statement in &block.stmts {
             self.execute_statement(statement, env);
@@ -462,12 +471,27 @@ impl<'a> ScenarioLowerer<'a> {
             .collect::<Vec<_>>()
             .join("::");
         let label = if name.ends_with("select") {
+            self.operations.push(ScenarioOp {
+                span: self.span(mac),
+                kind: ScenarioOpKind::Select {
+                    branch_count: select_branch_count(mac),
+                },
+            });
             format!("{name}!")
         } else {
             format!("macro:{name}")
         };
-        if !self.coverage.unsupported_constructs.contains(&label) {
-            self.coverage.unsupported_constructs.push(label);
+        self.record_unsupported_construct(&label);
+    }
+
+    fn record_unsupported_construct(&mut self, label: &str) {
+        if !self
+            .coverage
+            .unsupported_constructs
+            .iter()
+            .any(|construct| construct == label)
+        {
+            self.coverage.unsupported_constructs.push(label.to_owned());
         }
     }
 
@@ -655,4 +679,9 @@ fn path_ends_with(path: &Path, suffix: &[&str]) -> bool {
         .iter()
         .zip(suffix)
         .all(|(segment, expected)| segment == expected)
+}
+
+fn select_branch_count(mac: &Macro) -> u32 {
+    let branch_count = mac.tokens.to_string().matches("=>").count();
+    branch_count.max(1) as u32
 }

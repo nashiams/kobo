@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use v09_common::{
-    assert_contains, assert_failure, assert_success, path_arg, run_kobo, s, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg, run_kobo, s,
+    TestProject,
 };
 
 fn fixture_root() -> PathBuf {
@@ -371,9 +372,9 @@ fn public_backend_commands_report_v10_execution_truth() {
             .iter()
             .any(|backend| backend["name"] == "loom"
                 && backend["executes_in_v10"] == true
-                && backend["integration_level"] == "plumbing-smoke"
-                && backend["scenario_execution"] == "fixed-adapter-model")),
-        "phase 09 Loom support must disclose plumbing-level integration, not user-program execution: {value}"
+                && backend["integration_level"] == "generated-scenario"
+                && backend["scenario_execution"] == "lowered-scenario-loom")),
+        "phase 09 Loom support must execute the compiler-owned generated scenario model, not a fixed smoke model: {value}"
     );
     assert!(
         !output.combined().contains("v0.9"),
@@ -396,7 +397,7 @@ fn loom_backend_adapter_is_a_real_workspace_dependency() {
 }
 
 #[test]
-fn loom_backend_digest_discloses_plumbing_boundary() {
+fn loom_backend_digest_discloses_generated_scenario_execution() {
     let project = TestProject::new("v10-loom-boundary");
     let output = run_kobo(
         &[
@@ -418,9 +419,36 @@ fn loom_backend_digest_discloses_plumbing_boundary() {
     assert_eq!(witness["backend"], "loom");
     assert_eq!(
         witness["execution_digest"]["harness_engine"],
-        "generated-rust-process+loom-plumbing-smoke",
-        "v0.10 must not label the fixed Loom adapter as user-scenario Loom execution"
+        "generated-rust-process+loom-generated-scenario",
+        "v0.10 sync backend must bind the generated scenario model into Loom execution"
     );
+}
+
+#[test]
+fn sim_core_library_uses_typed_error_not_anyhow() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let sim_core = repo_root.join("crates/compiler/kobo-sim-core");
+    let cargo_toml =
+        fs::read_to_string(sim_core.join("Cargo.toml")).expect("sim-core manifest should read");
+    assert_not_contains(
+        &cargo_toml,
+        "anyhow",
+        "library crate must not depend on anyhow",
+    );
+    assert_contains(
+        &cargo_toml,
+        "thiserror",
+        "library crate should expose a typed thiserror error",
+    );
+
+    for source in ["src/core.rs", "src/harness.rs", "src/backend.rs"] {
+        let text = fs::read_to_string(sim_core.join(source)).expect("sim-core source should read");
+        assert_not_contains(
+            &text,
+            "anyhow::",
+            "library crate APIs must not return anyhow errors",
+        );
+    }
 }
 
 #[test]
@@ -652,4 +680,17 @@ fn select_boundary_refuses_exact_until_modeled() {
         "select",
         "diagnostic should name the unsupported select boundary",
     );
+    let witness = read_first_witness(&project);
+    let events = witness["events"].to_string();
+    for expected in [
+        "scheduler-select-branch",
+        "scheduler-select-cancelled-branch",
+        "scheduler-future-dropped",
+    ] {
+        assert_contains(
+            &events,
+            expected,
+            "select-shaped source should still feed scheduler branch/drop state before exactness is refused",
+        );
+    }
 }

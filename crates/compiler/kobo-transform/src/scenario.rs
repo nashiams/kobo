@@ -471,6 +471,12 @@ impl<'a> ScenarioLowerer<'a> {
             .collect::<Vec<_>>()
             .join("::");
         let label = if name.ends_with("select") {
+            self.operations.push(ScenarioOp {
+                span: self.span(mac),
+                kind: ScenarioOpKind::Select {
+                    branch_count: select_branch_count(mac),
+                },
+            });
             format!("{name}!")
         } else {
             format!("macro:{name}")
@@ -673,4 +679,9 @@ fn path_ends_with(path: &Path, suffix: &[&str]) -> bool {
         .iter()
         .zip(suffix)
         .all(|(segment, expected)| segment == expected)
+}
+
+fn select_branch_count(mac: &Macro) -> u32 {
+    let branch_count = mac.tokens.to_string().matches("=>").count();
+    branch_count.max(1) as u32
 }

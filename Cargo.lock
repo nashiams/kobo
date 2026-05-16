@@ -463,12 +463,12 @@ dependencies = [
 name = "kobo-sim-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "kobo-errors",
  "kobo-ir",
  "loom",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

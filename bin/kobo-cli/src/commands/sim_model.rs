@@ -236,6 +236,11 @@ pub(super) enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    Select {
+        branch_count: u32,
+        span_start: usize,
+        span_end: usize,
+    },
     RawNondeterminism {
         operation: String,
         span_start: usize,
@@ -689,6 +694,15 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
             span_start,
             span_end,
         },
+        sim_core::ScenarioOperation::Select {
+            branch_count,
+            span_start,
+            span_end,
+        } => ScenarioOperation::Select {
+            branch_count,
+            span_start,
+            span_end,
+        },
         sim_core::ScenarioOperation::ModeledEffect {
             boundary,
             span_start,
@@ -835,6 +849,18 @@ impl ScenarioOperation {
                 output.push(':');
                 output.push_str(&span_end.to_string());
             }
+            Self::Select {
+                branch_count,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("select:");
+                output.push_str(&branch_count.to_string());
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
             Self::RawNondeterminism {
                 operation,
                 span_start,
@@ -964,6 +990,11 @@ impl<'a> SimulationRuntime<'a> {
                     label: Some("ward.network".to_owned()),
                     value: Some(self.seed),
                 }),
+                ScenarioOperation::Select {
+                    branch_count,
+                    span_start: _,
+                    span_end: _,
+                } => self.record_select(*branch_count),
                 ScenarioOperation::RawNondeterminism {
                     operation,
                     span_start,
@@ -1072,6 +1103,31 @@ impl<'a> SimulationRuntime<'a> {
         ));
         for hook in hooks {
             self.apply_failure_hook(hook, &boundary, span);
+        }
+    }
+
+    fn record_select(&mut self, branch_count: u32) {
+        let branch_count = branch_count.max(1);
+        let selected_branch = (self.seed % u64::from(branch_count)) as u32;
+        for branch_index in 0..branch_count {
+            let label = format!("branch-{branch_index}");
+            self.events.push(SimEvent {
+                kind: "scheduler-select-branch".to_owned(),
+                label: Some(label.clone()),
+                value: Some(branch_index as u64),
+            });
+            if branch_index != selected_branch {
+                self.events.push(SimEvent {
+                    kind: "scheduler-select-cancelled-branch".to_owned(),
+                    label: Some(label.clone()),
+                    value: Some(selected_branch as u64),
+                });
+                self.events.push(SimEvent {
+                    kind: "scheduler-future-dropped".to_owned(),
+                    label: Some(label),
+                    value: Some(branch_index as u64),
+                });
+            }
         }
     }
 

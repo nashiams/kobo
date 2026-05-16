@@ -57,6 +57,11 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     span_start,
                     span_end,
                 }),
+                ScenarioOpKind::Select { branch_count } => Some(ScenarioOperation::Select {
+                    branch_count: *branch_count,
+                    span_start,
+                    span_end,
+                }),
                 ScenarioOpKind::RawNondeterminism { operation } => {
                     Some(ScenarioOperation::RawNondeterminism {
                         operation: operation.clone(),

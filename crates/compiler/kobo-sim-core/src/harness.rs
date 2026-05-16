@@ -7,6 +7,7 @@ use kobo_ir::{ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
 use crate::core::{
     EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure, ScenarioOptions,
 };
+use crate::error::{Result, SimCoreError};
 use crate::harness_manifest::HarnessManifest;
 use crate::network::NetworkModel;
 use crate::storage::StorageModel;
@@ -17,7 +18,7 @@ pub fn check_harness_agreement(
     options: &ScenarioOptions,
     mut semantic: FullDepthRun,
     _mode: EngineMode,
-) -> anyhow::Result<FullDepthRun> {
+) -> Result<FullDepthRun> {
     if !semantic.coverage.unsupported_constructs.is_empty() {
         semantic.digest.agreement = agreement_label(TraceAgreement::CoverageIncomplete);
         semantic.replay_guarantee = ReplayGuarantee::Partial;
@@ -44,11 +45,14 @@ pub fn check_harness_agreement(
 
     let harness = run_generated_harness(program, generated_rust, options)?;
     let mut harness_hash = crate::digest::events_hash(&harness.events);
-    let manifest_json = serde_json::to_string(&harness.manifest)?;
+    let manifest_json = serde_json::to_string(&harness.manifest)
+        .map_err(|source| SimCoreError::json("serialize harness manifest", source))?;
+    let lowered_for_backend = crate::lower::lower_from_program(program, &semantic.profile);
     let backend_execution = crate::backend::execute_profile(
         &semantic.profile,
         options.seed,
         &semantic.digest.semantic_trace_hash,
+        &lowered_for_backend.operations,
     );
 
     semantic.digest.harness_engine = backend_execution
@@ -119,14 +123,16 @@ fn run_generated_harness(
     program: &ScenarioProgram,
     generated_rust: &str,
     options: &ScenarioOptions,
-) -> anyhow::Result<HarnessRun> {
+) -> Result<HarnessRun> {
     let generated_rust_hash = crate::digest::stable_hash(generated_rust);
     let harness_dir = harness_dir(&program.source_hash, &program.target, &generated_rust_hash)?;
-    std::fs::create_dir_all(&harness_dir)?;
+    std::fs::create_dir_all(&harness_dir)
+        .map_err(|source| SimCoreError::io("create harness directory", source))?;
     let harness_source = harness_source(program, generated_rust, options)?;
     let harness_rs_path = harness_dir.join("harness.rs");
     let harness_bin_path = harness_dir.join(binary_name("harness_bin"));
-    std::fs::write(&harness_rs_path, harness_source)?;
+    std::fs::write(&harness_rs_path, harness_source)
+        .map_err(|source| SimCoreError::io("write generated harness source", source))?;
     remove_existing_output(&harness_bin_path)?;
 
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
@@ -135,13 +141,16 @@ fn run_generated_harness(
         .arg(&harness_rs_path)
         .arg("-o")
         .arg(&harness_bin_path)
-        .output()?;
+        .output()
+        .map_err(|source| SimCoreError::io("compile generated harness", source))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("generated harness failed to compile: {stderr}");
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(SimCoreError::HarnessCompileFailed { stderr });
     }
 
-    let run_output = Command::new(&harness_bin_path).output()?;
+    let run_output = Command::new(&harness_bin_path)
+        .output()
+        .map_err(|source| SimCoreError::io("run generated harness", source))?;
     let stdout = String::from_utf8_lossy(&run_output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&run_output.stderr).to_string();
     let events = parse_harness_events(&stdout)?;
@@ -157,17 +166,22 @@ fn run_generated_harness(
         event_count: events.len(),
     };
     let manifest_path = harness_dir.join("manifest.json");
-    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+    let manifest_json = serde_json::to_string_pretty(&manifest)
+        .map_err(|source| SimCoreError::json("serialize harness manifest", source))?;
+    std::fs::write(&manifest_path, manifest_json)
+        .map_err(|source| SimCoreError::io("write harness manifest", source))?;
     Ok(HarnessRun { events, manifest })
 }
 
-fn remove_existing_output(path: &PathBuf) -> anyhow::Result<()> {
+fn remove_existing_output(path: &PathBuf) -> Result<()> {
     if path.exists() {
-        std::fs::remove_file(path)?;
+        std::fs::remove_file(path)
+            .map_err(|source| SimCoreError::io("remove stale harness binary", source))?;
     }
     let pdb_path = path.with_extension("pdb");
     if pdb_path.exists() {
-        std::fs::remove_file(pdb_path)?;
+        std::fs::remove_file(pdb_path)
+            .map_err(|source| SimCoreError::io("remove stale harness debug file", source))?;
     }
     Ok(())
 }
@@ -176,7 +190,7 @@ fn harness_source(
     program: &ScenarioProgram,
     generated_rust: &str,
     options: &ScenarioOptions,
-) -> anyhow::Result<String> {
+) -> Result<String> {
     if has_event_marker(generated_rust) {
         return Ok(generated_rust.to_owned());
     }
@@ -196,7 +210,7 @@ fn instrument_generated_rust(
     program: &ScenarioProgram,
     generated_rust: &str,
     options: &ScenarioOptions,
-) -> anyhow::Result<String> {
+) -> Result<String> {
     let mut source = String::new();
     source.push_str(&harness_support_source(program, options)?);
     source.push_str(generated_rust);
@@ -216,10 +230,7 @@ fn instrument_generated_rust(
     Ok(source)
 }
 
-fn harness_support_source(
-    program: &ScenarioProgram,
-    options: &ScenarioOptions,
-) -> anyhow::Result<String> {
+fn harness_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
     let mut source = String::from(
         r#"
 #[allow(non_camel_case_types)]
@@ -284,10 +295,7 @@ impl __KoboWardRandom {
     Ok(source)
 }
 
-fn storage_support_source(
-    program: &ScenarioProgram,
-    options: &ScenarioOptions,
-) -> anyhow::Result<String> {
+fn storage_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
     let mut methods = Vec::new();
     for operation in &program.operations {
         if let ScenarioOpKind::StorageEvent { action } = &operation.kind {
@@ -319,10 +327,7 @@ fn storage_support_source(
     Ok(source)
 }
 
-fn network_support_source(
-    program: &ScenarioProgram,
-    options: &ScenarioOptions,
-) -> anyhow::Result<String> {
+fn network_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
     let mut methods = Vec::new();
     for operation in &program.operations {
         if let ScenarioOpKind::NetworkEvent { action } = &operation.kind {
@@ -353,7 +358,7 @@ fn inject_modeled_boundary_event(
     source: String,
     boundary: &ScenarioModeledBoundary,
     events: &[ScenarioEvent],
-) -> anyhow::Result<String> {
+) -> Result<String> {
     let print = event_print_statements(events)?;
     let replacements: &[(&str, &str)] = match boundary {
         ScenarioModeledBoundary::WardTask => &[("ward.task();", "ward.task();")],
@@ -368,10 +373,9 @@ fn inject_modeled_boundary_event(
             return Ok(source.replacen(needle, &instrumented_expression(replacement, &print), 1));
         }
     }
-    anyhow::bail!(
-        "generated Rust did not contain modeled boundary {}",
-        boundary_label(boundary)
-    )
+    Err(SimCoreError::ModeledBoundaryMissing {
+        boundary: boundary_label(boundary),
+    })
 }
 
 fn instrumented_expression(expression: &str, print: &str) -> String {
@@ -382,7 +386,7 @@ fn instrumented_expression(expression: &str, print: &str) -> String {
     }
 }
 
-fn main_wrapper_source(target: &str, final_events: &[ScenarioEvent]) -> anyhow::Result<String> {
+fn main_wrapper_source(target: &str, final_events: &[ScenarioEvent]) -> Result<String> {
     let mut source = String::from("\nfn main() {\n");
     source.push_str("    ");
     source.push_str(target);
@@ -396,16 +400,17 @@ fn main_wrapper_source(target: &str, final_events: &[ScenarioEvent]) -> anyhow::
     Ok(source)
 }
 
-fn event_print_statement(event: &ScenarioEvent) -> anyhow::Result<String> {
-    let json = serde_json::to_string(event)?;
+fn event_print_statement(event: &ScenarioEvent) -> Result<String> {
+    let json = serde_json::to_string(event)
+        .map_err(|source| SimCoreError::json("serialize harness event", source))?;
     Ok(format!("println!(\"KOBO_EVENT:{{}}\", r#\"{json}\"#);"))
 }
 
-fn event_print_statements(events: &[ScenarioEvent]) -> anyhow::Result<String> {
+fn event_print_statements(events: &[ScenarioEvent]) -> Result<String> {
     let statements = events
         .iter()
         .map(event_print_statement)
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
     Ok(statements.join("\n        "))
 }
 
@@ -488,6 +493,7 @@ fn terminal_failure_events(
                     }
                 }
             }
+            ScenarioOpKind::Select { .. } => {}
             ScenarioOpKind::RawNondeterminism { .. }
             | ScenarioOpKind::UncontrolledEffect { .. }
             | ScenarioOpKind::ExternalBoundary { .. }
@@ -579,20 +585,22 @@ fn core_boundary(boundary: &ScenarioModeledBoundary) -> crate::core::ModeledBoun
     }
 }
 
-fn parse_harness_events(stdout: &str) -> anyhow::Result<Vec<ScenarioEvent>> {
+fn parse_harness_events(stdout: &str) -> Result<Vec<ScenarioEvent>> {
     stdout
         .lines()
         .filter_map(|line| line.strip_prefix("KOBO_EVENT:"))
-        .map(|json| serde_json::from_str(json).map_err(Into::into))
+        .map(|json| {
+            serde_json::from_str(json)
+                .map_err(|source| SimCoreError::json("parse generated harness event", source))
+        })
         .collect()
 }
 
-fn harness_dir(
-    source_hash: &str,
-    target: &str,
-    generated_rust_hash: &str,
-) -> anyhow::Result<PathBuf> {
-    let root = std::env::current_dir()?.join(".kobo").join("harness");
+fn harness_dir(source_hash: &str, target: &str, generated_rust_hash: &str) -> Result<PathBuf> {
+    let root = std::env::current_dir()
+        .map_err(|source| SimCoreError::io("resolve current directory", source))?
+        .join(".kobo")
+        .join("harness");
     let safe_target = sanitize_path_segment(target);
     Ok(root.join(format!(
         "{}-{}-{}",

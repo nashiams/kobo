@@ -1,6 +1,7 @@
 use kobo_errors::KErrorCode;
 use kobo_ir::ScenarioProgram;
 
+use crate::error::{Result, SimCoreError};
 use crate::harness_manifest::HarnessManifest;
 use crate::network::NetworkModel;
 use crate::storage::StorageModel;
@@ -206,6 +207,11 @@ pub enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    Select {
+        branch_count: u32,
+        span_start: usize,
+        span_end: usize,
+    },
     RawNondeterminism {
         operation: String,
         span_start: usize,
@@ -227,16 +233,14 @@ pub enum ScenarioOperation {
     },
 }
 
-pub fn run_compiler_semantics(_source: &str, _target: &str) -> anyhow::Result<FullDepthRun> {
-    anyhow::bail!(
-        "source-based sim-core lowering is not available in production-depth mode; use run_semantics_from_program"
-    )
+pub fn run_compiler_semantics(_source: &str, _target: &str) -> Result<FullDepthRun> {
+    Err(SimCoreError::SourceLoweringUnavailable)
 }
 
 pub fn run_semantics_from_program(
     program: &ScenarioProgram,
     options: &ScenarioOptions,
-) -> anyhow::Result<FullDepthRun> {
+) -> Result<FullDepthRun> {
     let lowered = crate::lower::lower_from_program(program, &options.profile);
     Ok(execute_lowered(&program.target, options, lowered))
 }
@@ -246,10 +250,8 @@ pub fn run_full_depth(
     _target: &str,
     _mode: EngineMode,
     _options: ScenarioOptions,
-) -> anyhow::Result<FullDepthRun> {
-    anyhow::bail!(
-        "source-based full-depth execution is not available; build a ScenarioProgram through kobo-driver"
-    )
+) -> Result<FullDepthRun> {
+    Err(SimCoreError::SourceFullDepthUnavailable)
 }
 
 pub fn run_full_depth_from_program(
@@ -257,7 +259,7 @@ pub fn run_full_depth_from_program(
     generated_rust: &str,
     options: &ScenarioOptions,
     mode: EngineMode,
-) -> anyhow::Result<FullDepthRun> {
+) -> Result<FullDepthRun> {
     match mode {
         EngineMode::SemanticOnly => {
             let mut run = run_semantics_from_program(program, options)?;
@@ -404,6 +406,13 @@ impl<'a> Runtime<'a> {
                     span_start,
                     span_end,
                 } => self.record_network_event(action, (*span_start, *span_end)),
+                ScenarioOperation::Select {
+                    branch_count,
+                    span_start: _,
+                    span_end: _,
+                } => self
+                    .events
+                    .extend(crate::scheduler::select_events(*branch_count, self.options)),
                 ScenarioOperation::RawNondeterminism {
                     operation,
                     span_start,

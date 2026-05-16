@@ -59,6 +59,7 @@ fn compiler_semantics_reports_coverage_gap_for_unmodeled_construct() {
         coverage: ScenarioCoverageFacts {
             unsupported_constructs: vec!["tokio::select!".to_owned()],
             opaque_boundaries: Vec::new(),
+            call_graph_sccs: Vec::new(),
         },
     };
 

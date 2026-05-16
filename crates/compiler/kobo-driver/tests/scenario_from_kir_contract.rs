@@ -59,3 +59,64 @@ fn scenario_model_is_derived_from_compiler_facts_not_fixture_names() {
         "scenario operations must retain source-mapped spans"
     );
 }
+
+#[test]
+fn scenario_lowering_records_whole_program_recursive_sccs() {
+    let source = r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {}
+
+fn open(tx: Transaction, retry: bool) {
+    step(tx, retry);
+}
+
+fn step(tx: Transaction, retry: bool) {
+    if retry {
+        open(tx, false);
+    } else {
+        tx.commit();
+    }
+}
+
+fn transaction_entry() {
+    let tx = Transaction {};
+    open(tx, true);
+}
+"#;
+
+    let codegen = run_codegen_for_source_with_policy(source, "checked").expect("codegen artifacts");
+    let scenario = build_scenario_program(
+        &codegen,
+        "transaction_entry",
+        "test-source-hash".to_owned(),
+        "sync",
+    )
+    .expect("scenario program");
+
+    assert!(
+        scenario
+            .coverage
+            .call_graph_sccs
+            .iter()
+            .any(|component| component.is_recursive
+                && component.functions == vec!["open".to_owned(), "step".to_owned()]),
+        "scenario lowering must be backed by a whole-program SCC analysis: {:?}",
+        scenario.coverage.call_graph_sccs
+    );
+    assert!(
+        scenario
+            .operations
+            .iter()
+            .any(|operation| { matches!(&operation.kind, kobo_ir::ScenarioOpKind::Loop) }),
+        "recursive SCC re-entry should be represented as a modeled loop boundary"
+    );
+    assert!(
+        !scenario
+            .coverage
+            .unsupported_constructs
+            .iter()
+            .any(|construct| construct.contains("recursion depth")),
+        "SCC lowering must not rely on a bounded helper-call recursion guard: {:?}",
+        scenario.coverage.unsupported_constructs
+    );
+}

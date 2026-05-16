@@ -1,12 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
-    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCoverageFacts,
-    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
+    ScenarioCoverageFacts, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
 use syn::{
     Block, Expr, ExprAsync, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath,
     ExprStruct, File, Item, ItemFn, ItemUse, Lit, Local, Macro, MetaNameValue, Pat, PatIdent,
@@ -17,6 +18,8 @@ type BindingMap = HashMap<String, String>;
 type BoolMap = HashMap<String, bool>;
 type ImportMap = HashMap<String, String>;
 type BoundaryPolicyMap = HashMap<String, BoundaryPolicyFact>;
+type FunctionMap<'a> = HashMap<String, &'a ItemFn>;
+type FunctionSccMap = HashMap<String, usize>;
 
 #[derive(Default)]
 struct BindingEnv {
@@ -30,15 +33,43 @@ struct BoundaryPolicyFact {
     reason: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct FunctionScc {
+    functions: Vec<String>,
+    is_recursive: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ScenarioCallGraph {
+    sccs: Vec<FunctionScc>,
+    function_sccs: FunctionSccMap,
+}
+
+#[derive(Default)]
+struct TarjanState {
+    next_index: usize,
+    stack: Vec<String>,
+    indices: HashMap<String, usize>,
+    lowlinks: HashMap<String, usize>,
+    on_stack: HashSet<String>,
+    components: Vec<Vec<String>>,
+}
+
+struct DirectCallVisitor<'a> {
+    known_functions: &'a HashSet<String>,
+    calls: Vec<String>,
+}
+
 struct ScenarioLowerer<'a> {
     ast: &'a KoboFile,
     must_call_types: &'a HashMap<String, Vec<String>>,
-    functions: &'a HashMap<String, &'a ItemFn>,
+    functions: &'a FunctionMap<'a>,
+    call_graph: &'a ScenarioCallGraph,
     imports: &'a ImportMap,
     boundary_policies: &'a BoundaryPolicyMap,
     operations: Vec<ScenarioOp>,
     coverage: ScenarioCoverageFacts,
-    call_depth: usize,
+    active_functions: Vec<String>,
 }
 
 pub fn build_scenario_programs(
@@ -49,6 +80,7 @@ pub fn build_scenario_programs(
     let _ = fallback_profile;
     let file = ast.syn_file();
     let functions = collect_functions(file);
+    let call_graph = ScenarioCallGraph::build(&functions);
     let imports = collect_use_crate_aliases(file);
     let boundary_policies = collect_boundary_policies(file);
     let must_call_types = must_call_type_map(file, must_call_obligations);
@@ -59,6 +91,7 @@ pub fn build_scenario_programs(
             lower_function(
                 ast,
                 &functions,
+                &call_graph,
                 &imports,
                 &boundary_policies,
                 &must_call_types,
@@ -70,7 +103,8 @@ pub fn build_scenario_programs(
 
 fn lower_function(
     ast: &KoboFile,
-    functions: &HashMap<String, &ItemFn>,
+    functions: &FunctionMap<'_>,
+    call_graph: &ScenarioCallGraph,
     imports: &ImportMap,
     boundary_policies: &BoundaryPolicyMap,
     must_call_types: &HashMap<String, Vec<String>>,
@@ -80,14 +114,18 @@ fn lower_function(
         ast,
         must_call_types,
         functions,
+        call_graph,
         imports,
         boundary_policies,
         operations: Vec::new(),
-        coverage: ScenarioCoverageFacts::default(),
-        call_depth: 0,
+        coverage: ScenarioCoverageFacts {
+            call_graph_sccs: call_graph.coverage_facts(),
+            ..ScenarioCoverageFacts::default()
+        },
+        active_functions: Vec::new(),
     };
     let mut env = BindingEnv::default();
-    lowerer.execute_block(&function.block, &mut env);
+    lowerer.execute_function(&function.sig.ident.to_string(), function, &mut env);
     lowerer.operations.push(ScenarioOp {
         span: KoboSpan::generated(ast.file_id),
         kind: ScenarioOpKind::Return,
@@ -243,6 +281,144 @@ fn parse_boundary_attr(attr: &syn::Attribute) -> Option<(String, BoundaryPolicyF
     Some((crate_name, BoundaryPolicyFact { policy, reason }))
 }
 
+impl ScenarioCallGraph {
+    fn build(functions: &FunctionMap<'_>) -> Self {
+        let edges = collect_call_graph_edges(functions);
+        let mut state = TarjanState::default();
+        let mut names = functions.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        for name in names {
+            if !state.indices.contains_key(&name) {
+                state.connect(&name, &edges);
+            }
+        }
+
+        let mut sccs = state
+            .components
+            .into_iter()
+            .map(|mut functions| {
+                functions.sort();
+                let is_recursive = functions.len() > 1
+                    || functions
+                        .first()
+                        .and_then(|function| {
+                            edges.get(function).map(|calls| calls.contains(function))
+                        })
+                        .unwrap_or(false);
+                FunctionScc {
+                    functions,
+                    is_recursive,
+                }
+            })
+            .collect::<Vec<_>>();
+        sccs.sort_by(|left, right| left.functions.cmp(&right.functions));
+
+        let mut function_sccs = HashMap::new();
+        for (index, component) in sccs.iter().enumerate() {
+            for function in &component.functions {
+                function_sccs.insert(function.clone(), index);
+            }
+        }
+
+        Self {
+            sccs,
+            function_sccs,
+        }
+    }
+
+    fn coverage_facts(&self) -> Vec<ScenarioCallGraphScc> {
+        self.sccs
+            .iter()
+            .map(|component| ScenarioCallGraphScc {
+                functions: component.functions.clone(),
+                is_recursive: component.is_recursive,
+            })
+            .collect()
+    }
+
+    fn is_recursive_function(&self, function: &str) -> bool {
+        self.function_sccs
+            .get(function)
+            .and_then(|index| self.sccs.get(*index))
+            .map(|component| component.is_recursive)
+            .unwrap_or(false)
+    }
+}
+
+impl TarjanState {
+    fn connect(&mut self, node: &str, edges: &HashMap<String, Vec<String>>) {
+        let node_index = self.next_index;
+        self.next_index += 1;
+        self.indices.insert(node.to_owned(), node_index);
+        self.lowlinks.insert(node.to_owned(), node_index);
+        self.stack.push(node.to_owned());
+        self.on_stack.insert(node.to_owned());
+
+        for callee in edges.get(node).into_iter().flatten() {
+            if !self.indices.contains_key(callee) {
+                self.connect(callee, edges);
+                let child_lowlink = self.lowlinks.get(callee).copied().unwrap_or(node_index);
+                let node_lowlink = self.lowlinks.get(node).copied().unwrap_or(node_index);
+                self.lowlinks
+                    .insert(node.to_owned(), node_lowlink.min(child_lowlink));
+            } else if self.on_stack.contains(callee) {
+                let callee_index = self.indices.get(callee).copied().unwrap_or(node_index);
+                let node_lowlink = self.lowlinks.get(node).copied().unwrap_or(node_index);
+                self.lowlinks
+                    .insert(node.to_owned(), node_lowlink.min(callee_index));
+            }
+        }
+
+        if self.indices.get(node) == self.lowlinks.get(node) {
+            self.finish_component(node);
+        }
+    }
+
+    fn finish_component(&mut self, root: &str) {
+        let mut component = Vec::new();
+        while let Some(function) = self.stack.pop() {
+            self.on_stack.remove(&function);
+            let is_root = function == root;
+            component.push(function);
+            if is_root {
+                break;
+            }
+        }
+        if !component.is_empty() {
+            self.components.push(component);
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for DirectCallVisitor<'_> {
+    fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        if let Expr::Path(path) = node.func.as_ref() {
+            if let Some(function_name) = path_last_ident(&path.path) {
+                if self.known_functions.contains(&function_name) {
+                    self.calls.push(function_name);
+                }
+            }
+        }
+        visit::visit_expr_call(self, node);
+    }
+}
+
+fn collect_call_graph_edges(functions: &FunctionMap<'_>) -> HashMap<String, Vec<String>> {
+    let known_functions = functions.keys().cloned().collect::<HashSet<_>>();
+    let mut edges = HashMap::new();
+    for (function_name, function) in functions {
+        let mut visitor = DirectCallVisitor {
+            known_functions: &known_functions,
+            calls: Vec::new(),
+        };
+        visitor.visit_block(&function.block);
+        visitor.calls.sort();
+        visitor.calls.dedup();
+        edges.insert(function_name.clone(), visitor.calls);
+    }
+    edges
+}
+
 impl BindingEnv {
     fn bind(&mut self, local: String, obligation_key: String) {
         self.bindings.insert(local, obligation_key);
@@ -262,6 +438,17 @@ impl BindingEnv {
 }
 
 impl<'a> ScenarioLowerer<'a> {
+    fn execute_function(
+        &mut self,
+        function_name: &str,
+        function: &'a ItemFn,
+        env: &mut BindingEnv,
+    ) {
+        self.active_functions.push(function_name.to_owned());
+        self.execute_block(&function.block, env);
+        let _ = self.active_functions.pop();
+    }
+
     fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) {
         for statement in &block.stmts {
             self.execute_statement(statement, env);
@@ -512,8 +699,12 @@ impl<'a> ScenarioLowerer<'a> {
         let Some(function) = self.functions.get(function_name.as_str()).copied() else {
             return false;
         };
-        if self.call_depth > 16 {
-            self.uncontrolled_effect("helper-call recursion depth exceeded", call);
+
+        if self.is_recursive_reentry(&function_name) {
+            self.operations.push(ScenarioOp {
+                span: self.span(call),
+                kind: ScenarioOpKind::Loop,
+            });
             return true;
         }
 
@@ -539,10 +730,16 @@ impl<'a> ScenarioLowerer<'a> {
             }
         }
 
-        self.call_depth += 1;
-        self.execute_block(&function.block, &mut helper_env);
-        self.call_depth -= 1;
+        self.execute_function(&function_name, function, &mut helper_env);
         true
+    }
+
+    fn is_recursive_reentry(&self, function_name: &str) -> bool {
+        self.call_graph.is_recursive_function(function_name)
+            && self
+                .active_functions
+                .iter()
+                .any(|active_function| active_function == function_name)
     }
 
     fn execute_method_call(&mut self, call: &'a ExprMethodCall, env: &mut BindingEnv) {

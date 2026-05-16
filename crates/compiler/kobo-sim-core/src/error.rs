@@ -2,7 +2,7 @@ use std::io;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SimCoreError {
-    #[error("source-based sim-core lowering is not available in modeled-island mode; use run_semantics_from_program")]
+    #[error("source-based sim-core lowering is not available; build a compiler ScenarioProgram through kobo-driver")]
     SourceLoweringUnavailable,
     #[error("source-based full-depth execution is not available; build a ScenarioProgram through kobo-driver")]
     SourceFullDepthUnavailable,

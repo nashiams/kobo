@@ -435,7 +435,8 @@ fn backend_for_profile(profile: &str) -> &'static str {
         "sync" => "loom",
         "stateful-input" => "proptest",
         "failpoint" => "failpoints",
-        "network" | "network-design" => "network-design",
+        "network" | "network-design" => "turmoil",
+        "distributed" | "madsim" => "madsim",
         _ => "shuttle",
     }
 }
@@ -462,7 +463,7 @@ fn validate_exact_witness_contract(
     let harness_engine = digest["harness_engine"].as_str();
     let agreement = digest["agreement"].as_str();
     let has_generated_harness =
-        harness_engine.is_some_and(|engine| engine.starts_with("generated-rust-process"));
+        harness_engine.is_some_and(|engine| engine.starts_with("generated-rust"));
     if semantic_engine != Some("driver-kir-scenario")
         || !has_generated_harness
         || agreement != Some("matched")

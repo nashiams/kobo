@@ -1345,7 +1345,8 @@ fn backend_for_profile(profile: &str) -> &'static str {
         "sync" => "loom",
         "stateful-input" => "proptest",
         "failpoint" => "failpoints",
-        "network" | "network-design" => "network-design",
+        "network" | "network-design" => "turmoil",
+        "distributed" | "madsim" => "madsim",
         _ => "shuttle",
     }
 }

@@ -575,7 +575,9 @@ fn write_run_witness(
     let coverage = coverage_json(run);
     let event_stream = shrink_event_stream(run, sim_profile);
     let witness_events = events_json(&event_stream.events);
-    let witness = serde_json::json!({
+    let inferred_obligations =
+        witness_evidence::inferred_obligations_json(&source_path, &document.source, run);
+    let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
         "target": format!("{}:{}", source_path, run.target),
@@ -623,6 +625,48 @@ fn write_run_witness(
         "events": witness_events.clone(),
         "event_stream": witness_events,
     });
+    let object = witness
+        .as_object_mut()
+        .expect("witness json literal should be an object");
+    object.insert(
+        "call_graph_obligation_summaries".to_owned(),
+        witness_evidence::call_graph_obligation_summaries_json(scenario_program, run),
+    );
+    object.insert(
+        "replay_grade".to_owned(),
+        serde_json::json!(witness_evidence::replay_grade_json(
+            run,
+            fuzz_plan.is_some()
+        )),
+    );
+    object.insert(
+        "boundary_ledger".to_owned(),
+        witness_evidence::boundary_ledger_json(scenario_program, run),
+    );
+    object.insert(
+        "inferred_obligations".to_owned(),
+        inferred_obligations.clone(),
+    );
+    object.insert(
+        "lifecycle_inference".to_owned(),
+        serde_json::json!({
+            "mode": "observe",
+            "source": "scenario_program",
+            "template_version": "v0.10.1",
+            "obligations": inferred_obligations,
+        }),
+    );
+    object.insert(
+        "available_boundary_ledger_statuses".to_owned(),
+        serde_json::json!([
+            "modeled",
+            "recordable",
+            "activity",
+            "opaque",
+            "outside",
+            "debt"
+        ]),
+    );
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
     Ok(witness_path)

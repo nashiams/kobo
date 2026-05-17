@@ -120,6 +120,9 @@ fn replay_v1(
     validate_removed_events_replay_safe(witness, &run.events, error_format)?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
+    let inferred_obligations =
+        witness_evidence::inferred_obligations_json(source_display, &verified_source.source, &run);
+    let fuzz_enabled = witness["fuzz"]["enabled"].as_bool().unwrap_or(false);
     let expected = serde_json::json!({
         "backend": backend_for_profile(&run.profile),
         "backend_replay": replay_token(&verified_source.hash, seed, &run),
@@ -130,6 +133,16 @@ fn replay_v1(
         "harness_manifest": run.harness_manifest.clone(),
         "operation_coverage": witness_evidence::operation_coverage_json(&scenario_program, &run),
         "function_summaries": witness_evidence::function_summaries_json(&scenario_program, &run),
+        "call_graph_obligation_summaries": witness_evidence::call_graph_obligation_summaries_json(&scenario_program, &run),
+        "replay_grade": witness_evidence::replay_grade_json(&run, fuzz_enabled),
+        "boundary_ledger": witness_evidence::boundary_ledger_json(&scenario_program, &run),
+        "inferred_obligations": inferred_obligations.clone(),
+        "lifecycle_inference": {
+            "mode": "observe",
+            "source": "scenario_program",
+            "template_version": "v0.10.1",
+            "obligations": inferred_obligations,
+        },
         "failure": failure_json(source_display, &verified_source.source, &run),
         "events": replay_events_json(witness, &run.events)?,
     });
@@ -143,6 +156,11 @@ fn replay_v1(
         "harness_manifest": witness["harness_manifest"].clone(),
         "operation_coverage": witness["operation_coverage"].clone(),
         "function_summaries": witness["function_summaries"].clone(),
+        "call_graph_obligation_summaries": witness["call_graph_obligation_summaries"].clone(),
+        "replay_grade": witness["replay_grade"].clone(),
+        "boundary_ledger": witness["boundary_ledger"].clone(),
+        "inferred_obligations": witness["inferred_obligations"].clone(),
+        "lifecycle_inference": witness["lifecycle_inference"].clone(),
         "failure": witness_failure_json(witness),
         "events": witness["events"].clone(),
     });
@@ -688,6 +706,11 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["harness_manifest", "stdout_hash"][..]);
             required.push(&["operation_coverage", "modeled"][..]);
             required.push(&["function_summaries"][..]);
+            required.push(&["call_graph_obligation_summaries"][..]);
+            required.push(&["replay_grade"][..]);
+            required.push(&["boundary_ledger"][..]);
+            required.push(&["inferred_obligations"][..]);
+            required.push(&["lifecycle_inference", "mode"][..]);
         }
         for path in required {
             if value_at(witness, path).is_none() {

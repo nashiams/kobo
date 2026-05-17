@@ -669,6 +669,14 @@ impl<'a> Runtime<'a> {
             });
             return;
         }
+        if is_explicit_partial_boundary(&policy) {
+            self.events.push(ScenarioEvent {
+                kind: format!("boundary-{}", policy.as_str()),
+                label: Some(crate_name),
+                value: Some(self.options.seed),
+            });
+            return;
+        }
         self.set_failure_once(ScenarioFailure {
             code: KErrorCode::K0107,
             message: format!(
@@ -802,6 +810,13 @@ fn is_replay_owned_boundary(policy: &BoundaryPolicyChoice) -> bool {
     matches!(
         policy,
         BoundaryPolicyChoice::Model | BoundaryPolicyChoice::Record | BoundaryPolicyChoice::Stub
+    )
+}
+
+fn is_explicit_partial_boundary(policy: &BoundaryPolicyChoice) -> bool {
+    matches!(
+        policy,
+        BoundaryPolicyChoice::Outside | BoundaryPolicyChoice::Opaque | BoundaryPolicyChoice::Debt
     )
 }
 

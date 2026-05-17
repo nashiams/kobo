@@ -45,6 +45,13 @@ struct ScenarioCallGraph {
     function_sccs: FunctionSccMap,
 }
 
+struct InferredLifecycleCreation {
+    binding: String,
+    type_name: String,
+    actions: Vec<String>,
+    span: KoboSpan,
+}
+
 #[derive(Default)]
 struct TarjanState {
     next_index: usize,
@@ -445,8 +452,37 @@ impl<'a> ScenarioLowerer<'a> {
         env: &mut BindingEnv,
     ) {
         self.active_functions.push(function_name.to_owned());
+        self.seed_handler_obligations(function, env);
         self.execute_block(&function.block, env);
         let _ = self.active_functions.pop();
+    }
+
+    fn seed_handler_obligations(&mut self, function: &'a ItemFn, env: &mut BindingEnv) {
+        if !function
+            .attrs
+            .iter()
+            .any(|attr| path_ends_with(attr.path(), &["kobo", "handler"]))
+        {
+            return;
+        }
+
+        for input in &function.sig.inputs {
+            let syn::FnArg::Typed(argument) = input else {
+                continue;
+            };
+            let Some(binding) = pat_ident(argument.pat.as_ref()) else {
+                continue;
+            };
+            env.bind(binding.clone(), binding.clone());
+            self.operations.push(ScenarioOp {
+                span: self.span(argument),
+                kind: ScenarioOpKind::CreateObligation {
+                    binding,
+                    type_name: "HandlerReply".to_owned(),
+                    actions: handler_reply_actions(),
+                },
+            });
+        }
     }
 
     fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) {
@@ -484,6 +520,19 @@ impl<'a> ScenarioLowerer<'a> {
                 return;
             }
         }
+        if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref()) {
+            env.bind(creation.binding.clone(), creation.binding.clone());
+            self.operations.push(ScenarioOp {
+                span: creation.span,
+                kind: ScenarioOpKind::CreateObligation {
+                    binding: creation.binding,
+                    type_name: creation.type_name,
+                    actions: creation.actions,
+                },
+            });
+            self.execute_expr(init.expr.as_ref(), env);
+            return;
+        }
         if let Some(binding) =
             expr_path_ident(init.expr.as_ref()).and_then(|name| env.resolve(&name))
         {
@@ -517,6 +566,39 @@ impl<'a> ScenarioLowerer<'a> {
             .then(|| (binding, type_name, self.span(expr)))
     }
 
+    fn local_lifecycle_creation(
+        &self,
+        local: &'a Local,
+        expr: &'a Expr,
+    ) -> Option<InferredLifecycleCreation> {
+        let binding = pat_ident(&local.pat)?;
+        if tokio_spawn_call(expr).is_some() {
+            return Some(InferredLifecycleCreation {
+                binding,
+                type_name: "SpawnedTask".to_owned(),
+                actions: spawned_task_actions(),
+                span: self.span(expr),
+            });
+        }
+
+        let call = lifecycle_method_call(expr)?;
+        match call.method.to_string().as_str() {
+            "recv" => Some(InferredLifecycleCreation {
+                binding,
+                type_name: "Delivery".to_owned(),
+                actions: queue_delivery_actions(),
+                span: self.span(call),
+            }),
+            "begin" => Some(InferredLifecycleCreation {
+                binding,
+                type_name: "Transaction".to_owned(),
+                actions: transaction_actions(),
+                span: self.span(call),
+            }),
+            _ => None,
+        }
+    }
+
     fn execute_expr(&mut self, expr: &'a Expr, env: &mut BindingEnv) {
         match expr {
             Expr::MethodCall(call) => self.execute_method_call(call, env),
@@ -524,7 +606,21 @@ impl<'a> ScenarioLowerer<'a> {
             Expr::If(expr_if) => self.execute_if(expr_if, env),
             Expr::Match(expr_match) => self.execute_match(expr_match, env),
             Expr::Async(expr_async) => self.execute_async(expr_async, env),
-            Expr::Await(await_expr) => self.execute_expr(await_expr.base.as_ref(), env),
+            Expr::Await(await_expr) => {
+                if let Some(binding) =
+                    expr_path_ident(await_expr.base.as_ref()).and_then(|name| env.resolve(&name))
+                {
+                    self.operations.push(ScenarioOp {
+                        span: self.span(expr),
+                        kind: ScenarioOpKind::Discharge {
+                            binding,
+                            action: "join".to_owned(),
+                        },
+                    });
+                    return;
+                }
+                self.execute_expr(await_expr.base.as_ref(), env);
+            }
             Expr::Block(block) => self.execute_block(&block.block, env),
             Expr::Loop(expr_loop) => self.operations.push(ScenarioOp {
                 span: self.span(expr_loop),
@@ -754,7 +850,7 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(call),
                 kind: ScenarioOpKind::Discharge {
                     binding,
-                    action: call.method.to_string(),
+                    action: terminal_action_name(&call.method.to_string()),
                 },
             });
             return;
@@ -988,6 +1084,61 @@ fn is_tokio_spawn(path: &Path) -> bool {
     path_ends_with(path, &["tokio", "spawn"])
 }
 
+fn tokio_spawn_call(expr: &Expr) -> Option<&ExprCall> {
+    match expr {
+        Expr::Call(call) => match call.func.as_ref() {
+            Expr::Path(path) if is_tokio_spawn(&path.path) => Some(call),
+            _ => None,
+        },
+        Expr::Paren(paren) => tokio_spawn_call(paren.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn lifecycle_method_call(expr: &Expr) -> Option<&ExprMethodCall> {
+    match expr {
+        Expr::MethodCall(call) => Some(call),
+        Expr::Await(await_expr) => lifecycle_method_call(await_expr.base.as_ref()),
+        Expr::Paren(paren) => lifecycle_method_call(paren.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn queue_delivery_actions() -> Vec<String> {
+    ["ack", "nack", "requeue"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn transaction_actions() -> Vec<String> {
+    ["commit", "rollback"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn handler_reply_actions() -> Vec<String> {
+    ["reply", "reject", "cancel"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn spawned_task_actions() -> Vec<String> {
+    ["join", "abort", "detach-with-policy"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn terminal_action_name(method: &str) -> String {
+    match method {
+        "detach_with_policy" => "detach-with-policy".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 fn is_replay_owned_policy(policy: &ScenarioBoundaryPolicy) -> bool {
     matches!(
         policy,
@@ -1109,4 +1260,91 @@ fn path_ends_with(path: &Path, suffix: &[&str]) -> bool {
 fn select_branch_count(mac: &Macro) -> u32 {
     let branch_count = mac.tokens.to_string().matches("=>").count();
     branch_count.max(1) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kobo_ir::{FileId, NodeIdGen};
+    use kobo_parser::parse_file;
+
+    #[test]
+    fn infers_normal_lifecycle_templates_from_scenario_ast() {
+        let source = r#"
+struct Queue {}
+struct Delivery {}
+struct Db {}
+struct Tx {}
+struct Request {}
+
+#[kobo::handler]
+#[kobo::scenario(profile = "async")]
+async fn service(request: Request) {
+    let message = Queue {}.recv().await;
+    message.ack();
+
+    let tx = Db {}.begin();
+    tx.commit();
+
+    let task = tokio::spawn(async {});
+    task.abort();
+
+    request.reply();
+}
+"#;
+        let mut id_gen = NodeIdGen::new();
+        let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+        let program = build_scenario_programs(&ast, &[], "async")
+            .into_iter()
+            .find(|program| program.target == "service")
+            .expect("service scenario should lower");
+
+        let creates = program
+            .operations
+            .iter()
+            .filter_map(|operation| match &operation.kind {
+                ScenarioOpKind::CreateObligation {
+                    binding,
+                    type_name,
+                    actions,
+                } => Some((binding.as_str(), type_name.as_str(), actions.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (binding, type_name, actions) in [
+            ("request", "HandlerReply", handler_reply_actions()),
+            ("message", "Delivery", queue_delivery_actions()),
+            ("tx", "Transaction", transaction_actions()),
+            ("task", "SpawnedTask", spawned_task_actions()),
+        ] {
+            assert!(
+                creates
+                    .iter()
+                    .any(|candidate| candidate == &(binding, type_name, actions.clone())),
+                "missing inferred obligation {binding}/{type_name}/{actions:?} in {creates:?}"
+            );
+        }
+
+        let discharges = program
+            .operations
+            .iter()
+            .filter_map(|operation| match &operation.kind {
+                ScenarioOpKind::Discharge { binding, action } => {
+                    Some((binding.as_str(), action.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for discharge in [
+            ("request", "reply"),
+            ("message", "ack"),
+            ("tx", "commit"),
+            ("task", "abort"),
+        ] {
+            assert!(
+                discharges.contains(&discharge),
+                "missing lifecycle discharge {discharge:?} in {discharges:?}"
+            );
+        }
+    }
 }

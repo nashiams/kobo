@@ -44,6 +44,12 @@ pub fn check_harness_agreement(
         return Ok(semantic);
     }
 
+    if !semantic.opaque_boundaries.is_empty() {
+        semantic.digest.agreement = agreement_label(TraceAgreement::BoundaryPartial);
+        semantic.replay_guarantee = ReplayGuarantee::Partial;
+        return Ok(semantic);
+    }
+
     let harness = run_generated_harness(program, generated_rust, options)?;
     let mut harness_hash = crate::digest::events_hash(&harness.events);
     let manifest_json = serde_json::to_string(&harness.manifest)
@@ -109,6 +115,7 @@ enum TraceAgreement {
     Matched,
     Diverged,
     CoverageIncomplete,
+    BoundaryPartial,
 }
 
 fn agreement_label(agreement: TraceAgreement) -> String {
@@ -116,6 +123,7 @@ fn agreement_label(agreement: TraceAgreement) -> String {
         TraceAgreement::Matched => String::from("matched"),
         TraceAgreement::Diverged => String::from("diverged"),
         TraceAgreement::CoverageIncomplete => String::from("coverage-incomplete"),
+        TraceAgreement::BoundaryPartial => String::from("partial-boundary"),
     }
 }
 
@@ -351,7 +359,7 @@ fn instrument_generated_rust(
     options: &ScenarioOptions,
 ) -> Result<String> {
     let mut source = String::new();
-    source.push_str(&harness_support_source(program, options)?);
+    source.push_str(&harness_support_source(program, generated_rust, options)?);
     source.push_str(&strip_harness_only_attrs(generated_rust));
     if !source.ends_with('\n') {
         source.push('\n');
@@ -375,6 +383,7 @@ fn instrument_generated_rust(
         &program.target,
         &final_events,
         options,
+        target_is_async(generated_rust, &program.target),
     )?);
     Ok(source)
 }
@@ -400,7 +409,11 @@ fn strip_harness_only_attrs(source: &str) -> String {
     output
 }
 
-fn harness_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
+fn harness_support_source(
+    program: &ScenarioProgram,
+    generated_rust: &str,
+    options: &ScenarioOptions,
+) -> Result<String> {
     let mut source = String::from(
         r#"
 #[allow(non_camel_case_types)]
@@ -435,6 +448,31 @@ impl __KoboWardRandom {
     fn u64(&self) -> u64 { 0 }
     fn next_u64(&self) -> u64 { 0 }
 }
+
+fn __kobo_block_on<F: std::future::Future>(future: F) -> F::Output {
+    fn clone(_: *const ()) -> std::task::RawWaker {
+        raw_waker()
+    }
+    fn wake(_: *const ()) {}
+    fn wake_by_ref(_: *const ()) {}
+    fn drop(_: *const ()) {}
+    fn raw_waker() -> std::task::RawWaker {
+        std::task::RawWaker::new(
+            std::ptr::null(),
+            &std::task::RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+        )
+    }
+
+    let waker = unsafe { std::task::Waker::from_raw(raw_waker()) };
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(output) => return output,
+            std::task::Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
 "#,
     );
 
@@ -453,18 +491,36 @@ impl __KoboWardRandom {
                 continue;
             }
             impls.push(type_name.clone());
+            if !generated_rust_defines_type(generated_rust, type_name) {
+                source.push_str("struct ");
+                source.push_str(type_name);
+                source.push_str(";\n");
+            }
             source.push_str("impl ");
             source.push_str(type_name);
             source.push_str(" {\n");
             for action in actions {
                 source.push_str("    fn ");
-                source.push_str(action);
+                source.push_str(&rust_method_name(action));
                 source.push_str("(self) {}\n");
             }
             source.push_str("}\n");
         }
     }
     Ok(source)
+}
+
+fn generated_rust_defines_type(source: &str, type_name: &str) -> bool {
+    let struct_pattern = format!("struct {type_name}");
+    let enum_pattern = format!("enum {type_name}");
+    let type_pattern = format!("type {type_name}");
+    source.contains(&struct_pattern)
+        || source.contains(&enum_pattern)
+        || source.contains(&type_pattern)
+}
+
+fn rust_method_name(action: &str) -> String {
+    action.replace('-', "_")
 }
 
 fn external_boundary_support_source(
@@ -516,9 +572,11 @@ fn tokio_support_source(program: &ScenarioProgram, options: &ScenarioOptions) ->
         return Ok(String::new());
     }
     let events = modeled_boundary_events(&ScenarioModeledBoundary::WardTask, options);
-    let mut source = String::from("mod tokio {\n    pub fn spawn<F>(_future: F) {\n        ");
+    let mut source = String::from(
+        "mod tokio {\n    pub struct JoinHandle;\n    impl JoinHandle {\n        pub fn abort(self) {}\n        pub fn detach_with_policy(self) {}\n    }\n    impl std::future::Future for JoinHandle {\n        type Output = ();\n        fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {\n            std::task::Poll::Ready(())\n        }\n    }\n    pub fn spawn<F>(_future: F) -> JoinHandle {\n        ",
+    );
     source.push_str(&event_print_statements(&events)?);
-    source.push_str("\n    }\n}\n");
+    source.push_str("\n        JoinHandle\n    }\n}\n");
     Ok(source)
 }
 
@@ -703,6 +761,7 @@ fn main_wrapper_source(
     target: &str,
     final_events: &[ScenarioEvent],
     options: &ScenarioOptions,
+    target_is_async: bool,
 ) -> Result<String> {
     let mut source = if options.profile == "sync" {
         String::from("\nfn main() {\n    loom::model(|| {\n")
@@ -713,8 +772,14 @@ fn main_wrapper_source(
     if options.profile == "sync" {
         source.push_str("    ");
     }
-    source.push_str(target);
-    source.push_str("();\n");
+    if target_is_async {
+        source.push_str("__kobo_block_on(");
+        source.push_str(target);
+        source.push_str("());\n");
+    } else {
+        source.push_str(target);
+        source.push_str("();\n");
+    }
     for event in final_events {
         source.push_str("    ");
         if options.profile == "sync" {
@@ -728,6 +793,10 @@ fn main_wrapper_source(
     }
     source.push_str("}\n");
     Ok(source)
+}
+
+fn target_is_async(source: &str, target: &str) -> bool {
+    source.contains(&format!("async fn {target}"))
 }
 
 fn event_print_statement(event: &ScenarioEvent) -> Result<String> {

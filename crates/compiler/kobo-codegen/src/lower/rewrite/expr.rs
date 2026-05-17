@@ -19,6 +19,7 @@ impl super::Lowerer<'_> {
     pub(super) fn lower_expr(&mut self, expr: &mut syn::Expr, scopes: &mut ScopeStack) {
         match expr {
             syn::Expr::Array(array) => self.lower_exprs(array.elems.iter_mut(), scopes),
+            syn::Expr::Async(expr_async) => self.lower_nested_block(&mut expr_async.block, scopes),
             syn::Expr::Assign(assign) => {
                 if let Some(replacement) = self.lower_assign_expr(assign, scopes) {
                     *expr = replacement;

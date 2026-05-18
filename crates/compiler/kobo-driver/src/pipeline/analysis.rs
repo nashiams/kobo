@@ -2,7 +2,8 @@ use std::path::Path;
 
 use kobo_analysis::{
     analyze_send_violations, facts_to_diagnostics, run_analysis, scan_source_cancel_safety,
-    scan_source_handler_leaks, SpawnSite as AnalysisSpawnSite,
+    scan_source_handler_leaks, scan_source_parallel_warnings, ParallelWarningKind,
+    SpawnSite as AnalysisSpawnSite,
 };
 use kobo_errors::{
     resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
@@ -65,6 +66,7 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
     project_guard_liveness_diagnostics(session, kir);
     project_cancel_safety_diagnostics(session);
     project_handler_leak_diagnostics(session);
+    project_parallel_diagnostics(session);
     session.suppress_diagnostics_from(downstream_diagnostics_start);
 
     if session.has_errors() {
@@ -404,6 +406,68 @@ fn project_handler_leak_diagnostics(session: &mut CompileSession) {
         }
     }
     session.diagnostics.extend(diagnostics);
+}
+
+fn project_parallel_diagnostics(session: &mut CompileSession) {
+    let mut diagnostics = Vec::new();
+    for (file_id, entry) in session.file_set().iter_files() {
+        let warnings = scan_source_parallel_warnings(entry.source());
+        for warning in &warnings {
+            let severity = resolve_severity(KErrorCode::K0061, session.guarantee_policy())
+                .unwrap_or(Severity::Warning);
+            let (label, why, decision) = parallel_warning_message(&warning.kind);
+            let span_len = parallel_warning_span_len(&warning.kind);
+            let span = KoboSpan::new(
+                warning.source_offset as u32,
+                (warning.source_offset + span_len).max(warning.source_offset + 1) as u32,
+                file_id,
+            );
+            diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0061,
+                severity,
+                DiagLabel::primary(span, label),
+                why,
+                DiagDecision(decision),
+            ));
+        }
+    }
+    session.diagnostics.extend(diagnostics);
+}
+
+fn parallel_warning_message(kind: &ParallelWarningKind) -> (String, String, String) {
+    match kind {
+        ParallelWarningKind::NonSendCapture {
+            binding_name,
+            type_name,
+        } => (
+            format!("parallel loop captures non-Send `{binding_name}`"),
+            format!(
+                "`{binding_name}` uses `{type_name}`, which cannot safely cross Rayon worker threads"
+            ),
+            "change the captured state to a Send + Sync type such as Arc, or keep the loop serial"
+                .to_owned(),
+        ),
+        ParallelWarningKind::SharedMutation { binding_name } => (
+            format!("parallel loop mutates shared `{binding_name}`"),
+            format!("`{binding_name}` is mutated inside the parallel body and would race"),
+            "collect per-item results or protect shared mutation behind an explicit synchronization boundary"
+                .to_owned(),
+        ),
+        ParallelWarningKind::MissingBoundaryPolicy => (
+            "parallel loop near ward boundary needs an explicit policy".to_owned(),
+            "ward boundaries can affect replay ordering; choose whether the loop is outside or inside that boundary"
+                .to_owned(),
+            "write #[kobo::parallel(policy = \"outside\")] or keep this path serial".to_owned(),
+        ),
+    }
+}
+
+fn parallel_warning_span_len(kind: &ParallelWarningKind) -> usize {
+    match kind {
+        ParallelWarningKind::NonSendCapture { binding_name, .. }
+        | ParallelWarningKind::SharedMutation { binding_name } => binding_name.len(),
+        ParallelWarningKind::MissingBoundaryPolicy => "ward".len(),
+    }
 }
 fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
     for binding in kir.transform_facts().iter_bindings() {

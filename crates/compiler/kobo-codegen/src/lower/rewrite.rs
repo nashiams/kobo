@@ -15,6 +15,7 @@ use syn::parse_quote;
 use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
 use super::handler;
+use super::parallel;
 use super::plan::{AnnotationNote, LoweringPlan};
 use super::scope::{type_name_from_syn, ScopeStack};
 use super::strict::StrictGuardCounter;
@@ -36,6 +37,7 @@ pub(crate) struct Lowerer<'a> {
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
     pub(super) error_policy_markers: Vec<ErrorPolicyMarker>,
+    pub(super) needs_rayon: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -64,6 +66,7 @@ impl<'a> Lowerer<'a> {
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
             error_policy_markers: Vec::new(),
+            needs_rayon: false,
         }
     }
 
@@ -86,12 +89,14 @@ impl<'a> Lowerer<'a> {
         Vec<LoweringAnchor>,
         Vec<ErrorPolicyMarker>,
         ConcurrentSupportNeeds,
+        bool,
     ) {
         (
             self.annotation_notes,
             self.anchors,
             self.error_policy_markers,
             self.concurrent_support,
+            self.needs_rayon,
         )
     }
 
@@ -528,6 +533,22 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Local(local) => self.lower_local(local, scopes),
             syn::Stmt::Item(item) => self.lower_item(item),
             syn::Stmt::Expr(expr, semi) => {
+                if let syn::Expr::ForLoop(for_loop) = expr {
+                    let policy = parallel::policy_value(&for_loop.attrs)
+                        .unwrap_or_else(|| "outside".to_owned());
+                    match parallel::lower_for_loop(for_loop) {
+                        parallel::ParallelLowering::Parallel => {
+                            self.needs_rayon = true;
+                        }
+                        parallel::ParallelLowering::SerialPolicy => {
+                            parallel::mark_serial_policy(for_loop);
+                        }
+                        parallel::ParallelLowering::BoundaryPolicy => {
+                            parallel::mark_boundary_policy(for_loop, &policy);
+                        }
+                        parallel::ParallelLowering::None => {}
+                    }
+                }
                 if semi.is_none() && self.lower_owned_value_expr(expr, scopes) {
                     return;
                 }

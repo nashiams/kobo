@@ -2,6 +2,7 @@ mod anchor;
 mod binding;
 mod borrow_scope;
 mod handler;
+mod parallel;
 mod plan;
 pub(crate) mod rewrite;
 mod scope;
@@ -49,8 +50,11 @@ pub(crate) fn lower(
     let mut lowerer = Lowerer::new(ast, &plan, kir, options);
     lowerer.lower_items(&mut file.items);
     plan.insert_support_items(&mut file);
-    let (mut lowerer_notes, lowerer_anchors, error_policy_markers, concurrent_support) =
+    let (mut lowerer_notes, lowerer_anchors, error_policy_markers, concurrent_support, needs_rayon) =
         lowerer.into_parts();
+    if needs_rayon {
+        parallel::insert_rayon_import(&mut file);
+    }
     support::insert_concurrent_support_items(&mut file, concurrent_support);
     service::append_service_support_items(&mut file, service_support_items);
     handler::append_handler_support_items(&mut file, handler_support_items);

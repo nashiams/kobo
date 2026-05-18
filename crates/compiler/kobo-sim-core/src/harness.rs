@@ -1409,8 +1409,10 @@ fn network_support_source(program: &ScenarioProgram, options: &ScenarioOptions) 
             methods.push(action.clone());
         }
     }
-    if methods.is_empty() {
-        methods.extend(["send", "delay", "reorder", "drop"].map(str::to_owned));
+    for default_method in ["send", "delay", "reorder", "receive", "drop_message"] {
+        if !methods.iter().any(|existing| existing == default_method) {
+            methods.push(default_method.to_owned());
+        }
     }
     let mut source = String::from(
         r#"

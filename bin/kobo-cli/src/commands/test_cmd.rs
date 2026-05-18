@@ -160,6 +160,14 @@ struct StatefulInputOperation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct HandlerLifecycleEvidence {
+    name: String,
+    source_line: usize,
+    cleanup_hook: Option<String>,
+    terminal_actions: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ServiceRuntimeEvidence {
     name: String,
     buffer: usize,
@@ -691,6 +699,10 @@ fn write_run_witness(
         service_runtime_json(&document.source),
     );
     object.insert(
+        "handler_lifecycle".to_owned(),
+        handler_lifecycle_json(&document.source, run),
+    );
+    object.insert(
         "available_boundary_ledger_statuses".to_owned(),
         serde_json::json!([
             "modeled",
@@ -850,6 +862,139 @@ fn upper_camel_case(value: &str) -> String {
         }
     }
     result
+}
+
+fn handler_lifecycle_json(source: &str, run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "handlers": handler_lifecycle_handlers(source)
+            .into_iter()
+            .map(handler_lifecycle_handler_json)
+            .collect::<Vec<_>>(),
+        "scenario_cases": handler_scenario_cases(run),
+    })
+}
+
+fn handler_lifecycle_handler_json(handler: HandlerLifecycleEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "name": handler.name,
+        "source_line": handler.source_line,
+        "cleanup_hook": handler.cleanup_hook,
+        "must_call": {
+            "kind": "handler_token",
+            "terminal_actions": handler.terminal_actions,
+            "required": true,
+        },
+        "boundaries": {
+            "tracing": "drop-closes-span",
+            "metrics": "handler-entry-exit",
+            "cleanup": "success-error-cancel",
+        },
+    })
+}
+
+fn handler_lifecycle_handlers(source: &str) -> Vec<HandlerLifecycleEvidence> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    let handler_lines = handler_attr_lines(source);
+    let mut handler_index = 0usize;
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Fn(function) = item else {
+                return None;
+            };
+            let evidence = handler_lifecycle_from_function(
+                function,
+                handler_lines.get(handler_index).copied().unwrap_or(0),
+            );
+            if evidence.is_some() {
+                handler_index += 1;
+            }
+            evidence
+        })
+        .collect()
+}
+
+fn handler_lifecycle_from_function(
+    function: &syn::ItemFn,
+    source_line: usize,
+) -> Option<HandlerLifecycleEvidence> {
+    if !function.attrs.iter().any(is_handler_attr) {
+        return None;
+    }
+    Some(HandlerLifecycleEvidence {
+        name: function.sig.ident.to_string(),
+        source_line,
+        cleanup_hook: function.attrs.iter().find_map(cleanup_hook_name),
+        terminal_actions: handler_terminal_actions(),
+    })
+}
+
+fn handler_attr_lines(source: &str) -> Vec<usize> {
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if line.contains("#[kobo::handler]") {
+                Some(index + 1)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn is_handler_attr(attr: &syn::Attribute) -> bool {
+    let segments = attr.path().segments.iter().collect::<Vec<_>>();
+    segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
+}
+
+fn cleanup_hook_name(attr: &syn::Attribute) -> Option<String> {
+    let segments = attr.path().segments.iter().collect::<Vec<_>>();
+    if !(segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "cleanup") {
+        return None;
+    }
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    syn::parse2::<syn::Path>(list.tokens.clone())
+        .ok()
+        .and_then(|path| path.segments.last().map(|segment| segment.ident.to_string()))
+}
+
+fn handler_terminal_actions() -> Vec<String> {
+    ["reply", "reject", "cancel"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn handler_scenario_cases(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    let mut cases = Vec::new();
+    if run
+        .events
+        .iter()
+        .any(|event| event.kind == "network-dropped")
+    {
+        cases.push(serde_json::json!({
+            "kind": "disconnect",
+            "source": "network-model",
+            "event": "network-dropped",
+        }));
+    }
+    if run
+        .events
+        .iter()
+        .any(|event| event.kind == "failure-injection-cancel")
+    {
+        cases.push(serde_json::json!({
+            "kind": "cancellation",
+            "source": "scheduler",
+            "event": "failure-injection-cancel",
+        }));
+    }
+    cases
 }
 
 fn validate_run_boundary_declarations(

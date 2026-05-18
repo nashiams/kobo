@@ -500,6 +500,9 @@ impl<'a> ScenarioLowerer<'a> {
             let syn::FnArg::Typed(argument) = input else {
                 continue;
             };
+            if !is_handler_obligation_argument(argument) {
+                continue;
+            }
             let Some(binding) = pat_ident(argument.pat.as_ref()) else {
                 continue;
             };
@@ -1516,6 +1519,46 @@ fn fn_arg_ident(arg: &syn::FnArg) -> Option<String> {
         syn::FnArg::Typed(pat_type) => pat_ident(pat_type.pat.as_ref()),
         syn::FnArg::Receiver(_) => None,
     }
+}
+
+fn is_handler_obligation_argument(argument: &PatType) -> bool {
+    handler_argument_type_name(argument)
+        .as_deref()
+        .is_some_and(|type_name| !is_non_obligation_handler_type(type_name))
+}
+
+fn handler_argument_type_name(argument: &PatType) -> Option<String> {
+    let syn::Type::Path(type_path) = argument.ty.as_ref() else {
+        return None;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn is_non_obligation_handler_type(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "bool"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "String"
+            | "str"
+    )
 }
 
 fn expr_path_ident(expr: &Expr) -> Option<String> {

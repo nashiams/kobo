@@ -1,6 +1,7 @@
 mod anchor;
 mod binding;
 mod borrow_scope;
+mod handler;
 mod plan;
 pub(crate) mod rewrite;
 mod scope;
@@ -43,6 +44,7 @@ pub(crate) fn lower(
 ) -> LoweredFile {
     let mut file = ast.inner.clone();
     let service_support_items = service::service_support_items(ast, &file);
+    let handler_support_items = handler::handler_support_items(&file);
     let plan = LoweringPlan::from_kir(ast, kir, solution, kobo_path, options);
     let mut lowerer = Lowerer::new(ast, &plan, kir, options);
     lowerer.lower_items(&mut file.items);
@@ -51,6 +53,7 @@ pub(crate) fn lower(
         lowerer.into_parts();
     support::insert_concurrent_support_items(&mut file, concurrent_support);
     service::append_service_support_items(&mut file, service_support_items);
+    handler::append_handler_support_items(&mut file, handler_support_items);
     let mut notes = plan.annotation_notes().to_vec();
     notes.append(&mut lowerer_notes);
     let anchors = LoweringAnchorMap::new(lowerer_anchors, plan.support_item_count());

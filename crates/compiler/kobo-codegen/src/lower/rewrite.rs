@@ -14,6 +14,7 @@ use syn::parse_quote;
 
 use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
+use super::handler;
 use super::plan::{AnnotationNote, LoweringPlan};
 use super::scope::{type_name_from_syn, ScopeStack};
 use super::strict::StrictGuardCounter;
@@ -249,6 +250,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_function(&mut self, function: &mut syn::ItemFn) {
+        let lowered_handler = handler::lower_item_function(self.ast, function);
         // S-16: #[kobo::tick(rate=N)] → inject interval loop before lowering body.
         let tick_rate = function.attrs.iter().find_map(tick::parse_tick_rate);
         if let Some(rate) = tick_rate {
@@ -279,7 +281,7 @@ impl<'a> Lowerer<'a> {
             function.block.stmts.push(loop_body);
         }
         // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
-        let is_handler = function.attrs.iter().any(|attr| {
+        let is_handler = !lowered_handler && function.attrs.iter().any(|attr| {
             let segments: Vec<_> = attr.path().segments.iter().collect();
             segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
         });

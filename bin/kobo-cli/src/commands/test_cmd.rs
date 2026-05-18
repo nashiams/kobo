@@ -836,7 +836,45 @@ fn scheduler_json(sim_profile: &str, seed: u64, run: &FullDepthRun) -> serde_jso
             .iter()
             .find(|event| event.kind == "scheduler-portfolio")
             .and_then(|event| event.value),
+        "cancellation": scheduler_cancellation_json(run),
     })
+}
+
+fn scheduler_cancellation_json(run: &FullDepthRun) -> serde_json::Value {
+    let events = scheduler_cancellation_events(run);
+    if events.is_empty() {
+        return serde_json::json!({
+            "mode": "none",
+            "token_source": null,
+            "events": [],
+        });
+    }
+    serde_json::json!({
+        "mode": "explicit-scheduler-history",
+        "token_source": "kobo.scheduler.cancel",
+        "events": events,
+    })
+}
+
+fn scheduler_cancellation_events(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    run.events
+        .iter()
+        .filter(|event| is_scheduler_cancellation_event(&event.kind))
+        .map(|event| {
+            serde_json::json!({
+                "kind": event.kind.clone(),
+                "label": event.label.clone(),
+                "value": event.value,
+            })
+        })
+        .collect()
+}
+
+fn is_scheduler_cancellation_event(kind: &str) -> bool {
+    matches!(
+        kind,
+        "scheduler-cancel-path" | "scheduler-future-dropped" | "failure-injection-cancel"
+    )
 }
 
 fn exactness_json(run: &FullDepthRun) -> &'static str {

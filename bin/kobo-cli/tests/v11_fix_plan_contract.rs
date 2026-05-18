@@ -4,7 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use v09_common::{
-    assert_contains, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject,
+    assert_contains, assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput,
+    TestProject,
 };
 
 const V11_TIMEOUT: Duration = Duration::from_secs(60);
@@ -78,5 +79,358 @@ async fn replay_gap() {
         &output.stdout,
         "activity",
         "external side effects should include activity as a policy option",
+    );
+    assert_contains(
+        &output.stdout,
+        "source_spans",
+        "fix plan should include source span evidence for replay-critical classes",
+    );
+    assert_contains(
+        &output.stdout,
+        "call_path",
+        "fix plan should include call path evidence when a boundary call is resolved",
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("fix plan should be JSON");
+    let http_item = parsed["fix_plan"]
+        .as_array()
+        .expect("fix plan should be an array")
+        .iter()
+        .find(|item| item["class"] == "http-database")
+        .expect("http/database item should exist");
+    assert_contains(
+        &http_item.to_string(),
+        "reqwest::Client::new",
+        "fix plan should carry the resolved call path from parsed source",
+    );
+}
+
+#[test]
+fn sim_scout_fix_plan_ignores_comments_strings_and_local_same_name_types() {
+    let project = TestProject::new("v11-fix-plan-ast-evidence");
+    let file = project.main_file(
+        r#"
+// reqwest::Client::new in a comment is not executable evidence.
+const NOTE: &str = "sqlx::query in a string is not executable evidence";
+
+struct Client;
+
+impl Client {
+    fn new() -> Self {
+        Client
+    }
+}
+
+fn local_only() {
+    let _client = Client::new();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            path_arg(&file),
+            s("--json"),
+            s("--fix-plan"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "sim scout --fix-plan should inspect parsed executable source",
+    );
+    assert!(
+        !output.stdout.contains("http-database"),
+        "comments, strings, and local Client::new must not become HTTP/database evidence:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn sim_scout_fix_plan_ignores_local_same_name_functions_modules_and_methods() {
+    let project = TestProject::new("v11-fix-plan-local-name-false-positives");
+    let file = project.main_file(
+        r#"
+fn thread_rng() {}
+
+mod sqlx {
+    pub fn query() {}
+}
+
+mod reqwest {
+    pub fn get() {}
+}
+
+struct Worker;
+
+impl Worker {
+    fn spawn(&self) {}
+    fn sleep(&self) {}
+    fn yield_now(&self) {}
+}
+
+fn local_only(worker: Worker) {
+    thread_rng();
+    sqlx::query();
+    reqwest::get();
+    worker.spawn();
+    worker.sleep();
+    worker.yield_now();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            path_arg(&file),
+            s("--json"),
+            s("--fix-plan"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "sim scout --fix-plan should parse local same-name calls without external false positives",
+    );
+    for blocked in [
+        "random",
+        "http-database",
+        "task-spawn",
+        "observable-scheduling",
+    ] {
+        assert!(
+            !output.stdout.contains(blocked),
+            "local same-name functions/modules/methods must not create {blocked} evidence:\n{}",
+            output.stdout
+        );
+    }
+}
+
+#[test]
+fn sim_scout_fix_plan_resolves_block_local_scopes_before_classifying() {
+    let project = TestProject::new("v11-fix-plan-block-scope");
+    let file = project.main_file(
+        r#"
+fn local_only() {
+    mod sqlx {
+        pub fn query() {}
+    }
+
+    mod reqwest {
+        pub fn get() {}
+    }
+
+    mod local {
+        pub fn thread_rng() {}
+
+        pub struct Tokio;
+
+        impl Tokio {
+            pub fn spawn(&self) {}
+            pub fn sleep(&self) {}
+            pub fn yield_now(&self) {}
+        }
+    }
+
+    use local::thread_rng;
+
+    let tokio = local::Tokio;
+    thread_rng();
+    sqlx::query();
+    reqwest::get();
+    tokio.spawn();
+    tokio.sleep();
+    tokio.yield_now();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            path_arg(&file),
+            s("--json"),
+            s("--fix-plan"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "sim scout --fix-plan should understand local block scopes",
+    );
+    for blocked in [
+        "random",
+        "http-database",
+        "task-spawn",
+        "observable-scheduling",
+    ] {
+        assert!(
+            !output.stdout.contains(blocked),
+            "block-local declarations and local shadowing must not create {blocked} evidence:\n{}",
+            output.stdout
+        );
+    }
+}
+
+#[test]
+fn sim_scout_fix_plan_resolves_block_local_external_imports() {
+    let project = TestProject::new("v11-fix-plan-block-imports");
+    let file = project.main_file(
+        r#"
+fn replay_gap() {
+    use rand::thread_rng;
+    use sqlx::query;
+    use std::thread::{sleep, spawn};
+    use std::time::Duration;
+    use tokio::task::yield_now;
+
+    let _random = thread_rng();
+    let _row = query("select 1");
+    spawn(|| {});
+    sleep(Duration::from_millis(1));
+    yield_now();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            path_arg(&file),
+            s("--json"),
+            s("--fix-plan"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "sim scout --fix-plan should resolve block-local imports to external roots",
+    );
+    for expected in [
+        "random",
+        "http-database",
+        "task-spawn",
+        "observable-scheduling",
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "block-local external imports should still produce replay-critical evidence",
+        );
+    }
+}
+
+#[test]
+fn sim_scout_fix_plan_uses_configured_registry_and_adapter_roots() {
+    let project = TestProject::new("v11-fix-plan-configured-ecosystem-roots");
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.crate]]
+name = "payments"
+policy = "record"
+reason = "configured payment gateway boundary"
+
+[[ecosystem.adapter]]
+crate = "emailer"
+package = "kobo-adapter-emailer"
+reason = "configured email adapter"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+use payments::charge;
+use emailer::send;
+
+fn replay_gap() {
+    let _payment = charge();
+    let _mail = send();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            path_arg(&file),
+            s("--json"),
+            s("--fix-plan"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "sim scout --fix-plan should include configured ecosystem roots",
+    );
+    assert_contains(
+        &output.stdout,
+        "http-database",
+        "configured registry/adapter roots should be treated as replay-critical boundaries",
+    );
+    for expected in ["payments::charge", "emailer::send"] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "configured ecosystem root evidence should retain resolved call paths",
+        );
+    }
+}
+
+#[test]
+fn sim_scout_fix_plan_reports_invalid_ecosystem_config_instead_of_dropping_roots() {
+    let project = TestProject::new("v11-fix-plan-invalid-config");
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "definitely-not-a-policy"
+
+[[ecosystem.crate]]
+name = "payments"
+policy = "record"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+use payments::charge;
+
+fn replay_gap() {
+    let _payment = charge();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            path_arg(&file),
+            s("--json"),
+            s("--fix-plan"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "sim scout --fix-plan must not silently ignore invalid configured ecosystem roots",
+    );
+    assert_contains(
+        &output.combined(),
+        "definitely-not-a-policy",
+        "config load errors should be visible instead of producing an incomplete fix plan",
     );
 }

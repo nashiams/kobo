@@ -35,6 +35,17 @@ pub struct KoboProjectConfig {
     pub edition: String,
     /// Non-kobo dependencies as `(name, version_req)` pairs.
     pub dependencies: Vec<(String, String)>,
+    pub dev_dependencies: Vec<(String, String)>,
+    pub build_dependencies: Vec<(String, String)>,
+    pub target_dependencies: Vec<TargetDependencyConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TargetDependencyConfig {
+    pub target: String,
+    pub dependencies: Vec<(String, String)>,
+    pub dev_dependencies: Vec<(String, String)>,
+    pub build_dependencies: Vec<(String, String)>,
 }
 
 impl Default for KoboProjectConfig {
@@ -44,6 +55,9 @@ impl Default for KoboProjectConfig {
             version: "0.1.0".to_owned(),
             edition: "2021".to_owned(),
             dependencies: Vec::new(),
+            dev_dependencies: Vec::new(),
+            build_dependencies: Vec::new(),
+            target_dependencies: Vec::new(),
         }
     }
 }
@@ -72,25 +86,64 @@ impl KoboProjectConfig {
             .unwrap_or("2021")
             .to_owned();
 
-        let mut dependencies = Vec::new();
-        if let Some(deps) = table.get("dependencies").and_then(|v| v.as_table()) {
-            for (dep_name, dep_val) in deps {
-                // Skip kobo_ prefixed dependencies.
-                if dep_name.starts_with("kobo") {
-                    continue;
-                }
-                let version_str = dependency_manifest_spec(dep_val);
-                dependencies.push((dep_name.clone(), version_str));
-            }
-        }
+        let dependencies = dependency_section(&table, "dependencies");
+        let dev_dependencies = dependency_section(&table, "dev-dependencies");
+        let build_dependencies = dependency_section(&table, "build-dependencies");
+        let target_dependencies = target_dependency_sections(&table);
 
         Ok(Self {
             name,
             version,
             edition,
             dependencies,
+            dev_dependencies,
+            build_dependencies,
+            target_dependencies,
         })
     }
+}
+
+fn dependency_section(table: &toml::Table, section: &str) -> Vec<(String, String)> {
+    let mut dependencies = Vec::new();
+    if let Some(deps) = table.get(section).and_then(|v| v.as_table()) {
+        for (dep_name, dep_val) in deps {
+            if dep_name.starts_with("kobo") {
+                continue;
+            }
+            let version_str = dependency_manifest_spec(dep_val);
+            dependencies.push((dep_name.clone(), version_str));
+        }
+    }
+    dependencies.sort_by(|left, right| left.0.cmp(&right.0));
+    dependencies
+}
+
+fn target_dependency_sections(table: &toml::Table) -> Vec<TargetDependencyConfig> {
+    let mut sections = Vec::new();
+    let Some(targets) = table.get("target").and_then(|value| value.as_table()) else {
+        return sections;
+    };
+    for (target, value) in targets {
+        let Some(target_table) = value.as_table() else {
+            continue;
+        };
+        let dependencies = dependency_section(target_table, "dependencies");
+        let dev_dependencies = dependency_section(target_table, "dev-dependencies");
+        let build_dependencies = dependency_section(target_table, "build-dependencies");
+        if !dependencies.is_empty()
+            || !dev_dependencies.is_empty()
+            || !build_dependencies.is_empty()
+        {
+            sections.push(TargetDependencyConfig {
+                target: target.clone(),
+                dependencies,
+                dev_dependencies,
+                build_dependencies,
+            });
+        }
+    }
+    sections.sort_by(|left, right| left.target.cmp(&right.target));
+    sections
 }
 
 /// Generate a complete Cargo project directory.
@@ -183,20 +236,66 @@ fn generate_cargo_toml(config: &KoboProjectConfig) -> String {
     toml.push('\n');
 
     if !config.dependencies.is_empty() {
-        toml.push_str("[dependencies]\n");
-        for (dep_name, dep_version) in &config.dependencies {
-            if dep_version.trim_start().starts_with('{') {
-                toml.push_str(&format!("{dep_name} = {dep_version}\n"));
-            } else {
-                toml.push_str(&format!("{dep_name} = \"{dep_version}\"\n"));
-            }
-        }
-        toml.push('\n');
+        push_dependency_section(&mut toml, "dependencies", &config.dependencies);
+    }
+    if !config.build_dependencies.is_empty() {
+        push_dependency_section(&mut toml, "build-dependencies", &config.build_dependencies);
+    }
+    if !config.dev_dependencies.is_empty() {
+        push_dependency_section(&mut toml, "dev-dependencies", &config.dev_dependencies);
+    }
+    for target in &config.target_dependencies {
+        push_dependency_section_if_not_empty(
+            &mut toml,
+            &target.target,
+            "dependencies",
+            &target.dependencies,
+        );
+        push_dependency_section_if_not_empty(
+            &mut toml,
+            &target.target,
+            "build-dependencies",
+            &target.build_dependencies,
+        );
+        push_dependency_section_if_not_empty(
+            &mut toml,
+            &target.target,
+            "dev-dependencies",
+            &target.dev_dependencies,
+        );
     }
 
     toml.push_str("[workspace]\n");
 
     toml
+}
+
+fn push_dependency_section_if_not_empty(
+    toml: &mut String,
+    target: &str,
+    section: &str,
+    dependencies: &[(String, String)],
+) {
+    if dependencies.is_empty() {
+        return;
+    }
+    push_dependency_section(
+        toml,
+        &format!("target.\"{}\".{section}", target.replace('"', "\\\"")),
+        dependencies,
+    );
+}
+
+fn push_dependency_section(toml: &mut String, section: &str, dependencies: &[(String, String)]) {
+    toml.push_str(&format!("[{section}]\n"));
+    for (dep_name, dep_version) in dependencies {
+        if dep_version.trim_start().starts_with('{') {
+            toml.push_str(&format!("{dep_name} = {dep_version}\n"));
+        } else {
+            toml.push_str(&format!("{dep_name} = \"{dep_version}\"\n"));
+        }
+    }
+    toml.push('\n');
 }
 
 fn config_with_inferred_dependencies(
@@ -232,6 +331,7 @@ mod tests {
             version: "0.1.0".to_owned(),
             edition: "2021".to_owned(),
             dependencies: vec![],
+            ..Default::default()
         };
         let sources = vec![(
             PathBuf::from("src/main.kobo"),
@@ -261,6 +361,7 @@ mod tests {
                 ("tokio".to_owned(), "1".to_owned()),
                 ("serde".to_owned(), "1".to_owned()),
             ],
+            ..Default::default()
         };
 
         let toml = generate_cargo_toml(&config);
@@ -278,6 +379,7 @@ mod tests {
                 "tokio".to_owned(),
                 "{ version = \"1\", features = [\"time\"] }".to_owned(),
             )],
+            ..Default::default()
         };
 
         let toml = generate_cargo_toml(&config);
@@ -380,6 +482,7 @@ kobo-runtime = { path = "../kobo-runtime" }
             version: "0.1.0".to_owned(),
             edition: "2021".to_owned(),
             dependencies: vec![],
+            ..Default::default()
         };
         let sources = vec![
             (PathBuf::from("src/main.kobo"), "fn main() {}".to_owned()),

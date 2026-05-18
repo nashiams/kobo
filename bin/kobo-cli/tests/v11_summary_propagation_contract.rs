@@ -66,10 +66,72 @@ fn main() {
         "upstream_kobo::Transaction",
         "summary applicability should qualify owner types with the producing crate",
     );
+    assert_contains(
+        &summary["obligations"][0]["applicability"].to_string(),
+        "producer-summary",
+        "summary applicability should carry explicit producer provenance",
+    );
 
     let summary_hash = summary["summary_hash"]
         .as_str()
         .expect("summary should contain a hash");
+
+    let mut tampered_summary = summary.clone();
+    tampered_summary["obligations"][0]["terminal_actions"] =
+        serde_json::json!(["commit", "rollback", "forged"]);
+    fs::write(
+        &summary_path,
+        serde_json::to_string_pretty(&tampered_summary).expect("tampered summary should serialize"),
+    )
+    .expect("tampered summary should write");
+    let tampered_consumer = TestProject::new("v11-summary-tampered-body-consumer");
+    tampered_consumer.main_file(
+        r#"
+use upstream_kobo::Transaction;
+
+fn main() {
+    let _external: Option<Transaction> = None;
+}
+"#,
+    );
+    tampered_consumer.write(
+        "Kobo.toml",
+        &format!(
+            r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.summary]]
+crate = "upstream_kobo"
+path = "{}"
+hash = "{summary_hash}"
+"#,
+            summary_path.display().to_string().replace('\\', "/")
+        ),
+    );
+    let tampered_debt = run_kobo(
+        &[
+            s("debt"),
+            path_arg(&tampered_consumer.root.join("src/main.kobo")),
+            s("--liveness"),
+            s("--json"),
+        ],
+        &tampered_consumer.root,
+    );
+    assert_failure(
+        &tampered_debt,
+        "summary consumers must recompute hashes instead of trusting embedded summary_hash",
+    );
+    assert_contains(
+        &tampered_debt.combined(),
+        "K0126",
+        "tampered summary body should fail summary validation",
+    );
+    fs::write(
+        &summary_path,
+        serde_json::to_string_pretty(&summary).expect("summary should serialize"),
+    )
+    .expect("summary should restore");
+
     let summary_consumer = TestProject::new("v11-summary-liveness-consumer");
     summary_consumer.main_file(
         r#"
@@ -122,6 +184,37 @@ hash = "{summary_hash}"
         "applicability",
         "downstream debt output should preserve structured applicability",
     );
+    assert_contains(
+        &debt.stdout,
+        "producer-summary",
+        "downstream debt output should preserve summary-declared applicability provenance",
+    );
+
+    let check = run_kobo(
+        &[
+            s("check"),
+            path_arg(&summary_consumer.root.join("src/main.kobo")),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &summary_consumer.root,
+    );
+    assert_success(
+        &check,
+        "check --replay-critical should validate and expose cross-crate summary facts",
+    );
+    for expected in [
+        "summary-policy-evidence",
+        "Transaction",
+        "upstream_kobo::main",
+        "producer-summary",
+    ] {
+        assert_contains(
+            &check.stdout,
+            expected,
+            "check output should carry .kobo-summary solver/liveness facts, not only summary paths",
+        );
+    }
 
     let unrelated_consumer = TestProject::new("v11-summary-unrelated-consumer");
     unrelated_consumer.main_file("fn main() {}\n");
@@ -351,5 +444,180 @@ hash = "stale-hash"
         &stale_debt.combined(),
         "K0126",
         "stale summary should not be trusted by debt analysis",
+    );
+}
+
+#[test]
+fn summary_usage_is_serialized_in_exact_witness_with_obligation_facts() {
+    let upstream = TestProject::new("v11-summary-witness-upstream");
+    upstream.write(
+        "Cargo.toml",
+        r#"[package]
+name = "summary_witness_upstream"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    upstream.main_file(
+        r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {}
+
+fn main() {
+    let _tx = Transaction {};
+}
+"#,
+    );
+    let build = run_kobo(&[s("build")], &upstream.root);
+    assert_success(&build, "upstream build should emit a .kobo-summary");
+    let summary_path = upstream.root.join("target/kobo-gen/.kobo-summary");
+    let summary: Value = serde_json::from_str(
+        &fs::read_to_string(&summary_path).expect(".kobo-summary should be readable"),
+    )
+    .expect(".kobo-summary should be JSON");
+    let summary_hash = summary["summary_hash"]
+        .as_str()
+        .expect("summary should contain a hash");
+
+    let downstream = TestProject::new("v11-summary-witness-downstream");
+    downstream.write(
+        "Kobo.toml",
+        &format!(
+            r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.summary]]
+crate = "summary_witness_upstream"
+path = "{}"
+hash = "{summary_hash}"
+"#,
+            summary_path.display().to_string().replace('\\', "/")
+        ),
+    );
+    let file = downstream.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn summary_consumer() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &downstream.root,
+    );
+
+    assert_success(
+        &output,
+        "exact witness should include configured summary propagation evidence",
+    );
+    let witness_path = downstream
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    let summaries = witness["summaries"].to_string();
+    for expected in [
+        "summary_witness_upstream",
+        "summary_hash",
+        "schema_version",
+        "obligation_count",
+        "function_count",
+        "Transaction",
+        "commit",
+        "rollback",
+    ] {
+        assert_contains(
+            &summaries,
+            expected,
+            "witness summary usage should carry cross-crate obligation facts, not only path/hash",
+        );
+    }
+}
+
+#[test]
+fn test_sim_rejects_stale_summary_before_writing_exact_witness() {
+    let upstream = TestProject::new("v11-summary-stale-test-upstream");
+    upstream.write(
+        "Cargo.toml",
+        r#"[package]
+name = "stale_summary_upstream"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    upstream.main_file(
+        r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {}
+
+fn main() {
+    let _tx = Transaction {};
+}
+"#,
+    );
+    let build = run_kobo(&[s("build")], &upstream.root);
+    assert_success(&build, "upstream build should emit a .kobo-summary");
+    let summary_path = upstream.root.join("target/kobo-gen/.kobo-summary");
+
+    let downstream = TestProject::new("v11-summary-stale-test-downstream");
+    downstream.write(
+        "Kobo.toml",
+        &format!(
+            r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.summary]]
+crate = "stale_summary_upstream"
+path = "{}"
+hash = "stale-hash"
+"#,
+            summary_path.display().to_string().replace('\\', "/")
+        ),
+    );
+    let file = downstream.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn summary_consumer() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &downstream.root,
+    );
+
+    assert_failure(
+        &output,
+        "test --sim must validate configured summaries before exact witness output",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0126",
+        "stale summary validation should use K0126",
+    );
+    assert!(
+        downstream.find_files_with_ext("kwit").is_empty(),
+        "stale summaries must not produce exact witness files"
     );
 }

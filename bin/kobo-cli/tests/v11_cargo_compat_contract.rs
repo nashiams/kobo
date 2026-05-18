@@ -210,6 +210,76 @@ fn inspect_cargo_preserves_feature_mutation_from_cargo_manifest() {
 }
 
 #[test]
+fn generated_cargo_preserves_build_dev_and_target_dependencies() {
+    let project = TestProject::new("v11-cargo-generated-section-breadth");
+    write_path_dependency(&project, "build_helper", None);
+    write_path_dependency(&project, "dev_helper", None);
+    write_path_dependency(&project, "target_helper", None);
+    write_path_dependency(&project, "target_dev_helper", None);
+    write_path_dependency(&project, "target_build_helper", None);
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "v11-cargo-section-breadth"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+dev_helper = { path = "dev_helper" }
+
+[build-dependencies]
+build_helper = { path = "build_helper" }
+
+[target.'cfg(windows)'.dependencies]
+target_helper = { path = "target_helper" }
+
+[target.'cfg(windows)'.dev-dependencies]
+target_dev_helper = { path = "target_dev_helper" }
+
+[target.'cfg(windows)'.build-dependencies]
+target_build_helper = { path = "target_build_helper" }
+"#,
+    );
+    let file = project.main_file("fn main() {}\n");
+    let generated_dir = project.root.join("target").join("section-breadth");
+
+    let output = run_kobo(
+        &[
+            s("inspect"),
+            path_arg(&file),
+            s("--cargo"),
+            path_arg(&generated_dir),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "inspect --cargo should preserve non-regular Cargo dependency sections",
+    );
+    let generated = fs::read_to_string(generated_dir.join("Cargo.toml"))
+        .expect("generated Cargo.toml should be readable");
+    for expected in [
+        "[build-dependencies]",
+        "build_helper",
+        "[dev-dependencies]",
+        "dev_helper",
+        "[target.\"cfg(windows)\".dependencies]",
+        "target_helper",
+        "[target.\"cfg(windows)\".build-dependencies]",
+        "target_build_helper",
+        "[target.\"cfg(windows)\".dev-dependencies]",
+        "target_dev_helper",
+    ] {
+        assert_contains(
+            &generated,
+            expected,
+            "generated Cargo.toml must preserve Cargo dependency section breadth",
+        );
+    }
+}
+
+#[test]
 fn build_script_errors_are_passthrough_not_generic_kobo_errors() {
     let project = TestProject::new("v11-cargo-build-rs-passthrough");
     project.write(
@@ -311,6 +381,12 @@ local_helper = { package = "helper_dep", path = "helper_dep", features = ["fancy
 
 [target.'cfg(windows)'.dependencies]
 win_helper = { package = "helper_dep", path = "helper_dep", default-features = false }
+
+[target.'cfg(windows)'.dev-dependencies]
+dev_win_helper = { package = "helper_dep", path = "helper_dep" }
+
+[target.'cfg(windows)'.build-dependencies]
+build_win_helper = { package = "helper_dep", path = "helper_dep" }
 "#,
     );
 
@@ -337,6 +413,16 @@ win_helper = { package = "helper_dep", path = "helper_dep", default-features = f
         &report.to_string(),
         "target.'cfg(windows)'.dependencies",
         "target-specific dependency section should remain visible",
+    );
+    assert_contains(
+        &report.to_string(),
+        "target.'cfg(windows)'.dev-dependencies",
+        "target-specific dev dependency section should remain visible",
+    );
+    assert_contains(
+        &report.to_string(),
+        "target.'cfg(windows)'.build-dependencies",
+        "target-specific build dependency section should remain visible",
     );
     assert_contains(
         &report.to_string(),

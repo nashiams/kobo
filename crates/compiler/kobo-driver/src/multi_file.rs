@@ -73,38 +73,98 @@ edition = "2021"
 
     if !config.workspace_dependencies.is_empty() {
         cargo.push_str("\n[workspace.dependencies]\n");
-        for (dep_name, dep_value) in &config.workspace_dependencies {
-            let generated_value =
-                dependency_value_for_generated_project(project_dir, gen_dir, dep_value);
-            match &generated_value {
-                toml::Value::String(ver) => {
-                    cargo.push_str(&format!("{dep_name} = \"{ver}\"\n"));
-                }
-                other => {
-                    cargo.push_str(&format!("{dep_name} = {other}\n"));
-                }
-            }
-        }
+        push_dependency_entries(
+            &mut cargo,
+            project_dir,
+            gen_dir,
+            &config.workspace_dependencies,
+        );
     }
 
     if !config.dependencies.is_empty() {
         cargo.push_str("\n[dependencies]\n");
-        for (dep_name, dep_value) in &config.dependencies {
-            let generated_value =
-                dependency_value_for_generated_project(project_dir, gen_dir, dep_value);
-            match &generated_value {
-                toml::Value::String(ver) => {
-                    cargo.push_str(&format!("{dep_name} = \"{ver}\"\n"));
-                }
-                other => {
-                    cargo.push_str(&format!("{dep_name} = {other}\n"));
-                }
-            }
-        }
+        push_dependency_entries(&mut cargo, project_dir, gen_dir, &config.dependencies);
+    }
+
+    if !config.build_dependencies.is_empty() {
+        cargo.push_str("\n[build-dependencies]\n");
+        push_dependency_entries(&mut cargo, project_dir, gen_dir, &config.build_dependencies);
+    }
+
+    if !config.dev_dependencies.is_empty() {
+        cargo.push_str("\n[dev-dependencies]\n");
+        push_dependency_entries(&mut cargo, project_dir, gen_dir, &config.dev_dependencies);
+    }
+
+    for target in &config.target_dependencies {
+        push_target_dependency_section(
+            &mut cargo,
+            project_dir,
+            gen_dir,
+            &target.target,
+            "dependencies",
+            &target.dependencies,
+        );
+        push_target_dependency_section(
+            &mut cargo,
+            project_dir,
+            gen_dir,
+            &target.target,
+            "build-dependencies",
+            &target.build_dependencies,
+        );
+        push_target_dependency_section(
+            &mut cargo,
+            project_dir,
+            gen_dir,
+            &target.target,
+            "dev-dependencies",
+            &target.dev_dependencies,
+        );
     }
 
     fs::create_dir_all(gen_dir)?;
     fs::write(gen_dir.join("Cargo.toml"), cargo)
+}
+
+fn push_target_dependency_section(
+    cargo: &mut String,
+    project_dir: &Path,
+    gen_dir: &Path,
+    target: &str,
+    section: &str,
+    dependencies: &std::collections::HashMap<String, toml::Value>,
+) {
+    if dependencies.is_empty() {
+        return;
+    }
+    cargo.push_str(&format!(
+        "\n[target.\"{}\".{section}]\n",
+        target.replace('"', "\\\"")
+    ));
+    push_dependency_entries(cargo, project_dir, gen_dir, dependencies);
+}
+
+fn push_dependency_entries(
+    cargo: &mut String,
+    project_dir: &Path,
+    gen_dir: &Path,
+    dependencies: &std::collections::HashMap<String, toml::Value>,
+) {
+    let mut entries = dependencies.iter().collect::<Vec<_>>();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (dep_name, dep_value) in entries {
+        let generated_value =
+            dependency_value_for_generated_project(project_dir, gen_dir, dep_value);
+        match &generated_value {
+            toml::Value::String(ver) => {
+                cargo.push_str(&format!("{dep_name} = \"{ver}\"\n"));
+            }
+            other => {
+                cargo.push_str(&format!("{dep_name} = {other}\n"));
+            }
+        }
+    }
 }
 
 fn dependency_value_for_generated_project(
@@ -293,7 +353,9 @@ fn summary_obligation_json(
         "applicability": {
             "types": applicable_types,
             "functions": applicable_functions,
+            "source": "producer-summary",
         },
+        "applicability_source": "producer-summary",
         "terminal_actions": obligation
             .actions
             .iter()
@@ -551,6 +613,83 @@ mod tests {
         assert!(content.contains("name = \"test_pkg\""));
         assert!(content.contains("version = \"1.0.0\""));
         assert!(content.contains("log = \"0.4\""));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn generate_cargo_toml_preserves_non_regular_dependency_sections() {
+        let tmp = std::env::temp_dir().join(format!("kobo-cargo-sections-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let gen_dir = tmp.join("target").join("kobo-gen");
+
+        let mut config = KoboConfig {
+            package_name: "section_pkg".to_string(),
+            package_version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+        config.build_dependencies.insert(
+            "build_helper".to_string(),
+            toml::Value::Table(toml::Table::from_iter([(
+                "path".to_string(),
+                toml::Value::String("build_helper".to_string()),
+            )])),
+        );
+        config.dev_dependencies.insert(
+            "dev_helper".to_string(),
+            toml::Value::Table(toml::Table::from_iter([(
+                "path".to_string(),
+                toml::Value::String("dev_helper".to_string()),
+            )])),
+        );
+        config
+            .target_dependencies
+            .push(crate::config::CargoTargetDependencyConfig {
+                target: "cfg(windows)".to_string(),
+                dependencies: std::collections::HashMap::from([(
+                    "target_helper".to_string(),
+                    toml::Value::Table(toml::Table::from_iter([(
+                        "path".to_string(),
+                        toml::Value::String("target_helper".to_string()),
+                    )])),
+                )]),
+                dev_dependencies: std::collections::HashMap::from([(
+                    "target_dev_helper".to_string(),
+                    toml::Value::Table(toml::Table::from_iter([(
+                        "path".to_string(),
+                        toml::Value::String("target_dev_helper".to_string()),
+                    )])),
+                )]),
+                build_dependencies: std::collections::HashMap::from([(
+                    "target_build_helper".to_string(),
+                    toml::Value::Table(toml::Table::from_iter([(
+                        "path".to_string(),
+                        toml::Value::String("target_build_helper".to_string()),
+                    )])),
+                )]),
+            });
+
+        generate_cargo_toml(&config, &tmp, &gen_dir).unwrap();
+
+        let content = fs::read_to_string(gen_dir.join("Cargo.toml")).unwrap();
+        for expected in [
+            "[build-dependencies]",
+            r#"build_helper = { path = "../../build_helper" }"#,
+            "[dev-dependencies]",
+            r#"dev_helper = { path = "../../dev_helper" }"#,
+            "[target.\"cfg(windows)\".dependencies]",
+            r#"target_helper = { path = "../../target_helper" }"#,
+            "[target.\"cfg(windows)\".build-dependencies]",
+            r#"target_build_helper = { path = "../../target_build_helper" }"#,
+            "[target.\"cfg(windows)\".dev-dependencies]",
+            r#"target_dev_helper = { path = "../../target_dev_helper" }"#,
+        ] {
+            assert!(
+                content.contains(expected),
+                "missing {expected} in generated manifest:\n{content}"
+            );
+        }
 
         let _ = fs::remove_dir_all(&tmp);
     }

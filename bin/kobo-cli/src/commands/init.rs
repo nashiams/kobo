@@ -82,6 +82,10 @@ replay_unknown = "debt"
         );
         fs::write(&kobo_path, kobo_toml).context("failed to write Kobo.toml")?;
     }
+    let migrated = super::ecosystem::migrate_cargo_deps_into_kobo_toml()?;
     eprintln!("Initialized Kobo metadata from Cargo.toml");
+    if migrated > 0 {
+        eprintln!("Seeded {migrated} Cargo dependencies into optional Kobo ecosystem metadata");
+    }
     Ok(())
 }

@@ -25,6 +25,7 @@ pub(super) fn cmd_lsp_diagnostics(
     )?;
     let _ = run_check_pipeline(&mut session, file);
     let mut extra_diagnostics = artifact_backed_diagnostics(&session, file)?;
+    extra_diagnostics.extend(configured_declaration_diagnostics(&session, file)?);
     extra_diagnostics.extend(replay_boundary_diagnostics(&session, file)?);
     extra_diagnostics.extend(declaration_boundary_diagnostics(&session, file)?);
 
@@ -86,8 +87,13 @@ fn declaration_boundary_diagnostics(
                 boundary_call.span_end as u32,
                 file_id,
             );
-            let expected_version = dependency_version(&session.config, crate_name);
-            match declarations::load_declaration(file, crate_name, expected_version.as_deref()) {
+            let expected_version = declarations::dependency_version(&session.config, crate_name);
+            match declarations::load_declaration_with_config(
+                file,
+                crate_name,
+                expected_version.as_deref(),
+                &session.config,
+            ) {
                 DeclarationLookup::Missing if boundary.policy == "typed" => {
                     diagnostics.push(KDiagnostic::new(
                         KErrorCode::K0122,
@@ -99,7 +105,20 @@ fn declaration_boundary_diagnostics(
                         DiagDecision("add a declaration file or choose record, activity, opaque, or debt".to_owned()),
                     ));
                 }
-                DeclarationLookup::Invalid(error) if boundary.policy == "typed" => {
+                DeclarationLookup::Missing if boundary.policy == "activity" => {
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0125,
+                        Severity::Warning,
+                        DiagLabel::primary(span, format!("activity boundary `{crate_name}` has no declaration")),
+                        format!(
+                            "`{crate_name}` is marked activity, but Kobo could not find retry/idempotency declaration metadata"
+                        ),
+                        DiagDecision("add activity metadata or choose record, opaque, or debt".to_owned()),
+                    ));
+                }
+                DeclarationLookup::Invalid(error)
+                    if matches!(boundary.policy.as_str(), "typed" | "activity") =>
+                {
                     diagnostics.push(KDiagnostic::new(
                         KErrorCode::K0121,
                         Severity::Error,
@@ -190,6 +209,50 @@ fn declaration_boundary_diagnostics(
                 }
                 _ => {}
             }
+        }
+    }
+    Ok(diagnostics)
+}
+
+fn configured_declaration_diagnostics(
+    session: &kobo_driver::CompileSession,
+    file: &Path,
+) -> anyhow::Result<Vec<KDiagnostic>> {
+    let Some((file_id, _)) = session.file_set().iter_files().next() else {
+        return Ok(Vec::new());
+    };
+    let span = KoboSpan::new(0, 1, file_id);
+    let mut diagnostics = Vec::new();
+    for types_policy in &session.config.ecosystem_policy.types {
+        match declarations::declaration_facts_for_config(
+            file,
+            &types_policy.crate_name,
+            &session.config,
+        ) {
+            DeclarationLookup::Invalid(error) => {
+                diagnostics.push(KDiagnostic::new(
+                    KErrorCode::K0121,
+                    Severity::Error,
+                    DiagLabel::primary(
+                        span,
+                        format!(
+                            "invalid configured metadata package for `{}`",
+                            types_policy.crate_name
+                        ),
+                    ),
+                    format!(
+                        "invalid declaration key `{}` in {}: {}",
+                        error.key,
+                        error.path.display(),
+                        error.message
+                    ),
+                    DiagDecision(
+                        "fix the configured metadata package before using it in editor diagnostics"
+                            .to_owned(),
+                    ),
+                ));
+            }
+            DeclarationLookup::Valid(_) | DeclarationLookup::Missing => {}
         }
     }
     Ok(diagnostics)
@@ -331,12 +394,8 @@ fn parse_source_boundary_policy(
             _ => {}
         }
     }
-    let span_start = crate_name
-        .as_deref()
-        .and_then(|name| source.find(name))
-        .or_else(|| source.find("kobo::boundary"))
-        .unwrap_or(0);
-    let span_end = span_start + crate_name.as_ref().map(String::len).unwrap_or(1);
+    let (span_start, span_end) = span_offsets(source, attr.span())
+        .unwrap_or((0, crate_name.as_ref().map(String::len).unwrap_or(1)));
     Some(SourceBoundaryPolicy {
         crate_name,
         policy: policy.unwrap_or_else(|| "opaque".to_owned()),
@@ -344,18 +403,6 @@ fn parse_source_boundary_policy(
         span_start,
         span_end,
     })
-}
-
-fn dependency_version(config: &kobo_driver::KoboConfig, crate_name: &str) -> Option<String> {
-    let value = config.dependencies.get(crate_name)?;
-    match value {
-        toml::Value::String(version) => Some(version.clone()),
-        toml::Value::Table(table) => table
-            .get("version")
-            .and_then(toml::Value::as_str)
-            .map(str::to_owned),
-        _ => None,
-    }
 }
 
 fn syn_path_ends_with(path: &syn::Path, suffix: &[&str]) -> bool {
@@ -393,7 +440,51 @@ fn external_replay_boundaries(
 
 fn dependency_names(config: &kobo_driver::KoboConfig) -> std::collections::BTreeSet<String> {
     let mut names = std::collections::BTreeSet::new();
-    for (alias, value) in &config.dependencies {
+    extend_dependency_names(&mut names, &config.dependencies);
+    extend_dependency_names(&mut names, &config.dev_dependencies);
+    extend_dependency_names(&mut names, &config.build_dependencies);
+    extend_dependency_names(&mut names, &config.workspace_dependencies);
+    for target in &config.target_dependencies {
+        extend_dependency_names(&mut names, &target.dependencies);
+        extend_dependency_names(&mut names, &target.dev_dependencies);
+        extend_dependency_names(&mut names, &target.build_dependencies);
+    }
+    names.extend(
+        config
+            .ecosystem_policy
+            .crates
+            .iter()
+            .map(|policy| policy.name.clone()),
+    );
+    names.extend(
+        config
+            .ecosystem_policy
+            .types
+            .iter()
+            .map(|policy| policy.crate_name.clone()),
+    );
+    names.extend(
+        config
+            .ecosystem_policy
+            .adapters
+            .iter()
+            .map(|policy| policy.crate_name.clone()),
+    );
+    names.extend(
+        config
+            .ecosystem_policy
+            .summaries
+            .iter()
+            .map(|policy| policy.crate_name.clone()),
+    );
+    names
+}
+
+fn extend_dependency_names(
+    names: &mut std::collections::BTreeSet<String>,
+    dependencies: &std::collections::HashMap<String, toml::Value>,
+) {
+    for (alias, value) in dependencies {
         names.insert(alias.clone());
         if let toml::Value::Table(table) = value {
             if let Some(package) = table.get("package").and_then(toml::Value::as_str) {
@@ -401,7 +492,6 @@ fn dependency_names(config: &kobo_driver::KoboConfig) -> std::collections::BTree
             }
         }
     }
-    names
 }
 
 #[derive(Default)]

@@ -22,6 +22,9 @@ pub struct KoboConfig {
     pub package_name: String,
     pub package_version: String,
     pub dependencies: HashMap<String, toml::Value>,
+    pub dev_dependencies: HashMap<String, toml::Value>,
+    pub build_dependencies: HashMap<String, toml::Value>,
+    pub target_dependencies: Vec<CargoTargetDependencyConfig>,
     pub workspace_dependencies: HashMap<String, toml::Value>,
     pub copy_types: Vec<String>,
     pub mutating_methods: Vec<String>,
@@ -36,8 +39,17 @@ pub struct EcosystemPolicyConfig {
     pub default_is_configured: bool,
     pub replay_unknown: kobo_ir::ScenarioBoundaryPolicy,
     pub crates: Vec<EcosystemCratePolicy>,
+    pub types: Vec<EcosystemTypesPolicy>,
     pub adapters: Vec<EcosystemAdapterPolicy>,
     pub summaries: Vec<EcosystemSummaryPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CargoTargetDependencyConfig {
+    pub target: String,
+    pub dependencies: HashMap<String, toml::Value>,
+    pub dev_dependencies: HashMap<String, toml::Value>,
+    pub build_dependencies: HashMap<String, toml::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,9 +61,36 @@ pub struct EcosystemCratePolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcosystemTypesPolicy {
+    pub crate_name: String,
+    pub package: String,
+    pub version: Option<String>,
+    pub source: Option<String>,
+    pub registry: Option<String>,
+    pub checksum: Option<String>,
+    pub compatible_crate: Option<String>,
+    pub metadata_path: Option<PathBuf>,
+    pub trust_policy: Option<String>,
+    pub signed_by: Option<String>,
+    pub validated: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EcosystemAdapterPolicy {
     pub crate_name: String,
     pub package: String,
+    pub version: Option<String>,
+    pub source: Option<String>,
+    pub registry: Option<String>,
+    pub checksum: Option<String>,
+    pub compatible_crate: Option<String>,
+    pub metadata_path: Option<PathBuf>,
+    pub trust_policy: Option<String>,
+    pub signed_by: Option<String>,
+    pub validated: bool,
+    pub adapter_runtime: Option<String>,
+    pub capture: Option<String>,
     pub reason: Option<String>,
 }
 
@@ -170,9 +209,28 @@ struct RawEcosystemSection {
     #[serde(default, rename = "crate")]
     crates: Vec<RawEcosystemCrateSection>,
     #[serde(default)]
+    types: Vec<RawEcosystemTypesSection>,
+    #[serde(default)]
     adapter: Vec<RawEcosystemAdapterSection>,
     #[serde(default)]
     summary: Vec<RawEcosystemSummarySection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawEcosystemTypesSection {
+    #[serde(rename = "crate")]
+    crate_name: String,
+    package: String,
+    version: Option<String>,
+    source: Option<String>,
+    registry: Option<String>,
+    checksum: Option<String>,
+    compatible_crate: Option<String>,
+    metadata_path: Option<PathBuf>,
+    trust_policy: Option<String>,
+    signed_by: Option<String>,
+    validated: Option<bool>,
+    reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -188,6 +246,17 @@ struct RawEcosystemAdapterSection {
     #[serde(rename = "crate")]
     crate_name: String,
     package: String,
+    version: Option<String>,
+    source: Option<String>,
+    registry: Option<String>,
+    checksum: Option<String>,
+    compatible_crate: Option<String>,
+    metadata_path: Option<PathBuf>,
+    trust_policy: Option<String>,
+    signed_by: Option<String>,
+    validated: Option<bool>,
+    adapter_runtime: Option<String>,
+    capture: Option<String>,
     reason: Option<String>,
 }
 
@@ -235,6 +304,9 @@ impl Default for KoboConfig {
             package_name: String::new(),
             package_version: String::new(),
             dependencies: HashMap::new(),
+            dev_dependencies: HashMap::new(),
+            build_dependencies: HashMap::new(),
+            target_dependencies: Vec::new(),
             workspace_dependencies: HashMap::new(),
             copy_types: Vec::new(),
             mutating_methods: Vec::new(),
@@ -252,6 +324,7 @@ impl Default for EcosystemPolicyConfig {
             default_is_configured: false,
             replay_unknown: kobo_ir::ScenarioBoundaryPolicy::Debt,
             crates: Vec::new(),
+            types: Vec::new(),
             adapters: Vec::new(),
             summaries: Vec::new(),
         }
@@ -267,6 +340,12 @@ impl EcosystemPolicyConfig {
         self.adapters
             .iter()
             .find(|adapter| adapter.crate_name == crate_name)
+    }
+
+    pub fn types_for(&self, crate_name: &str) -> Option<&EcosystemTypesPolicy> {
+        self.types
+            .iter()
+            .find(|types| types.crate_name == crate_name)
     }
 }
 
@@ -359,14 +438,49 @@ fn apply_cargo_manifest_layer(
             .collect();
     }
 
-    let Some(dependencies) = parsed.get("dependencies").and_then(toml::Value::as_table) else {
-        return Ok(());
-    };
-    config.dependencies = dependencies
-        .iter()
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect();
+    config.dependencies = dependency_section(&parsed, "dependencies");
+    config.dev_dependencies = dependency_section(&parsed, "dev-dependencies");
+    config.build_dependencies = dependency_section(&parsed, "build-dependencies");
+    config.target_dependencies = target_dependency_sections(&parsed);
     Ok(())
+}
+
+fn dependency_section(parsed: &toml::Value, section: &str) -> HashMap<String, toml::Value> {
+    parsed
+        .get(section)
+        .and_then(toml::Value::as_table)
+        .map(|dependencies| {
+            dependencies
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn target_dependency_sections(parsed: &toml::Value) -> Vec<CargoTargetDependencyConfig> {
+    let mut sections = Vec::new();
+    let Some(targets) = parsed.get("target").and_then(toml::Value::as_table) else {
+        return sections;
+    };
+    for (target, value) in targets {
+        let dependencies = dependency_section(value, "dependencies");
+        let dev_dependencies = dependency_section(value, "dev-dependencies");
+        let build_dependencies = dependency_section(value, "build-dependencies");
+        if !dependencies.is_empty()
+            || !dev_dependencies.is_empty()
+            || !build_dependencies.is_empty()
+        {
+            sections.push(CargoTargetDependencyConfig {
+                target: target.clone(),
+                dependencies,
+                dev_dependencies,
+                build_dependencies,
+            });
+        }
+    }
+    sections.sort_by(|left, right| left.target.cmp(&right.target));
+    sections
 }
 
 impl RawKoboConfig {
@@ -487,6 +601,27 @@ impl RawEcosystemSection {
                 retry: crate_policy.retry,
             });
         }
+        for types in self.types {
+            policy
+                .types
+                .retain(|existing| existing.crate_name != types.crate_name);
+            policy.types.push(EcosystemTypesPolicy {
+                crate_name: types.crate_name,
+                package: types.package,
+                version: types.version,
+                source: types.source,
+                registry: types.registry,
+                checksum: types.checksum,
+                compatible_crate: types.compatible_crate,
+                metadata_path: types
+                    .metadata_path
+                    .map(|path| resolve_output_dir(config_dir, path)),
+                trust_policy: types.trust_policy,
+                signed_by: types.signed_by,
+                validated: types.validated.unwrap_or(false),
+                reason: types.reason,
+            });
+        }
         for adapter in self.adapter {
             policy
                 .adapters
@@ -494,6 +629,19 @@ impl RawEcosystemSection {
             policy.adapters.push(EcosystemAdapterPolicy {
                 crate_name: adapter.crate_name,
                 package: adapter.package,
+                version: adapter.version,
+                source: adapter.source,
+                registry: adapter.registry,
+                checksum: adapter.checksum,
+                compatible_crate: adapter.compatible_crate,
+                metadata_path: adapter
+                    .metadata_path
+                    .map(|path| resolve_output_dir(config_dir, path)),
+                trust_policy: adapter.trust_policy,
+                signed_by: adapter.signed_by,
+                validated: adapter.validated.unwrap_or(false),
+                adapter_runtime: adapter.adapter_runtime,
+                capture: adapter.capture,
                 reason: adapter.reason,
             });
         }

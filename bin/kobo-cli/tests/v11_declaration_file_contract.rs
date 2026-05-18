@@ -107,8 +107,469 @@ fn typed_policy_uses_declaration_version_and_hash() {
     );
     assert_contains(
         &output.stdout,
+        "must_call",
+        "declaration evidence should surface must_call obligations as structured metadata",
+    );
+    assert_contains(
+        &output.stdout,
+        "commit",
+        "declaration evidence should include concrete obligation alternatives",
+    );
+    assert_contains(
+        &output.stdout,
         "sqlx::Pool::connect_lazy",
         "declaration must surface covered function metadata",
+    );
+}
+
+#[test]
+fn typed_policy_consumes_configured_metadata_package_declaration() {
+    let project = TestProject::new("v11-declaration-types-package");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+declaration_hash = "dfa7c134ea28cc61"
+"#,
+    );
+    project.write(
+        "metadata/sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[type]]
+path = "sqlx::Transaction"
+must_call = ["commit", "rollback"]
+resource = true
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-v0.11"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+checksum = "sha256:c1a4d5ed004cead9b16c187b281f53269bd1a4324b6f8e23eae1b2617f67261d"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = true
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[s("check"), path_arg(&file), s("--error-format=json")],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "typed metadata package declarations should satisfy default boundary checks",
+    );
+    for expected in [
+        "boundary-policy-evidence",
+        "kobo-types-sqlx",
+        "metadata/kobo-types-sqlx.toml",
+        "sqlx::Pool::connect_lazy",
+        "sqlx::Transaction",
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "configured metadata packages must be consumed as typed declaration evidence",
+        );
+    }
+}
+
+#[test]
+fn builtin_types_package_makes_typed_registry_boundary_understood() {
+    let project = TestProject::new("v11-builtin-types-package");
+    write_sqlx_project(&project);
+
+    let add_types = run_kobo(&[s("add-types"), s("sqlx")], &project.root);
+    assert_success(
+        &add_types,
+        "built-in registry types package should be recordable",
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[s("check"), path_arg(&file), s("--error-format=json")],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "built-in sqlx types metadata should satisfy typed boundary validation",
+    );
+    assert_contains(
+        &output.stdout,
+        "boundary-policy-evidence",
+        "check output should expose typed registry declaration evidence",
+    );
+    assert_contains(
+        &output.stdout,
+        "kobo-types-sqlx",
+        "built-in metadata package should be attached to declaration facts",
+    );
+    let kobo_toml = project.read("Kobo.toml");
+    for expected in [
+        r#"source = "registry""#,
+        r#"registry = "builtin-v0.11""#,
+        r#"trust_policy = "builtin-reviewed""#,
+        r#"signed_by = "kobo-core""#,
+        r#"validated = true"#,
+    ] {
+        assert_contains(
+            &kobo_toml,
+            expected,
+            "built-in types metadata should be trusted, validated registry evidence",
+        );
+    }
+}
+
+#[test]
+fn configured_metadata_package_trust_is_enforced_before_declaration_use() {
+    fn run_case(kobo_toml: &str, metadata_extra: &str, context: &str) {
+        let project = TestProject::new(context);
+        write_sqlx_project(&project);
+        project.write(
+            "metadata/kobo-types-sqlx.toml",
+            &format!(
+                r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+{metadata_extra}
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#
+            ),
+        );
+        project.write(
+            "metadata/sqlx.kobo.d.toml",
+            r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+        );
+        project.write("Kobo.toml", kobo_toml);
+        let file = typed_sqlx_file(&project);
+
+        let output = run_kobo(
+            &[s("check"), path_arg(&file), s("--error-format=json")],
+            &project.root,
+        );
+
+        assert_failure(
+            &output,
+            "configured metadata package trust failures must block typed declarations",
+        );
+        assert_contains(
+            &output.combined(),
+            "K0121",
+            "configured metadata package trust failures should be declaration validation errors",
+        );
+    }
+
+    let base = r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-v0.11"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+"#;
+
+    run_case(
+        &(base.to_owned() + "validated = false\n"),
+        "signed_by = \"kobo-local\"",
+        "v11-types-package-unvalidated",
+    );
+    run_case(
+        &(base.to_owned()
+            + "validated = true\nchecksum = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"),
+        "signed_by = \"kobo-local\"",
+        "v11-types-package-bad-checksum",
+    );
+    run_case(
+        &(base.replace(
+            "signed_by = \"kobo-local\"",
+            "signed_by = \"kobo-local\"\ncompatible_crate = \"0.7\"",
+        ) + "validated = true\n"),
+        "signed_by = \"kobo-local\"",
+        "v11-types-package-incompatible-version",
+    );
+    run_case(
+        &(base.to_owned() + "validated = true\n"),
+        "signed_by = \"evil-signer\"",
+        "v11-types-package-bad-signer",
+    );
+}
+
+#[test]
+fn test_sim_rejects_invalid_typed_metadata_before_writing_witness() {
+    let project = TestProject::new("v11-test-sim-invalid-types-package");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#,
+    );
+    project.write(
+        "metadata/sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-v0.11"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = false
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "sqlx", policy = "typed", reason = "typed declaration supplied")]
+use sqlx::Pool;
+
+#[kobo::scenario(profile = "async")]
+fn scenario() {
+    let _pool = Pool::connect_lazy();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "test --sim must reject invalid configured typed metadata before witness output",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0121",
+        "invalid typed metadata in test --sim should surface as declaration validation",
+    );
+    assert!(
+        project.find_files_with_ext("kwit").is_empty(),
+        "invalid typed metadata must not produce .kwit witnesses"
+    );
+}
+
+#[test]
+fn lsp_uses_configured_metadata_package_validation() {
+    let project = TestProject::new("v11-lsp-invalid-types-package");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#,
+    );
+    project.write(
+        "metadata/sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-v0.11"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = false
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "LSP diagnostics should report configured metadata package validation errors",
+    );
+    assert_contains(
+        &output.stdout,
+        "K0121",
+        "LSP should use configured metadata package validation instead of treating it as missing",
+    );
+    assert_contains(
+        &output.stdout,
+        "validated",
+        "LSP diagnostic should name the failed configured metadata trust key",
+    );
+}
+
+#[test]
+fn lsp_validates_configured_metadata_package_without_source_boundary_annotation() {
+    let project = TestProject::new("v11-lsp-invalid-types-package-unannotated");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-v0.11"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = false
+"#,
+    );
+    let file = project.main_file(
+        r#"
+use sqlx::Pool;
+
+fn main() {
+    let _pool = Pool::connect_lazy();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "LSP diagnostics should validate configured metadata packages even without source boundary annotations",
+    );
+    assert_contains(
+        &output.stdout,
+        "K0121",
+        "invalid configured metadata should be visible in LSP diagnostics",
+    );
+    assert_contains(
+        &output.stdout,
+        "validated",
+        "LSP should name the failed configured metadata trust key",
     );
 }
 

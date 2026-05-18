@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -19,6 +20,7 @@ use super::{
     declarations::{self, DeclarationFacts, DeclarationLookup},
     policy,
     session::{build_session, render_diagnostics_with_format},
+    summary_validation,
 };
 
 pub(super) fn cmd_check(
@@ -65,14 +67,18 @@ pub(super) fn cmd_check(
 
     match run_check_pipeline(&mut session, file) {
         Ok(()) => {
-            let boundary_evidence = if replay_critical {
-                project_boundary_policy_diagnostics(&mut session, file)?
-            } else {
-                Vec::new()
-            };
+            let boundary_evidence =
+                if replay_critical || boundary_policy_visibility_enabled(&session) {
+                    project_boundary_policy_diagnostics(&mut session, file)?
+                } else {
+                    Vec::new()
+                };
             project_contextual_suggestions(&mut session, file)?;
             render_diagnostics_with_format(&session, error_format, color_mode);
             emit_boundary_policy_evidence(&boundary_evidence, error_format)?;
+            if replay_critical || !session.config.ecosystem_policy.summaries.is_empty() {
+                emit_summary_policy_evidence(&session.config, error_format)?;
+            }
             render_budget_summary(
                 file,
                 error_format,
@@ -114,14 +120,18 @@ pub(super) fn cmd_check(
             Ok(())
         }
         Err(()) => {
-            let boundary_evidence = if replay_critical {
-                project_boundary_policy_diagnostics(&mut session, file)?
-            } else {
-                Vec::new()
-            };
+            let boundary_evidence =
+                if replay_critical || boundary_policy_visibility_enabled(&session) {
+                    project_boundary_policy_diagnostics(&mut session, file)?
+                } else {
+                    Vec::new()
+                };
             project_contextual_suggestions(&mut session, file)?;
             render_diagnostics_with_format(&session, error_format, color_mode);
             emit_boundary_policy_evidence(&boundary_evidence, error_format)?;
+            if replay_critical || !session.config.ecosystem_policy.summaries.is_empty() {
+                emit_summary_policy_evidence(&session.config, error_format)?;
+            }
             render_budget_summary(
                 file,
                 error_format,
@@ -132,6 +142,14 @@ pub(super) fn cmd_check(
             Err(super::diagnostics_emitted())
         }
     }
+}
+
+fn boundary_policy_visibility_enabled(session: &kobo_driver::CompileSession) -> bool {
+    session.config.ecosystem_policy.default_is_configured
+        || !session.config.ecosystem_policy.crates.is_empty()
+        || !session.config.ecosystem_policy.types.is_empty()
+        || !session.config.ecosystem_policy.adapters.is_empty()
+        || !session.config.ecosystem_policy.summaries.is_empty()
 }
 
 fn reject_malformed_scenario_attributes(
@@ -656,10 +674,11 @@ fn project_boundary_policy_diagnostics(
             .with_suppression(DiagnosticSuppression::new(span, reason.clone())),
         );
 
-        let declaration = match declarations::load_declaration(
+        let declaration = match declarations::load_declaration_with_config(
             file,
             &boundary_call.crate_name,
             package_identity.version.as_deref(),
+            &session.config,
         ) {
             DeclarationLookup::Valid(info) => {
                 if decision.policy == ScenarioBoundaryPolicy::Typed
@@ -802,8 +821,7 @@ fn project_boundary_policy_diagnostics(
         let adapter_package = session
             .config
             .ecosystem_policy
-            .adapter_for(&boundary_call.crate_name)
-            .map(|adapter| adapter.package.clone());
+            .adapter_for(&boundary_call.crate_name);
         if decision.policy == ScenarioBoundaryPolicy::Model && adapter_package.is_none() {
             session.diagnostics.push(KDiagnostic::new(
                 KErrorCode::K0123,
@@ -825,6 +843,28 @@ fn project_boundary_policy_diagnostics(
                 ),
             ));
         }
+        if decision.policy == ScenarioBoundaryPolicy::Model {
+            if let Some(adapter) = adapter_package {
+                if let Err(message) = validate_model_adapter_metadata(adapter) {
+                    session.diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0123,
+                        Severity::Error,
+                        DiagLabel::primary(
+                            span,
+                            format!(
+                                "model adapter package for `{}` failed validation",
+                                boundary_call.crate_name
+                            ),
+                        ),
+                        message,
+                        DiagDecision(
+                            "install a registry-validated adapter package or downgrade the boundary policy"
+                                .to_owned(),
+                        ),
+                    ));
+                }
+            }
+        }
 
         evidence.push(BoundaryPolicyEvidence {
             crate_name: boundary_call.crate_name,
@@ -836,7 +876,7 @@ fn project_boundary_policy_diagnostics(
             span_start: boundary_call.span_start,
             span_end: boundary_call.span_end,
             call_path: boundary_call.call_path,
-            adapter_package,
+            adapter_package: adapter_package.map(|adapter| adapter.package.clone()),
         });
     }
 
@@ -867,6 +907,18 @@ fn emit_boundary_policy_evidence(
                     "declaration_path": entry.declaration.as_ref().map(|info| info.path.display().to_string()),
                     "declaration_version": entry.declaration.as_ref().map(|info| info.version.clone()),
                     "declaration_hash": entry.declaration.as_ref().map(|info| info.hash.clone()),
+                    "declaration_metadata_package": entry.declaration.as_ref().and_then(|info| {
+                        info.metadata_package.as_ref().map(|package| serde_json::json!({
+                            "package": package.package.clone(),
+                            "version": package.version.clone(),
+                            "path": package.path.display().to_string(),
+                            "source": package.source.clone(),
+                            "registry": package.registry.clone(),
+                            "checksum": package.checksum.clone(),
+                            "signed_by": package.signed_by.clone(),
+                            "validated": package.validated,
+                        }))
+                    }),
                     "declaration": entry.declaration.as_ref().map(|info| serde_json::json!({
                         "path": info.path.display().to_string(),
                         "version": info.version.clone(),
@@ -874,7 +926,35 @@ fn emit_boundary_policy_evidence(
                         "hash": info.hash.clone(),
                     })),
                     "declaration_types": entry.declaration.as_ref().map(|info| info.types.clone()).unwrap_or_default(),
+                    "declaration_type_facts": entry.declaration.as_ref().map(|info| {
+                        info.type_facts.iter().map(|fact| serde_json::json!({
+                            "path": fact.path.clone(),
+                            "kind": fact.kind.clone(),
+                            "resource": fact.resource,
+                            "must_call": fact.must_call.clone(),
+                            "ownership": fact.ownership.clone(),
+                            "strict_ward": fact.strict_ward.clone(),
+                        })).collect::<Vec<_>>()
+                    }).unwrap_or_default(),
+                    "declaration_obligations": entry.declaration.as_ref().map(|info| {
+                        info.type_facts.iter().filter(|fact| fact.resource || !fact.must_call.is_empty()).map(|fact| serde_json::json!({
+                            "type": fact.path.clone(),
+                            "must_call": fact.must_call.clone(),
+                            "resource": fact.resource,
+                        })).collect::<Vec<_>>()
+                    }).unwrap_or_default(),
                     "declaration_functions": entry.declaration.as_ref().map(|info| info.functions.clone()).unwrap_or_default(),
+                    "declaration_function_facts": entry.declaration.as_ref().map(|info| {
+                        info.function_facts.iter().map(|fact| serde_json::json!({
+                            "path": fact.path.clone(),
+                            "effects": fact.effects.clone(),
+                            "simulation": fact.simulation.clone(),
+                            "determinism": fact.determinism.clone(),
+                            "returns": fact.returns.clone(),
+                            "obligation": fact.obligation.clone(),
+                            "strict_ward": fact.strict_ward.clone(),
+                        })).collect::<Vec<_>>()
+                    }).unwrap_or_default(),
                     "declaration_effects": entry.declaration.as_ref().map(|info| info.effects.clone()).unwrap_or_default(),
                     "declaration_adapters": entry.declaration.as_ref().map(|info| info.adapters.clone()).unwrap_or_default(),
                     "activity_call_covered": declarations::activity_covers_call(
@@ -902,6 +982,150 @@ fn emit_boundary_policy_evidence(
                     .unwrap_or_default()
             ),
         }
+    }
+    Ok(())
+}
+
+fn emit_summary_policy_evidence(
+    config: &kobo_driver::KoboConfig,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    for summary in &config.ecosystem_policy.summaries {
+        let valid = summary_validation::load_valid_summary(summary)?;
+        let obligations = valid
+            .value
+            .get("obligations")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let functions = valid
+            .value
+            .get("functions")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        match error_format {
+            ErrorFormat::Json => println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "category": "summary-policy-evidence",
+                    "crate": summary.crate_name,
+                    "path": summary.path.display().to_string(),
+                    "summary_hash": valid.hash,
+                    "schema_version": valid.schema_version,
+                    "obligation_count": obligations.len(),
+                    "function_count": functions.len(),
+                    "obligations": obligations,
+                    "functions": functions,
+                }))?
+            ),
+            ErrorFormat::Human => eprintln!(
+                "summary policy: crate={} path={} hash={}",
+                summary.crate_name,
+                summary.path.display(),
+                valid.hash
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn validate_model_adapter_metadata(
+    adapter: &kobo_driver::EcosystemAdapterPolicy,
+) -> Result<(), String> {
+    if adapter.validated
+        && adapter.source.as_deref() == Some("registry")
+        && adapter.registry.as_deref() == Some(super::ecosystem::BUILTIN_REGISTRY_NAME)
+        && adapter.trust_policy.as_deref() == Some("builtin-reviewed")
+        && adapter.signed_by.as_deref() == Some("kobo-core")
+    {
+        return Ok(());
+    }
+    if !adapter.validated {
+        return Err(format!(
+            "`{}` adapter package must be registry-validated before model replay evidence is accepted",
+            adapter.package
+        ));
+    }
+    if adapter.trust_policy.as_deref() != Some("workspace-pinned") {
+        return Err(format!(
+            "`{}` adapter package must use trust_policy = \"workspace-pinned\"",
+            adapter.package
+        ));
+    }
+    let Some(metadata_path) = adapter.metadata_path.as_deref() else {
+        return Err(format!(
+            "`{}` adapter package must pin a metadata_path",
+            adapter.package
+        ));
+    };
+    let Some(checksum) = adapter.checksum.as_deref() else {
+        return Err(format!(
+            "`{}` adapter package must pin a sha256 checksum",
+            adapter.package
+        ));
+    };
+    let Some(expected_digest) = checksum.strip_prefix("sha256:") else {
+        return Err(format!(
+            "`{}` adapter package checksum must use sha256:<digest>",
+            adapter.package
+        ));
+    };
+    if expected_digest.len() != 64 || !expected_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "`{}` adapter package checksum must use sha256:<64 hex digits>",
+            adapter.package
+        ));
+    }
+    let bytes = fs::read(metadata_path)
+        .map_err(|error| format!("failed to read adapter metadata package: {error}"))?;
+    let actual = format!("sha256:{}", super::ecosystem::sha256_hex(&bytes));
+    if actual != checksum {
+        return Err(format!(
+            "`{}` adapter metadata checksum mismatch: expected {checksum}, found {actual}",
+            adapter.package
+        ));
+    }
+    let source = String::from_utf8(bytes)
+        .map_err(|error| format!("adapter metadata package is not UTF-8: {error}"))?;
+    let parsed: toml::Value =
+        toml::from_str(&source).map_err(|error| format!("adapter metadata TOML: {error}"))?;
+    if parsed
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        != Some(1)
+    {
+        return Err("adapter metadata package must use schema_version = 1".to_owned());
+    }
+    if parsed.get("kind").and_then(toml::Value::as_str) != Some("adapter") {
+        return Err("adapter metadata package must declare kind = \"adapter\"".to_owned());
+    }
+    if parsed.get("package").and_then(toml::Value::as_str) != Some(adapter.package.as_str()) {
+        return Err(format!(
+            "adapter metadata package does not describe `{}`",
+            adapter.package
+        ));
+    }
+    if let Some(version) = adapter.version.as_deref() {
+        if parsed.get("version").and_then(toml::Value::as_str) != Some(version) {
+            return Err(format!(
+                "adapter metadata package version does not match configured version `{version}`"
+            ));
+        }
+    }
+    if parsed.get("signed_by").and_then(toml::Value::as_str) != adapter.signed_by.as_deref() {
+        return Err("adapter metadata package signer does not match configured signer".to_owned());
+    }
+    if parsed.get("adapter_runtime").and_then(toml::Value::as_str)
+        != adapter.adapter_runtime.as_deref()
+    {
+        return Err(
+            "adapter metadata package runtime does not match configured adapter_runtime".to_owned(),
+        );
+    }
+    if parsed.get("capture").and_then(toml::Value::as_str) != adapter.capture.as_deref() {
+        return Err("adapter metadata package capture mode does not match config".to_owned());
     }
     Ok(())
 }
@@ -1407,7 +1631,51 @@ fn parsed_external_boundaries(
 
 fn dependency_names(config: &kobo_driver::KoboConfig) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    for (alias, value) in &config.dependencies {
+    extend_dependency_names(&mut names, &config.dependencies);
+    extend_dependency_names(&mut names, &config.dev_dependencies);
+    extend_dependency_names(&mut names, &config.build_dependencies);
+    extend_dependency_names(&mut names, &config.workspace_dependencies);
+    for target in &config.target_dependencies {
+        extend_dependency_names(&mut names, &target.dependencies);
+        extend_dependency_names(&mut names, &target.dev_dependencies);
+        extend_dependency_names(&mut names, &target.build_dependencies);
+    }
+    names.extend(
+        config
+            .ecosystem_policy
+            .crates
+            .iter()
+            .map(|policy| policy.name.clone()),
+    );
+    names.extend(
+        config
+            .ecosystem_policy
+            .types
+            .iter()
+            .map(|policy| policy.crate_name.clone()),
+    );
+    names.extend(
+        config
+            .ecosystem_policy
+            .adapters
+            .iter()
+            .map(|policy| policy.crate_name.clone()),
+    );
+    names.extend(
+        config
+            .ecosystem_policy
+            .summaries
+            .iter()
+            .map(|policy| policy.crate_name.clone()),
+    );
+    names
+}
+
+fn extend_dependency_names(
+    names: &mut BTreeSet<String>,
+    dependencies: &std::collections::HashMap<String, toml::Value>,
+) {
+    for (alias, value) in dependencies {
         names.insert(alias.clone());
         if let toml::Value::Table(table) = value {
             if let Some(package) = table.get("package").and_then(toml::Value::as_str) {
@@ -1415,7 +1683,6 @@ fn dependency_names(config: &kobo_driver::KoboConfig) -> BTreeSet<String> {
             }
         }
     }
-    names
 }
 
 #[derive(Default)]
@@ -1747,12 +2014,8 @@ fn parse_boundary_attribute(attr: &syn::Attribute, source: &str) -> Option<Bound
             _ => {}
         }
     }
-    let span_start = crate_name
-        .as_deref()
-        .and_then(|name| source.find(name))
-        .or_else(|| source.find("kobo::boundary"))
-        .unwrap_or(0);
-    let span_end = span_start + crate_name.as_ref().map(String::len).unwrap_or(1);
+    let (span_start, span_end) = span_offsets(source, attr.span())
+        .unwrap_or((0, crate_name.as_ref().map(String::len).unwrap_or(1)));
     Some(BoundaryPolicy {
         crate_name,
         policy: policy.unwrap_or_else(|| "opaque".to_owned()),

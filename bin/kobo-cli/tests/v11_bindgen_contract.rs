@@ -29,6 +29,29 @@ edition = "2021"
     crate_dir
 }
 
+fn write_featured_fixture_crate(
+    project: &TestProject,
+    name: &str,
+    body: &str,
+) -> std::path::PathBuf {
+    let crate_dir = project.root.join(name);
+    project.write(
+        &format!("{name}/Cargo.toml"),
+        &format!(
+            r#"[package]
+name = "{name}"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+advanced = []
+"#
+        ),
+    );
+    project.write(&format!("{name}/src/lib.rs"), body);
+    crate_dir
+}
+
 #[test]
 fn bindgen_positional_crate_uses_builtin_registry_metadata() {
     let project = TestProject::new("v11-bindgen-registry-sqlx");
@@ -48,6 +71,16 @@ fn bindgen_positional_crate_uses_builtin_registry_metadata() {
         &output.stdout,
         r#"package_source = "registry""#,
         "registry bindgen should disclose that metadata came from the built-in registry",
+    );
+    assert_contains(
+        &output.stdout,
+        r#"api_extraction_source = "registry-seed""#,
+        "registry bindgen fallback should disclose seed metadata instead of claiming source-backed public API extraction",
+    );
+    assert_contains(
+        &output.stdout,
+        "run kobo bindgen --path <crate-source>",
+        "registry seed drafts should tell users how to request source-backed public API extraction",
     );
     assert_contains(
         &output.stdout,
@@ -102,9 +135,126 @@ fn bindgen_crate_flag_preserves_feature_request_in_registry_draft() {
     );
     assert_contains(
         &output.stdout,
+        r#"api_extraction_status = "seed-only-use---path-for-source-backed-api""#,
+        "registry bindgen should not overstate static seed facts as rustdoc-expanded extraction",
+    );
+    assert_contains(
+        &output.stdout,
         "review_question",
         "registry bindgen should remain a review-required draft",
     );
+}
+
+#[test]
+fn bindgen_registry_crate_prefers_validated_source_path_over_static_public_list() {
+    let project = TestProject::new("v11-bindgen-registry-source-path");
+    project.write(
+        ".kobo/registry/index.toml",
+        r#"schema_version = 1
+name = "local-v0.11"
+trust_policy = "workspace-pinned"
+trusted_signers = ["kobo-local"]
+
+[[crate]]
+name = "acme_http"
+cargo_version = "0.4.1"
+signed_by = "kobo-local"
+source_path = "vendor/acme_http"
+public_types = ["StaleRegistryType"]
+public_functions = ["stale_registry_fn"]
+"#,
+    );
+    project.write(
+        "vendor/acme_http/Cargo.toml",
+        r#"[package]
+name = "acme_http"
+version = "0.4.1"
+edition = "2021"
+"#,
+    );
+    project.write(
+        "vendor/acme_http/src/lib.rs",
+        r#"
+pub struct LiveClient {}
+pub fn live_get() -> LiveClient { LiveClient {} }
+"#,
+    );
+
+    let output = run_kobo(&[s("bindgen"), s("acme_http")], &project.root);
+
+    assert_success(
+        &output,
+        "registry bindgen should extract public API from a validated registry source path",
+    );
+    assert_contains(
+        &output.stdout,
+        "acme_http::LiveClient",
+        "registry source_path should drive real public API extraction",
+    );
+    assert_contains(
+        &output.stdout,
+        "acme_http::live_get",
+        "registry source_path functions should be emitted",
+    );
+    assert!(
+        !output.stdout.contains("StaleRegistryType")
+            && !output.stdout.contains("stale_registry_fn"),
+        "registry source extraction must not use stale static public lists:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn bindgen_positional_crate_uses_cargo_dependency_source_when_available() {
+    let project = TestProject::new("v11-bindgen-cargo-dependency");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "v11-bindgen-cargo-dependency"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+acme_http = { path = "vendor/acme_http" }
+"#,
+    );
+    project.write("src/lib.rs", "pub fn root() {}\n");
+    project.write(
+        "vendor/acme_http/Cargo.toml",
+        r#"[package]
+name = "acme_http"
+version = "0.4.1"
+edition = "2021"
+"#,
+    );
+    project.write(
+        "vendor/acme_http/src/lib.rs",
+        r#"
+pub struct LiveClient {}
+pub fn live_get() -> LiveClient { LiveClient {} }
+"#,
+    );
+
+    let output = run_kobo(&[s("bindgen"), s("acme_http")], &project.root);
+
+    assert_success(
+        &output,
+        "bindgen should resolve real Cargo dependency sources before static registry fallback",
+    );
+    for expected in [
+        r#"metadata_source = "cargo-metadata""#,
+        r#"api_extraction_source = "cargo-metadata+checked-syn-public-api""#,
+        r#"api_validation = "cargo-check --lib""#,
+        r#"name = "acme_http""#,
+        "acme_http::LiveClient",
+        "acme_http::live_get",
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "positional bindgen should extract the dependency public API from Cargo metadata",
+        );
+    }
 }
 
 #[test]
@@ -157,6 +307,11 @@ pub fn charge_card() {
     );
     assert_contains(
         &output.stdout,
+        r#"api_extraction_status = "cargo-check-validated-public-api-draft""#,
+        "bindgen --path should disclose Cargo-validated source-backed public API extraction",
+    );
+    assert_contains(
+        &output.stdout,
         "source_hash = ",
         "bindgen should label package source/API hashes as source_hash",
     );
@@ -184,6 +339,212 @@ pub fn charge_card() {
         &output.stdout,
         "review_question",
         "ambiguous effects must become review questions, not trusted facts",
+    );
+}
+
+#[test]
+fn bindgen_path_emits_public_inherent_methods_as_api_functions() {
+    let project = TestProject::new("v11-bindgen-methods");
+    let crate_dir = write_fixture_crate(
+        &project,
+        "method_crate",
+        r#"
+pub struct Client;
+
+impl Client {
+    pub fn new() -> Self { Client }
+    pub fn get(&self) -> Response { Response }
+    fn private_helper(&self) {}
+}
+
+pub struct Response;
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("bindgen"), s("--path"), path_arg(&crate_dir)],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "bindgen --path should produce a declaration draft for public methods",
+    );
+    for expected in [
+        r#"path = "method_crate::Client::new""#,
+        r#"path = "method_crate::Client::get""#,
+        r#"method_receiver = "method_crate::Client""#,
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "public inherent methods should be emitted as declaration functions",
+        );
+    }
+    assert!(
+        !output.stdout.contains("private_helper"),
+        "private impl methods must not leak into bindgen public API output:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn bindgen_path_uses_cargo_metadata_and_feature_cfg_public_api() {
+    let project = TestProject::new("v11-bindgen-cargo-metadata");
+    let crate_dir = write_featured_fixture_crate(
+        &project,
+        "feature_api",
+        r#"
+mod internal;
+pub use internal::Exported;
+
+pub struct Always {}
+
+#[cfg(feature = "advanced")]
+pub struct Advanced {}
+
+#[cfg(not(feature = "advanced"))]
+pub struct Basic {}
+"#,
+    );
+    project.write(
+        "feature_api/src/internal.rs",
+        r#"
+pub struct Exported {}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("bindgen"),
+            s("--path"),
+            path_arg(&crate_dir),
+            s("--features"),
+            s("advanced"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "bindgen --path should use Cargo package metadata and enabled features",
+    );
+    for expected in [
+        r#"metadata_source = "cargo-metadata""#,
+        r#"api_extraction_source = "cargo-metadata+checked-syn-public-api""#,
+        r#"api_validation = "cargo-check --lib""#,
+        r#"metadata_status = "resolved""#,
+        r#"manifest_path = "#,
+        r#"target_kind = "lib""#,
+        r#"features = ["advanced"]"#,
+        "feature_api::Always",
+        "feature_api::Advanced",
+        "feature_api::Exported",
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "path bindgen should disclose cargo metadata and cfg-filtered public API",
+        );
+    }
+    assert!(
+        !output.stdout.contains("feature_api::Basic"),
+        "disabled cfg(not(feature = \"advanced\")) API must not be emitted:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn bindgen_path_uses_cargo_target_src_path_and_inline_modules() {
+    let project = TestProject::new("v11-bindgen-target-src-path");
+    let crate_dir = project.root.join("custom_api");
+    project.write(
+        "custom_api/Cargo.toml",
+        r#"[package]
+name = "custom_api"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "entry/main_api.rs"
+"#,
+    );
+    project.write(
+        "custom_api/entry/main_api.rs",
+        r#"
+pub mod inline_api {
+    pub struct InlineClient {}
+
+    pub fn connect() -> InlineClient {
+        InlineClient {}
+    }
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("bindgen"), s("--path"), path_arg(&crate_dir)],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "bindgen should read Cargo target src_path instead of assuming src/lib.rs",
+    );
+    for expected in [
+        "custom_api::inline_api::InlineClient",
+        "custom_api::inline_api::connect",
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "bindgen should include public API from inline modules under the Cargo target path",
+        );
+    }
+}
+
+#[test]
+fn bindgen_path_uses_conservative_cfg_for_unknown_predicates() {
+    let project = TestProject::new("v11-bindgen-unknown-cfg");
+    let crate_dir = write_featured_fixture_crate(
+        &project,
+        "cfg_api",
+        r#"
+pub struct Always {}
+
+#[cfg(kobo_private_build)]
+pub struct UnknownCfgType {}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("bindgen"), s("--path"), path_arg(&crate_dir)],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "bindgen --path should not fail on unknown cfg predicates",
+    );
+    assert_contains(
+        &output.stdout,
+        r#"cfg_policy = "conservative""#,
+        "bindgen should disclose conservative cfg evaluation",
+    );
+    assert_contains(
+        &output.stdout,
+        "cfg_api::Always",
+        "ordinary public API should still be emitted",
+    );
+    assert!(
+        output.stdout.contains("cfg_api::UnknownCfgType"),
+        "unknown cfg-gated API should be preserved as review-required instead of silently dropped:\n{}",
+        output.stdout
+    );
+    assert_contains(
+        &output.stdout,
+        "unresolved cfg predicate",
+        "unresolved cfg-gated API should carry a review question",
     );
 }
 

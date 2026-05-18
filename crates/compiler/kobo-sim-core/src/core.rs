@@ -107,6 +107,28 @@ pub struct ScenarioEvent {
     pub value: Option<u64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryIoCapture {
+    pub mode: String,
+    pub replay_key: String,
+    pub request: BoundaryIoPayload,
+    pub response: BoundaryIoPayload,
+    pub request_hash: String,
+    pub response_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryIoPayload {
+    pub kind: String,
+    pub fields: Vec<BoundaryIoField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BoundaryIoField {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeObligationSummary {
     pub binding: String,
@@ -126,6 +148,7 @@ pub struct BoundaryDecision {
     pub reason: Option<String>,
     pub span_start: usize,
     pub span_end: usize,
+    pub recorded_io: Option<BoundaryIoCapture>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -666,6 +689,20 @@ impl<'a> Runtime<'a> {
         if !is_replay_owned_boundary(&policy) && !self.opaque_boundaries.contains(&crate_name) {
             self.opaque_boundaries.push(crate_name.clone());
         }
+        let event_label = boundary_event_label(&crate_name, call_path.as_deref(), span);
+        let recorded_io = if policy == BoundaryPolicyChoice::Record {
+            Some(recorded_boundary_io_capture(
+                &crate_name,
+                call_path.as_deref(),
+                call_shape.as_str(),
+                policy.as_str(),
+                reason.as_deref(),
+                span,
+                &event_label,
+            ))
+        } else {
+            None
+        };
         if !self.boundary_decisions.iter().any(|decision| {
             decision.crate_name == crate_name
                 && decision.call_path == call_path
@@ -676,14 +713,14 @@ impl<'a> Runtime<'a> {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
                 call_path: call_path.clone(),
-                call_shape,
+                call_shape: call_shape.clone(),
                 policy: policy.clone(),
                 reason: reason.clone(),
                 span_start: span.0,
                 span_end: span.1,
+                recorded_io: recorded_io.clone(),
             });
         }
-        let event_label = boundary_event_label(&crate_name, call_path.as_deref(), span);
         if is_replay_owned_boundary(&policy) {
             self.events.push(ScenarioEvent {
                 kind: format!("boundary-{}", policy.as_str()),
@@ -849,6 +886,68 @@ fn is_explicit_partial_boundary(policy: &BoundaryPolicyChoice) -> bool {
 
 fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
     format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
+}
+
+fn recorded_boundary_io_capture(
+    crate_name: &str,
+    call_path: Option<&str>,
+    call_shape: &str,
+    policy: &str,
+    reason: Option<&str>,
+    span: (usize, usize),
+    replay_key: &str,
+) -> BoundaryIoCapture {
+    let request = BoundaryIoPayload {
+        kind: "kobo-boundary-request".to_owned(),
+        fields: vec![
+            boundary_io_field("crate", crate_name),
+            boundary_io_field("call_path", call_path.unwrap_or(crate_name)),
+            boundary_io_field("call_shape", call_shape),
+            boundary_io_field("policy", policy),
+            boundary_io_field("reason", reason.unwrap_or("")),
+            boundary_io_field("source_span_start", &span.0.to_string()),
+            boundary_io_field("source_span_end", &span.1.to_string()),
+        ],
+    };
+    let request_hash = crate::digest::stable_hash(&boundary_io_payload_material(&request));
+    let replay_result =
+        crate::digest::stable_hash(&format!("recorded-response:{replay_key}:{request_hash}"));
+    let response = BoundaryIoPayload {
+        kind: "kobo-boundary-response".to_owned(),
+        fields: vec![
+            boundary_io_field("status", "recorded"),
+            boundary_io_field("replay_key", replay_key),
+            boundary_io_field("replay_result", &replay_result),
+            boundary_io_field("external_internals_replayed", "false"),
+        ],
+    };
+    let response_hash = crate::digest::stable_hash(&boundary_io_payload_material(&response));
+    BoundaryIoCapture {
+        mode: "recorded-boundary-io".to_owned(),
+        replay_key: replay_key.to_owned(),
+        request,
+        response,
+        request_hash,
+        response_hash,
+    }
+}
+
+fn boundary_io_field(key: &str, value: &str) -> BoundaryIoField {
+    BoundaryIoField {
+        key: key.to_owned(),
+        value: value.to_owned(),
+    }
+}
+
+fn boundary_io_payload_material(payload: &BoundaryIoPayload) -> String {
+    let mut material = payload.kind.clone();
+    for field in &payload.fields {
+        material.push('\n');
+        material.push_str(&field.key);
+        material.push('=');
+        material.push_str(&field.value);
+    }
+    material
 }
 
 pub(crate) fn scheduler_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {

@@ -29,6 +29,58 @@ fn first_witness(project: &TestProject) -> (std::path::PathBuf, Value) {
 }
 
 #[test]
+fn backend_registry_discloses_full_depth_for_compiler_owned_and_registered_boundaries() {
+    let project = TestProject::new("v11-backend-full-depth-scope");
+    let output = run_kobo(&[s("sim"), s("backends"), s("--json")], &project.root);
+    assert_success(&output, "backend registry should render");
+    let value: Value = serde_json::from_str(&output.stdout).expect("backend JSON should parse");
+    let backends = value["backends"]
+        .as_array()
+        .expect("backend list should be an array");
+
+    for name in [
+        "generated-rust-process",
+        "loom",
+        "storage-filesystem",
+        "network-loopback",
+    ] {
+        let backend = backends
+            .iter()
+            .find(|backend| backend["name"] == name)
+            .unwrap_or_else(|| panic!("backend `{name}` should be listed: {value}"));
+        assert_eq!(
+            backend["full_ecosystem_exploration"], true,
+            "{name} should claim full depth for compiler-owned generated Rust scope only: {backend}",
+        );
+        assert_contains(
+            &backend.to_string(),
+            "full-compiler-owned",
+            "compiler-owned backends should expose their precise full-depth scope",
+        );
+    }
+
+    for name in ["shuttle", "turmoil", "madsim"] {
+        let backend = backends
+            .iter()
+            .find(|backend| backend["name"] == name)
+            .unwrap_or_else(|| panic!("backend `{name}` should be listed: {value}"));
+        assert_eq!(
+            backend["full_ecosystem_exploration"], false,
+            "{name} still must not claim arbitrary external crate exploration: {backend}",
+        );
+        assert_eq!(
+            backend["registered_boundary_exploration"], true,
+            "{name} should be full-depth for registry-validated adapter boundaries: {backend}",
+        );
+        assert_contains(
+            &backend.to_string(),
+            "full-registered-boundaries",
+            "adapter backends should disclose their registry-validated production scope",
+        );
+    }
+}
+
+#[test]
 fn exact_witness_discloses_v11_ecosystem_scope_without_full_exploration() {
     let project = TestProject::new("v11-exact-witness-ecosystem-scope");
     let file = project.main_file(
@@ -74,6 +126,11 @@ fn recorded_gateway() {
     );
     assert_contains(
         &witness["ecosystem_boundaries"].to_string(),
+        "facade-call-capture",
+        "record policy should disclose call-time boundary capture metadata",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
         "reqwest::Client::new",
         "boundary evidence should retain the replay-critical item path",
     );
@@ -81,6 +138,171 @@ fn recorded_gateway() {
         &witness["ecosystem_boundaries"].to_string(),
         "source_span",
         "boundary evidence should retain source span identity",
+    );
+    for expected in [
+        "io_capture",
+        "request_hash",
+        "response_hash",
+        "replay_key",
+        "recorded-boundary-io",
+    ] {
+        assert_contains(
+            &witness["ecosystem_boundaries"].to_string(),
+            expected,
+            "record boundaries should carry replayable boundary I/O capture, not only an event label",
+        );
+    }
+    let boundary = witness["ecosystem_boundaries"]
+        .as_array()
+        .and_then(|boundaries| {
+            boundaries
+                .iter()
+                .find(|boundary| boundary["policy"].as_str() == Some("record"))
+        })
+        .expect("record boundary should be present");
+    let io_capture = &boundary["capture"]["io_capture"];
+    assert_eq!(
+        io_capture["request"]["payload"]["call_path"].as_str(),
+        Some("reqwest::Client::new"),
+        "recorded I/O capture should store the concrete boundary request path"
+    );
+    assert_eq!(
+        io_capture["response"]["payload"]["status"].as_str(),
+        Some("recorded"),
+        "recorded I/O capture should store a replayable response payload"
+    );
+    assert!(
+        io_capture["response"]["payload"]["replay_result"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()),
+        "recorded I/O capture should include a deterministic replay result"
+    );
+}
+
+#[test]
+fn activity_witness_carries_retry_idempotency_and_result_metadata() {
+    let project = TestProject::new("v11-activity-witness-metadata");
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.1"
+source = "bindgen"
+
+[[activity]]
+path = "reqwest::Client::new"
+retry = "retry-safe"
+idempotency = "request-id"
+result = "record"
+compensation = "cancel-request"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "activity", reason = "external request activity")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn request_activity() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "activity boundary with declaration metadata should produce witness evidence",
+    );
+    let (_, witness) = first_witness(&project);
+    let boundary_text = witness["ecosystem_boundaries"].to_string();
+    for expected in [
+        r#""evidence":"activity-result""#,
+        "activity_metadata",
+        "retry-safe",
+        "request-id",
+        "record",
+        "cancel-request",
+        "boundary-call-capture",
+    ] {
+        assert_contains(
+            &boundary_text,
+            expected,
+            "activity witness should carry production-depth activity evidence",
+        );
+    }
+}
+
+#[test]
+fn test_sim_rejects_activity_boundary_without_complete_metadata() {
+    let project = TestProject::new("v11-activity-witness-incomplete-metadata");
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.1"
+source = "bindgen"
+
+[[activity]]
+path = "reqwest::Client::new"
+retry = "retry-safe"
+idempotency = "request-id"
+result = "record"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "activity", reason = "external request activity")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn request_activity() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "test --sim must reject activity evidence without complete retry/idempotency/result/compensation metadata",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0125",
+        "incomplete activity metadata should use the v0.11 activity diagnostic",
+    );
+    assert!(
+        project.find_files_with_ext("kwit").is_empty(),
+        "invalid activity metadata must not produce .kwit witnesses"
     );
 }
 
@@ -527,6 +749,115 @@ fn recorded_gateway() {
         &replay.combined(),
         "K0124",
         "missing recorded event evidence should use K0124",
+    );
+}
+
+#[test]
+fn record_boundary_missing_io_capture_breaks_exact_replay() {
+    let project = TestProject::new("v11-record-missing-io-capture");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "record gateway construction")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(&output, "fixture should create an exact witness");
+    let (witness_path, mut witness) = first_witness(&project);
+    witness["ecosystem_boundaries"][0]["capture"]["io_capture"] = serde_json::Value::Null;
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).expect("witness should serialize"),
+    )
+    .expect("witness should write");
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &replay,
+        "record replay must reject witnesses with missing boundary I/O capture",
+    );
+    assert_contains(
+        &replay.combined(),
+        "K0124",
+        "missing record I/O capture should use K0124",
+    );
+}
+
+#[test]
+fn record_boundary_tampered_io_capture_hash_breaks_exact_replay() {
+    let project = TestProject::new("v11-record-tampered-io-capture");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "record gateway construction")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(&output, "fixture should create an exact witness");
+    let (witness_path, mut witness) = first_witness(&project);
+    witness["ecosystem_boundaries"][0]["capture"]["io_capture"]["request_hash"] =
+        serde_json::json!("tampered");
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).expect("witness should serialize"),
+    )
+    .expect("witness should write");
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &replay,
+        "record replay must reject witnesses with modified boundary I/O hashes",
+    );
+    assert_contains(
+        &replay.combined(),
+        "K0124",
+        "tampered record I/O capture should use K0124",
     );
 }
 

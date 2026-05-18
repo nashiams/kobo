@@ -126,6 +126,285 @@ fn main() {
 }
 
 #[test]
+fn inspect_projects_boundary_policy_evidence() {
+    let project = TestProject::new("v11-inspect-boundary-policy");
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.crate]]
+name = "reqwest"
+policy = "record"
+reason = "record gateway construction"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+use reqwest::Client;
+
+fn main() {
+    let _client = Client::new();
+}
+"#,
+    );
+
+    let inspect = run_kobo(&[s("inspect"), path_arg(&file)], &project.root);
+    assert_success(
+        &inspect,
+        "inspect should project configured boundary policy evidence",
+    );
+    assert_contains(
+        &inspect.combined(),
+        "kobo-boundary-policy",
+        "inspect output should expose boundary policy metadata",
+    );
+    assert_contains(
+        &inspect.combined(),
+        "crate=reqwest policy=record source=project-crate",
+        "inspect output should preserve the configured crate policy source",
+    );
+    assert_contains(
+        &inspect.combined(),
+        "call=reqwest::Client::new",
+        "inspect output should preserve the resolved boundary call path",
+    );
+    assert_contains(
+        &inspect.combined(),
+        "span=",
+        "inspect output should preserve source span evidence for the boundary call",
+    );
+    assert_contains(
+        &inspect.combined(),
+        "record gateway construction",
+        "inspect output should preserve the policy reason",
+    );
+
+    let inspect_sim = run_kobo(&[s("inspect"), path_arg(&file), s("--sim")], &project.root);
+    assert_success(
+        &inspect_sim,
+        "inspect --sim should project configured boundary policy evidence",
+    );
+    assert_contains(
+        &inspect_sim.combined(),
+        "kobo-boundary-policy",
+        "inspect --sim output should expose boundary policy metadata",
+    );
+    assert_contains(
+        &inspect_sim.combined(),
+        "crate=reqwest policy=record source=project-crate",
+        "inspect --sim output should preserve the configured crate policy source",
+    );
+    assert_contains(
+        &inspect_sim.combined(),
+        "call=reqwest::Client::new",
+        "inspect --sim output should preserve the resolved boundary call path",
+    );
+}
+
+#[test]
+fn debt_projects_boundary_policy_evidence() {
+    let project = TestProject::new("v11-debt-boundary-policy");
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.crate]]
+name = "reqwest"
+policy = "record"
+reason = "record gateway construction"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+use reqwest::Client;
+
+fn main() {
+    let _client = Client::new();
+}
+"#,
+    );
+
+    let debt = run_kobo(&[s("debt"), path_arg(&file)], &project.root);
+    assert_success(
+        &debt,
+        "debt should project configured boundary policy evidence",
+    );
+    assert_contains(
+        &debt.combined(),
+        "Boundary policy debt",
+        "human debt output should expose boundary policy debt",
+    );
+    assert_contains(
+        &debt.combined(),
+        "crate=reqwest policy=record source=project-crate",
+        "human debt output should preserve the configured crate policy source",
+    );
+    assert_contains(
+        &debt.combined(),
+        "call=reqwest::Client::new",
+        "human debt output should preserve the resolved boundary call path",
+    );
+    assert_contains(
+        &debt.combined(),
+        "span=",
+        "human debt output should preserve source span evidence for the boundary call",
+    );
+    assert_contains(
+        &debt.combined(),
+        "record gateway construction",
+        "human debt output should preserve the policy reason",
+    );
+
+    let json = run_kobo(&[s("debt"), path_arg(&file), s("--json")], &project.root);
+    assert_success(
+        &json,
+        "debt --json should project configured boundary policy evidence",
+    );
+    assert_contains(
+        &json.combined(),
+        r#""boundary_policies""#,
+        "JSON debt output should include boundary policy evidence",
+    );
+    assert_contains(
+        &json.combined(),
+        r#""policy": "record""#,
+        "JSON debt output should preserve the configured policy",
+    );
+    assert_contains(
+        &json.combined(),
+        r#""source": "project-crate""#,
+        "JSON debt output should preserve the configured policy source",
+    );
+    assert_contains(
+        &json.combined(),
+        r#""reqwest::Client::new""#,
+        "JSON debt output should preserve the resolved boundary call path",
+    );
+    assert_contains(
+        &json.combined(),
+        r#""spans""#,
+        "JSON debt output should preserve structured boundary source spans",
+    );
+}
+
+#[test]
+fn boundary_policy_spans_are_call_site_anchored() {
+    let project = TestProject::new("v11-boundary-policy-call-site-spans");
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.crate]]
+name = "reqwest"
+policy = "record"
+reason = "record gateway construction"
+"#,
+    );
+    let source = r#"
+use reqwest::Client;
+
+fn main() {
+    // Client::new in a comment must not become span evidence.
+    let _text = "Client::new in a string must not become span evidence";
+    let _first = Client::new();
+    let _second = Client::new();
+}
+"#;
+    let file = project.main_file(source);
+
+    let json = run_kobo(&[s("debt"), path_arg(&file), s("--json")], &project.root);
+    assert_success(
+        &json,
+        "debt --json should emit boundary call-site span evidence",
+    );
+    let parsed: Value = serde_json::from_str(&json.stdout).expect("debt output should be JSON");
+    let boundary = parsed["boundary_policies"]
+        .as_array()
+        .expect("boundary policies should be an array")
+        .iter()
+        .find(|entry| entry["crate"] == "reqwest" && entry["policy"] == "record")
+        .expect("reqwest record boundary policy should exist");
+    let spans = boundary["spans"]
+        .as_array()
+        .expect("boundary spans should be an array");
+    assert!(
+        spans.len() >= 2,
+        "repeated call sites should produce distinct span evidence:\n{}",
+        boundary
+    );
+    let comment_start = source
+        .find("// Client::new")
+        .expect("comment marker should exist");
+    let first_call = source
+        .find("let _first = Client::new")
+        .expect("first call should exist");
+    for span in spans {
+        let start = span["start"]
+            .as_u64()
+            .expect("span start should be numeric") as usize;
+        assert_ne!(
+            start,
+            comment_start + "// ".len(),
+            "comment text must not be used as boundary span evidence:\n{}",
+            boundary
+        );
+        assert!(
+            start >= first_call,
+            "boundary span should be anchored to an executable call site, not comments/strings:\n{}",
+            boundary
+        );
+    }
+}
+
+#[test]
+fn replay_critical_boundary_discovery_uses_full_cargo_dependency_breadth() {
+    let project = TestProject::new("v11-boundary-policy-target-dependency");
+    project.write(
+        "Kobo.toml",
+        r#"[target."cfg(windows)".dependencies]
+http_alias = { package = "reqwest", version = "0.12" }
+"#,
+    );
+    let file = project.main_file(
+        r#"
+use http_alias::Client;
+
+fn main() {
+    let _client = Client::new();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "target-specific aliased dependencies should be replay-boundary candidates",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0107",
+        "target dependency aliases should produce replay boundary diagnostics",
+    );
+    assert_contains(
+        &output.combined(),
+        "http_alias",
+        "check should discover target dependency aliases as external boundaries",
+    );
+}
+
+#[test]
 fn invalid_ecosystem_policy_emits_k0120() {
     let project = TestProject::new("v11-invalid-ecosystem-policy");
     project.write(
@@ -240,6 +519,22 @@ fn activity_gateway() {
     let _client = Client::new();
     ward.task();
 }
+"#,
+    );
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+
+[[activity]]
+path = "sqlx::Client::new"
+retry = "caller"
+idempotency = "idempotent-connect"
+result = "record"
+compensation = "drop-client"
 "#,
     );
 

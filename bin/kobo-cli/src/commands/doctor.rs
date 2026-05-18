@@ -39,7 +39,7 @@ struct DoctorReport {
 
 struct DependencyEvidence {
     name: String,
-    section: &'static str,
+    section: String,
     version: Option<String>,
     package: Option<String>,
     source: Option<String>,
@@ -204,7 +204,7 @@ impl DependencyEvidence {
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "name": self.name,
-            "section": self.section,
+            "section": self.section.clone(),
             "version": self.version,
             "package": self.package,
             "source": self.source,
@@ -523,37 +523,54 @@ fn add_profile_guidance(profile: &str, hotspots: &mut Vec<String>, hints: &mut V
 }
 
 fn collect_dependencies(cargo: &TomlValue) -> Vec<DependencyEvidence> {
-    [
-        "dependencies",
-        "dev-dependencies",
-        "build-dependencies",
-        "target.'cfg(windows)'.dependencies",
-        "target.'cfg(unix)'.dependencies",
-    ]
-    .into_iter()
-    .flat_map(|section| dependencies_in_section(cargo, section))
-    .collect()
+    let mut dependencies = Vec::new();
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        dependencies.extend(dependencies_in_section(cargo, section.to_owned()));
+    }
+    if let Some(targets) = cargo.get("target").and_then(TomlValue::as_table) {
+        for (target, target_config) in targets {
+            for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                let label = format!("target.'{target}'.{section}");
+                dependencies.extend(dependencies_in_table(target_config, label, section));
+            }
+        }
+    }
+    dependencies
 }
 
-fn dependencies_in_section(cargo: &TomlValue, section: &'static str) -> Vec<DependencyEvidence> {
-    let Some(table) = table_at_path(cargo, section) else {
+fn dependencies_in_section(cargo: &TomlValue, section: String) -> Vec<DependencyEvidence> {
+    let Some(table) = table_at_path(cargo, &section) else {
         return Vec::new();
     };
+    dependencies_in_table_entries(table, section)
+}
+
+fn dependencies_in_table(
+    cargo: &TomlValue,
+    label: String,
+    section: &str,
+) -> Vec<DependencyEvidence> {
+    let Some(table) = cargo.get(section).and_then(TomlValue::as_table) else {
+        return Vec::new();
+    };
+    dependencies_in_table_entries(table, label)
+}
+
+fn dependencies_in_table_entries(
+    table: &toml::map::Map<String, TomlValue>,
+    section: String,
+) -> Vec<DependencyEvidence> {
     table
         .iter()
-        .filter_map(|(name, value)| dependency_evidence(name, section, value))
+        .filter_map(|(name, value)| dependency_evidence(name, &section, value))
         .collect()
 }
 
-fn dependency_evidence(
-    name: &str,
-    section: &'static str,
-    value: &TomlValue,
-) -> Option<DependencyEvidence> {
+fn dependency_evidence(name: &str, section: &str, value: &TomlValue) -> Option<DependencyEvidence> {
     if let Some(version) = value.as_str() {
         return Some(DependencyEvidence {
             name: name.to_owned(),
-            section,
+            section: section.to_owned(),
             version: Some(version.to_owned()),
             package: None,
             source: Some("registry".to_owned()),
@@ -597,7 +614,7 @@ fn dependency_evidence(
 
     Some(DependencyEvidence {
         name: name.to_owned(),
-        section,
+        section: section.to_owned(),
         version,
         package,
         source,

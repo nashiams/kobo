@@ -17,9 +17,9 @@ use proptest::test_runner::{
 
 use crate::ErrorFormat;
 
-use super::declarations;
 use super::sim_model::{self, ScenarioDocument};
 use super::witness_evidence;
+use super::{declarations, summary_validation};
 
 pub(super) fn cmd_test(
     file: &Path,
@@ -88,6 +88,7 @@ pub(super) fn cmd_test(
             engine,
         )?,
     };
+    validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
     if run.failure.is_some() || witness_dir.is_some() {
@@ -657,7 +658,7 @@ fn write_run_witness(
     );
     object.insert(
         "summaries".to_owned(),
-        serde_json::Value::Array(summary_usage_json(config)),
+        serde_json::Value::Array(summary_usage_json(config)?),
     );
     object.insert(
         "lifecycle_inference".to_owned(),
@@ -682,6 +683,44 @@ fn write_run_witness(
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
     Ok(witness_path)
+}
+
+fn validate_run_boundary_declarations(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    run: &FullDepthRun,
+) -> anyhow::Result<()> {
+    for decision in &run.boundary_decisions {
+        let policy = decision.policy.as_str();
+        if !matches!(policy, "typed" | "activity") {
+            continue;
+        }
+        if let Err(error) = declarations::declaration_facts_for_boundary(
+            file,
+            config,
+            &decision.crate_name,
+            policy,
+            decision.call_path.as_deref(),
+        ) {
+            let code = declaration_error_code(policy, error.key);
+            anyhow::bail!(
+                "{code}: configured {policy} metadata for `{}` failed validation at {} key `{}`: {}",
+                decision.crate_name,
+                error.path.display(),
+                error.key,
+                error.message
+            );
+        }
+    }
+    Ok(())
+}
+
+fn declaration_error_code(policy: &str, key: &str) -> &'static str {
+    match (policy, key) {
+        ("activity", "activity") => "K0125",
+        ("typed", "declaration") => "K0122",
+        _ => "K0121",
+    }
 }
 
 fn replay_contract_json(run: &FullDepthRun) -> serde_json::Value {
@@ -1174,13 +1213,26 @@ fn ecosystem_boundaries_json(
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
                 "evidence": evidence,
+                "capture": boundary_capture_json(decision, run),
+                "activity_metadata": activity_metadata_for_boundary(file, config, decision),
                 "source_span": {
                     "start": decision.span_start,
                     "end": decision.span_end,
                 },
-                "declaration": declaration_metadata_for_boundary(file, &decision.crate_name, decision.policy.as_str()),
+                "declaration": declaration_metadata_for_boundary(file, config, &decision.crate_name, decision.policy.as_str()),
                 "adapter": config.ecosystem_policy.adapter_for(&decision.crate_name).map(|adapter| serde_json::json!({
                     "package": adapter.package,
+                    "version": adapter.version,
+                    "source": adapter.source,
+                    "registry": adapter.registry,
+                    "checksum": adapter.checksum,
+                    "compatible_crate": adapter.compatible_crate,
+                    "metadata_path": adapter.metadata_path.as_ref().map(|path| path.display().to_string()),
+                    "trust_policy": adapter.trust_policy,
+                    "signed_by": adapter.signed_by,
+                    "validated": adapter.validated,
+                    "adapter_runtime": adapter.adapter_runtime,
+                    "capture": adapter.capture,
                     "reason": adapter.reason,
                 })),
                 "full_ecosystem_exploration": false,
@@ -1191,36 +1243,52 @@ fn ecosystem_boundaries_json(
 
 fn declaration_metadata_for_boundary(
     file: &Path,
+    config: &kobo_driver::KoboConfig,
     crate_name: &str,
     policy: &str,
 ) -> Option<serde_json::Value> {
-    if policy != "typed" {
+    if !matches!(policy, "typed" | "activity") {
         return None;
     }
-    let path = declarations::declaration_path_for(file, crate_name)?;
-    let source = std::fs::read_to_string(&path).ok()?;
-    let parsed = source.parse::<toml::Value>().ok()?;
-    let schema_version = parsed
-        .get("schema_version")
-        .and_then(toml::Value::as_integer)
-        .unwrap_or(0);
-    let version = parsed
-        .get("crate")
-        .and_then(toml::Value::as_table)
-        .and_then(|table| table.get("version"))
-        .and_then(toml::Value::as_str)
-        .unwrap_or("unknown");
+    let facts = match declarations::declaration_facts_for_config(file, crate_name, config) {
+        declarations::DeclarationLookup::Valid(facts) => facts,
+        declarations::DeclarationLookup::Missing | declarations::DeclarationLookup::Invalid(_) => {
+            return None;
+        }
+    };
+    Some(declaration_metadata_json(&facts))
+}
+
+fn activity_metadata_for_boundary(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    decision: &kobo_sim_core::BoundaryDecision,
+) -> Option<serde_json::Value> {
+    if decision.policy.as_str() != "activity" {
+        return None;
+    }
+    let facts = match declarations::declaration_facts_for_config(file, &decision.crate_name, config)
+    {
+        declarations::DeclarationLookup::Valid(facts) => facts,
+        declarations::DeclarationLookup::Missing | declarations::DeclarationLookup::Invalid(_) => {
+            return None;
+        }
+    };
+    let activity = declarations::activity_fact_for_call(&facts, decision.call_path.as_deref())?;
     Some(serde_json::json!({
-        "path": path.display().to_string(),
-        "version": version,
-        "schema_version": schema_version,
-        "hash": declarations::declaration_hash(&source),
+        "path": activity.path.clone(),
+        "retry": activity.retry.clone(),
+        "idempotency": activity.idempotency.clone(),
+        "result": activity.result.clone(),
+        "compensation": activity.compensation.clone(),
+        "declaration_hash": facts.hash.clone(),
+        "declaration_version": facts.version.clone(),
     }))
 }
 
 fn declarations_json(
     file: &Path,
-    _config: &kobo_driver::KoboConfig,
+    config: &kobo_driver::KoboConfig,
     run: &FullDepthRun,
 ) -> Vec<serde_json::Value> {
     run.boundary_decisions
@@ -1229,46 +1297,83 @@ fn declarations_json(
             if decision.policy.as_str() != "typed" {
                 return None;
             }
-            let path = declarations::declaration_path_for(file, &decision.crate_name)?;
-            let source = std::fs::read_to_string(&path).ok()?;
-            let parsed = source.parse::<toml::Value>().ok()?;
-            let schema_version = parsed
-                .get("schema_version")
-                .and_then(toml::Value::as_integer)
-                .unwrap_or(0);
-            let version = parsed
-                .get("crate")
-                .and_then(toml::Value::as_table)
-                .and_then(|table| table.get("version"))
-                .and_then(toml::Value::as_str)
-                .unwrap_or("unknown");
-            let hash = declarations::declaration_hash(&source);
+            let facts = match declarations::declaration_facts_for_config(
+                file,
+                &decision.crate_name,
+                config,
+            ) {
+                declarations::DeclarationLookup::Valid(facts) => facts,
+                declarations::DeclarationLookup::Missing
+                | declarations::DeclarationLookup::Invalid(_) => return None,
+            };
             Some(serde_json::json!({
                 "crate": decision.crate_name,
-                "path": path.display().to_string(),
-                "version": version,
-                "schema_version": schema_version,
-                "hash": hash,
-                "declaration_version": version,
-                "declaration_hash": hash,
+                "path": facts.path.display().to_string(),
+                "version": facts.version.clone(),
+                "schema_version": facts.schema_version,
+                "hash": facts.hash.clone(),
+                "declaration_version": facts.version.clone(),
+                "declaration_hash": facts.hash.clone(),
             }))
         })
         .collect()
 }
 
-fn summary_usage_json(config: &kobo_driver::KoboConfig) -> Vec<serde_json::Value> {
-    config
-        .ecosystem_policy
-        .summaries
-        .iter()
-        .map(|summary| {
-            serde_json::json!({
-                "crate": summary.crate_name,
-                "path": summary.path.display().to_string(),
-                "summary_hash": summary.hash,
-            })
-        })
-        .collect()
+fn declaration_metadata_json(facts: &declarations::DeclarationFacts) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "path": facts.path.display().to_string(),
+        "version": facts.version.clone(),
+        "schema_version": facts.schema_version,
+        "hash": facts.hash.clone(),
+    });
+    if let Some(package) = facts.metadata_package.as_ref() {
+        value
+            .as_object_mut()
+            .expect("declaration metadata json should be an object")
+            .insert(
+                "metadata_package".to_owned(),
+                serde_json::json!({
+                    "package": package.package.clone(),
+                    "version": package.version.clone(),
+                    "path": package.path.display().to_string(),
+                    "source": package.source.clone(),
+                    "registry": package.registry.clone(),
+                    "checksum": package.checksum.clone(),
+                    "signed_by": package.signed_by.clone(),
+                    "validated": package.validated,
+                }),
+            );
+    }
+    value
+}
+
+fn summary_usage_json(config: &kobo_driver::KoboConfig) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut summaries = Vec::new();
+    for summary in &config.ecosystem_policy.summaries {
+        let valid = summary_validation::load_valid_summary(summary)?;
+        let parsed = valid.value;
+        let obligations = parsed
+            .get("obligations")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let functions = parsed
+            .get("functions")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        summaries.push(serde_json::json!({
+            "crate": summary.crate_name,
+            "path": summary.path.display().to_string(),
+            "summary_hash": valid.hash,
+            "schema_version": valid.schema_version,
+            "obligation_count": obligations.len(),
+            "function_count": functions.len(),
+            "obligations": obligations,
+            "functions": functions,
+        }));
+    }
+    Ok(summaries)
 }
 
 fn boundary_evidence_for_policy(
@@ -1300,6 +1405,68 @@ fn boundary_evidence_for_policy(
         "opaque" | "debt" => "assumption",
         _ => "unverified",
     }
+}
+
+fn boundary_capture_json(
+    decision: &kobo_sim_core::BoundaryDecision,
+    run: &FullDepthRun,
+) -> Option<serde_json::Value> {
+    let expected_label = boundary_event_label(decision);
+    let event = run.events.iter().find(|event| {
+        matches!(
+            event.kind.as_str(),
+            "boundary-record" | "boundary-activity" | "boundary-model" | "boundary-stub"
+        ) && event.label.as_deref() == Some(expected_label.as_str())
+    })?;
+    let capture_source = if run.harness_manifest.is_some() {
+        "facade-call-capture"
+    } else {
+        "semantic-boundary-capture"
+    };
+    Some(serde_json::json!({
+        "mode": "boundary-call-capture",
+        "capture_source": capture_source,
+        "event_kind": event.kind.clone(),
+        "event_label": event.label.clone(),
+        "event_value": event.value,
+        "io_capture": record_io_capture_json(decision),
+        "call_path": decision.call_path.clone(),
+        "call_shape": decision.call_shape.as_str(),
+        "source_span": {
+            "start": decision.span_start,
+            "end": decision.span_end,
+        },
+        "external_internals_replayed": false,
+    }))
+}
+
+fn record_io_capture_json(decision: &kobo_sim_core::BoundaryDecision) -> Option<serde_json::Value> {
+    if decision.policy.as_str() != "record" {
+        return None;
+    }
+    let capture = decision.recorded_io.as_ref()?;
+    Some(serde_json::json!({
+        "mode": capture.mode.clone(),
+        "replay_key": capture.replay_key.clone(),
+        "request": boundary_io_payload_json(&capture.request),
+        "response": boundary_io_payload_json(&capture.response),
+        "request_hash": capture.request_hash.clone(),
+        "response_hash": capture.response_hash.clone(),
+    }))
+}
+
+fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    for field in &payload.fields {
+        fields.insert(
+            field.key.clone(),
+            serde_json::Value::String(field.value.clone()),
+        );
+    }
+    serde_json::json!({
+        "kind": payload.kind.clone(),
+        "payload": fields,
+    })
 }
 
 fn boundary_event_label(decision: &kobo_sim_core::BoundaryDecision) -> String {

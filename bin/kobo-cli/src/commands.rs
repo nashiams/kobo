@@ -1,5 +1,6 @@
 mod bench;
 mod bindgen;
+mod boundary_projection;
 mod build;
 mod check;
 mod debt;
@@ -20,6 +21,7 @@ mod run;
 mod session;
 mod sim;
 mod sim_model;
+mod summary_validation;
 mod test_cmd;
 mod watch;
 mod witness_evidence;
@@ -171,6 +173,9 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             path,
             git,
             no_default_features,
+            dev,
+            build,
+            target,
             manifest_path,
             member,
         } => ecosystem::cmd_add(
@@ -180,6 +185,9 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             path.as_deref(),
             git.as_deref(),
             no_default_features,
+            dev,
+            build,
+            target.as_deref(),
             manifest_path.as_deref(),
             member.as_deref(),
         ),

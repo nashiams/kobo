@@ -201,6 +201,16 @@ pub(crate) enum KoboCommand {
         git: Option<String>,
         #[arg(long = "no-default-features")]
         no_default_features: bool,
+        #[arg(long, help = "Add to [dev-dependencies]")]
+        dev: bool,
+        #[arg(long, help = "Add to [build-dependencies]")]
+        build: bool,
+        #[arg(
+            long,
+            value_name = "TARGET",
+            help = "Add to target-specific dependencies"
+        )]
+        target: Option<String>,
         #[arg(long, value_name = "PATH")]
         manifest_path: Option<PathBuf>,
         #[arg(long, value_name = "MEMBER")]

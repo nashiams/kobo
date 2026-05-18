@@ -10,8 +10,9 @@ use kobo_driver::{
 use kobo_ir::{GuaranteePolicy, MustCallObligation};
 
 use super::{
-    ownership_analysis, policy,
+    boundary_projection, ownership_analysis, policy,
     session::{build_session, line_number_for_offset, render_diagnostics},
+    summary_validation,
 };
 use crate::{ErrorFormat, GuaranteeProfileArg};
 
@@ -89,6 +90,7 @@ pub(super) fn cmd_inspect(
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_policy.clone())?;
     let summary_usages = validate_configured_summaries(&session)?;
+    let boundary_policies = boundary_projection::projections_for_file(file, &session.config)?;
 
     if audit == Some("json") {
         let source = std::fs::read_to_string(file)
@@ -105,6 +107,7 @@ pub(super) fn cmd_inspect(
             "// effective guarantee profile: {}",
             session.guarantee_profile().as_str()
         );
+        emit_boundary_policy_comments(&boundary_policies);
         print!("{output}");
         return Ok(());
     }
@@ -123,6 +126,7 @@ pub(super) fn cmd_inspect(
             "// effective guarantee profile: {}",
             session.guarantee_profile().as_str()
         );
+        emit_boundary_policy_comments(&boundary_policies);
         print!("{main_output}");
         return Ok(());
     }
@@ -175,8 +179,17 @@ pub(super) fn cmd_inspect(
             usage.crate_name, usage.hash, usage.schema_version
         );
     }
+    emit_boundary_policy_comments(&boundary_policies);
     print!("{output}");
     Ok(())
+}
+
+fn emit_boundary_policy_comments(
+    boundary_policies: &[boundary_projection::BoundaryPolicyProjection],
+) {
+    for boundary in boundary_policies {
+        println!("{}", boundary.inspect_comment());
+    }
 }
 
 struct SummaryUsage {
@@ -190,50 +203,14 @@ fn validate_configured_summaries(
 ) -> anyhow::Result<Vec<SummaryUsage>> {
     let mut usages = Vec::new();
     for summary in &session.config.ecosystem_policy.summaries {
-        let source = fs::read_to_string(&summary.path)
-            .with_context(|| format!("failed to read .kobo-summary {}", summary.path.display()))?;
-        let parsed: serde_json::Value = serde_json::from_str(&source)
-            .with_context(|| format!("failed to parse .kobo-summary {}", summary.path.display()))?;
-        let schema_version = parsed
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        if schema_version != 1 {
-            anyhow::bail!(
-                "K0126: .kobo-summary version mismatch for {}: expected 1, found {}",
-                summary.crate_name,
-                schema_version
-            );
-        }
-        let actual = parsed
-            .get("summary_hash")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| stable_hash(&source));
-        if actual != summary.hash {
-            anyhow::bail!(
-                "K0126: .kobo-summary hash mismatch for {}: expected {}, found {}",
-                summary.crate_name,
-                summary.hash,
-                actual
-            );
-        }
+        let valid = summary_validation::load_valid_summary(summary)?;
         usages.push(SummaryUsage {
             crate_name: summary.crate_name.clone(),
-            hash: actual,
-            schema_version,
+            hash: valid.hash,
+            schema_version: valid.schema_version,
         });
     }
     Ok(usages)
-}
-
-fn stable_hash(source: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in source.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
 }
 
 fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
@@ -695,13 +672,26 @@ fn cargo_toml_with_absolute_dependency_paths(
 }
 
 fn rewrite_dependency_paths(project_root: &Path, manifest: &mut toml::Value) {
-    let Some(dependencies) = manifest
-        .get_mut("dependencies")
+    rewrite_dependency_section_paths(project_root, manifest, "dependencies");
+    rewrite_dependency_section_paths(project_root, manifest, "dev-dependencies");
+    rewrite_dependency_section_paths(project_root, manifest, "build-dependencies");
+    if let Some(targets) = manifest
+        .get_mut("target")
         .and_then(toml::Value::as_table_mut)
-    else {
+    {
+        for (_, target) in targets {
+            rewrite_dependency_section_paths(project_root, target, "dependencies");
+            rewrite_dependency_section_paths(project_root, target, "dev-dependencies");
+            rewrite_dependency_section_paths(project_root, target, "build-dependencies");
+        }
+    }
+}
+
+fn rewrite_dependency_section_paths(project_root: &Path, value: &mut toml::Value, section: &str) {
+    let Some(dependencies) = value.get_mut(section).and_then(toml::Value::as_table_mut) else {
         return;
     };
-    for (_, value) in dependencies.iter_mut() {
+    for (_, value) in dependencies {
         let Some(table) = value.as_table_mut() else {
             continue;
         };

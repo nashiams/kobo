@@ -213,6 +213,33 @@ fn active_codes_do_not_use_explain_fallbacks() {
 }
 
 #[test]
+fn v011_active_explain_pages_have_specific_prod_depth_guidance() {
+    let fallback_prose = [
+        "Review the highlighted source and make the ownership or boundary choice explicit.",
+        "Follow the help text from the diagnostic card and rerun Kobo.",
+        "Apply a machine-applicable suggestion only after checking that it preserves the source intent.",
+        "Choose an explicit boundary policy so the guarantee remains reviewable.",
+    ];
+
+    for code_text in [
+        "K0120", "K0121", "K0122", "K0123", "K0124", "K0125", "K0126", "K0127", "K0128", "K0129",
+    ] {
+        let text = explain_code(code_text)
+            .unwrap_or_else(|| panic!("missing explain text for {code_text}"));
+        assert!(
+            text.contains("Option 1:") && text.contains("Problem:") && text.contains("Fix:"),
+            "{code_text} explain must be a concrete teaching page:\n{text}"
+        );
+        for fallback in fallback_prose {
+            assert!(
+                !text.contains(fallback),
+                "{code_text} explain used generic fallback prose `{fallback}`:\n{text}"
+            );
+        }
+    }
+}
+
+#[test]
 fn high_traffic_explain_pages_include_small_examples() {
     for code in active_codes_to_check() {
         let text = explain_code(code.as_str()).expect("explain page should exist");

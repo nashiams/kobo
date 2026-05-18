@@ -10,7 +10,7 @@ use kobo_ir::MustCallObligation;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 use syn::visit::Visit;
 
-use super::session::build_session;
+use super::{boundary_projection, session::build_session, summary_validation};
 
 pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
     let mut session = build_session(file, None)?;
@@ -19,9 +19,23 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
 
     let (file_count, line_count) = count_files_and_lines(session.file_set());
     let report = build_debt_report(&kir, file_count, line_count);
+    let boundary_policies = boundary_projection::projections_for_file(file, &session.config)?;
 
     if json {
-        let json_str = serde_json::to_string_pretty(&report)
+        let mut value =
+            serde_json::to_value(&report).context("failed to serialize debt report to JSON")?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "boundary_policies".to_owned(),
+                serde_json::Value::Array(
+                    boundary_policies
+                        .iter()
+                        .map(boundary_projection::BoundaryPolicyProjection::to_json_value)
+                        .collect(),
+                ),
+            );
+        }
+        let json_str = serde_json::to_string_pretty(&value)
             .context("failed to serialize debt report to JSON")?;
         println!("{json_str}");
         return Ok(());
@@ -50,6 +64,9 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
         );
     } else {
         println!("{human}");
+    }
+    for boundary in &boundary_policies {
+        println!("{}", boundary.debt_line());
     }
 
     Ok(())
@@ -104,33 +121,8 @@ fn summary_liveness_findings(
 ) -> anyhow::Result<Vec<LivenessFinding>> {
     let mut findings = Vec::new();
     for summary in &config.ecosystem_policy.summaries {
-        let summary_source = std::fs::read_to_string(&summary.path)
-            .with_context(|| format!("failed to read .kobo-summary {}", summary.path.display()))?;
-        let parsed = serde_json::from_str::<serde_json::Value>(&summary_source)
-            .with_context(|| format!("failed to parse .kobo-summary {}", summary.path.display()))?;
-        let schema_version = parsed
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        if schema_version != 1 {
-            anyhow::bail!(
-                "K0126: .kobo-summary version mismatch for {}: expected 1, found {}",
-                summary.crate_name,
-                schema_version
-            );
-        }
-        let actual_hash = parsed
-            .get("summary_hash")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("<missing>");
-        if actual_hash != summary.hash {
-            anyhow::bail!(
-                "K0126: .kobo-summary hash mismatch for {}: expected {}, found {}",
-                summary.crate_name,
-                summary.hash,
-                actual_hash
-            );
-        }
+        let valid = summary_validation::load_valid_summary(summary)?;
+        let parsed = valid.value;
         let Some(obligations) = parsed
             .get("obligations")
             .and_then(serde_json::Value::as_array)
@@ -160,6 +152,18 @@ fn summary_liveness_findings(
             let applicable_functions = string_array_field(obligation, "applicable_functions")
                 .filter(|functions| !functions.is_empty())
                 .unwrap_or_else(|| vec![summary.crate_name.clone()]);
+            let applicability_source = obligation
+                .get("applicability")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|applicability| applicability.get("source"))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    obligation
+                        .get("applicability_source")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .unwrap_or("summary-declared")
+                .to_owned();
             if !summary_obligation_applies(source, &applicable_types, &applicable_functions) {
                 continue;
             }
@@ -174,11 +178,12 @@ fn summary_liveness_findings(
                 binding: None,
                 applicable_types,
                 applicable_functions,
+                applicability_source,
                 message: "liveness fact imported from .kobo-summary".to_owned(),
                 reason: Some(format!(
                     "summary {} schema 1 hash {}",
                     summary.path.display(),
-                    summary.hash
+                    valid.hash
                 )),
             });
         }
@@ -407,6 +412,7 @@ struct LivenessFinding {
     binding: Option<String>,
     applicable_types: Vec<String>,
     applicable_functions: Vec<String>,
+    applicability_source: String,
     message: String,
     reason: Option<String>,
 }
@@ -424,7 +430,8 @@ impl LivenessFinding {
             self.code, self.owner_type, binding, self.function, self.message, action_list
         );
         line.push_str(&format!(
-            "; applicability: types=[{}] functions=[{}]",
+            "; applicability: source={} types=[{}] functions=[{}]",
+            self.applicability_source,
             self.applicable_types.join(", "),
             self.applicable_functions.join(", ")
         ));
@@ -442,6 +449,7 @@ impl LivenessFinding {
             "function": self.function,
             "binding": self.binding,
             "applicability": {
+                "source": self.applicability_source,
                 "types": self.applicable_types,
                 "functions": self.applicable_functions,
             },
@@ -501,6 +509,7 @@ fn build_liveness_findings(
                             binding: Some(binding),
                             applicable_types: vec![obligation.owner_type.clone()],
                             applicable_functions: vec![function.name.clone()],
+                            applicability_source: "local-declaration".to_owned(),
                             message: "must_call liveness obligation suppressed".to_owned(),
                             reason: Some(reason.clone()),
                         });
@@ -517,6 +526,7 @@ fn build_liveness_findings(
                             binding: Some(binding),
                             applicable_types: vec![obligation.owner_type.clone()],
                             applicable_functions: vec![function.name.clone()],
+                            applicability_source: "local-declaration".to_owned(),
                             message: "`#[kobo::suppress(K0100)]` requires a reason".to_owned(),
                             reason: None,
                         });
@@ -530,6 +540,7 @@ fn build_liveness_findings(
                             binding: Some(binding),
                             applicable_types: vec![obligation.owner_type.clone()],
                             applicable_functions: vec![function.name.clone()],
+                            applicability_source: "local-declaration".to_owned(),
                             message: "may leave without a required call".to_owned(),
                             reason: None,
                         });
@@ -575,6 +586,7 @@ fn escape_finding(
         binding: None,
         applicable_types: vec![obligation.owner_type.clone()],
         applicable_functions: vec![function.name.clone()],
+        applicability_source: "local-declaration".to_owned(),
         message: "obligation escapes local analysis through a return value".to_owned(),
         reason: None,
     })

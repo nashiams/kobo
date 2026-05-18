@@ -20,6 +20,10 @@ fn sim_scout_fix_plan_covers_common_replay_boundary_classes() {
         r#"
 use reqwest::Client;
 
+extern "C" {
+    fn ffi_ping();
+}
+
 async fn replay_gap() {
     let _now = std::time::SystemTime::now();
     let _random = rand::thread_rng();
@@ -27,7 +31,10 @@ async fn replay_gap() {
     let _client = Client::new();
     tokio::spawn(async {});
     let _file = std::fs::read_to_string("state.txt");
+    let _socket = std::net::TcpStream::connect("127.0.0.1:8080");
     let _process = std::process::id();
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    unsafe { ffi_ping(); }
 }
 "#,
     );
@@ -51,7 +58,10 @@ async fn replay_gap() {
         "http-database",
         "task-spawn",
         "filesystem",
+        "socket",
         "process",
+        "ffi",
+        "observable-scheduling",
     ] {
         assert_contains(
             &output.stdout,

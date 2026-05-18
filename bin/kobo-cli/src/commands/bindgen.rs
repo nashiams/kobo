@@ -5,7 +5,34 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use quote::ToTokens;
 
-pub(super) fn cmd_bindgen(path: &Path) -> anyhow::Result<()> {
+use super::ecosystem::{community_registry_entry, BUILTIN_REGISTRY_NAME};
+
+pub(super) struct BindgenOptions<'a> {
+    pub(super) path: Option<&'a Path>,
+    pub(super) crate_name: Option<&'a str>,
+    pub(super) features: Option<&'a str>,
+}
+
+struct RegistryDraft<'a> {
+    crate_name: &'a str,
+    version: &'a str,
+    features: Vec<String>,
+    public_types: &'a [&'a str],
+    public_functions: &'a [&'a str],
+}
+
+pub(super) fn cmd_bindgen(options: BindgenOptions<'_>) -> anyhow::Result<()> {
+    match (options.path, options.crate_name) {
+        (Some(path), None) => cmd_bindgen_path(path),
+        (None, Some(crate_name)) => cmd_bindgen_registry(crate_name, options.features),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("kobo bindgen accepts either --path or a crate name, not both")
+        }
+        (None, None) => anyhow::bail!("kobo bindgen needs --path <crate> or a registry crate name"),
+    }
+}
+
+fn cmd_bindgen_path(path: &Path) -> anyhow::Result<()> {
     let manifest_path = path.join("Cargo.toml");
     let manifest_source =
         fs::read_to_string(&manifest_path).context("failed to read crate Cargo.toml")?;
@@ -103,6 +130,101 @@ pub(super) fn cmd_bindgen(path: &Path) -> anyhow::Result<()> {
         declaration.replace("__KOBO_DECLARATION_HASH__", &declaration_hash)
     );
     Ok(())
+}
+
+fn cmd_bindgen_registry(crate_name: &str, features: Option<&str>) -> anyhow::Result<()> {
+    let entry = community_registry_entry(crate_name).with_context(|| {
+        format!(
+            "K0127: no built-in v0.11 registry metadata for `{crate_name}`; use kobo bindgen --path <crate>"
+        )
+    })?;
+    let draft = RegistryDraft {
+        crate_name: entry.crate_name,
+        version: entry.cargo_version,
+        features: feature_list(features),
+        public_types: entry.public_types,
+        public_functions: entry.public_functions,
+    };
+    eprintln!(
+        "warning[K0127]: bindgen produced a review-required declaration draft for `{crate_name}`"
+    );
+    print!("{}", registry_declaration(&draft));
+    Ok(())
+}
+
+fn registry_declaration(draft: &RegistryDraft<'_>) -> String {
+    let mut declaration = String::new();
+    declaration.push_str("schema_version = 0\n\n");
+    declaration.push_str("[crate]\n");
+    declaration.push_str(&format!("name = \"{}\"\n", draft.crate_name));
+    declaration.push_str(&format!("version = \"{}\"\n", draft.version));
+    declaration.push_str("source = \"bindgen\"\n");
+    declaration.push_str("package_source = \"registry\"\n");
+    declaration.push_str(&format!("registry = \"{BUILTIN_REGISTRY_NAME}\"\n"));
+    declaration.push_str("review_required = true\n");
+    if !draft.features.is_empty() {
+        declaration.push_str(&format!("features = [{}]\n", quoted_list(&draft.features)));
+    }
+    declaration.push_str(&format!(
+        "source_hash = \"{}\"\n",
+        stable_hash(&registry_hash_material(draft))
+    ));
+    declaration.push_str("declaration_hash = \"__KOBO_DECLARATION_HASH__\"\n");
+    declaration.push_str(
+        "review_question = \"confirm registry-derived public API before exact replay\"\n",
+    );
+
+    for public_type in draft.public_types {
+        declaration.push_str("\n[[type]]\n");
+        declaration.push_str(&format!(
+            "path = \"{}::{}\"\n",
+            draft.crate_name, public_type
+        ));
+        declaration.push_str("kind = \"unknown\"\n");
+        declaration
+            .push_str("review_question = \"confirm type shape and lifecycle obligations\"\n");
+    }
+
+    for public_function in draft.public_functions {
+        declaration.push_str("\n[[function]]\n");
+        declaration.push_str(&format!(
+            "path = \"{}::{}\"\n",
+            draft.crate_name, public_function
+        ));
+        declaration.push_str(&format!(
+            "review_question = \"confirm effects and replay policy for {}::{}\"\n",
+            draft.crate_name, public_function
+        ));
+    }
+
+    let declaration_hash = stable_hash(&declaration_without_hash(&declaration));
+    declaration.replace("__KOBO_DECLARATION_HASH__", &declaration_hash)
+}
+
+fn feature_list(features: Option<&str>) -> Vec<String> {
+    features
+        .into_iter()
+        .flat_map(|features| features.split(','))
+        .map(str::trim)
+        .filter(|feature| !feature.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn registry_hash_material(draft: &RegistryDraft<'_>) -> String {
+    let mut material = String::new();
+    material.push_str(BUILTIN_REGISTRY_NAME);
+    material.push('\n');
+    material.push_str(draft.crate_name);
+    material.push('\n');
+    material.push_str(draft.version);
+    material.push('\n');
+    material.push_str(&draft.features.join(","));
+    material.push('\n');
+    material.push_str(&draft.public_types.join(","));
+    material.push('\n');
+    material.push_str(&draft.public_functions.join(","));
+    material
 }
 
 fn declaration_without_hash(source: &str) -> String {

@@ -239,11 +239,35 @@ fn fix_plan_source(source: &str, file: &Path) -> serde_json::Value {
     );
     push_fix_plan(
         &mut items,
+        classes.socket,
+        "socket",
+        "move socket IO behind a declaration, loopback fixture, or activity boundary",
+        "kobo.net.loopback",
+        ["typed", "record", "activity", "outside", "opaque"],
+    );
+    push_fix_plan(
+        &mut items,
         classes.process,
         "process",
         "replace process-state reads with an explicit fixture or recorded activity",
         "kobo.process.fixture",
         ["typed", "record", "activity", "outside"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.ffi,
+        "ffi",
+        "wrap FFI calls behind a declaration or keep the boundary opaque/debt until reviewed",
+        "kobo bindgen --crate <ffi-wrapper>",
+        ["typed", "record", "activity", "opaque", "debt"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.observable_scheduling,
+        "observable-scheduling",
+        "replace observable sleeps/yields with a modeled scheduler or recorded activity",
+        "kobo.scheduler.model",
+        ["model", "record", "activity"],
     );
 
     serde_json::json!({
@@ -261,7 +285,10 @@ struct ReplayClassSet {
     http_database: bool,
     task_spawn: bool,
     filesystem: bool,
+    socket: bool,
     process: bool,
+    ffi: bool,
+    observable_scheduling: bool,
 }
 
 impl ReplayClassSet {
@@ -332,6 +359,11 @@ struct ReplayClassVisitor {
 }
 
 impl<'ast> Visit<'ast> for ReplayClassVisitor {
+    fn visit_item_foreign_mod(&mut self, node: &'ast syn::ItemForeignMod) {
+        self.classes.ffi = true;
+        syn::visit::visit_item_foreign_mod(self, node);
+    }
+
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = node.func.as_ref() {
             let segments = path_segments(&path.path);
@@ -344,6 +376,9 @@ impl<'ast> Visit<'ast> for ReplayClassVisitor {
         let method = node.method.to_string();
         if matches!(method.as_str(), "spawn" | "spawn_local") {
             self.classes.task_spawn = true;
+        }
+        if matches!(method.as_str(), "sleep" | "yield_now") {
+            self.classes.observable_scheduling = true;
         }
         syn::visit::visit_expr_method_call(self, node);
     }
@@ -367,6 +402,9 @@ impl ReplayClassVisitor {
         if names.first() == Some(&"std") && names.get(1) == Some(&"fs") {
             self.classes.filesystem = true;
         }
+        if names.first() == Some(&"std") && names.get(1) == Some(&"net") {
+            self.classes.socket = true;
+        }
         if names.first() == Some(&"std") && names.get(1) == Some(&"process") {
             self.classes.process = true;
         }
@@ -379,6 +417,17 @@ impl ReplayClassVisitor {
         }
         if names.first() == Some(&"tokio") && names.contains(&"spawn") {
             self.classes.task_spawn = true;
+        }
+        if path_ends_with(&names, &["thread", "spawn"]) {
+            self.classes.task_spawn = true;
+            self.classes.observable_scheduling = true;
+        }
+        if path_ends_with(&names, &["thread", "sleep"])
+            || path_ends_with(&names, &["thread", "yield_now"])
+            || path_ends_with(&names, &["time", "sleep"])
+            || path_ends_with(&names, &["task", "yield_now"])
+        {
+            self.classes.observable_scheduling = true;
         }
     }
 

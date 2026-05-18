@@ -1,5 +1,6 @@
 mod commands;
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -179,8 +180,12 @@ pub(crate) enum KoboCommand {
     },
     /// Generate a draft Kobo declaration file from a Rust crate.
     Bindgen {
+        #[arg(long = "crate", value_name = "CRATE")]
+        crate_option: Option<String>,
+        #[arg(long, value_name = "LIST")]
+        features: Option<String>,
         #[arg(long, value_name = "PATH")]
-        path: PathBuf,
+        path: Option<PathBuf>,
     },
     /// Add a Cargo dependency without requiring Kobo metadata packages.
     Add {
@@ -520,7 +525,27 @@ pub(crate) fn resolve_guarantee_profile(
 }
 
 fn main() -> std::process::ExitCode {
-    let args = Args::parse();
+    match std::thread::Builder::new()
+        .name("kobo-main".to_owned())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(run_main)
+    {
+        Ok(handle) => match handle.join() {
+            Ok(code) => code,
+            Err(_) => {
+                eprintln!("Error: kobo command thread panicked");
+                std::process::ExitCode::FAILURE
+            }
+        },
+        Err(error) => {
+            eprintln!("Error: failed to start kobo command thread: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_main() -> std::process::ExitCode {
+    let args = Args::parse_from(normalized_args());
     match commands::dispatch(args.command) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) if commands::is_diagnostic_exit(&error) => std::process::ExitCode::FAILURE,
@@ -529,4 +554,18 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+fn normalized_args() -> Vec<OsString> {
+    let mut args = std::env::args_os().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|arg| arg == OsStr::new("bindgen"))
+        && args.get(2).is_some_and(|arg| !starts_with_dash(arg))
+    {
+        args.insert(2, OsString::from("--crate"));
+    }
+    args
+}
+
+fn starts_with_dash(value: &OsStr) -> bool {
+    value.to_str().is_some_and(|value| value.starts_with('-'))
 }

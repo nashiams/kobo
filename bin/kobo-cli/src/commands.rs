@@ -155,7 +155,15 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 output_format,
             })
         }
-        KoboCommand::Bindgen { path } => bindgen::cmd_bindgen(&path),
+        KoboCommand::Bindgen {
+            crate_option,
+            features,
+            path,
+        } => bindgen::cmd_bindgen(bindgen::BindgenOptions {
+            path: path.as_deref(),
+            crate_name: crate_option.as_deref(),
+            features: features.as_deref(),
+        }),
         KoboCommand::Add {
             crate_name,
             features,

@@ -53,6 +53,40 @@ edition = "2021"
 }
 
 #[test]
+fn kobo_add_promised_registry_crate_without_explicit_version() {
+    let project = TestProject::new("v11-kobo-add-serde-json");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "v11-kobo-add-serde-json"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+
+    let add = run_kobo(&[s("add"), s("serde_json")], &project.root);
+
+    assert_success(
+        &add,
+        "kobo add serde_json should work through the built-in package registry",
+    );
+    let cargo = project.read("Cargo.toml");
+    assert_contains(
+        &cargo,
+        r#"serde_json = { version = "1" }"#,
+        "registry-backed kobo add should write a concrete Cargo version",
+    );
+    assert!(
+        !cargo.contains(r#"version = "*""#),
+        "wildcard versions are not production metadata: {cargo}"
+    );
+    assert!(
+        !project.root.join("Kobo.toml").exists(),
+        "plain kobo add should not force optional Kobo metadata packages"
+    );
+}
+
+#[test]
 fn kobo_add_supports_workspace_dependency_section_and_path_source() {
     let project = TestProject::new("v11-kobo-add-workspace");
     project.write(
@@ -172,6 +206,26 @@ edition = "2021"
         &kobo_toml,
         r#"package = "kobo-adapter-tokio""#,
         "adapter package should be recorded in Kobo metadata",
+    );
+    assert_contains(
+        &kobo_toml,
+        r#"source = "registry""#,
+        "metadata packages should come from the registry layer, not only a name convention",
+    );
+    assert_contains(
+        &kobo_toml,
+        r#"registry = "builtin-v0.11""#,
+        "metadata packages should record the registry that supplied the annotation",
+    );
+    assert_contains(
+        &kobo_toml,
+        r#"version = "0.8""#,
+        "types package metadata should preserve registry package version",
+    );
+    assert_contains(
+        &kobo_toml,
+        r#"version = "1""#,
+        "adapter package metadata should preserve registry package version",
     );
 }
 

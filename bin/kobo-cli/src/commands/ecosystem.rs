@@ -4,6 +4,38 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value};
 
+pub(super) const BUILTIN_REGISTRY_NAME: &str = "builtin-v0.11";
+
+#[derive(Clone, Copy)]
+pub(super) struct CommunityRegistryEntry {
+    pub(super) crate_name: &'static str,
+    pub(super) cargo_version: &'static str,
+    pub(super) types_package: Option<RegistryMetadataPackage>,
+    pub(super) adapter_package: Option<RegistryMetadataPackage>,
+    pub(super) public_types: &'static [&'static str],
+    pub(super) public_functions: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RegistryMetadataPackage {
+    pub(super) package: &'static str,
+    pub(super) version: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum MetadataKind {
+    Types,
+    Adapter,
+}
+
+struct MetadataPackageSelection {
+    package: String,
+    version: Option<String>,
+    source: &'static str,
+    registry: Option<&'static str>,
+    description: &'static str,
+}
+
 pub(super) fn cmd_add(
     crate_name: &str,
     features: Option<&str>,
@@ -21,10 +53,11 @@ pub(super) fn cmd_add(
         .parse::<DocumentMut>()
         .with_context(|| format!("failed to parse {}", cargo_path.display()))?;
     let (crate_name, spec_version) = split_crate_spec(crate_name);
+    let registry_version = community_registry_entry(&crate_name).map(|entry| entry.cargo_version);
     let dependency = cargo_dependency_value(
         &crate_name,
         features,
-        version.or(spec_version.as_deref()),
+        version.or(spec_version.as_deref()).or(registry_version),
         path,
         git,
         no_default_features,
@@ -41,21 +74,20 @@ pub(super) fn cmd_add(
 }
 
 pub(super) fn cmd_add_types(crate_name: &str) -> anyhow::Result<()> {
-    append_kobo_metadata(
-        "types",
-        crate_name,
-        &format!("kobo-types-{crate_name}"),
-        "declaration metadata package",
-    )
+    let package = metadata_package_for(MetadataKind::Types, crate_name);
+    append_kobo_metadata(MetadataKind::Types, crate_name, package)
 }
 
 pub(super) fn cmd_add_adapter(crate_name: &str) -> anyhow::Result<()> {
-    append_kobo_metadata(
-        "adapter",
-        crate_name,
-        &format!("kobo-adapter-{crate_name}"),
-        "simulation adapter package",
-    )
+    let package = metadata_package_for(MetadataKind::Adapter, crate_name);
+    append_kobo_metadata(MetadataKind::Adapter, crate_name, package)
+}
+
+pub(super) fn community_registry_entry(crate_name: &str) -> Option<CommunityRegistryEntry> {
+    community_registry_entries()
+        .iter()
+        .copied()
+        .find(|entry| entry.crate_name == crate_name)
 }
 
 pub(super) fn cmd_migrate_cargo_deps() -> anyhow::Result<()> {
@@ -131,6 +163,142 @@ fn cargo_dependency_value(
     }
     let _ = crate_name;
     Ok(Item::Value(Value::InlineTable(fields)))
+}
+
+fn community_registry_entries() -> &'static [CommunityRegistryEntry] {
+    &[
+        CommunityRegistryEntry {
+            crate_name: "serde_json",
+            cargo_version: "1",
+            types_package: Some(RegistryMetadataPackage {
+                package: "kobo-types-serde-json",
+                version: "1",
+            }),
+            adapter_package: None,
+            public_types: &["Value", "Map", "Number"],
+            public_functions: &["from_str", "to_string", "to_vec"],
+        },
+        CommunityRegistryEntry {
+            crate_name: "reqwest",
+            cargo_version: "0.12",
+            types_package: Some(RegistryMetadataPackage {
+                package: "kobo-types-reqwest",
+                version: "0.12",
+            }),
+            adapter_package: Some(RegistryMetadataPackage {
+                package: "kobo-adapter-reqwest",
+                version: "0.12",
+            }),
+            public_types: &["Client", "RequestBuilder", "Response", "Error"],
+            public_functions: &["get"],
+        },
+        CommunityRegistryEntry {
+            crate_name: "sqlx",
+            cargo_version: "0.8",
+            types_package: Some(RegistryMetadataPackage {
+                package: "kobo-types-sqlx",
+                version: "0.8",
+            }),
+            adapter_package: Some(RegistryMetadataPackage {
+                package: "kobo-adapter-sqlx",
+                version: "0.8",
+            }),
+            public_types: &["Pool", "Transaction", "Executor", "Row"],
+            public_functions: &["query", "query_as"],
+        },
+        CommunityRegistryEntry {
+            crate_name: "tokio",
+            cargo_version: "1",
+            types_package: None,
+            adapter_package: Some(RegistryMetadataPackage {
+                package: "kobo-adapter-tokio",
+                version: "1",
+            }),
+            public_types: &["task::JoinHandle", "runtime::Runtime"],
+            public_functions: &["spawn", "select"],
+        },
+        CommunityRegistryEntry {
+            crate_name: "anyhow",
+            cargo_version: "1",
+            types_package: Some(RegistryMetadataPackage {
+                package: "kobo-types-anyhow",
+                version: "1",
+            }),
+            adapter_package: None,
+            public_types: &["Error", "Result"],
+            public_functions: &["anyhow"],
+        },
+        CommunityRegistryEntry {
+            crate_name: "clap",
+            cargo_version: "4",
+            types_package: Some(RegistryMetadataPackage {
+                package: "kobo-types-clap",
+                version: "4",
+            }),
+            adapter_package: None,
+            public_types: &["Command", "Arg"],
+            public_functions: &[],
+        },
+        CommunityRegistryEntry {
+            crate_name: "thiserror",
+            cargo_version: "1",
+            types_package: Some(RegistryMetadataPackage {
+                package: "kobo-types-thiserror",
+                version: "1",
+            }),
+            adapter_package: None,
+            public_types: &["Error"],
+            public_functions: &[],
+        },
+    ]
+}
+
+fn metadata_package_for(kind: MetadataKind, crate_name: &str) -> MetadataPackageSelection {
+    if let Some(entry) = community_registry_entry(crate_name) {
+        let registry_package = match kind {
+            MetadataKind::Types => entry.types_package,
+            MetadataKind::Adapter => entry.adapter_package,
+        };
+        if let Some(package) = registry_package {
+            return MetadataPackageSelection {
+                package: package.package.to_owned(),
+                version: Some(package.version.to_owned()),
+                source: "registry",
+                registry: Some(BUILTIN_REGISTRY_NAME),
+                description: kind.description(),
+            };
+        }
+    }
+    MetadataPackageSelection {
+        package: format!("{}-{crate_name}", kind.default_package_prefix()),
+        version: None,
+        source: "convention",
+        registry: None,
+        description: kind.description(),
+    }
+}
+
+impl MetadataKind {
+    fn section_name(self) -> &'static str {
+        match self {
+            Self::Types => "types",
+            Self::Adapter => "adapter",
+        }
+    }
+
+    fn default_package_prefix(self) -> &'static str {
+        match self {
+            Self::Types => "kobo-types",
+            Self::Adapter => "kobo-adapter",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Types => "declaration metadata package",
+            Self::Adapter => "simulation adapter package",
+        }
+    }
 }
 
 fn split_crate_spec(crate_spec: &str) -> (String, Option<String>) {
@@ -234,18 +402,26 @@ fn nested_table_mut<'a>(table: &'a mut Table, key: &str) -> anyhow::Result<&'a m
 }
 
 fn append_kobo_metadata(
-    kind: &str,
+    kind: MetadataKind,
     crate_name: &str,
-    package: &str,
-    description: &str,
+    package: MetadataPackageSelection,
 ) -> anyhow::Result<()> {
     let mut output = ensure_kobo_header(read_optional("Kobo.toml")?);
-    output.push_str(&format!("\n[[ecosystem.{kind}]]\n"));
+    let section_name = kind.section_name();
+    output.push_str(&format!("\n[[ecosystem.{section_name}]]\n"));
     output.push_str(&format!("crate = \"{crate_name}\"\n"));
-    output.push_str(&format!("package = \"{package}\"\n"));
-    output.push_str(&format!("reason = \"optional {description}\"\n"));
+    output.push_str(&format!("package = \"{}\"\n", package.package));
+    if let Some(version) = package.version.as_deref() {
+        output.push_str(&format!("version = \"{version}\"\n"));
+    }
+    output.push_str(&format!("source = \"{}\"\n", package.source));
+    if let Some(registry) = package.registry {
+        output.push_str(&format!("registry = \"{registry}\"\n"));
+    }
+    output.push_str("review_required = true\n");
+    output.push_str(&format!("reason = \"optional {}\"\n", package.description));
     fs::write("Kobo.toml", output).context("failed to write Kobo.toml")?;
-    eprintln!("Recorded optional Kobo {kind} package for `{crate_name}`");
+    eprintln!("Recorded optional Kobo {section_name} package for `{crate_name}`");
     Ok(())
 }
 

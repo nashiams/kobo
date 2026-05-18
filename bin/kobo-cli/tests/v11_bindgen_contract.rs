@@ -30,6 +30,84 @@ edition = "2021"
 }
 
 #[test]
+fn bindgen_positional_crate_uses_builtin_registry_metadata() {
+    let project = TestProject::new("v11-bindgen-registry-sqlx");
+
+    let output = run_kobo(&[s("bindgen"), s("sqlx")], &project.root);
+
+    assert_success(
+        &output,
+        "kobo bindgen sqlx should generate a registry-backed declaration draft",
+    );
+    assert_contains(
+        &output.stdout,
+        r#"name = "sqlx""#,
+        "registry bindgen should target the requested crate",
+    );
+    assert_contains(
+        &output.stdout,
+        r#"package_source = "registry""#,
+        "registry bindgen should disclose that metadata came from the built-in registry",
+    );
+    assert_contains(
+        &output.stdout,
+        r#"registry = "builtin-v0.11""#,
+        "registry bindgen should identify the metadata registry layer",
+    );
+    assert_contains(
+        &output.stdout,
+        "sqlx::Pool",
+        "registry bindgen should emit useful public metadata, not just a crate-name template",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0127",
+        "registry bindgen drafts should still require review",
+    );
+}
+
+#[test]
+fn bindgen_crate_flag_preserves_feature_request_in_registry_draft() {
+    let project = TestProject::new("v11-bindgen-registry-reqwest");
+
+    let output = run_kobo(
+        &[
+            s("bindgen"),
+            s("--crate"),
+            s("reqwest"),
+            s("--features"),
+            s("json,rustls-tls"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "kobo bindgen --crate reqwest --features ... should generate a draft",
+    );
+    assert_contains(
+        &output.stdout,
+        r#"name = "reqwest""#,
+        "bindgen --crate should target the named crate",
+    );
+    assert_contains(
+        &output.stdout,
+        r#"features = ["json", "rustls-tls"]"#,
+        "bindgen should preserve requested registry feature metadata",
+    );
+    assert_contains(
+        &output.stdout,
+        "reqwest::Client",
+        "registry draft should include known public API metadata",
+    );
+    assert_contains(
+        &output.stdout,
+        "review_question",
+        "registry bindgen should remain a review-required draft",
+    );
+}
+
+#[test]
 fn bindgen_path_outputs_schema_v0_with_review_questions() {
     let project = TestProject::new("v11-bindgen-path");
     let crate_dir = write_fixture_crate(

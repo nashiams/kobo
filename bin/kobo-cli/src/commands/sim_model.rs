@@ -91,6 +91,7 @@ pub(super) enum ModeledBoundary {
     WardTime,
     WardRandom,
     WardTask,
+    WardTaskLocal,
     WardStorage,
     WardNetwork,
 }
@@ -170,6 +171,7 @@ impl ModeledBoundary {
             Self::WardTime => "ward.time",
             Self::WardRandom => "ward.random",
             Self::WardTask => "ward.task",
+            Self::WardTaskLocal => "ward.task.local",
             Self::WardStorage => "ward.storage",
             Self::WardNetwork => "ward.network",
         }
@@ -785,6 +787,7 @@ fn convert_core_boundary(boundary: sim_core::ModeledBoundary) -> ModeledBoundary
         sim_core::ModeledBoundary::WardTime => ModeledBoundary::WardTime,
         sim_core::ModeledBoundary::WardRandom => ModeledBoundary::WardRandom,
         sim_core::ModeledBoundary::WardTask => ModeledBoundary::WardTask,
+        sim_core::ModeledBoundary::WardTaskLocal => ModeledBoundary::WardTaskLocal,
         sim_core::ModeledBoundary::WardStorage => ModeledBoundary::WardStorage,
         sim_core::ModeledBoundary::WardNetwork => ModeledBoundary::WardNetwork,
     }
@@ -1342,9 +1345,14 @@ fn modeled_effect_event(boundary: ModeledBoundary, seed: u64, has_time_jump: boo
             label: None,
             value: Some(seed.rotate_left(13) ^ 0x9e37_79b9_7f4a_7c15_u64),
         },
-        ModeledBoundary::WardTask => SimEvent {
+        ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal => SimEvent {
             kind: "deterministic-task".to_owned(),
-            label: Some("ward.task".to_owned()),
+            label: Some(match boundary {
+                ModeledBoundary::WardTask => "ward.task",
+                ModeledBoundary::WardTaskLocal => "ward.task.local",
+                _ => unreachable!(),
+            }
+            .to_owned()),
             value: Some(seed),
         },
         ModeledBoundary::WardStorage => SimEvent {

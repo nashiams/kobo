@@ -189,6 +189,7 @@ pub enum ModeledBoundary {
     WardTime,
     WardRandom,
     WardTask,
+    WardTaskLocal,
     WardStorage,
     WardNetwork,
 }
@@ -199,6 +200,7 @@ impl ModeledBoundary {
             Self::WardTime => "ward.time",
             Self::WardRandom => "ward.random",
             Self::WardTask => "ward.task",
+            Self::WardTaskLocal => "ward.task.local",
             Self::WardStorage => "ward.storage",
             Self::WardNetwork => "ward.network",
         }

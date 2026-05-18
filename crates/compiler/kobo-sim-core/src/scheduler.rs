@@ -34,9 +34,9 @@ pub(crate) fn modeled_boundary_events(
     options: &ScenarioOptions,
 ) -> Vec<ScenarioEvent> {
     let mut events = vec![deterministic_boundary_event(boundary, options.seed)];
-    if matches!(boundary, ModeledBoundary::WardTask) {
+    if matches!(boundary, ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal) {
         let mut scheduler = SchedulerModel::new(options);
-        scheduler.record_task_boundary();
+        scheduler.record_task_boundary(boundary.as_str());
         events.extend(scheduler.into_events());
     }
     events
@@ -55,7 +55,7 @@ pub(crate) fn schedule_failure(
     span: (usize, usize),
 ) -> Option<ScenarioFailure> {
     if !matches!(options.sim_profile.as_str(), "deep" | "exhaustive")
-        || !matches!(boundary, ModeledBoundary::WardTask)
+        || !matches!(boundary, ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal)
     {
         return None;
     }
@@ -126,8 +126,8 @@ impl<'a> SchedulerModel<'a> {
         }
     }
 
-    fn record_task_boundary(&mut self) {
-        let task_id = self.enqueue_task("ward.task");
+    fn record_task_boundary(&mut self, label: &str) {
+        let task_id = self.enqueue_task(label);
         self.wake_task(task_id);
         self.poll_task(task_id);
         if self.has_cancel_injection() {
@@ -306,9 +306,9 @@ fn deterministic_boundary_event(boundary: &ModeledBoundary, seed: u64) -> Scenar
             value: Some(seed.rotate_left(13) ^ 0x9e37_79b9_7f4a_7c15_u64),
             io: None,
         },
-        ModeledBoundary::WardTask => ScenarioEvent {
+        ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal => ScenarioEvent {
             kind: "deterministic-task".to_owned(),
-            label: Some("ward.task".to_owned()),
+            label: Some(boundary.as_str().to_owned()),
             value: Some(seed),
             io: None,
         },

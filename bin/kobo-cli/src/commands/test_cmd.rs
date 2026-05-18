@@ -453,6 +453,9 @@ fn stateful_input_sources(program: &ScenarioProgram) -> Vec<StatefulInputSource>
                 kobo_ir::ScenarioModeledBoundary::WardTask => {
                     sources.push(StatefulInputSource::WardTask);
                 }
+                kobo_ir::ScenarioModeledBoundary::WardTaskLocal => {
+                    sources.push(StatefulInputSource::WardTask);
+                }
                 kobo_ir::ScenarioModeledBoundary::WardTime => {}
             },
             ScenarioOpKind::Transfer { binding, callee } => {

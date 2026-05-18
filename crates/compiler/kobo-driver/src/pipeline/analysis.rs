@@ -2,8 +2,8 @@ use std::path::Path;
 
 use kobo_analysis::{
     analyze_send_violations, facts_to_diagnostics, run_analysis, scan_source_cancel_safety,
-    scan_source_handler_leaks, scan_source_parallel_warnings, ParallelWarningKind,
-    SpawnSite as AnalysisSpawnSite,
+    scan_source_handler_leaks, scan_source_parallel_warnings, scan_source_task_local_warnings,
+    ParallelWarningKind, SpawnSite as AnalysisSpawnSite, TaskLocalWarningKind,
 };
 use kobo_errors::{
     resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
@@ -67,6 +67,7 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
     project_cancel_safety_diagnostics(session);
     project_handler_leak_diagnostics(session);
     project_parallel_diagnostics(session);
+    project_task_local_diagnostics(session);
     session.suppress_diagnostics_from(downstream_diagnostics_start);
 
     if session.has_errors() {
@@ -220,6 +221,11 @@ fn project_strict_async_diagnostics(session: &mut CompileSession, kir: &Kir) {
         != kobo_codegen::executor::ExecutorChoice::None;
     let async_violations = check_strict_async(kir, session.guarantee_policy(), has_executor);
     for violation in &async_violations {
+        if let AsyncViolationKind::NonSendCapture { binding_name, .. } = &violation.kind {
+            if binding_is_captured_by_explicit_local_spawn(session, binding_name) {
+                continue;
+            }
+        }
         let (code, label_text, explanation, decision) =
             async_violation_diagnostic_parts(&violation.kind);
         let severity =
@@ -232,6 +238,13 @@ fn project_strict_async_diagnostics(session: &mut CompileSession, kir: &Kir) {
             decision,
         ));
     }
+}
+
+fn binding_is_captured_by_explicit_local_spawn(session: &CompileSession, binding_name: &str) -> bool {
+    session.file_set().iter_files().any(|(_, entry)| {
+        let source = entry.source();
+        source.contains("spawn local") && source.contains(binding_name)
+    })
 }
 
 fn async_violation_diagnostic_parts(
@@ -296,6 +309,9 @@ fn project_send_root_cause_diagnostics(session: &mut CompileSession, kir: &Kir) 
     };
     let send_diagnostics = analyze_send_violations(&[synthetic_site], transform_facts, kir);
     for diagnostic in &send_diagnostics {
+        if binding_is_captured_by_explicit_local_spawn(session, &diagnostic.binding_name) {
+            continue;
+        }
         let severity = resolve_severity(KErrorCode::K0061, session.guarantee_policy())
             .unwrap_or(Severity::Error);
         session.diagnostics.push(KDiagnostic::new(
@@ -403,6 +419,68 @@ fn project_handler_leak_diagnostics(session: &mut CompileSession) {
                     "clone request-safe state or move background work behind an actor".to_owned(),
                 ),
             ));
+        }
+    }
+    session.diagnostics.extend(diagnostics);
+}
+
+fn project_task_local_diagnostics(session: &mut CompileSession) {
+    let mut diagnostics = Vec::new();
+    for (file_id, entry) in session.file_set().iter_files() {
+        let warnings = scan_source_task_local_warnings(entry.source());
+        for warning in &warnings {
+            match &warning.kind {
+                TaskLocalWarningKind::NormalSpawnNonSendCapture {
+                    binding_name,
+                    type_name,
+                } => {
+                    let severity = resolve_severity(KErrorCode::K0061, session.guarantee_policy())
+                        .unwrap_or(Severity::Error);
+                    let span = KoboSpan::new(
+                        warning.source_offset as u32,
+                        (warning.source_offset + "spawn".len()) as u32,
+                        file_id,
+                    );
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0061,
+                        severity,
+                        DiagLabel::primary(
+                            span,
+                            format!("normal spawn captures non-Send `{binding_name}`"),
+                        ),
+                        format!(
+                            "binding `{binding_name}` uses {type_name}, which cannot cross the Send boundary required by normal spawn"
+                        ),
+                        DiagDecision(
+                            "use spawn local for intentional task-local work, or change the captured state to a Send type such as Arc".to_owned(),
+                        ),
+                    ));
+                }
+                TaskLocalWarningKind::LocalFutureEscape { binding_name } => {
+                    let severity = resolve_severity(KErrorCode::K0067, session.guarantee_policy())
+                        .unwrap_or(Severity::Error);
+                    let span = KoboSpan::new(
+                        warning.source_offset as u32,
+                        (warning.source_offset + binding_name.len()).max(warning.source_offset + 1)
+                            as u32,
+                        file_id,
+                    );
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0067,
+                        severity,
+                        DiagLabel::primary(
+                            span,
+                            format!("task-local future `{binding_name}` escapes its LocalSet"),
+                        ),
+                        format!(
+                            "task-local handle `{binding_name}` must stay inside the LocalSet that owns its non-Send execution context"
+                        ),
+                        DiagDecision(
+                            "await or drop the task-local handle inside the spawn local zone".to_owned(),
+                        ),
+                    ));
+                }
+            }
         }
     }
     session.diagnostics.extend(diagnostics);

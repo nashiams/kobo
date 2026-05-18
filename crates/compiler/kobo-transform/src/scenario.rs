@@ -535,7 +535,11 @@ impl<'a> ScenarioLowerer<'a> {
             Stmt::Local(local) => self.execute_local(local, env),
             Stmt::Expr(expr, _) => self.execute_expr(expr, env),
             Stmt::Item(_) => {}
-            Stmt::Macro(statement_macro) => self.unsupported_macro(&statement_macro.mac),
+            Stmt::Macro(statement_macro) => {
+                if !self.record_spawn_macro(&statement_macro.mac) {
+                    self.unsupported_macro(&statement_macro.mac);
+                }
+            }
         }
     }
 
@@ -672,7 +676,11 @@ impl<'a> ScenarioLowerer<'a> {
                 kind: ScenarioOpKind::Loop,
             }),
             Expr::Paren(paren) => self.execute_expr(paren.expr.as_ref(), env),
-            Expr::Macro(expr_macro) => self.unsupported_macro(&expr_macro.mac),
+            Expr::Macro(expr_macro) => {
+                if !self.record_spawn_macro(&expr_macro.mac) {
+                    self.unsupported_macro(&expr_macro.mac);
+                }
+            }
             _ => {}
         }
     }
@@ -1196,6 +1204,22 @@ impl<'a> ScenarioLowerer<'a> {
             format!("macro:{name}")
         };
         self.record_unsupported_construct(&label);
+    }
+
+    fn record_spawn_macro(&mut self, mac: &Macro) -> bool {
+        let Some(name) = mac.path.get_ident().map(|ident| ident.to_string()) else {
+            return false;
+        };
+        let boundary = match name.as_str() {
+            "__kobo_spawn_block" => ScenarioModeledBoundary::WardTask,
+            "__kobo_spawn_local_block" => ScenarioModeledBoundary::WardTaskLocal,
+            _ => return false,
+        };
+        self.operations.push(ScenarioOp {
+            span: self.span(mac),
+            kind: ScenarioOpKind::ModeledEffect { boundary },
+        });
+        true
     }
 
     fn record_unsupported_construct(&mut self, label: &str) {

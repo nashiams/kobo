@@ -135,5 +135,6 @@ fn modeled_boundary(boundary: &ScenarioModeledBoundary) -> ModeledBoundary {
         ScenarioModeledBoundary::WardTime => ModeledBoundary::WardTime,
         ScenarioModeledBoundary::WardRandom => ModeledBoundary::WardRandom,
         ScenarioModeledBoundary::WardTask => ModeledBoundary::WardTask,
+        ScenarioModeledBoundary::WardTaskLocal => ModeledBoundary::WardTaskLocal,
     }
 }

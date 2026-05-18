@@ -557,13 +557,15 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
-                if !spawn::is_spawn_block_macro(&stmt_macro.mac) {
+                if !spawn::is_any_spawn_block_macro(&stmt_macro.mac) {
                     self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
                     return;
                 }
 
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
-                let use_spawn_local = self.any_captured_non_send(&captured);
+                let use_spawn_local =
+                    spawn::is_spawn_local_block_macro(&stmt_macro.mac)
+                        || self.any_captured_non_send(&captured);
                 if use_spawn_local {
                     self.needs_local_set = true;
                 }
@@ -925,6 +927,9 @@ fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {
     let local_set_stmt: syn::Stmt = parse_quote! {
         let __kobo_local = tokio::task::LocalSet::new();
     };
+    let marker_stmt: syn::Stmt = parse_quote! {
+        let _ = "kobo: task-local-zone";
+    };
     let run_expr: syn::Expr = if function.sig.asyncness.is_some() {
         parse_quote! {
             __kobo_local.run_until(async move { #(#original_stmts)* }).await
@@ -934,7 +939,7 @@ fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {
             tokio::runtime::Handle::current().block_on(__kobo_local.run_until(async move { #(#original_stmts)* }))
         }
     };
-    function.block.stmts = vec![local_set_stmt, syn::Stmt::Expr(run_expr, None)];
+    function.block.stmts = vec![local_set_stmt, marker_stmt, syn::Stmt::Expr(run_expr, None)];
 }
 
 #[cfg(test)]

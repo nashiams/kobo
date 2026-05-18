@@ -24,6 +24,8 @@ pub struct SpawnBlockInfo {
     pub generated_body_span: KoboSpan,
     /// Span of the generated macro close in the REWRITTEN source.
     pub generated_close_span: KoboSpan,
+    /// Whether the original source used `spawn local { ... }`.
+    pub is_local: bool,
 }
 
 /// Error when spawn is used outside an async function.
@@ -211,22 +213,10 @@ fn find_spawn_offsets(source: &str) -> Vec<usize> {
             continue;
         }
 
-        if pos + 5 <= len && &bytes[pos..pos + 5] == b"spawn" {
-            let preceded =
-                pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
-            let followed =
-                pos + 5 < len && (bytes[pos + 5].is_ascii_alphanumeric() || bytes[pos + 5] == b'_');
-            if !preceded && !followed {
-                let mut ws = pos + 5;
-                while ws < len && bytes[ws].is_ascii_whitespace() {
-                    ws += 1;
-                }
-                if ws < len && bytes[ws] == b'{' {
-                    offsets.push(pos);
-                    pos = ws + 1;
-                    continue;
-                }
-            }
+        if let Some((brace_pos, _)) = spawn_block_at(source, pos) {
+            offsets.push(pos);
+            pos = brace_pos + 1;
+            continue;
         }
         pos += 1;
     }
@@ -303,29 +293,20 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
         }
 
         // Look for `spawn` keyword.
-        if pos + 5 <= len && &bytes[pos..pos + 5] == b"spawn" {
-            let preceded_by_ident =
-                pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
-            let followed_by_ident =
-                pos + 5 < len && (bytes[pos + 5].is_ascii_alphanumeric() || bytes[pos + 5] == b'_');
-
-            if !preceded_by_ident && !followed_by_ident {
-                let after_spawn = pos + 5;
-                let mut ws_pos = after_spawn;
-                while ws_pos < len && bytes[ws_pos].is_ascii_whitespace() {
-                    ws_pos += 1;
-                }
-
-                if ws_pos < len && bytes[ws_pos] == b'{' {
+        if let Some((brace_pos, is_local)) = spawn_block_at(source, pos) {
                     let spawn_start = pos;
-                    let brace_pos = ws_pos;
                     let body_start = brace_pos + 1;
+                    let macro_name = if is_local {
+                        "__kobo_spawn_local_block"
+                    } else {
+                        "__kobo_spawn_block"
+                    };
+                    let macro_open = format!("{macro_name}!({{");
 
                     // Find closing brace to record the full span info.
                     if let Some(brace_end) = find_matching_brace(source, brace_pos) {
                         let generated_macro_start = result.len();
-                        let generated_body_start =
-                            generated_macro_start + "__kobo_spawn_block!({".len();
+                        let generated_body_start = generated_macro_start + macro_open.len();
                         infos.push(SpawnBlockInfo {
                             span: KoboSpan::new(
                                 spawn_start as u32,
@@ -335,7 +316,7 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
                             body_span: KoboSpan::new(body_start as u32, brace_end as u32, file_id),
                             generated_macro_span: KoboSpan::new(
                                 generated_macro_start as u32,
-                                (generated_macro_start + "__kobo_spawn_block!".len()) as u32,
+                                (generated_macro_start + macro_name.len() + "!".len()) as u32,
                                 file_id,
                             ),
                             generated_body_span: KoboSpan::new(
@@ -344,19 +325,18 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
                                 file_id,
                             ),
                             generated_close_span: KoboSpan::new(0, 0, file_id),
+                            is_local,
                         });
                     }
 
                     // Emit macro open and the `{`.
-                    result.push_str("__kobo_spawn_block!({");
+                    result.push_str(&macro_open);
                     if !infos.is_empty() {
                         spawn_close_depths.push((brace_depth, infos.len() - 1));
                     }
                     brace_depth += 1;
                     pos = body_start;
                     continue;
-                }
-            }
         }
 
         // Track brace depth for non-spawn braces.
@@ -407,6 +387,41 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
     }
 
     (result, infos)
+}
+
+fn spawn_block_at(source: &str, pos: usize) -> Option<(usize, bool)> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    if pos + 5 > len || &bytes[pos..pos + 5] != b"spawn" {
+        return None;
+    }
+    let preceded_by_ident =
+        pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_');
+    let followed_by_ident =
+        pos + 5 < len && (bytes[pos + 5].is_ascii_alphanumeric() || bytes[pos + 5] == b'_');
+    if preceded_by_ident || followed_by_ident {
+        return None;
+    }
+
+    let mut cursor = pos + 5;
+    while cursor < len && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+
+    let mut is_local = false;
+    if cursor + 5 <= len && &bytes[cursor..cursor + 5] == b"local" {
+        let local_followed_by_ident = cursor + 5 < len
+            && (bytes[cursor + 5].is_ascii_alphanumeric() || bytes[cursor + 5] == b'_');
+        if !local_followed_by_ident {
+            is_local = true;
+            cursor += 5;
+            while cursor < len && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+        }
+    }
+
+    (cursor < len && bytes[cursor] == b'{').then_some((cursor, is_local))
 }
 
 pub fn preprocess_spawn_blocks_mapped(

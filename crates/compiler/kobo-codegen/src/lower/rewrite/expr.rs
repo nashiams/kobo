@@ -85,13 +85,15 @@ impl super::Lowerer<'_> {
             }
             syn::Expr::Loop(expr_loop) => self.lower_nested_block(&mut expr_loop.body, scopes),
             syn::Expr::Macro(expr_macro) => {
-                if !super::spawn::is_spawn_block_macro(&expr_macro.mac) {
+                if !super::spawn::is_any_spawn_block_macro(&expr_macro.mac) {
                     self.lower_macro_tokens(&mut expr_macro.mac.tokens, scopes);
                     return;
                 }
 
                 let captured = super::collect_spawn_captures(&expr_macro.mac.tokens, scopes);
-                let use_spawn_local = self.any_captured_non_send(&captured);
+                let use_spawn_local =
+                    super::spawn::is_spawn_local_block_macro(&expr_macro.mac)
+                        || self.any_captured_non_send(&captured);
                 if use_spawn_local {
                     self.needs_local_set = true;
                 }

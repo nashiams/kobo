@@ -136,6 +136,7 @@ pub enum ScenarioModeledBoundary {
     WardTime,
     WardRandom,
     WardTask,
+    WardTaskLocal,
 }
 
 impl ScenarioModeledBoundary {
@@ -144,6 +145,7 @@ impl ScenarioModeledBoundary {
             Self::WardTime => "ward.time",
             Self::WardRandom => "ward.random",
             Self::WardTask => "ward.task",
+            Self::WardTaskLocal => "ward.task.local",
         }
     }
 }

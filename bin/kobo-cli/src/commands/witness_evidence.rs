@@ -404,6 +404,7 @@ fn modeled_boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
         ScenarioModeledBoundary::WardTime => "ward.time",
         ScenarioModeledBoundary::WardRandom => "ward.random",
         ScenarioModeledBoundary::WardTask => "ward.task",
+        ScenarioModeledBoundary::WardTaskLocal => "ward.task.local",
     }
 }
 

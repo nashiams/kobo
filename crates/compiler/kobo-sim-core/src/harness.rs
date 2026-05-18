@@ -263,6 +263,10 @@ fn harness_facades(program: &ScenarioProgram) -> Vec<String> {
                     facades.push("scheduler-task-facade".to_owned());
                     facades.push("tokio-spawn-facade".to_owned());
                 }
+                ScenarioModeledBoundary::WardTaskLocal => {
+                    facades.push("scheduler-task-local-facade".to_owned());
+                    facades.push("tokio-spawn-local-facade".to_owned());
+                }
             },
             ScenarioOpKind::StorageEvent { .. } => {
                 facades.push("storage-filesystem-facade".to_owned());
@@ -1301,15 +1305,19 @@ fn tokio_support_source(program: &ScenarioProgram, options: &ScenarioOptions) ->
             operation.kind,
             ScenarioOpKind::ModeledEffect {
                 boundary: ScenarioModeledBoundary::WardTask
+                    | ScenarioModeledBoundary::WardTaskLocal
             }
         )
     }) {
         return Ok(String::new());
     }
     let events = modeled_boundary_events(&ScenarioModeledBoundary::WardTask, options);
+    let local_events = modeled_boundary_events(&ScenarioModeledBoundary::WardTaskLocal, options);
     let mut source = String::from(
-        "mod tokio {\n    pub mod sync {\n        pub mod mpsc {\n            pub struct Sender<T> { marker: std::marker::PhantomData<T> }\n            pub struct Receiver<T> { marker: std::marker::PhantomData<T> }\n            pub mod error {\n                pub struct SendError<T>(pub T);\n            }\n            pub fn channel<T>(_capacity: usize) -> (Sender<T>, Receiver<T>) {\n                (Sender { marker: std::marker::PhantomData }, Receiver { marker: std::marker::PhantomData })\n            }\n            impl<T> Sender<T> {\n                pub async fn send(&self, value: T) -> Result<(), error::SendError<T>> {\n                    let _ = value;\n                    Ok(())\n                }\n            }\n        }\n        pub mod oneshot {\n            pub struct Sender<T> { marker: std::marker::PhantomData<T> }\n        }\n    }\n    pub struct JoinHandle;\n    impl JoinHandle {\n        pub fn abort(self) {}\n        pub fn detach_with_policy(self) {}\n    }\n    impl std::future::Future for JoinHandle {\n        type Output = ();\n        fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {\n            std::task::Poll::Ready(())\n        }\n    }\n    pub fn spawn<F>(_future: F) -> JoinHandle {\n        ",
+        "mod tokio {\n    pub mod sync {\n        pub mod mpsc {\n            pub struct Sender<T> { marker: std::marker::PhantomData<T> }\n            pub struct Receiver<T> { marker: std::marker::PhantomData<T> }\n            pub mod error {\n                pub struct SendError<T>(pub T);\n            }\n            pub fn channel<T>(_capacity: usize) -> (Sender<T>, Receiver<T>) {\n                (Sender { marker: std::marker::PhantomData }, Receiver { marker: std::marker::PhantomData })\n            }\n            impl<T> Sender<T> {\n                pub async fn send(&self, value: T) -> Result<(), error::SendError<T>> {\n                    let _ = value;\n                    Ok(())\n                }\n            }\n        }\n        pub mod oneshot {\n            pub struct Sender<T> { marker: std::marker::PhantomData<T> }\n        }\n    }\n    pub struct JoinHandle;\n    impl JoinHandle {\n        pub fn abort(self) {}\n        pub fn detach_with_policy(self) {}\n    }\n    impl std::future::Future for JoinHandle {\n        type Output = ();\n        fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {\n            std::task::Poll::Ready(())\n        }\n    }\n    pub mod runtime {\n        pub struct Handle;\n        impl Handle {\n            pub fn current() -> Self { Self }\n            pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {\n                crate::__kobo_block_on(future)\n            }\n        }\n    }\n    pub mod task {\n        pub struct LocalSet;\n        impl LocalSet {\n            pub fn new() -> Self { Self }\n            pub async fn run_until<F: std::future::Future>(&self, future: F) -> F::Output {\n                future.await\n            }\n        }\n        pub fn spawn_local<F>(_future: F) -> super::JoinHandle {\n            ",
     );
+    source.push_str(&event_print_statements(&local_events)?);
+    source.push_str("\n            super::JoinHandle\n        }\n    }\n    pub fn spawn<F>(_future: F) -> JoinHandle {\n        ");
     source.push_str(&event_print_statements(&events)?);
     source.push_str("\n        JoinHandle\n    }\n}\n");
     Ok(source)
@@ -1469,7 +1477,9 @@ fn inject_modeled_boundary_event(
 ) -> Result<String> {
     let print = event_print_statements(events)?;
     let replacements: &[(&str, &str)] = match boundary {
-        ScenarioModeledBoundary::WardTask => &[("ward.task();", "ward.task();")],
+        ScenarioModeledBoundary::WardTask | ScenarioModeledBoundary::WardTaskLocal => {
+            &[("ward.task();", "ward.task();")]
+        }
         ScenarioModeledBoundary::WardTime => &[("ward.time.now()", "ward.time.now()")],
         ScenarioModeledBoundary::WardRandom => &[
             ("ward.random.u64()", "ward.random.u64()"),
@@ -1727,6 +1737,7 @@ fn boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
         ScenarioModeledBoundary::WardTime => "ward.time",
         ScenarioModeledBoundary::WardRandom => "ward.random",
         ScenarioModeledBoundary::WardTask => "ward.task",
+        ScenarioModeledBoundary::WardTaskLocal => "ward.task.local",
     }
 }
 
@@ -1742,6 +1753,7 @@ fn core_boundary(boundary: &ScenarioModeledBoundary) -> crate::core::ModeledBoun
         ScenarioModeledBoundary::WardTime => crate::core::ModeledBoundary::WardTime,
         ScenarioModeledBoundary::WardRandom => crate::core::ModeledBoundary::WardRandom,
         ScenarioModeledBoundary::WardTask => crate::core::ModeledBoundary::WardTask,
+        ScenarioModeledBoundary::WardTaskLocal => crate::core::ModeledBoundary::WardTaskLocal,
     }
 }
 

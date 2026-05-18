@@ -10,6 +10,7 @@ pub mod pipeline;
 mod runner;
 pub mod send_diagnostic;
 pub mod split_borrow;
+pub mod task_local;
 
 pub use cancel_safety::{scan_source_cancel_safety, CancelSafetyWarning};
 pub use diagnostics::facts_to_diagnostics;
@@ -20,3 +21,6 @@ pub use pipeline::{check_pipeline_ordering, PipelineIssue, PipelineWarning};
 pub use runner::{run_analysis, AnalysisFacts};
 pub use send_diagnostic::{analyze_send_violations, SendDiagnostic, SpawnSite};
 pub use split_borrow::{detect_split_borrow_sites, FieldAccess, FieldAccessKind, SplitBorrowSite};
+pub use task_local::{
+    scan_source_task_local_warnings, TaskLocalWarning, TaskLocalWarningKind,
+};

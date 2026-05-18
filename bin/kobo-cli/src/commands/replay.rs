@@ -452,8 +452,11 @@ fn record_boundary_has_io_capture(witness: &Value, expected_boundary: &Value) ->
     let expected_call_path = expected_boundary["call_path"].as_str();
     let expected_span = &expected_boundary["source_span"];
     observed_boundaries.iter().any(|observed| {
+        let replay_key = observed["capture"]["io_capture"]["replay_key"].as_str();
         observed["policy"].as_str() == Some("record")
             && observed["call_path"].as_str() == expected_call_path
+            && observed["call_arguments"] == expected_boundary["call_arguments"]
+            && observed["return_type"] == expected_boundary["return_type"]
             && observed["source_span"] == *expected_span
             && observed["capture"]["io_capture"]["mode"].as_str() == Some("recorded-boundary-io")
             && observed["capture"]["io_capture"]["request_hash"]
@@ -466,6 +469,28 @@ fn record_boundary_has_io_capture(witness: &Value, expected_boundary: &Value) ->
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
             && observed["capture"]["io_capture"] == expected_boundary["capture"]["io_capture"]
+            && witness["boundary_ledger"]
+                .as_array()
+                .is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry["policy"].as_str() == Some("record")
+                            && entry["boundary"] == observed["crate"]
+                            && entry["call_path"] == observed["call_path"]
+                            && entry["call_arguments"] == observed["call_arguments"]
+                            && entry["return_type"] == observed["return_type"]
+                            && entry["source_span"] == observed["source_span"]
+                            && entry["io_capture"] == observed["capture"]["io_capture"]
+                    })
+                })
+            && replay_key.is_some_and(|key| {
+                witness["events"].as_array().is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event["kind"].as_str() == Some("boundary-record")
+                            && event["label"].as_str() == Some(key)
+                            && event["io_capture"] == observed["capture"]["io_capture"]
+                    })
+                })
+            })
     })
 }
 
@@ -477,6 +502,8 @@ fn observed_boundary_matches(witness: &Value, expected_boundary: &Value, policy:
         observed["policy"].as_str() == Some(policy)
             && observed["crate"] == expected_boundary["crate"]
             && observed["call_path"] == expected_boundary["call_path"]
+            && observed["call_arguments"] == expected_boundary["call_arguments"]
+            && observed["return_type"] == expected_boundary["return_type"]
             && observed["call_shape"] == expected_boundary["call_shape"]
             && observed["source_span"] == expected_boundary["source_span"]
     })
@@ -529,6 +556,41 @@ fn validate_run_boundary_declarations(
 ) -> anyhow::Result<()> {
     for decision in &run.boundary_decisions {
         let policy = decision.policy.as_str();
+        let adapter = config.ecosystem_policy.adapter_for(&decision.crate_name);
+        if policy == "model" && adapter.is_none() {
+            let payload = serde_json::json!({
+                "code": "K0123",
+                "message": "model boundary has no adapter package",
+                "crate": decision.crate_name,
+                "policy": policy,
+                "call_path": decision.call_path,
+            });
+            emit_replay_issue(&payload, error_format)?;
+            anyhow::bail!(
+                "K0123: model boundary for `{}` has no adapter package",
+                decision.crate_name
+            );
+        }
+        if let Some(adapter) = adapter {
+            if let Err(message) = super::ecosystem::validate_model_adapter_package(adapter) {
+                let payload = serde_json::json!({
+                    "code": "K0123",
+                    "message": "adapter package failed validation",
+                    "crate": decision.crate_name,
+                    "policy": policy,
+                    "call_path": decision.call_path,
+                    "detail": message,
+                });
+                emit_replay_issue(&payload, error_format)?;
+                anyhow::bail!(
+                    "K0123: adapter package for `{}` failed validation: {}",
+                    decision.crate_name,
+                    payload["detail"]
+                        .as_str()
+                        .unwrap_or("invalid adapter metadata")
+                );
+            }
+        }
         if !matches!(policy, "typed" | "activity") {
             continue;
         }
@@ -584,6 +646,8 @@ fn ecosystem_boundaries_json(
                 serde_json::json!({
                     "crate": decision.crate_name,
                     "call_path": decision.call_path,
+                    "call_arguments": decision.call_arguments,
+                    "return_type": decision.return_type,
                     "call_shape": decision.call_shape.as_str(),
                     "policy": decision.policy.as_str(),
                     "reason": decision.reason,
@@ -672,6 +736,8 @@ fn boundary_capture_json(
         "event_value": event.value,
         "io_capture": record_io_capture_json(decision),
         "call_path": decision.call_path.clone(),
+        "call_arguments": decision.call_arguments.clone(),
+        "return_type": decision.return_type.clone(),
         "call_shape": decision.call_shape.as_str(),
         "source_span": {
             "start": decision.span_start,
@@ -686,14 +752,18 @@ fn record_io_capture_json(decision: &kobo_sim_core::BoundaryDecision) -> Option<
         return None;
     }
     let capture = decision.recorded_io.as_ref()?;
-    Some(serde_json::json!({
+    Some(boundary_io_capture_json(capture))
+}
+
+fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> Value {
+    serde_json::json!({
         "mode": capture.mode.clone(),
         "replay_key": capture.replay_key.clone(),
         "request": boundary_io_payload_json(&capture.request),
         "response": boundary_io_payload_json(&capture.response),
         "request_hash": capture.request_hash.clone(),
         "response_hash": capture.response_hash.clone(),
-    }))
+    })
 }
 
 fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> Value {
@@ -769,11 +839,16 @@ fn summary_usage_json(config: &kobo_driver::KoboConfig) -> anyhow::Result<Value>
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let solver_metadata = parsed
+            .get("solver_metadata")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"engine": "unknown", "outcome": "missing"}));
         summaries.push(serde_json::json!({
             "crate": summary.crate_name,
             "path": summary.path.display().to_string(),
             "summary_hash": valid.hash,
             "schema_version": valid.schema_version,
+            "solver_metadata": solver_metadata,
             "obligation_count": obligations.len(),
             "function_count": functions.len(),
             "obligations": obligations,
@@ -905,12 +980,19 @@ fn replay_events_json(
         .iter()
         .enumerate()
         .map(|(id, event)| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "id": id,
-                "kind": event.kind,
-                "label": event.label,
+                "kind": event.kind.clone(),
+                "label": event.label.clone(),
                 "value": event.value,
-            })
+            });
+            if let Some(io) = event.io.as_ref() {
+                value
+                    .as_object_mut()
+                    .expect("event json should be an object")
+                    .insert("io_capture".to_owned(), boundary_io_capture_json(io));
+            }
+            value
         })
         .collect())
 }

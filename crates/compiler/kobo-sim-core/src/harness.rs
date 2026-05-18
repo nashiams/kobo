@@ -4,8 +4,8 @@ use std::process::Command;
 
 use kobo_errors::KErrorCode;
 use kobo_ir::{
-    ScenarioBoundaryPolicy, ScenarioExternalCallShape, ScenarioModeledBoundary, ScenarioOpKind,
-    ScenarioProgram,
+    ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioExternalCallShape,
+    ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram,
 };
 
 use crate::core::{
@@ -55,6 +55,10 @@ pub fn check_harness_agreement(
     }
 
     let harness = run_generated_harness(program, generated_rust, options)?;
+    if events_match_with_harness_recording(&semantic.events, &harness.events) {
+        merge_harness_recordings(&mut semantic, &harness.events);
+        semantic.digest.semantic_trace_hash = crate::digest::events_hash(&semantic.events);
+    }
     let mut harness_hash = crate::digest::events_hash(&harness.events);
     let manifest_json = serde_json::to_string(&harness.manifest)
         .map_err(|source| SimCoreError::json("serialize harness manifest", source))?;
@@ -100,6 +104,55 @@ pub fn check_harness_agreement(
         events: harness.events,
     });
     Ok(semantic)
+}
+
+fn events_match_with_harness_recording(
+    semantic_events: &[ScenarioEvent],
+    harness_events: &[ScenarioEvent],
+) -> bool {
+    semantic_events.len() == harness_events.len()
+        && semantic_events
+            .iter()
+            .zip(harness_events)
+            .all(|(semantic, harness)| {
+                semantic.kind == harness.kind
+                    && semantic.label == harness.label
+                    && semantic.value == harness.value
+                    && (semantic.io == harness.io
+                        || (semantic.kind == "boundary-record"
+                            && semantic.io.is_none()
+                            && harness.io.is_some()))
+            })
+}
+
+fn merge_harness_recordings(run: &mut FullDepthRun, harness_events: &[ScenarioEvent]) {
+    for (semantic, harness) in run.events.iter_mut().zip(harness_events) {
+        if semantic.kind == "boundary-record" && semantic.io.is_none() {
+            semantic.io = harness.io.clone();
+        }
+    }
+    for decision in &mut run.boundary_decisions {
+        if decision.policy.as_str() != "record" {
+            continue;
+        }
+        let expected_label = format!(
+            "{}@{}..{}",
+            decision
+                .call_path
+                .as_deref()
+                .unwrap_or(decision.crate_name.as_str()),
+            decision.span_start,
+            decision.span_end
+        );
+        decision.recorded_io = run
+            .events
+            .iter()
+            .find(|event| {
+                event.kind == "boundary-record"
+                    && event.label.as_deref() == Some(expected_label.as_str())
+            })
+            .and_then(|event| event.io.clone());
+    }
 }
 
 struct HarnessRun {
@@ -541,8 +594,11 @@ fn external_boundary_support_source(
         let ScenarioOpKind::ExternalBoundary {
             crate_name,
             call_path,
+            call_arguments,
+            return_type,
             call_shape,
             policy,
+            reason,
             ..
         } = &operation.kind
         else {
@@ -560,6 +616,25 @@ fn external_boundary_support_source(
                 (operation.span.start as usize, operation.span.end as usize),
             )),
             value: Some(options.seed),
+            io: None,
+        };
+        let record_capture = (*policy == ScenarioBoundaryPolicy::Record).then(|| {
+            let span = (operation.span.start as usize, operation.span.end as usize);
+            BoundaryFacadeRecordCapture {
+                crate_name: crate_name.clone(),
+                call_path: call_path.clone(),
+                call_shape: call_shape.as_str().to_owned(),
+                policy: policy.as_str().to_owned(),
+                reason: reason.clone(),
+                return_type: return_type.clone(),
+                span,
+                replay_key: boundary_event_label(crate_name, call_path.as_deref(), span),
+                call_arguments: call_arguments.clone(),
+            }
+        });
+        let facade_event = BoundaryFacadeEvent {
+            event,
+            record_capture,
         };
         match target {
             BoundaryFacadeTarget::Function {
@@ -575,7 +650,7 @@ fn external_boundary_support_source(
                         .functions,
                     &module_path,
                     function_name,
-                    event,
+                    facade_event,
                 );
             }
             BoundaryFacadeTarget::Method {
@@ -590,17 +665,24 @@ fn external_boundary_support_source(
                     .or_default()
                     .entry(method_name)
                     .or_default()
-                    .push(event);
+                    .push(facade_event);
             }
             _ => {}
         }
     }
 
     let mut source = String::new();
+    if crate_facades
+        .values()
+        .any(BoundaryFacade::has_record_capture)
+    {
+        source.push_str(record_boundary_runtime_support_source());
+    }
     for (crate_name, facade) in crate_facades {
         source.push_str("mod ");
         source.push_str(&crate_name);
         source.push_str(" {\n");
+        source.push_str("    pub struct __KoboBoundaryValue;\n");
         source.push_str(&function_tree_source(
             &facade.functions,
             1,
@@ -614,8 +696,10 @@ fn external_boundary_support_source(
                     ": std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);\n",
                 );
             }
+        }
+        for struct_name in facade_struct_names(&facade) {
             source.push_str("    pub struct ");
-            source.push_str(type_name);
+            source.push_str(&struct_name);
             source.push_str(";\n");
         }
         for (type_name, methods) in &facade.methods {
@@ -627,24 +711,26 @@ fn external_boundary_support_source(
                 if associated {
                     source.push_str("        pub fn ");
                     source.push_str(method_name);
-                    source.push_str("() -> Self {\n");
+                    source.push_str(&generic_argument_signature(events, true));
+                    source.push_str(" -> ");
+                    source.push_str(&facade_return_type_name(events, type_name));
+                    source.push_str(" {\n");
                 } else {
                     source.push_str("        pub fn ");
                     source.push_str(method_name);
-                    source.push_str("(self) -> Self {\n");
+                    source.push_str(&generic_argument_signature(events, false));
+                    source.push_str(" -> ");
+                    source.push_str(&facade_return_type_name(events, type_name));
+                    source.push_str(" {\n");
                 }
                 source.push_str(&boundary_event_sequence_source(
                     &boundary_counter_name(type_name, method_name),
                     &format!("{crate_name}::{type_name}::{method_name}"),
                     events,
                 )?);
-                if associated {
-                    source.push_str("            ");
-                    source.push_str(type_name);
-                    source.push('\n');
-                } else {
-                    source.push_str("            self\n");
-                }
+                source.push_str("            ");
+                source.push_str(&facade_return_type_name(events, type_name));
+                source.push('\n');
                 source.push_str("        }\n");
             }
             source.push_str("    }\n");
@@ -656,7 +742,7 @@ fn external_boundary_support_source(
 
 struct BoundaryFacade {
     functions: FunctionTree,
-    methods: BTreeMap<String, BTreeMap<String, Vec<ScenarioEvent>>>,
+    methods: BTreeMap<String, BTreeMap<String, Vec<BoundaryFacadeEvent>>>,
 }
 
 impl Default for BoundaryFacade {
@@ -668,9 +754,64 @@ impl Default for BoundaryFacade {
     }
 }
 
+impl BoundaryFacade {
+    fn has_record_capture(&self) -> bool {
+        self.functions.has_record_capture()
+            || self.methods.values().any(|methods| {
+                methods
+                    .values()
+                    .any(|events| events.iter().any(|event| event.record_capture.is_some()))
+            })
+    }
+}
+
+fn facade_struct_names(facade: &BoundaryFacade) -> Vec<String> {
+    let mut names = facade.methods.keys().cloned().collect::<Vec<_>>();
+    for methods in facade.methods.values() {
+        for events in methods.values() {
+            if let Some(return_type) = facade_return_type_path(events) {
+                if let Some(name) = boundary_type_leaf(&return_type) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 enum FunctionTree {
     Module(BTreeMap<String, FunctionTree>),
-    Function(Vec<ScenarioEvent>),
+    Function(Vec<BoundaryFacadeEvent>),
+}
+
+impl FunctionTree {
+    fn has_record_capture(&self) -> bool {
+        match self {
+            Self::Module(children) => children.values().any(Self::has_record_capture),
+            Self::Function(events) => events.iter().any(|event| event.record_capture.is_some()),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BoundaryFacadeEvent {
+    event: ScenarioEvent,
+    record_capture: Option<BoundaryFacadeRecordCapture>,
+}
+
+#[derive(Clone)]
+struct BoundaryFacadeRecordCapture {
+    crate_name: String,
+    call_path: Option<String>,
+    call_shape: String,
+    policy: String,
+    reason: Option<String>,
+    return_type: Option<String>,
+    span: (usize, usize),
+    replay_key: String,
+    call_arguments: Vec<ScenarioBoundaryCallArgument>,
 }
 
 enum BoundaryFacadeTarget {
@@ -725,7 +866,7 @@ fn insert_function_event(
     tree: &mut FunctionTree,
     module_path: &[String],
     function_name: String,
-    event: ScenarioEvent,
+    event: BoundaryFacadeEvent,
 ) {
     let FunctionTree::Module(children) = tree else {
         return;
@@ -780,7 +921,10 @@ fn function_tree_source(
                 source.push_str(&indent);
                 source.push_str("pub fn ");
                 source.push_str(name);
-                source.push_str("() {\n");
+                source.push_str(&generic_argument_signature(events, true));
+                source.push_str(" -> crate::");
+                source.push_str(module_path.first().map(String::as_str).unwrap_or("self"));
+                source.push_str("::__KoboBoundaryValue {\n");
                 let mut function_path = module_path.clone();
                 function_path.push(name.clone());
                 source.push_str(&boundary_event_sequence_source(
@@ -789,11 +933,69 @@ fn function_tree_source(
                     events,
                 )?);
                 source.push_str(&indent);
+                source.push_str("    crate::");
+                source.push_str(module_path.first().map(String::as_str).unwrap_or("self"));
+                source.push_str("::__KoboBoundaryValue\n");
+                source.push_str(&indent);
                 source.push_str("}\n");
             }
         }
     }
     Ok(source)
+}
+
+fn generic_argument_signature(events: &[BoundaryFacadeEvent], no_self: bool) -> String {
+    let arguments = facade_call_arguments(events);
+    let generics = if arguments.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<{}>",
+            arguments
+                .iter()
+                .map(|argument| format!("__KoboArg{}", argument.index))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let mut parameters = Vec::new();
+    if !no_self {
+        parameters.push("self".to_owned());
+    }
+    parameters.extend(
+        arguments
+            .iter()
+            .map(|argument| format!("__kobo_arg{}: __KoboArg{}", argument.index, argument.index)),
+    );
+    format!("{generics}({})", parameters.join(", "))
+}
+
+fn facade_call_arguments(events: &[BoundaryFacadeEvent]) -> Vec<ScenarioBoundaryCallArgument> {
+    events
+        .iter()
+        .find_map(|event| event.record_capture.as_ref())
+        .map(|capture| capture.call_arguments.clone())
+        .unwrap_or_default()
+}
+
+fn facade_return_type_name(events: &[BoundaryFacadeEvent], fallback: &str) -> String {
+    facade_return_type_path(events)
+        .and_then(|path| boundary_type_leaf(&path))
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn facade_return_type_path(events: &[BoundaryFacadeEvent]) -> Option<String> {
+    events
+        .iter()
+        .find_map(|event| event.record_capture.as_ref())
+        .and_then(|capture| capture.return_type.clone())
+}
+
+fn boundary_type_leaf(path: &str) -> Option<String> {
+    path.split("::")
+        .filter(|segment| !segment.is_empty())
+        .last()
+        .map(str::to_owned)
 }
 
 fn boundary_counter_name(type_name: &str, method_name: &str) -> String {
@@ -804,12 +1006,96 @@ fn boundary_counter_name(type_name: &str, method_name: &str) -> String {
     )
 }
 
+fn boundary_call_arguments_source(events: &[BoundaryFacadeEvent]) -> String {
+    let arguments = facade_call_arguments(events);
+    if arguments.is_empty() {
+        return "            let __kobo_call_arguments: Vec<(usize, &'static str, String, String)> = Vec::new();\n".to_owned();
+    }
+    let mut source =
+        "            let __kobo_call_arguments: Vec<(usize, &'static str, String, String)> = vec![\n"
+            .to_owned();
+    for argument in arguments {
+        source.push_str("                (");
+        source.push_str(&argument.index.to_string());
+        source.push_str(", ");
+        source.push_str(&format!("{:?}", argument.source));
+        source.push_str(", std::any::type_name::<__KoboArg");
+        source.push_str(&argument.index.to_string());
+        source.push_str(">().to_owned(), std::mem::size_of_val(&__kobo_arg");
+        source.push_str(&argument.index.to_string());
+        source.push_str(").to_string()),\n");
+    }
+    source.push_str("            ];\n");
+    source
+}
+
+fn boundary_facade_event_statement(event: &BoundaryFacadeEvent) -> Result<String> {
+    if let Some(capture) = event.record_capture.as_ref() {
+        return Ok(record_boundary_event_statement(&event.event, capture));
+    }
+    event_print_statement(&event.event)
+}
+
+fn record_boundary_event_statement(
+    event: &ScenarioEvent,
+    capture: &BoundaryFacadeRecordCapture,
+) -> String {
+    let label = event.label.as_deref().unwrap_or("");
+    let value = event.value.unwrap_or_default();
+    let call_path = capture.call_path.as_deref().unwrap_or(&capture.crate_name);
+    let reason = capture.reason.as_deref().unwrap_or("");
+    let return_payload = facade_return_payload(capture);
+    format!(
+        "crate::__kobo_emit_record_boundary_event({:?}, {:?}, {}, {:?}, {:?}, {:?}, {:?}, {:?}, {}, {}, {:?}, {:?}, &__kobo_call_arguments);",
+        event.kind,
+        label,
+        value,
+        capture.crate_name,
+        call_path,
+        capture.call_shape,
+        capture.policy,
+        reason,
+        capture.span.0,
+        capture.span.1,
+        capture.replay_key,
+        return_payload
+    )
+}
+
+fn facade_return_payload(capture: &BoundaryFacadeRecordCapture) -> String {
+    let return_path =
+        capture
+            .return_type
+            .clone()
+            .unwrap_or_else(|| match capture.call_shape.as_str() {
+                "associated_function" | "method" => capture
+                    .call_path
+                    .as_deref()
+                    .and_then(boundary_receiver_type_path)
+                    .unwrap_or_else(|| capture.crate_name.clone()),
+                _ => format!("{}::__KoboBoundaryValue", capture.crate_name),
+            });
+    format!("facade_return:{return_path}")
+}
+
+fn boundary_receiver_type_path(call_path: &str) -> Option<String> {
+    let mut segments = call_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    (segments.len() >= 2).then(|| {
+        let _method = segments.pop();
+        segments.join("::")
+    })
+}
+
 fn boundary_event_sequence_source(
     counter_name: &str,
     label: &str,
-    events: &[ScenarioEvent],
+    events: &[BoundaryFacadeEvent],
 ) -> Result<String> {
     let mut source = String::new();
+    source.push_str(&boundary_call_arguments_source(events));
     source.push_str("            let __kobo_index = ");
     source.push_str(counter_name);
     source.push_str(".fetch_add(1, std::sync::atomic::Ordering::SeqCst);\n");
@@ -818,16 +1104,20 @@ fn boundary_event_sequence_source(
         source.push_str("                ");
         source.push_str(&index.to_string());
         source.push_str(" => { ");
-        source.push_str(&event_print_statement(event)?);
+        source.push_str(&boundary_facade_event_statement(event)?);
         source.push_str(" }\n");
     }
-    let overflow = ScenarioEvent {
-        kind: "boundary-overflow".to_owned(),
-        label: Some(label.to_owned()),
-        value: None,
+    let overflow = BoundaryFacadeEvent {
+        event: ScenarioEvent {
+            kind: "boundary-overflow".to_owned(),
+            label: Some(label.to_owned()),
+            value: None,
+            io: None,
+        },
+        record_capture: None,
     };
     source.push_str("                _ => { ");
-    source.push_str(&event_print_statement(&overflow)?);
+    source.push_str(&boundary_facade_event_statement(&overflow)?);
     source.push_str(" }\n");
     source.push_str("            }\n");
     Ok(source)
@@ -835,6 +1125,174 @@ fn boundary_event_sequence_source(
 
 fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
     format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
+}
+
+fn record_boundary_runtime_support_source() -> &'static str {
+    r#"
+fn __kobo_json_string(value: &str) -> String {
+    let mut escaped = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn __kobo_stable_hash(source: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn __kobo_field_json(key: &str, value: &str) -> String {
+    format!(
+        "{{\"key\":{},\"value\":{}}}",
+        __kobo_json_string(key),
+        __kobo_json_string(value)
+    )
+}
+
+fn __kobo_payload_json(kind: &str, fields: &[(String, String)]) -> String {
+    let fields = fields
+        .iter()
+        .map(|(key, value)| __kobo_field_json(key, value))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"kind\":{},\"fields\":[{}]}}",
+        __kobo_json_string(kind),
+        fields
+    )
+}
+
+fn __kobo_payload_material(kind: &str, fields: &[(String, String)]) -> String {
+    let mut material = String::from(kind);
+    for (key, value) in fields {
+        material.push('|');
+        material.push_str(key);
+        material.push('=');
+        material.push_str(value);
+    }
+    material
+}
+
+fn __kobo_boundary_protocol(crate_name: &str, call_path: &str) -> &'static str {
+    if crate_name.contains("sql")
+        || call_path.contains("query")
+        || call_path.contains("transaction")
+        || call_path.contains("pool")
+    {
+        "database-like"
+    } else {
+        "http-like"
+    }
+}
+
+fn __kobo_emit_record_boundary_event(
+    kind: &str,
+    label: &str,
+    value: u64,
+    crate_name: &str,
+    call_path: &str,
+    call_shape: &str,
+    policy: &str,
+    reason: &str,
+    span_start: usize,
+    span_end: usize,
+    replay_key: &str,
+    return_payload: &str,
+    call_arguments: &[(usize, &'static str, String, String)],
+) {
+    let mut argument_fragments = Vec::new();
+    let mut request_fields = vec![
+        ("capture_source".to_owned(), "generated-boundary-facade-runtime".to_owned()),
+        ("protocol".to_owned(), __kobo_boundary_protocol(crate_name, call_path).to_owned()),
+        ("crate".to_owned(), crate_name.to_owned()),
+        ("call_path".to_owned(), call_path.to_owned()),
+        ("call_shape".to_owned(), call_shape.to_owned()),
+        ("policy".to_owned(), policy.to_owned()),
+        ("reason".to_owned(), reason.to_owned()),
+        ("argument_count".to_owned(), call_arguments.len().to_string()),
+        ("source_span_start".to_owned(), span_start.to_string()),
+        ("source_span_end".to_owned(), span_end.to_string()),
+    ];
+    for (index, source, type_name, size) in call_arguments {
+        request_fields.push((format!("argument_{index}_source"), (*source).to_owned()));
+        request_fields.push((format!("argument_{index}_type"), type_name.clone()));
+        request_fields.push((format!("argument_{index}_size"), size.clone()));
+        argument_fragments.push(format!(
+            "{{\"index\":{},\"source\":{},\"type\":{},\"size\":{}}}",
+            index,
+            __kobo_json_string(source),
+            __kobo_json_string(type_name),
+            size
+        ));
+    }
+    let request_body = format!(
+        "{{\"boundary\":{},\"operation\":{},\"arguments\":[{}]}}",
+        __kobo_json_string(crate_name),
+        __kobo_json_string(call_path),
+        argument_fragments.join(",")
+    );
+    request_fields.push(("request_body".to_owned(), request_body));
+    let request_hash = __kobo_stable_hash(&__kobo_payload_material(
+        "kobo-boundary-request",
+        &request_fields,
+    ));
+
+    let replay_result =
+        __kobo_stable_hash(&format!("recorded-response:{replay_key}:{request_hash}:{return_payload}"));
+    let response_body = format!(
+        "{{\"recorded\":true,\"return\":{},\"replay_result\":{}}}",
+        __kobo_json_string(return_payload),
+        __kobo_json_string(&replay_result)
+    );
+    let response_fields = vec![
+        ("capture_source".to_owned(), "generated-boundary-facade-runtime".to_owned()),
+        ("status".to_owned(), "recorded".to_owned()),
+        ("status_code".to_owned(), "200".to_owned()),
+        ("replay_key".to_owned(), replay_key.to_owned()),
+        ("replay_result".to_owned(), replay_result),
+        ("return_payload".to_owned(), return_payload.to_owned()),
+        ("response_body".to_owned(), response_body),
+        ("external_internals_replayed".to_owned(), "false".to_owned()),
+    ];
+    let response_hash = __kobo_stable_hash(&__kobo_payload_material(
+        "kobo-boundary-response",
+        &response_fields,
+    ));
+
+    let request_json = __kobo_payload_json("kobo-boundary-request", &request_fields);
+    let response_json = __kobo_payload_json("kobo-boundary-response", &response_fields);
+    let io_json = format!(
+        "{{\"mode\":\"recorded-boundary-io\",\"replay_key\":{},\"request\":{},\"response\":{},\"request_hash\":{},\"response_hash\":{}}}",
+        __kobo_json_string(replay_key),
+        request_json,
+        response_json,
+        __kobo_json_string(&request_hash),
+        __kobo_json_string(&response_hash)
+    );
+    println!(
+        "KOBO_EVENT:{{\"kind\":{},\"label\":{},\"value\":{},\"io\":{}}}",
+        __kobo_json_string(kind),
+        __kobo_json_string(label),
+        value,
+        io_json
+    );
+}
+
+"#
 }
 
 fn tokio_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
@@ -1133,6 +1591,7 @@ fn terminal_failure_events(
                 kind: "obligation-transfer".to_owned(),
                 label: Some(format!("{binding}->{callee}")),
                 value: None,
+                io: None,
             }),
             ScenarioOpKind::ModeledEffect { boundary } => {
                 if failure_events.is_none() {
@@ -1186,6 +1645,7 @@ fn terminal_failure_events(
                 kind: "failure-injection-cancel".to_owned(),
                 label: Some(obligation.binding.clone()),
                 value: None,
+                io: None,
             }]);
         }
         if failure_events.is_none() {
@@ -1194,6 +1654,7 @@ fn terminal_failure_events(
                     kind: "failure-injection-cancel".to_owned(),
                     label: Some(boundary.to_owned()),
                     value: None,
+                    io: None,
                 }]);
             }
         }
@@ -1208,6 +1669,7 @@ fn terminal_failure_events(
                     kind: "liveness-token-drop".to_owned(),
                     label: Some(obligation.binding.clone()),
                     value: None,
+                    io: None,
                 }]
             });
     }

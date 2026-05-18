@@ -351,6 +351,13 @@ fn load_declaration_from_types_package(
         }
         return DeclarationLookup::Missing;
     };
+    if is_builtin_declaration_metadata_path(metadata_path, types_package) {
+        if let Some(facts) = builtin_declaration_facts(crate_name, expected_version, types_package)
+        {
+            return DeclarationLookup::Valid(facts);
+        }
+        return DeclarationLookup::Missing;
+    }
     let package = match parse_types_package(metadata_path, types_package, expected_version) {
         Ok(package) => package,
         Err(error) => return error,
@@ -419,15 +426,19 @@ fn builtin_declaration_facts(
         types.join(","),
         functions.join(",")
     );
+    let declaration_uri = builtin_declaration_uri_for(crate_name, version);
     Some(DeclarationFacts {
-        path: PathBuf::from(format!("<builtin:{}>", types_package.package)),
+        path: PathBuf::from(declaration_uri),
         version: version.to_owned(),
         schema_version: 0,
         hash: stable_hash(&hash_material),
         metadata_package: Some(DeclarationMetadataPackage {
             package: types_package.package.clone(),
             version: types_package.version.clone(),
-            path: PathBuf::from(format!("<builtin:{}>", types_package.package)),
+            path: types_package
+                .metadata_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(format!("<builtin:{}>", types_package.package))),
             source: types_package.source.clone(),
             registry: types_package.registry.clone(),
             checksum: types_package.checksum.clone(),
@@ -444,6 +455,59 @@ fn builtin_declaration_facts(
     })
 }
 
+fn is_builtin_declaration_metadata_path(
+    metadata_path: &Path,
+    types_package: &kobo_driver::EcosystemTypesPolicy,
+) -> bool {
+    types_package.source.as_deref() == Some("registry")
+        && types_package.registry.as_deref() == Some(super::ecosystem::BUILTIN_REGISTRY_NAME)
+        && types_package.validated
+        && normalized_builtin_uri(metadata_path).is_some()
+}
+
+fn normalized_builtin_uri(path: &Path) -> Option<String> {
+    let display = path.display().to_string().replace('\\', "/");
+    display
+        .find("builtin://")
+        .map(|start| display[start..].to_owned())
+}
+
+pub(super) fn builtin_declaration_hash_for(
+    crate_name: &str,
+    expected_version: Option<&str>,
+) -> Option<String> {
+    let version = builtin_declaration_version(crate_name)?;
+    if let Some(expected_version) = expected_version {
+        if expected_version != version {
+            return None;
+        }
+    }
+    let (type_facts, function_facts, _) = builtin_declaration_catalog(crate_name)?;
+    let types = type_facts
+        .iter()
+        .map(|fact| fact.path.clone())
+        .collect::<Vec<_>>();
+    let functions = function_facts
+        .iter()
+        .map(|fact| fact.path.clone())
+        .collect::<Vec<_>>();
+    let hash_material = format!(
+        "{}:{}:{}:{}",
+        crate_name,
+        version,
+        types.join(","),
+        functions.join(",")
+    );
+    Some(stable_hash(&hash_material))
+}
+
+fn builtin_declaration_uri_for(crate_name: &str, version: &str) -> String {
+    format!(
+        "builtin://{}/declarations/{crate_name}-{version}.kobo.d.toml",
+        super::ecosystem::BUILTIN_REGISTRY_NAME
+    )
+}
+
 fn builtin_declaration_version(crate_name: &str) -> Option<&'static str> {
     match crate_name {
         "serde_json" => Some("1"),
@@ -452,7 +516,7 @@ fn builtin_declaration_version(crate_name: &str) -> Option<&'static str> {
         "tokio" => Some("1"),
         "anyhow" => Some("1"),
         "clap" => Some("4"),
-        "thiserror" => Some("1"),
+        "thiserror" => Some("2"),
         _ => None,
     }
 }

@@ -1,5 +1,5 @@
 use kobo_errors::KErrorCode;
-use kobo_ir::{ScenarioExternalCallShape, ScenarioProgram};
+use kobo_ir::{ScenarioBoundaryCallArgument, ScenarioExternalCallShape, ScenarioProgram};
 
 use crate::error::Result;
 use crate::harness_manifest::HarnessManifest;
@@ -105,6 +105,8 @@ pub struct ScenarioEvent {
     pub kind: String,
     pub label: Option<String>,
     pub value: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io: Option<BoundaryIoCapture>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -143,6 +145,8 @@ pub struct RuntimeObligationSummary {
 pub struct BoundaryDecision {
     pub crate_name: String,
     pub call_path: Option<String>,
+    pub call_arguments: Vec<ScenarioBoundaryCallArgument>,
+    pub return_type: Option<String>,
     pub call_shape: ScenarioExternalCallShape,
     pub policy: BoundaryPolicyChoice,
     pub reason: Option<String>,
@@ -258,6 +262,8 @@ pub enum ScenarioOperation {
     ExternalBoundary {
         crate_name: String,
         call_path: Option<String>,
+        call_arguments: Vec<ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
         call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
@@ -473,6 +479,7 @@ impl<'a> Runtime<'a> {
                         kind: "raw-nondeterminism".to_owned(),
                         label: Some(operation.clone()),
                         value: None,
+                        io: None,
                     }],
                 }),
                 ScenarioOperation::UncontrolledEffect {
@@ -490,11 +497,14 @@ impl<'a> Runtime<'a> {
                         kind: "uncontrolled-effect".to_owned(),
                         label: Some(operation.clone()),
                         value: None,
+                        io: None,
                     }],
                 }),
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
                     call_path,
+                    call_arguments,
+                    return_type,
                     call_shape,
                     policy,
                     reason,
@@ -503,6 +513,8 @@ impl<'a> Runtime<'a> {
                 } => self.record_external_boundary(
                     crate_name.clone(),
                     call_path.clone(),
+                    call_arguments.clone(),
+                    return_type.clone(),
                     call_shape.clone(),
                     policy.clone(),
                     reason.clone(),
@@ -524,6 +536,7 @@ impl<'a> Runtime<'a> {
                         kind: "budget-exceeded".to_owned(),
                         label: Some(self.options.sim_profile.clone()),
                         value: Some(scheduler_budget(self.options)),
+                        io: None,
                     }],
                 }),
             }
@@ -582,11 +595,13 @@ impl<'a> Runtime<'a> {
                     kind: "failure-injection-preempt".to_owned(),
                     label: Some(boundary.as_str().to_owned()),
                     value: Some(self.options.seed),
+                    io: None,
                 }),
                 "time-jump" | "timejump" => self.events.push(ScenarioEvent {
                     kind: "failure-injection-time-jump".to_owned(),
                     label: Some(boundary.as_str().to_owned()),
                     value: Some(self.options.seed.wrapping_add(60_000)),
+                    io: None,
                 }),
                 "crash" => self.set_failure_once(ScenarioFailure {
                     code: KErrorCode::K0103,
@@ -600,6 +615,7 @@ impl<'a> Runtime<'a> {
                         kind: "failure-injection-crash".to_owned(),
                         label: Some(boundary.as_str().to_owned()),
                         value: None,
+                        io: None,
                     }],
                 }),
                 _ => {}
@@ -612,6 +628,7 @@ impl<'a> Runtime<'a> {
             kind: "obligation-transfer".to_owned(),
             label: Some(format!("{binding}->{callee}")),
             value: None,
+            io: None,
         });
     }
 
@@ -654,6 +671,7 @@ impl<'a> Runtime<'a> {
                 kind: "failure-injection-cancel".to_owned(),
                 label: Some(boundary.as_str().to_owned()),
                 value: None,
+                io: None,
             });
             return;
         };
@@ -673,6 +691,7 @@ impl<'a> Runtime<'a> {
                 kind: "failure-injection-cancel".to_owned(),
                 label: Some(binding),
                 value: None,
+                io: None,
             }],
         });
     }
@@ -681,6 +700,8 @@ impl<'a> Runtime<'a> {
         &mut self,
         crate_name: String,
         call_path: Option<String>,
+        call_arguments: Vec<ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
         call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
@@ -690,22 +711,11 @@ impl<'a> Runtime<'a> {
             self.opaque_boundaries.push(crate_name.clone());
         }
         let event_label = boundary_event_label(&crate_name, call_path.as_deref(), span);
-        let recorded_io = if policy == BoundaryPolicyChoice::Record {
-            Some(recorded_boundary_io_capture(
-                &crate_name,
-                call_path.as_deref(),
-                call_shape.as_str(),
-                policy.as_str(),
-                reason.as_deref(),
-                span,
-                &event_label,
-            ))
-        } else {
-            None
-        };
         if !self.boundary_decisions.iter().any(|decision| {
             decision.crate_name == crate_name
                 && decision.call_path == call_path
+                && decision.call_arguments == call_arguments
+                && decision.return_type == return_type
                 && decision.call_shape == call_shape
                 && decision.span_start == span.0
                 && decision.span_end == span.1
@@ -713,12 +723,14 @@ impl<'a> Runtime<'a> {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
                 call_path: call_path.clone(),
+                call_arguments: call_arguments.clone(),
+                return_type: return_type.clone(),
                 call_shape: call_shape.clone(),
                 policy: policy.clone(),
                 reason: reason.clone(),
                 span_start: span.0,
                 span_end: span.1,
-                recorded_io: recorded_io.clone(),
+                recorded_io: None,
             });
         }
         if is_replay_owned_boundary(&policy) {
@@ -726,6 +738,7 @@ impl<'a> Runtime<'a> {
                 kind: format!("boundary-{}", policy.as_str()),
                 label: Some(event_label),
                 value: Some(self.options.seed),
+                io: None,
             });
             return;
         }
@@ -734,6 +747,7 @@ impl<'a> Runtime<'a> {
                 kind: format!("boundary-{}", policy.as_str()),
                 label: Some(event_label),
                 value: Some(self.options.seed),
+                io: None,
             });
             return;
         }
@@ -748,6 +762,7 @@ impl<'a> Runtime<'a> {
                 kind: "boundary-policy-required".to_owned(),
                 label: Some(event_label),
                 value: None,
+                io: None,
             }],
         });
     }
@@ -850,6 +865,7 @@ impl<'a> Runtime<'a> {
                 kind: "liveness-token-drop".to_owned(),
                 label: Some(obligation.binding.clone()),
                 value: None,
+                io: None,
             }],
         })
     }
@@ -886,68 +902,6 @@ fn is_explicit_partial_boundary(policy: &BoundaryPolicyChoice) -> bool {
 
 fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
     format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
-}
-
-fn recorded_boundary_io_capture(
-    crate_name: &str,
-    call_path: Option<&str>,
-    call_shape: &str,
-    policy: &str,
-    reason: Option<&str>,
-    span: (usize, usize),
-    replay_key: &str,
-) -> BoundaryIoCapture {
-    let request = BoundaryIoPayload {
-        kind: "kobo-boundary-request".to_owned(),
-        fields: vec![
-            boundary_io_field("crate", crate_name),
-            boundary_io_field("call_path", call_path.unwrap_or(crate_name)),
-            boundary_io_field("call_shape", call_shape),
-            boundary_io_field("policy", policy),
-            boundary_io_field("reason", reason.unwrap_or("")),
-            boundary_io_field("source_span_start", &span.0.to_string()),
-            boundary_io_field("source_span_end", &span.1.to_string()),
-        ],
-    };
-    let request_hash = crate::digest::stable_hash(&boundary_io_payload_material(&request));
-    let replay_result =
-        crate::digest::stable_hash(&format!("recorded-response:{replay_key}:{request_hash}"));
-    let response = BoundaryIoPayload {
-        kind: "kobo-boundary-response".to_owned(),
-        fields: vec![
-            boundary_io_field("status", "recorded"),
-            boundary_io_field("replay_key", replay_key),
-            boundary_io_field("replay_result", &replay_result),
-            boundary_io_field("external_internals_replayed", "false"),
-        ],
-    };
-    let response_hash = crate::digest::stable_hash(&boundary_io_payload_material(&response));
-    BoundaryIoCapture {
-        mode: "recorded-boundary-io".to_owned(),
-        replay_key: replay_key.to_owned(),
-        request,
-        response,
-        request_hash,
-        response_hash,
-    }
-}
-
-fn boundary_io_field(key: &str, value: &str) -> BoundaryIoField {
-    BoundaryIoField {
-        key: key.to_owned(),
-        value: value.to_owned(),
-    }
-}
-
-fn boundary_io_payload_material(payload: &BoundaryIoPayload) -> String {
-    let mut material = payload.kind.clone();
-    for field in &payload.fields {
-        material.push('\n');
-        material.push_str(&field.key);
-        material.push('=');
-        material.push_str(&field.value);
-    }
-    material
 }
 
 pub(crate) fn scheduler_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {

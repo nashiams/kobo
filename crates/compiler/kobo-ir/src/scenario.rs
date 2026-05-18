@@ -55,12 +55,20 @@ pub enum ScenarioOpKind {
     ExternalBoundary {
         crate_name: String,
         call_path: Option<String>,
+        call_arguments: Vec<ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
         call_shape: ScenarioExternalCallShape,
         policy: ScenarioBoundaryPolicy,
         reason: Option<String>,
     },
     Loop,
     Return,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioBoundaryCallArgument {
+    pub index: usize,
+    pub source: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

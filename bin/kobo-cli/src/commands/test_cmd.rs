@@ -351,6 +351,7 @@ fn fuzz_driver_events_for_case(case: &FuzzCase, base_seed: u64) -> Vec<ScenarioE
             case.index, case.seed
         )),
         value: Some(case.seed),
+        io: None,
     }];
     events.extend(fuzz_operation_events(case));
     events.extend(fuzz_shrink_candidate_events(case));
@@ -370,6 +371,7 @@ fn fuzz_operation_events(case: &FuzzCase) -> Vec<ScenarioEvent> {
                 operation.event_label()
             )),
             value: Some(operation.value),
+            io: None,
         })
         .collect()
 }
@@ -385,6 +387,7 @@ fn fuzz_shrink_candidate_events(case: &FuzzCase) -> Vec<ScenarioEvent> {
                 case.index, index, candidate.operation_count, candidate.removed_tail_operations
             )),
             value: Some(candidate.operation_count as u64),
+            io: None,
         })
         .collect()
 }
@@ -692,6 +695,21 @@ fn validate_run_boundary_declarations(
 ) -> anyhow::Result<()> {
     for decision in &run.boundary_decisions {
         let policy = decision.policy.as_str();
+        let adapter = config.ecosystem_policy.adapter_for(&decision.crate_name);
+        if policy == "model" && adapter.is_none() {
+            anyhow::bail!(
+                "K0123: model boundary for `{}` has no adapter package",
+                decision.crate_name
+            );
+        }
+        if let Some(adapter) = adapter {
+            if let Err(message) = super::ecosystem::validate_model_adapter_package(adapter) {
+                anyhow::bail!(
+                    "K0123: adapter package for `{}` failed validation: {message}",
+                    decision.crate_name
+                );
+            }
+        }
         if !matches!(policy, "typed" | "activity") {
             continue;
         }
@@ -1209,6 +1227,8 @@ fn ecosystem_boundaries_json(
             serde_json::json!({
                 "crate": decision.crate_name,
                 "call_path": decision.call_path,
+                "call_arguments": decision.call_arguments,
+                "return_type": decision.return_type,
                 "call_shape": decision.call_shape.as_str(),
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
@@ -1362,11 +1382,16 @@ fn summary_usage_json(config: &kobo_driver::KoboConfig) -> anyhow::Result<Vec<se
             .and_then(serde_json::Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let solver_metadata = parsed
+            .get("solver_metadata")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"engine": "unknown", "outcome": "missing"}));
         summaries.push(serde_json::json!({
             "crate": summary.crate_name,
             "path": summary.path.display().to_string(),
             "summary_hash": valid.hash,
             "schema_version": valid.schema_version,
+            "solver_metadata": solver_metadata,
             "obligation_count": obligations.len(),
             "function_count": functions.len(),
             "obligations": obligations,
@@ -1431,6 +1456,8 @@ fn boundary_capture_json(
         "event_value": event.value,
         "io_capture": record_io_capture_json(decision),
         "call_path": decision.call_path.clone(),
+        "call_arguments": decision.call_arguments.clone(),
+        "return_type": decision.return_type.clone(),
         "call_shape": decision.call_shape.as_str(),
         "source_span": {
             "start": decision.span_start,
@@ -1445,14 +1472,7 @@ fn record_io_capture_json(decision: &kobo_sim_core::BoundaryDecision) -> Option<
         return None;
     }
     let capture = decision.recorded_io.as_ref()?;
-    Some(serde_json::json!({
-        "mode": capture.mode.clone(),
-        "replay_key": capture.replay_key.clone(),
-        "request": boundary_io_payload_json(&capture.request),
-        "response": boundary_io_payload_json(&capture.response),
-        "request_hash": capture.request_hash.clone(),
-        "response_hash": capture.response_hash.clone(),
-    }))
+    Some(boundary_io_capture_json(capture))
 }
 
 fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> serde_json::Value {
@@ -1711,6 +1731,8 @@ fn boundary_decisions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "crate": decision.crate_name,
                 "call_path": decision.call_path,
+                "call_arguments": decision.call_arguments,
+                "return_type": decision.return_type,
                 "call_shape": decision.call_shape.as_str(),
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
@@ -1728,14 +1750,32 @@ fn events_json(events: &[ScenarioEvent]) -> Vec<serde_json::Value> {
         .iter()
         .enumerate()
         .map(|(id, event)| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "id": id,
-                "kind": event.kind,
-                "label": event.label,
+                "kind": event.kind.clone(),
+                "label": event.label.clone(),
                 "value": event.value,
-            })
+            });
+            if let Some(io) = event.io.as_ref() {
+                value
+                    .as_object_mut()
+                    .expect("event json should be an object")
+                    .insert("io_capture".to_owned(), boundary_io_capture_json(io));
+            }
+            value
         })
         .collect()
+}
+
+fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> serde_json::Value {
+    serde_json::json!({
+        "mode": capture.mode.clone(),
+        "replay_key": capture.replay_key.clone(),
+        "request": boundary_io_payload_json(&capture.request),
+        "response": boundary_io_payload_json(&capture.response),
+        "request_hash": capture.request_hash.clone(),
+        "response_hash": capture.response_hash.clone(),
+    })
 }
 
 fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String {

@@ -57,6 +57,7 @@ impl StorageModel {
                 kind: "lost-message".to_owned(),
                 label: Some(format!("storage-{}", normalize_event_part(action))),
                 value: None,
+                io: None,
             }],
         })
     }
@@ -75,6 +76,7 @@ pub(crate) fn events_for_action(action: &str, seed: u64) -> Vec<ScenarioEvent> {
         kind: event_kind,
         label: Some(format!("ward.storage:{state_label}")),
         value: Some(seed),
+        io: None,
     }]
 }
 

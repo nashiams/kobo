@@ -109,6 +109,8 @@ pub(super) struct RuntimeObligationSummary {
 pub(super) struct BoundaryDecision {
     pub crate_name: String,
     pub call_path: Option<String>,
+    pub call_arguments: Vec<kobo_ir::ScenarioBoundaryCallArgument>,
+    pub return_type: Option<String>,
     pub call_shape: ScenarioExternalCallShape,
     pub policy: BoundaryPolicyChoice,
     pub reason: Option<String>,
@@ -265,6 +267,8 @@ pub(super) enum ScenarioOperation {
     ExternalBoundary {
         crate_name: String,
         call_path: Option<String>,
+        call_arguments: Vec<kobo_ir::ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
         call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
@@ -748,6 +752,8 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
         sim_core::ScenarioOperation::ExternalBoundary {
             crate_name,
             call_path,
+            call_arguments,
+            return_type,
             call_shape,
             policy,
             reason,
@@ -756,6 +762,8 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
         } => ScenarioOperation::ExternalBoundary {
             crate_name,
             call_path,
+            call_arguments,
+            return_type,
             call_shape,
             policy: convert_core_policy(policy),
             reason,
@@ -1052,6 +1060,8 @@ impl<'a> SimulationRuntime<'a> {
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
                     call_path,
+                    call_arguments,
+                    return_type,
                     call_shape,
                     policy,
                     reason,
@@ -1060,6 +1070,8 @@ impl<'a> SimulationRuntime<'a> {
                 } => self.record_external_boundary(
                     crate_name.clone(),
                     call_path.clone(),
+                    call_arguments.clone(),
+                    return_type.clone(),
                     call_shape.clone(),
                     policy.clone(),
                     reason.clone(),
@@ -1402,6 +1414,8 @@ impl<'a> SimulationRuntime<'a> {
         &mut self,
         crate_name: String,
         call_path: Option<String>,
+        call_arguments: Vec<kobo_ir::ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
         call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
@@ -1413,6 +1427,8 @@ impl<'a> SimulationRuntime<'a> {
         if !self.boundary_decisions.iter().any(|decision| {
             decision.crate_name == crate_name
                 && decision.call_path == call_path
+                && decision.call_arguments == call_arguments
+                && decision.return_type == return_type
                 && decision.call_shape == call_shape
                 && decision.span_start == span.0
                 && decision.span_end == span.1
@@ -1420,6 +1436,8 @@ impl<'a> SimulationRuntime<'a> {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
                 call_path: call_path.clone(),
+                call_arguments,
+                return_type,
                 call_shape,
                 policy: policy.clone(),
                 reason,

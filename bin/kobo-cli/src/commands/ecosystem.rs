@@ -67,10 +67,19 @@ enum RegistrySource {
     LocalIndex,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum MetadataKind {
     Types,
     Adapter,
+}
+
+impl MetadataKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Types => "types",
+            Self::Adapter => "adapter",
+        }
+    }
 }
 
 struct MetadataPackageSelection {
@@ -511,12 +520,22 @@ impl CommunityRegistryEntry {
         Self {
             crate_name: entry.crate_name.to_owned(),
             cargo_version: entry.cargo_version.to_owned(),
-            types_package: entry
-                .types_package
-                .map(RegistryMetadataPackage::from_builtin),
-            adapter_package: entry
-                .adapter_package
-                .map(RegistryMetadataPackage::from_builtin),
+            types_package: entry.types_package.map(|package| {
+                RegistryMetadataPackage::from_builtin(
+                    MetadataKind::Types,
+                    entry.crate_name,
+                    entry.cargo_version,
+                    package,
+                )
+            }),
+            adapter_package: entry.adapter_package.map(|package| {
+                RegistryMetadataPackage::from_builtin(
+                    MetadataKind::Adapter,
+                    entry.crate_name,
+                    entry.cargo_version,
+                    package,
+                )
+            }),
             public_types: entry
                 .public_types
                 .iter()
@@ -540,19 +559,98 @@ impl CommunityRegistryEntry {
 }
 
 impl RegistryMetadataPackage {
-    fn from_builtin(package: BuiltinRegistryMetadataPackage) -> Self {
+    fn from_builtin(
+        kind: MetadataKind,
+        crate_name: &str,
+        crate_version: &str,
+        package: BuiltinRegistryMetadataPackage,
+    ) -> Self {
+        let declaration_path = (kind == MetadataKind::Types)
+            .then(|| builtin_declaration_uri(crate_name, crate_version));
+        let declaration_hash = (kind == MetadataKind::Types)
+            .then(|| {
+                super::declarations::builtin_declaration_hash_for(crate_name, Some(crate_version))
+            })
+            .flatten();
+        let adapter_runtime =
+            (kind == MetadataKind::Adapter).then(|| builtin_adapter_runtime(package.package));
+        let capture = (kind == MetadataKind::Adapter).then(|| "facade-call-capture".to_owned());
+        let metadata_document = builtin_metadata_package_document(
+            kind,
+            crate_name,
+            crate_version,
+            package.package,
+            package.version,
+            declaration_path.as_deref(),
+            declaration_hash.as_deref(),
+            adapter_runtime.as_deref(),
+            capture.as_deref(),
+        );
+        let metadata_hash = sha256_hex(metadata_document.as_bytes());
         Self {
             package: package.package.to_owned(),
             version: package.version.to_owned(),
-            checksum: None,
-            compatible_crate: None,
-            metadata_path: None,
-            declaration_path: None,
-            declaration_hash: None,
-            adapter_runtime: Some(format!("kobo-builtin-{}", package.package)),
-            capture: Some("facade-call-capture".to_owned()),
+            checksum: Some(format!("sha256:{metadata_hash}")),
+            compatible_crate: Some(package.version.to_owned()),
+            metadata_path: Some(PathBuf::from(builtin_metadata_uri(
+                package.package,
+                package.version,
+            ))),
+            declaration_path,
+            declaration_hash,
+            adapter_runtime,
+            capture,
         }
     }
+}
+
+fn builtin_metadata_uri(package: &str, version: &str) -> String {
+    format!("builtin://{BUILTIN_REGISTRY_NAME}/packages/{package}-{version}.toml")
+}
+
+fn builtin_declaration_uri(crate_name: &str, crate_version: &str) -> String {
+    format!(
+        "builtin://{BUILTIN_REGISTRY_NAME}/declarations/{crate_name}-{crate_version}.kobo.d.toml"
+    )
+}
+
+fn builtin_adapter_runtime(package: &str) -> String {
+    format!("kobo_builtin::{}::Adapter", package.replace('-', "_"))
+}
+
+fn builtin_metadata_package_document(
+    kind: MetadataKind,
+    crate_name: &str,
+    crate_version: &str,
+    package: &str,
+    package_version: &str,
+    declaration_path: Option<&str>,
+    declaration_hash: Option<&str>,
+    adapter_runtime: Option<&str>,
+    capture: Option<&str>,
+) -> String {
+    let mut document = String::new();
+    document.push_str("schema_version = 1\n");
+    document.push_str(&format!("package = \"{package}\"\n"));
+    document.push_str(&format!("version = \"{package_version}\"\n"));
+    document.push_str(&format!("kind = \"{}\"\n", kind.as_str()));
+    document.push_str(&format!("compatible_crate = \"{crate_version}\"\n"));
+    document.push_str("signed_by = \"kobo-core\"\n");
+    document.push_str("trust_policy = \"builtin-reviewed\"\n");
+    document.push_str(&format!("crate = \"{crate_name}\"\n"));
+    if let Some(declaration_path) = declaration_path {
+        document.push_str(&format!("declaration_path = \"{declaration_path}\"\n"));
+    }
+    if let Some(declaration_hash) = declaration_hash {
+        document.push_str(&format!("declaration_hash = \"{declaration_hash}\"\n"));
+    }
+    if let Some(adapter_runtime) = adapter_runtime {
+        document.push_str(&format!("adapter_runtime = \"{adapter_runtime}\"\n"));
+    }
+    if let Some(capture) = capture {
+        document.push_str(&format!("capture = \"{capture}\"\n"));
+    }
+    document
 }
 
 fn local_registry_entry(
@@ -1298,6 +1396,179 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     hash.iter()
         .map(|word| format!("{word:08x}"))
         .collect::<String>()
+}
+
+pub(super) fn validate_model_adapter_package(
+    adapter: &kobo_driver::EcosystemAdapterPolicy,
+) -> Result<(), String> {
+    if adapter.source.as_deref() == Some("registry")
+        && adapter.registry.as_deref() == Some(BUILTIN_REGISTRY_NAME)
+    {
+        return validate_builtin_model_adapter_package(adapter);
+    }
+    if !adapter.validated {
+        return Err(format!(
+            "`{}` adapter package must be registry-validated before model replay evidence is accepted",
+            adapter.package
+        ));
+    }
+    if adapter.trust_policy.as_deref() != Some("workspace-pinned") {
+        return Err(format!(
+            "`{}` adapter package must use trust_policy = \"workspace-pinned\"",
+            adapter.package
+        ));
+    }
+    let Some(metadata_path) = adapter.metadata_path.as_deref() else {
+        return Err(format!(
+            "`{}` adapter package must pin a metadata_path",
+            adapter.package
+        ));
+    };
+    let Some(checksum) = adapter.checksum.as_deref() else {
+        return Err(format!(
+            "`{}` adapter package must pin a sha256 checksum",
+            adapter.package
+        ));
+    };
+    let Some(expected_digest) = checksum.strip_prefix("sha256:") else {
+        return Err(format!(
+            "`{}` adapter package checksum must use sha256:<digest>",
+            adapter.package
+        ));
+    };
+    if expected_digest.len() != 64 || !expected_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(format!(
+            "`{}` adapter package checksum must use sha256:<64 hex digits>",
+            adapter.package
+        ));
+    }
+    let bytes = fs::read(metadata_path)
+        .map_err(|error| format!("failed to read adapter metadata package: {error}"))?;
+    let actual = format!("sha256:{}", sha256_hex(&bytes));
+    if actual != checksum {
+        return Err(format!(
+            "`{}` adapter metadata checksum mismatch: expected {checksum}, found {actual}",
+            adapter.package
+        ));
+    }
+    let source = String::from_utf8(bytes)
+        .map_err(|error| format!("adapter metadata package is not UTF-8: {error}"))?;
+    let parsed: toml::Value =
+        toml::from_str(&source).map_err(|error| format!("adapter metadata TOML: {error}"))?;
+    if parsed
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        != Some(KOBO_REGISTRY_SCHEMA_VERSION)
+    {
+        return Err("adapter metadata package must use schema_version = 1".to_owned());
+    }
+    if parsed.get("kind").and_then(toml::Value::as_str) != Some("adapter") {
+        return Err("adapter metadata package must declare kind = \"adapter\"".to_owned());
+    }
+    if parsed.get("package").and_then(toml::Value::as_str) != Some(adapter.package.as_str()) {
+        return Err(format!(
+            "adapter metadata package does not describe `{}`",
+            adapter.package
+        ));
+    }
+    if let Some(version) = adapter.version.as_deref() {
+        if parsed.get("version").and_then(toml::Value::as_str) != Some(version) {
+            return Err(format!(
+                "adapter metadata package version does not match configured version `{version}`"
+            ));
+        }
+    }
+    if parsed.get("signed_by").and_then(toml::Value::as_str) != adapter.signed_by.as_deref() {
+        return Err("adapter metadata package signer does not match configured signer".to_owned());
+    }
+    if parsed.get("adapter_runtime").and_then(toml::Value::as_str)
+        != adapter.adapter_runtime.as_deref()
+    {
+        return Err(
+            "adapter metadata package runtime does not match configured adapter_runtime".to_owned(),
+        );
+    }
+    if parsed.get("capture").and_then(toml::Value::as_str) != adapter.capture.as_deref() {
+        return Err("adapter metadata package capture mode does not match config".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_builtin_model_adapter_package(
+    adapter: &kobo_driver::EcosystemAdapterPolicy,
+) -> Result<(), String> {
+    if !adapter.validated {
+        return Err(format!(
+            "`{}` built-in adapter package must be marked validated",
+            adapter.package
+        ));
+    }
+    if adapter.trust_policy.as_deref() != Some("builtin-reviewed") {
+        return Err(format!(
+            "`{}` built-in adapter package must use trust_policy = \"builtin-reviewed\"",
+            adapter.package
+        ));
+    }
+    if adapter.signed_by.as_deref() != Some("kobo-core") {
+        return Err(format!(
+            "`{}` built-in adapter package must be signed_by = \"kobo-core\"",
+            adapter.package
+        ));
+    }
+    let version = adapter.version.as_deref().unwrap_or("0");
+    let expected_metadata_path = builtin_metadata_uri(&adapter.package, version);
+    if adapter
+        .metadata_path
+        .as_ref()
+        .and_then(|path| normalized_builtin_uri(path))
+        .as_deref()
+        != Some(expected_metadata_path.as_str())
+    {
+        return Err(format!(
+            "`{}` built-in adapter package must pin metadata_path = \"{expected_metadata_path}\"",
+            adapter.package
+        ));
+    }
+    let expected_runtime = builtin_adapter_runtime(&adapter.package);
+    if adapter.adapter_runtime.as_deref() != Some(expected_runtime.as_str()) {
+        return Err(format!(
+            "`{}` built-in adapter package runtime does not match first-party metadata",
+            adapter.package
+        ));
+    }
+    if adapter.capture.as_deref() != Some("facade-call-capture") {
+        return Err(format!(
+            "`{}` built-in adapter package must use capture = \"facade-call-capture\"",
+            adapter.package
+        ));
+    }
+    let metadata_document = builtin_metadata_package_document(
+        MetadataKind::Adapter,
+        &adapter.crate_name,
+        adapter.compatible_crate.as_deref().unwrap_or(version),
+        &adapter.package,
+        version,
+        None,
+        None,
+        adapter.adapter_runtime.as_deref(),
+        adapter.capture.as_deref(),
+    );
+    let expected_checksum = format!("sha256:{}", sha256_hex(metadata_document.as_bytes()));
+    if adapter.checksum.as_deref() != Some(expected_checksum.as_str()) {
+        return Err(format!(
+            "`{}` built-in adapter package checksum does not match first-party metadata",
+            adapter.package
+        ));
+    }
+    Ok(())
+}
+
+fn normalized_builtin_uri(path: &Path) -> Option<String> {
+    let display = path.display().to_string().replace('\\', "/");
+    display
+        .find("builtin://")
+        .map(|start| display[start..].to_owned())
 }
 
 fn metadata_package_for(

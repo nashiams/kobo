@@ -52,6 +52,17 @@ advanced = []
     crate_dir
 }
 
+fn assert_function_contains(output: &str, path: &str, expected: &str, message: &str) {
+    let needle = format!("path = \"{path}\"");
+    let Some(block) = output
+        .split("[[function]]")
+        .find(|block| block.contains(&needle))
+    else {
+        panic!("missing function declaration block for {path}");
+    };
+    assert_contains(block, expected, message);
+}
+
 #[test]
 fn bindgen_positional_crate_uses_builtin_registry_metadata() {
     let project = TestProject::new("v11-bindgen-registry-sqlx");
@@ -96,6 +107,11 @@ fn bindgen_positional_crate_uses_builtin_registry_metadata() {
         &output.combined(),
         "K0127",
         "registry bindgen drafts should still require review",
+    );
+    assert_contains(
+        &output.combined(),
+        "registry seed declaration draft",
+        "registry seed fallback must not describe itself as source-backed extraction",
     );
 }
 
@@ -563,16 +579,21 @@ pub use api::Client as GatewayClient;
         "gateway/src/api.rs",
         r#"
 pub enum Event { Started }
-pub trait SendGateway { fn send(&self); fn flush(&mut self); }
+pub trait SendGateway {
+    const MAX_IN_FLIGHT: usize;
+    type Response;
+    fn send(&self, request: RequestId<String>) -> Self::Response;
+    fn flush(&mut self);
+}
 pub type RequestId<T> = std::result::Result<T, String>;
 
-pub struct Client<T> { marker: std::marker::PhantomData<T> }
+pub struct Client<T: Clone> { marker: std::marker::PhantomData<T> }
 
-impl<T> Client<T> {
-    pub fn close(self) {}
+impl<T: Clone> Client<T> {
+    pub fn close(self, reason: &str) {}
 }
 
-pub fn send_request() -> Client<String> { Client { marker: std::marker::PhantomData } }
+pub fn send_request(user_id: &str, limit: usize) -> Client<String> { Client { marker: std::marker::PhantomData } }
 "#,
     );
 
@@ -601,15 +622,102 @@ pub fn send_request() -> Client<String> { Client { marker: std::marker::PhantomD
         r#"variants = ["Started"]"#,
         r#"kind = "trait""#,
         r#"trait_methods = ["send", "flush"]"#,
+        r#"trait_associated_types = ["Response"]"#,
+        r#"trait_associated_consts = ["MAX_IN_FLIGHT"]"#,
         r#"kind = "type_alias""#,
         r#"generics = ["T"]"#,
+        r#"generic_bounds = ["T: Clone"]"#,
         r#"alias_target = "std :: result :: Result < T , String >""#,
+        r#"parameters = ["user_id: & str", "limit: usize"]"#,
+        r#"return_type_signature = "Client < String >""#,
+        r#"determinism = "deterministic""#,
+        r#"replay_policy = "typed-draft""#,
         r#"target = "gateway::api::Client""#,
     ] {
         assert_contains(
             &output.stdout,
             expected,
             "bindgen should include richer public API facts for review",
+        );
+    }
+}
+
+#[test]
+fn bindgen_path_emits_effect_and_replay_policy_fields() {
+    let project = TestProject::new("v11-bindgen-effects");
+    let crate_dir = write_fixture_crate(
+        &project,
+        "effect_api",
+        r#"
+use std::env::var;
+
+pub fn read_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+pub fn read_env_alias(name: &str) -> Option<String> {
+    var(name).ok()
+}
+
+pub fn read_env_block_alias(name: &str) -> Option<String> {
+    use std::env::var as read_var;
+    read_var(name).ok()
+}
+
+pub fn pure_add(left: usize, right: usize) -> usize {
+    left + right
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("bindgen"), s("--path"), path_arg(&crate_dir)],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "bindgen should emit function-level effects and replay policy metadata",
+    );
+    for expected in [
+        r#"path = "effect_api::read_env""#,
+        r#"parameters = ["name: & str"]"#,
+        r#"return_type_signature = "Option < String >""#,
+        r#"effects = ["environment"]"#,
+        r#"determinism = "environment-dependent""#,
+        r#"replay_policy = "review-required""#,
+        r#"path = "effect_api::pure_add""#,
+        r#"parameters = ["left: usize", "right: usize"]"#,
+        r#"determinism = "deterministic""#,
+        r#"replay_policy = "typed-draft""#,
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "bindgen should emit production-review metadata for each public function",
+        );
+    }
+    for path in [
+        "effect_api::read_env_alias",
+        "effect_api::read_env_block_alias",
+    ] {
+        assert_function_contains(
+            &output.stdout,
+            path,
+            r#"effects = ["environment"]"#,
+            "bindgen should resolve imported environment APIs inside each function body",
+        );
+        assert_function_contains(
+            &output.stdout,
+            path,
+            r#"determinism = "environment-dependent""#,
+            "import-resolved environment APIs should not be emitted as deterministic",
+        );
+        assert_function_contains(
+            &output.stdout,
+            path,
+            r#"replay_policy = "review-required""#,
+            "import-resolved environment APIs should require replay review",
         );
     }
 }

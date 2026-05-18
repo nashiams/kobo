@@ -11,9 +11,43 @@ use v09_common::{
 };
 
 const V11_TIMEOUT: Duration = Duration::from_secs(60);
+const ADAPTER_FIXTURE: &str = "schema_version = 1\npackage = \"kobo-adapter-fixture\"\nversion = \"0.1.0\"\nkind = \"adapter\"\ncompatible_crate = \">=0.0.0,<999.0.0\"\nsigned_by = \"kobo-test\"\nadapter_runtime = \"kobo_adapter::Adapter\"\ncapture = \"boundary-io\"\n";
+const ADAPTER_FIXTURE_SHA256: &str =
+    "ffa9fbaa4f48f7b0df86b9ebb8bf9d64965d23b741260ff0d046491420fc4b0d";
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, V11_TIMEOUT)
+}
+
+fn write_valid_adapter_config(project: &TestProject, crate_name: &str) {
+    project.write(
+        ".kobo/registry/packages/adapter-fixture.toml",
+        ADAPTER_FIXTURE,
+    );
+    project.write(
+        "Kobo.toml",
+        &format!(
+            r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.adapter]]
+crate = "{crate_name}"
+package = "kobo-adapter-fixture"
+version = "0.1.0"
+source = "registry-index"
+registry = "test-v0.11"
+checksum = "sha256:{ADAPTER_FIXTURE_SHA256}"
+compatible_crate = ">=0.0.0,<999.0.0"
+metadata_path = ".kobo/registry/packages/adapter-fixture.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-test"
+validated = true
+adapter_runtime = "kobo_adapter::Adapter"
+capture = "boundary-io"
+reason = "validated test adapter"
+"#
+        ),
+    );
 }
 
 fn first_witness(project: &TestProject) -> (std::path::PathBuf, Value) {
@@ -49,13 +83,13 @@ fn backend_registry_discloses_full_depth_for_compiler_owned_and_registered_bound
             .find(|backend| backend["name"] == name)
             .unwrap_or_else(|| panic!("backend `{name}` should be listed: {value}"));
         assert_eq!(
-            backend["full_ecosystem_exploration"], true,
-            "{name} should claim full depth for compiler-owned generated Rust scope only: {backend}",
+            backend["full_ecosystem_exploration"], false,
+            "{name} must not claim arbitrary external crate exploration: {backend}",
         );
         assert_contains(
             &backend.to_string(),
-            "full-compiler-owned",
-            "compiler-owned backends should expose their precise full-depth scope",
+            "registered-boundaries",
+            "compiler-owned backends should disclose registered-boundary scope without arbitrary ecosystem exploration",
         );
     }
 
@@ -145,6 +179,10 @@ fn recorded_gateway() {
         "response_hash",
         "replay_key",
         "recorded-boundary-io",
+        "request_body",
+        "response_body",
+        "status_code",
+        "generated-boundary-facade-runtime",
     ] {
         assert_contains(
             &witness["ecosystem_boundaries"].to_string(),
@@ -176,6 +214,30 @@ fn recorded_gateway() {
             .as_str()
             .is_some_and(|value| !value.is_empty()),
         "recorded I/O capture should include a deterministic replay result"
+    );
+    let record_event = witness["events"]
+        .as_array()
+        .and_then(|events| {
+            events
+                .iter()
+                .find(|event| event["kind"].as_str() == Some("boundary-record"))
+        })
+        .expect("record boundary event should be present");
+    assert_eq!(
+        record_event["io_capture"], *io_capture,
+        "the replay-critical event stream should carry the same captured boundary I/O as ecosystem boundary evidence"
+    );
+    let ledger_entry = witness["boundary_ledger"]
+        .as_array()
+        .and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry["policy"].as_str() == Some("record"))
+        })
+        .expect("record boundary ledger entry should be present");
+    assert_eq!(
+        ledger_entry["io_capture"], *io_capture,
+        "the boundary ledger should carry the same captured boundary I/O as the event stream"
     );
 }
 
@@ -372,6 +434,197 @@ fn exact_witness_supports_imported_free_function_record_boundary() {
 }
 
 #[test]
+fn record_boundary_captures_facade_call_arguments_and_return_payload() {
+    let project = TestProject::new("v11-record-boundary-real-io-arguments");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "payments", policy = "record", reason = "capture charge request")]
+use payments::charge;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let _result = charge("acct_123", 42);
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "record boundary with call arguments should produce an exact witness",
+    );
+    let (_, witness) = first_witness(&project);
+    let boundary = witness["ecosystem_boundaries"]
+        .as_array()
+        .and_then(|boundaries| {
+            boundaries
+                .iter()
+                .find(|boundary| boundary["policy"].as_str() == Some("record"))
+        })
+        .expect("record boundary should be present");
+    let io_payload = &boundary["capture"]["io_capture"];
+    let request = io_payload["request"]["payload"].to_string();
+    for expected in [
+        "argument_count",
+        "argument_0_source",
+        "\\\"acct_123\\\"",
+        "argument_1_source",
+        "42",
+        "argument_0_type",
+        "argument_1_type",
+        "request_body",
+    ] {
+        assert_contains(
+            &request,
+            expected,
+            "record boundary request payload should be captured by the generated facade call",
+        );
+    }
+    let response = io_payload["response"]["payload"].to_string();
+    for expected in ["return_payload", "response_body", "facade_return"] {
+        assert_contains(
+            &response,
+            expected,
+            "record boundary response payload should include the generated facade return",
+        );
+    }
+    assert_eq!(
+        witness["boundary_ledger"][0]["io_capture"], boundary["capture"]["io_capture"],
+        "boundary ledger should carry the same facade-captured I/O payload"
+    );
+}
+
+#[test]
+fn record_boundary_captures_external_method_call_arguments_and_return_payload() {
+    let project = TestProject::new("v11-record-boundary-method-io-arguments");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "capture HTTP request")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let client = Client::new();
+    let request = client.get("https://example.test/api");
+    let _response = request.send();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "record boundary method call should produce an exact witness",
+    );
+    let (_, witness) = first_witness(&project);
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "reqwest::Client::get",
+        "method call boundary should reach ecosystem boundary evidence",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "method",
+        "method call boundary should preserve call shape",
+    );
+    assert_contains(
+        &witness["boundary_ledger"].to_string(),
+        "reqwest::Client::get",
+        "method call boundary should reach the boundary ledger",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "reqwest::RequestBuilder::send",
+        "method return values should keep enough type identity for chained boundary calls",
+    );
+    for expected in [
+        "argument_0_source",
+        "https://example.test/api",
+        "argument_0_type",
+        "return_payload",
+        "facade_return:reqwest::RequestBuilder",
+        "facade_return:reqwest::Response",
+    ] {
+        assert_contains(
+            &witness["ecosystem_boundaries"].to_string(),
+            expected,
+            "method record boundary should capture request arguments and facade return payload",
+        );
+    }
+}
+
+#[test]
+fn record_boundary_captures_external_method_call_inside_helper() {
+    let project = TestProject::new("v11-record-boundary-helper-method");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "capture helper HTTP request")]
+use reqwest::Client;
+
+fn send_request(client: Client) {
+    let _request = client.get("https://example.test/helper");
+}
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let client = Client::new();
+    send_request(client);
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "helper method boundary should produce an exact witness",
+    );
+    let (_, witness) = first_witness(&project);
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "reqwest::Client::get",
+        "helper-local method call should retain external boundary value metadata",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "https://example.test/helper",
+        "helper-local method call should retain captured argument payload",
+    );
+}
+
+#[test]
 fn exact_witness_supports_imported_free_function_model_boundary() {
     assert_free_function_boundary_policy("model", "modeled-facade", "boundary-model");
 }
@@ -421,6 +674,9 @@ fn exact_witness_supports_imported_module_free_function_stub_boundary() {
 
 fn assert_free_function_boundary_policy(policy: &str, evidence: &str, event_kind: &str) {
     let project = TestProject::new(&format!("v11-free-function-{policy}-boundary"));
+    if policy == "model" {
+        write_valid_adapter_config(&project, "payments");
+    }
     let file = project.main_file(&format!(
         r#"
 #[kobo::boundary(crate = "payments", policy = "{policy}", reason = "free function gateway")]
@@ -479,6 +735,9 @@ fn recorded_gateway() {{
 
 fn assert_nested_free_function_boundary_policy(policy: &str, evidence: &str, event_kind: &str) {
     let project = TestProject::new(&format!("v11-nested-free-function-{policy}-boundary"));
+    if policy == "model" {
+        write_valid_adapter_config(&project, "payments");
+    }
     let file = project.main_file(&format!(
         r#"
 #[kobo::boundary(crate = "payments", policy = "{policy}", reason = "nested free function gateway")]
@@ -554,6 +813,9 @@ fn assert_imported_module_free_function_boundary_policy(
     event_kind: &str,
 ) {
     let project = TestProject::new(&format!("v11-module-free-function-{policy}-boundary"));
+    if policy == "model" {
+        write_valid_adapter_config(&project, "payments");
+    }
     let file = project.main_file(&format!(
         r#"
 #[kobo::boundary(crate = "payments", policy = "{policy}", reason = "imported module free function gateway")]
@@ -862,6 +1124,61 @@ fn recorded_gateway() {
 }
 
 #[test]
+fn record_boundary_tampered_ledger_io_capture_breaks_exact_replay() {
+    let project = TestProject::new("v11-record-tampered-ledger-io-capture");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "record gateway construction")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(&output, "fixture should create an exact witness");
+    let (witness_path, mut witness) = first_witness(&project);
+    witness["boundary_ledger"][0]["io_capture"]["response_hash"] =
+        serde_json::json!("ledger-tampered");
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).expect("witness should serialize"),
+    )
+    .expect("witness should write");
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &replay,
+        "record replay must reject witnesses whose boundary ledger I/O capture diverges",
+    );
+    assert_contains(
+        &replay.combined(),
+        "K0124",
+        "tampered boundary ledger I/O capture should use K0124",
+    );
+}
+
+#[test]
 fn record_boundary_event_evidence_is_call_specific() {
     let project = TestProject::new("v11-record-call-specific-evidence");
     let file = project.main_file(
@@ -975,17 +1292,7 @@ fn opaque_gateway() {
 #[test]
 fn configured_adapter_metadata_replays_in_canonical_boundary_evidence() {
     let project = TestProject::new("v11-adapter-boundary-replay");
-    project.write(
-        "Kobo.toml",
-        r#"[ecosystem]
-default = "opaque"
-
-[[ecosystem.adapter]]
-crate = "reqwest"
-package = "kobo-adapter-reqwest"
-reason = "first-party HTTP adapter"
-"#,
-    );
+    write_valid_adapter_config(&project, "reqwest");
     let file = project.main_file(
         r#"
 #[kobo::boundary(crate = "reqwest", policy = "record", reason = "record gateway construction")]
@@ -1013,7 +1320,7 @@ fn recorded_gateway() {
     let (witness_path, witness) = first_witness(&project);
     assert_contains(
         &witness["ecosystem_boundaries"].to_string(),
-        "kobo-adapter-reqwest",
+        "kobo-adapter-fixture",
         "witness boundary evidence should preserve configured adapter metadata",
     );
 
@@ -1028,5 +1335,55 @@ fn recorded_gateway() {
     assert_success(
         &replay,
         "exact replay should preserve the same adapter evidence shape as witness generation",
+    );
+}
+
+#[test]
+fn unvalidated_adapter_metadata_rejects_exact_witness_generation() {
+    let project = TestProject::new("v11-unvalidated-adapter-boundary");
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.adapter]]
+crate = "reqwest"
+package = "kobo-adapter-reqwest"
+reason = "unvalidated adapter should not support exact replay"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "record gateway construction")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "test --sim must reject unvalidated adapter metadata before writing exact witness evidence",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0123",
+        "unvalidated adapter metadata should use the adapter package diagnostic",
     );
 }

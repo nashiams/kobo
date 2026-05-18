@@ -591,6 +591,58 @@ edition = "2021"
         r#"version = "1""#,
         "adapter package metadata should preserve registry package version",
     );
+    for expected in [
+        "metadata_path = \"builtin://builtin-v0.11/packages/kobo-types-sqlx-0.8.toml\"",
+        "declaration_path = \"builtin://builtin-v0.11/declarations/sqlx-0.8.kobo.d.toml\"",
+        "metadata_path = \"builtin://builtin-v0.11/packages/kobo-adapter-tokio-1.toml\"",
+        "checksum = \"sha256:",
+        "declaration_hash = \"",
+        "trust_policy = \"builtin-reviewed\"",
+        "signed_by = \"kobo-core\"",
+        "adapter_runtime = \"kobo_builtin::kobo_adapter_tokio::Adapter\"",
+        "capture = \"facade-call-capture\"",
+        "validated = true",
+    ] {
+        assert_contains(
+            &kobo_toml,
+            expected,
+            "built-in registry packages should carry first-party package validation evidence",
+        );
+    }
+}
+
+#[test]
+fn builtin_thiserror_types_package_carries_declaration_hash() {
+    let project = TestProject::new("v11-add-types-thiserror");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "v11-add-types-thiserror"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+
+    let add_types = run_kobo(&[s("add-types"), s("thiserror")], &project.root);
+    assert_success(
+        &add_types,
+        "kobo add-types thiserror should record validated built-in declaration metadata",
+    );
+
+    let kobo_toml = project.read("Kobo.toml");
+    for expected in [
+        r#"package = "kobo-types-thiserror""#,
+        r#"version = "2""#,
+        r#"declaration_path = "builtin://builtin-v0.11/declarations/thiserror-2.kobo.d.toml""#,
+        r#"declaration_hash = ""#,
+        r#"validated = true"#,
+    ] {
+        assert_contains(
+            &kobo_toml,
+            expected,
+            "built-in thiserror package should carry complete declaration evidence",
+        );
+    }
 }
 
 #[test]

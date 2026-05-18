@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -845,7 +844,7 @@ fn project_boundary_policy_diagnostics(
         }
         if decision.policy == ScenarioBoundaryPolicy::Model {
             if let Some(adapter) = adapter_package {
-                if let Err(message) = validate_model_adapter_metadata(adapter) {
+                if let Err(message) = super::ecosystem::validate_model_adapter_package(adapter) {
                     session.diagnostics.push(KDiagnostic::new(
                         KErrorCode::K0123,
                         Severity::Error,
@@ -1004,6 +1003,11 @@ fn emit_summary_policy_evidence(
             .and_then(serde_json::Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let solver_metadata = valid
+            .value
+            .get("solver_metadata")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"engine": "unknown", "outcome": "missing"}));
         match error_format {
             ErrorFormat::Json => println!(
                 "{}",
@@ -1013,6 +1017,7 @@ fn emit_summary_policy_evidence(
                     "path": summary.path.display().to_string(),
                     "summary_hash": valid.hash,
                     "schema_version": valid.schema_version,
+                    "solver_metadata": solver_metadata,
                     "obligation_count": obligations.len(),
                     "function_count": functions.len(),
                     "obligations": obligations,
@@ -1026,106 +1031,6 @@ fn emit_summary_policy_evidence(
                 valid.hash
             ),
         }
-    }
-    Ok(())
-}
-
-fn validate_model_adapter_metadata(
-    adapter: &kobo_driver::EcosystemAdapterPolicy,
-) -> Result<(), String> {
-    if adapter.validated
-        && adapter.source.as_deref() == Some("registry")
-        && adapter.registry.as_deref() == Some(super::ecosystem::BUILTIN_REGISTRY_NAME)
-        && adapter.trust_policy.as_deref() == Some("builtin-reviewed")
-        && adapter.signed_by.as_deref() == Some("kobo-core")
-    {
-        return Ok(());
-    }
-    if !adapter.validated {
-        return Err(format!(
-            "`{}` adapter package must be registry-validated before model replay evidence is accepted",
-            adapter.package
-        ));
-    }
-    if adapter.trust_policy.as_deref() != Some("workspace-pinned") {
-        return Err(format!(
-            "`{}` adapter package must use trust_policy = \"workspace-pinned\"",
-            adapter.package
-        ));
-    }
-    let Some(metadata_path) = adapter.metadata_path.as_deref() else {
-        return Err(format!(
-            "`{}` adapter package must pin a metadata_path",
-            adapter.package
-        ));
-    };
-    let Some(checksum) = adapter.checksum.as_deref() else {
-        return Err(format!(
-            "`{}` adapter package must pin a sha256 checksum",
-            adapter.package
-        ));
-    };
-    let Some(expected_digest) = checksum.strip_prefix("sha256:") else {
-        return Err(format!(
-            "`{}` adapter package checksum must use sha256:<digest>",
-            adapter.package
-        ));
-    };
-    if expected_digest.len() != 64 || !expected_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(format!(
-            "`{}` adapter package checksum must use sha256:<64 hex digits>",
-            adapter.package
-        ));
-    }
-    let bytes = fs::read(metadata_path)
-        .map_err(|error| format!("failed to read adapter metadata package: {error}"))?;
-    let actual = format!("sha256:{}", super::ecosystem::sha256_hex(&bytes));
-    if actual != checksum {
-        return Err(format!(
-            "`{}` adapter metadata checksum mismatch: expected {checksum}, found {actual}",
-            adapter.package
-        ));
-    }
-    let source = String::from_utf8(bytes)
-        .map_err(|error| format!("adapter metadata package is not UTF-8: {error}"))?;
-    let parsed: toml::Value =
-        toml::from_str(&source).map_err(|error| format!("adapter metadata TOML: {error}"))?;
-    if parsed
-        .get("schema_version")
-        .and_then(toml::Value::as_integer)
-        != Some(1)
-    {
-        return Err("adapter metadata package must use schema_version = 1".to_owned());
-    }
-    if parsed.get("kind").and_then(toml::Value::as_str) != Some("adapter") {
-        return Err("adapter metadata package must declare kind = \"adapter\"".to_owned());
-    }
-    if parsed.get("package").and_then(toml::Value::as_str) != Some(adapter.package.as_str()) {
-        return Err(format!(
-            "adapter metadata package does not describe `{}`",
-            adapter.package
-        ));
-    }
-    if let Some(version) = adapter.version.as_deref() {
-        if parsed.get("version").and_then(toml::Value::as_str) != Some(version) {
-            return Err(format!(
-                "adapter metadata package version does not match configured version `{version}`"
-            ));
-        }
-    }
-    if parsed.get("signed_by").and_then(toml::Value::as_str) != adapter.signed_by.as_deref() {
-        return Err("adapter metadata package signer does not match configured signer".to_owned());
-    }
-    if parsed.get("adapter_runtime").and_then(toml::Value::as_str)
-        != adapter.adapter_runtime.as_deref()
-    {
-        return Err(
-            "adapter metadata package runtime does not match configured adapter_runtime".to_owned(),
-        );
-    }
-    if parsed.get("capture").and_then(toml::Value::as_str) != adapter.capture.as_deref() {
-        return Err("adapter metadata package capture mode does not match config".to_owned());
     }
     Ok(())
 }

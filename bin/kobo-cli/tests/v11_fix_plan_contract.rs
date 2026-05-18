@@ -106,6 +106,129 @@ async fn replay_gap() {
 }
 
 #[test]
+fn test_sim_flags_environment_process_and_sleep_on_replay_path() {
+    for (label, source, expected) in [
+        (
+            "env",
+            r#"
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    let _env = std::env::var("PAYMENTS_URL");
+}
+"#,
+            "std::env",
+        ),
+        (
+            "process",
+            r#"
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    let _pid = std::process::id();
+}
+"#,
+            "std::process",
+        ),
+        (
+            "sleep",
+            r#"
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    std::thread::sleep(std::time::Duration::from_millis(1));
+}
+"#,
+            "std::thread::sleep",
+        ),
+        (
+            "imported-env",
+            r#"
+use std::env::var;
+
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    let _env = var("PAYMENTS_URL");
+}
+"#,
+            "std::env",
+        ),
+        (
+            "imported-process",
+            r#"
+use std::process::id;
+
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    let _pid = id();
+}
+"#,
+            "std::process",
+        ),
+        (
+            "imported-sleep",
+            r#"
+use std::thread::sleep;
+
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    sleep(std::time::Duration::from_millis(1));
+}
+"#,
+            "std::thread::sleep",
+        ),
+        (
+            "block-imported-env",
+            r#"
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    use std::env::var;
+    let _env = var("PAYMENTS_URL");
+}
+"#,
+            "std::env",
+        ),
+        (
+            "block-imported-process",
+            r#"
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    use std::process::id;
+    let _pid = id();
+}
+"#,
+            "std::process",
+        ),
+        (
+            "block-imported-sleep",
+            r#"
+#[kobo::scenario(profile = "async")]
+fn replay_gap() {
+    use std::thread::sleep;
+    sleep(std::time::Duration::from_millis(1));
+}
+"#,
+            "std::thread::sleep",
+        ),
+    ] {
+        let project = TestProject::new(&format!("v11-test-sim-replay-nondeterminism-{label}"));
+        let file = project.main_file(source);
+
+        let output = run_kobo(
+            &[s("test"), s("--sim"), s("quick"), path_arg(&file)],
+            &project.root,
+        );
+
+        assert_failure(
+            &output,
+            "test --sim should reject replay-path nondeterminism classes",
+        );
+        assert_contains(
+            &output.combined(),
+            expected,
+            "replay-path nondeterminism failure should name the offending operation",
+        );
+    }
+}
+
+#[test]
 fn sim_scout_fix_plan_ignores_comments_strings_and_local_same_name_types() {
     let project = TestProject::new("v11-fix-plan-ast-evidence");
     let file = project.main_file(

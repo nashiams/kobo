@@ -97,10 +97,17 @@ pub(super) fn boundary_ledger_json(
             serde_json::json!({
                 "boundary": decision.crate_name,
                 "call_path": decision.call_path,
+                "call_arguments": decision.call_arguments,
+                "return_type": decision.return_type,
                 "call_shape": decision.call_shape.as_str(),
                 "status": boundary_status(&decision.policy),
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
+                "source_span": {
+                    "start": decision.span_start,
+                    "end": decision.span_end,
+                },
+                "io_capture": boundary_ledger_io_capture_json(decision),
                 "source": "scenario_program",
             })
         })
@@ -142,6 +149,40 @@ pub(super) fn boundary_ledger_json(
         left_key.cmp(&right_key)
     });
     serde_json::Value::Array(entries)
+}
+
+fn boundary_ledger_io_capture_json(
+    decision: &kobo_sim_core::BoundaryDecision,
+) -> Option<serde_json::Value> {
+    if decision.policy.as_str() != "record" {
+        return None;
+    }
+    decision.recorded_io.as_ref().map(boundary_io_capture_json)
+}
+
+fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> serde_json::Value {
+    serde_json::json!({
+        "mode": capture.mode.clone(),
+        "request_hash": capture.request_hash.clone(),
+        "response_hash": capture.response_hash.clone(),
+        "replay_key": capture.replay_key.clone(),
+        "request": boundary_io_payload_json(&capture.request),
+        "response": boundary_io_payload_json(&capture.response),
+    })
+}
+
+fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    for field in &payload.fields {
+        fields.insert(
+            field.key.clone(),
+            serde_json::Value::String(field.value.clone()),
+        );
+    }
+    serde_json::json!({
+        "kind": payload.kind.clone(),
+        "payload": fields,
+    })
 }
 
 pub(super) fn inferred_obligations_json(

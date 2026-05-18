@@ -459,17 +459,98 @@ fn summary_functions_json(source: &str, config: &KoboConfig) -> Vec<serde_json::
                 return None;
             };
             let name = function.sig.ident.to_string();
+            let facts = function_summary_facts(function);
             Some(serde_json::json!({
                 "path": format!("{}::{name}", package_name(config)),
-                "creates": [],
-                "transfers": [],
-                "discharges": [],
-                "returns": [],
+                "creates": facts.creates,
+                "transfers": facts.transfers,
+                "discharges": facts.discharges,
+                "returns": facts.returns,
                 "effects": effect_tags_for_function(function),
                 "boundaries": boundary_tags_for_function(function),
             }))
         })
         .collect()
+}
+
+#[derive(Default)]
+struct FunctionSummaryFacts {
+    creates: Vec<String>,
+    transfers: Vec<String>,
+    discharges: Vec<String>,
+    returns: Vec<String>,
+}
+
+fn function_summary_facts(function: &syn::ItemFn) -> FunctionSummaryFacts {
+    let mut facts = FunctionSummaryFacts::default();
+    if let syn::ReturnType::Type(_, ty) = &function.sig.output {
+        facts.returns.push(quote::quote!(#ty).to_string());
+    }
+    let mut collector = FunctionSummaryVisitor::default();
+    collector.visit_block(&function.block);
+    facts.creates = sorted_unique(collector.creates);
+    facts.transfers = sorted_unique(collector.transfers);
+    facts.discharges = sorted_unique(collector.discharges);
+    facts
+}
+
+#[derive(Default)]
+struct FunctionSummaryVisitor {
+    creates: Vec<String>,
+    transfers: Vec<String>,
+    discharges: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for FunctionSummaryVisitor {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = call.func.as_ref() {
+            let segments = path_segments(&path.path);
+            if segments.last().is_some_and(|segment| segment == "new") {
+                self.creates.push(segments.join("::"));
+            }
+            if segments.iter().any(|segment| is_transfer_action(segment)) {
+                self.transfers.push(segments.join("::"));
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        let method = call.method.to_string();
+        if is_discharge_action(&method) {
+            self.discharges.push(method.clone());
+        }
+        if is_transfer_action(&method) {
+            self.transfers.push(method);
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_expr_struct(&mut self, expr: &'ast syn::ExprStruct) {
+        self.creates.push(path_segments(&expr.path).join("::"));
+        syn::visit::visit_expr_struct(self, expr);
+    }
+}
+
+fn is_discharge_action(action: &str) -> bool {
+    matches!(
+        action,
+        "ack" | "reply" | "reject" | "cancel" | "close" | "commit" | "flush" | "finish"
+    )
+}
+
+fn is_transfer_action(action: &str) -> bool {
+    matches!(
+        action,
+        "send" | "spawn" | "transfer" | "enqueue" | "publish" | "submit"
+    )
+}
+
+fn sorted_unique(mut values: Vec<String>) -> Vec<String> {
+    values.retain(|value| !value.is_empty());
+    values.sort();
+    values.dedup();
+    values
 }
 
 fn package_name(config: &KoboConfig) -> &str {
@@ -516,11 +597,13 @@ fn write_kobo_summary(
     functions: Vec<serde_json::Value>,
     obligations: Vec<serde_json::Value>,
 ) -> std::io::Result<()> {
+    let solver_metadata = solver_metadata_json(&functions, &obligations, &source_hash);
     let summary_body = serde_json::json!({
         "schema_version": 1,
         "crate": if config.package_name.is_empty() { "kobo_project" } else { &config.package_name },
         "crate_version": if config.package_version.is_empty() { "0.1.0" } else { &config.package_version },
         "source_hash": source_hash,
+        "solver_metadata": solver_metadata,
         "functions": functions,
         "obligations": obligations,
     });
@@ -531,6 +614,70 @@ fn write_kobo_summary(
         gen_dir.join(".kobo-summary"),
         serde_json::to_string_pretty(&summary).expect(".kobo-summary should serialize"),
     )
+}
+
+fn solver_metadata_json(
+    functions: &[serde_json::Value],
+    obligations: &[serde_json::Value],
+    source_hash: &str,
+) -> serde_json::Value {
+    let mut edge_count = 0usize;
+    for function in functions {
+        edge_count += function
+            .get("creates")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        edge_count += function
+            .get("transfers")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        edge_count += function
+            .get("discharges")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+    }
+    edge_count += obligations
+        .iter()
+        .map(|obligation| {
+            obligation
+                .get("terminal_actions")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+        })
+        .sum::<usize>();
+    let graph_material = serde_json::json!({
+        "source_hash": source_hash,
+        "functions": functions,
+        "obligations": obligations,
+        "edge_count": edge_count,
+    });
+    serde_json::json!({
+        "engine": "kobo-liveness-solver",
+        "schema_version": 1,
+        "outcome": if obligations.is_empty() { "no-exported-obligations" } else { "obligations-exported" },
+        "graph_fingerprint": stable_hash(&graph_material.to_string()),
+        "graph": {
+            "fingerprint": stable_hash(&graph_material.to_string()),
+            "node_count": functions.len() + obligations.len(),
+            "edge_count": edge_count,
+            "function_nodes": functions.len(),
+            "obligation_nodes": obligations.len(),
+        },
+        "node_count": functions.len() + obligations.len(),
+        "edge_count": edge_count,
+        "function_node_count": functions.len(),
+        "obligation_node_count": obligations.len(),
+        "decision_provenance": "producer-summary-solver-metadata",
+        "provenance": {
+            "producer": "kobo-driver",
+            "stage": "summary-propagation",
+            "source": "producer-summary-solver-metadata",
+        },
+    })
 }
 
 fn stable_hash(source: &str) -> String {

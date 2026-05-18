@@ -71,6 +71,38 @@ fn main() {
         "producer-summary",
         "summary applicability should carry explicit producer provenance",
     );
+    let solver_metadata = &summary["solver_metadata"];
+    assert_eq!(
+        solver_metadata["engine"].as_str(),
+        Some("kobo-liveness-solver"),
+        ".kobo-summary should identify the solver that produced propagated facts"
+    );
+    assert_eq!(
+        solver_metadata["outcome"].as_str(),
+        Some("obligations-exported"),
+        ".kobo-summary should carry a solver outcome, not only raw facts"
+    );
+    for expected in [
+        "graph_fingerprint",
+        "node_count",
+        "edge_count",
+        "decision_provenance",
+        "producer-summary-solver-metadata",
+    ] {
+        assert_contains(
+            &solver_metadata.to_string(),
+            expected,
+            ".kobo-summary solver metadata should include graph counts, fingerprint, and provenance",
+        );
+    }
+    assert_eq!(
+        solver_metadata["graph"]["fingerprint"], solver_metadata["graph_fingerprint"],
+        "nested graph metadata should preserve the replay-critical fingerprint"
+    );
+    assert!(
+        solver_metadata["graph"]["node_count"].as_u64().unwrap_or(0) > 0,
+        ".kobo-summary solver metadata should count solver graph nodes"
+    );
 
     let summary_hash = summary["summary_hash"]
         .as_str()
@@ -208,6 +240,10 @@ hash = "{summary_hash}"
         "Transaction",
         "upstream_kobo::main",
         "producer-summary",
+        "graph_fingerprint",
+        "node_count",
+        "edge_count",
+        "producer-summary-solver-metadata",
     ] {
         assert_contains(
             &check.stdout,

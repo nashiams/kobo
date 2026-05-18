@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,6 +23,8 @@ struct RegistryDraft {
     public_functions: Vec<String>,
     registry: String,
 }
+
+type ImportMap = HashMap<String, Vec<String>>;
 
 pub(super) fn cmd_bindgen(options: BindgenOptions<'_>) -> anyhow::Result<()> {
     match (options.path, options.crate_name) {
@@ -95,6 +97,12 @@ fn cmd_bindgen_path(path: &Path, features: Option<&str>) -> anyhow::Result<()> {
         if !ty.generics.is_empty() {
             declaration.push_str(&format!("generics = [{}]\n", quoted_list(&ty.generics)));
         }
+        if !ty.generic_bounds.is_empty() {
+            declaration.push_str(&format!(
+                "generic_bounds = [{}]\n",
+                quoted_list(&ty.generic_bounds)
+            ));
+        }
         if !ty.variants.is_empty() {
             declaration.push_str(&format!("variants = [{}]\n", quoted_list(&ty.variants)));
         }
@@ -102,6 +110,18 @@ fn cmd_bindgen_path(path: &Path, features: Option<&str>) -> anyhow::Result<()> {
             declaration.push_str(&format!(
                 "trait_methods = [{}]\n",
                 quoted_list(&ty.trait_methods)
+            ));
+        }
+        if !ty.trait_associated_types.is_empty() {
+            declaration.push_str(&format!(
+                "trait_associated_types = [{}]\n",
+                quoted_list(&ty.trait_associated_types)
+            ));
+        }
+        if !ty.trait_associated_consts.is_empty() {
+            declaration.push_str(&format!(
+                "trait_associated_consts = [{}]\n",
+                quoted_list(&ty.trait_associated_consts)
             ));
         }
         if let Some(alias_target) = ty.alias_target.as_deref() {
@@ -132,13 +152,39 @@ fn cmd_bindgen_path(path: &Path, features: Option<&str>) -> anyhow::Result<()> {
                 metadata.crate_name
             ));
         }
+        if !function.generics.is_empty() {
+            declaration.push_str(&format!(
+                "generics = [{}]\n",
+                quoted_list(&function.generics)
+            ));
+        }
+        if !function.generic_bounds.is_empty() {
+            declaration.push_str(&format!(
+                "generic_bounds = [{}]\n",
+                quoted_list(&function.generic_bounds)
+            ));
+        }
+        if !function.parameters.is_empty() {
+            declaration.push_str(&format!(
+                "parameters = [{}]\n",
+                quoted_list(&function.parameters)
+            ));
+        }
+        if let Some(return_type_signature) = function.return_type_signature.as_deref() {
+            declaration.push_str(&format!(
+                "return_type_signature = \"{return_type_signature}\"\n"
+            ));
+        }
         if let Some(receiver) = function.method_receiver.as_deref() {
             declaration.push_str(&format!(
                 "method_receiver = \"{}::{receiver}\"\n",
                 metadata.crate_name
             ));
         }
-        if function_needs_review(&function.path) {
+        declaration.push_str(&format!("effects = [{}]\n", quoted_list(&function.effects)));
+        declaration.push_str(&format!("determinism = \"{}\"\n", function.determinism));
+        declaration.push_str(&format!("replay_policy = \"{}\"\n", function.replay_policy));
+        if function.replay_policy != "typed-draft" || function_needs_review(&function.path) {
             declaration.push_str(&format!(
                 "review_question = \"confirm effects and replay policy for {}::{}\"\n",
                 metadata.crate_name, function.path
@@ -214,7 +260,7 @@ fn cmd_bindgen_registry(crate_name: &str, features: Option<&str>) -> anyhow::Res
         registry: entry.registry,
     };
     eprintln!(
-        "warning[K0127]: bindgen produced a source-backed declaration draft for `{crate_name}`; review effects before exact replay"
+        "warning[K0127]: bindgen produced a registry seed declaration draft for `{crate_name}`; run --path for source-backed API extraction before exact replay"
     );
     print!("{}", registry_declaration(&draft));
     Ok(())
@@ -302,6 +348,9 @@ fn registry_declaration(draft: &RegistryDraft) -> String {
             "path = \"{}::{}\"\n",
             draft.crate_name, public_function
         ));
+        declaration.push_str("effects = []\n");
+        declaration.push_str("determinism = \"unknown\"\n");
+        declaration.push_str("replay_policy = \"review-required\"\n");
         declaration.push_str(&format!(
             "review_question = \"confirm effects and replay policy for {}::{}\"\n",
             draft.crate_name, public_function
@@ -777,8 +826,11 @@ struct PublicType {
     path: String,
     kind: PublicTypeKind,
     generics: Vec<String>,
+    generic_bounds: Vec<String>,
     variants: Vec<String>,
     trait_methods: Vec<String>,
+    trait_associated_types: Vec<String>,
+    trait_associated_consts: Vec<String>,
     alias_target: Option<String>,
 }
 
@@ -803,7 +855,14 @@ impl PublicTypeKind {
 struct PublicFunction {
     path: String,
     return_type: Option<String>,
+    return_type_signature: Option<String>,
     method_receiver: Option<String>,
+    generics: Vec<String>,
+    generic_bounds: Vec<String>,
+    parameters: Vec<String>,
+    effects: Vec<String>,
+    determinism: &'static str,
+    replay_policy: &'static str,
 }
 
 struct PublicReexport {
@@ -853,6 +912,7 @@ impl PublicApi {
         items: &[syn::Item],
         cfg: &CfgEvaluation,
     ) {
+        let imports = collect_scope_imports(items, cfg);
         for item in items {
             match item_cfg_state(item, cfg) {
                 CfgState::Enabled => {}
@@ -884,8 +944,11 @@ impl PublicApi {
                         path: join_path(module_path, &item.ident.to_string()),
                         kind: PublicTypeKind::Struct,
                         generics: generic_params(&item.generics),
+                        generic_bounds: generic_bounds(&item.generics),
                         variants: Vec::new(),
                         trait_methods: Vec::new(),
+                        trait_associated_types: Vec::new(),
+                        trait_associated_consts: Vec::new(),
                         alias_target: None,
                     });
                 }
@@ -894,12 +957,15 @@ impl PublicApi {
                         path: join_path(module_path, &item.ident.to_string()),
                         kind: PublicTypeKind::Enum,
                         generics: generic_params(&item.generics),
+                        generic_bounds: generic_bounds(&item.generics),
                         variants: item
                             .variants
                             .iter()
                             .map(|variant| variant.ident.to_string())
                             .collect(),
                         trait_methods: Vec::new(),
+                        trait_associated_types: Vec::new(),
+                        trait_associated_consts: Vec::new(),
                         alias_target: None,
                     });
                 }
@@ -908,6 +974,7 @@ impl PublicApi {
                         path: join_path(module_path, &item.ident.to_string()),
                         kind: PublicTypeKind::Trait,
                         generics: generic_params(&item.generics),
+                        generic_bounds: generic_bounds(&item.generics),
                         variants: Vec::new(),
                         trait_methods: item
                             .items
@@ -919,6 +986,8 @@ impl PublicApi {
                                 Some(function.sig.ident.to_string())
                             })
                             .collect(),
+                        trait_associated_types: trait_associated_types(item),
+                        trait_associated_consts: trait_associated_consts(item),
                         alias_target: None,
                     });
                 }
@@ -927,18 +996,24 @@ impl PublicApi {
                         path: join_path(module_path, &item.ident.to_string()),
                         kind: PublicTypeKind::TypeAlias,
                         generics: generic_params(&item.generics),
+                        generic_bounds: generic_bounds(&item.generics),
                         variants: Vec::new(),
                         trait_methods: Vec::new(),
+                        trait_associated_types: Vec::new(),
+                        trait_associated_consts: Vec::new(),
                         alias_target: Some(item.ty.to_token_stream().to_string()),
                     });
                 }
                 syn::Item::Fn(item) if is_public_module && is_public(&item.vis) => {
-                    self.functions.push(PublicFunction {
-                        path: join_path(module_path, &item.sig.ident.to_string()),
-                        return_type: return_type_ident(&item.sig.output)
-                            .map(|name| join_path(module_path, &name)),
-                        method_receiver: None,
-                    });
+                    let path = join_path(module_path, &item.sig.ident.to_string());
+                    self.functions.push(public_function(
+                        path,
+                        &item.sig,
+                        Some(&item.block),
+                        None,
+                        module_path,
+                        &imports,
+                    ));
                 }
                 syn::Item::Use(item) if is_public_module && is_public(&item.vis) => {
                     collect_reexport_paths(&item.tree, module_path, &mut self.reexports);
@@ -959,12 +1034,14 @@ impl PublicApi {
                                 return None;
                             }
                             let method_name = method.sig.ident.to_string();
-                            self.functions.push(PublicFunction {
-                                path: format!("{type_path}::{method_name}"),
-                                return_type: return_type_ident(&method.sig.output)
-                                    .map(|name| join_path(module_path, &name)),
-                                method_receiver: Some(type_path.clone()),
-                            });
+                            self.functions.push(public_function(
+                                format!("{type_path}::{method_name}"),
+                                &method.sig,
+                                Some(&method.block),
+                                Some(type_path.clone()),
+                                module_path,
+                                &imports,
+                            ));
                             Some(method_name)
                         })
                         .collect::<Vec<_>>();
@@ -1120,6 +1197,481 @@ fn generic_params(generics: &syn::Generics) -> Vec<String> {
             syn::GenericParam::Const(param) => param.ident.to_string(),
         })
         .collect()
+}
+
+fn generic_bounds(generics: &syn::Generics) -> Vec<String> {
+    let mut bounds = generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            syn::GenericParam::Type(param) if !param.bounds.is_empty() => {
+                let ident = param.ident.to_string();
+                let bounds = param.bounds.to_token_stream().to_string();
+                Some(format!("{ident}: {bounds}"))
+            }
+            syn::GenericParam::Lifetime(param) if !param.bounds.is_empty() => {
+                let lifetime = param.lifetime.to_token_stream().to_string();
+                let bounds = param.bounds.to_token_stream().to_string();
+                Some(format!("{lifetime}: {bounds}"))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(where_clause) = generics.where_clause.as_ref() {
+        bounds.extend(
+            where_clause
+                .predicates
+                .iter()
+                .map(|predicate| predicate.to_token_stream().to_string()),
+        );
+    }
+    bounds
+}
+
+fn trait_associated_types(item: &syn::ItemTrait) -> Vec<String> {
+    item.items
+        .iter()
+        .filter_map(|trait_item| {
+            let syn::TraitItem::Type(associated_type) = trait_item else {
+                return None;
+            };
+            Some(associated_type.ident.to_string())
+        })
+        .collect()
+}
+
+fn trait_associated_consts(item: &syn::ItemTrait) -> Vec<String> {
+    item.items
+        .iter()
+        .filter_map(|trait_item| {
+            let syn::TraitItem::Const(associated_const) = trait_item else {
+                return None;
+            };
+            Some(associated_const.ident.to_string())
+        })
+        .collect()
+}
+
+fn public_function(
+    path: String,
+    signature: &syn::Signature,
+    body: Option<&syn::Block>,
+    method_receiver: Option<String>,
+    module_path: &[String],
+    imports: &ImportMap,
+) -> PublicFunction {
+    let effects = function_effects(signature, body, imports);
+    let determinism = determinism_for_effects(&effects);
+    let replay_policy = replay_policy_for_function(&path, &effects);
+    PublicFunction {
+        path,
+        return_type: return_type_ident(&signature.output).map(|name| join_path(module_path, &name)),
+        return_type_signature: return_type_signature(&signature.output),
+        method_receiver,
+        generics: generic_params(&signature.generics),
+        generic_bounds: generic_bounds(&signature.generics),
+        parameters: signature_parameters(signature),
+        effects,
+        determinism,
+        replay_policy,
+    }
+}
+
+fn signature_parameters(signature: &syn::Signature) -> Vec<String> {
+    signature
+        .inputs
+        .iter()
+        .filter_map(|input| {
+            let syn::FnArg::Typed(parameter) = input else {
+                return None;
+            };
+            let name = parameter.pat.to_token_stream().to_string();
+            let ty = parameter.ty.to_token_stream().to_string();
+            Some(format!("{name}: {ty}"))
+        })
+        .collect()
+}
+
+fn return_type_signature(output: &syn::ReturnType) -> Option<String> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return None;
+    };
+    Some(ty.to_token_stream().to_string())
+}
+
+fn function_effects(
+    signature: &syn::Signature,
+    body: Option<&syn::Block>,
+    imports: &ImportMap,
+) -> Vec<String> {
+    let mut material = signature.to_token_stream().to_string();
+    if let Some(body) = body {
+        material.push(' ');
+        material.push_str(&body.to_token_stream().to_string());
+    }
+    let mut effects = Vec::new();
+    push_effect_if(
+        &mut effects,
+        &material,
+        "environment",
+        &["std :: env", ":: env ::"],
+    );
+    push_effect_if(
+        &mut effects,
+        &material,
+        "filesystem",
+        &["std :: fs", "tokio :: fs"],
+    );
+    push_effect_if(&mut effects, &material, "process", &["std :: process"]);
+    push_effect_if(
+        &mut effects,
+        &material,
+        "network",
+        &["reqwest", "hyper", "TcpStream", "UdpSocket", "http ::"],
+    );
+    push_effect_if(&mut effects, &material, "random", &["rand ::"]);
+    push_effect_if(
+        &mut effects,
+        &material,
+        "wall-clock",
+        &["SystemTime", "Instant :: now"],
+    );
+    push_effect_if(&mut effects, &material, "task-spawn", &["spawn"]);
+    push_effect_if(&mut effects, &material, "unsafe-ffi", &["unsafe", "extern"]);
+    if let Some(body) = body {
+        collect_block_effects(body, imports, &mut effects);
+    }
+    effects.sort();
+    effects.dedup();
+    effects
+}
+
+fn collect_scope_imports(items: &[syn::Item], cfg: &CfgEvaluation) -> ImportMap {
+    let mut imports = HashMap::new();
+    for item in items {
+        if matches!(item_cfg_state(item, cfg), CfgState::Disabled) {
+            continue;
+        }
+        let syn::Item::Use(item_use) = item else {
+            continue;
+        };
+        collect_use_aliases(&item_use.tree, Vec::new(), &mut imports);
+    }
+    imports
+}
+
+fn collect_block_effects(block: &syn::Block, imports: &ImportMap, effects: &mut Vec<String>) {
+    let mut scoped_imports = imports.clone();
+    for statement in &block.stmts {
+        match statement {
+            syn::Stmt::Item(syn::Item::Use(item_use)) => {
+                collect_use_aliases(&item_use.tree, Vec::new(), &mut scoped_imports);
+            }
+            syn::Stmt::Item(item) => collect_item_effects(item, &scoped_imports, effects),
+            syn::Stmt::Local(local) => {
+                if let Some(init) = &local.init {
+                    collect_expr_effects(init.expr.as_ref(), &scoped_imports, effects);
+                }
+            }
+            syn::Stmt::Expr(expr, _) => collect_expr_effects(expr, &scoped_imports, effects),
+            syn::Stmt::Macro(statement_macro) => {
+                let material = statement_macro.mac.to_token_stream().to_string();
+                push_effect_if(effects, &material, "task-spawn", &["spawn"]);
+                push_effect_if(effects, &material, "unsafe-ffi", &["unsafe", "extern"]);
+            }
+        }
+    }
+}
+
+fn collect_item_effects(item: &syn::Item, imports: &ImportMap, effects: &mut Vec<String>) {
+    match item {
+        syn::Item::Fn(item_fn) => collect_block_effects(&item_fn.block, imports, effects),
+        syn::Item::Mod(item_mod) => {
+            if let Some((_, items)) = &item_mod.content {
+                let module_imports =
+                    collect_scope_imports(items, &CfgEvaluation::from_features(&[]));
+                for item in items {
+                    collect_item_effects(item, &module_imports, effects);
+                }
+            }
+        }
+        syn::Item::Impl(item_impl) => {
+            for item in &item_impl.items {
+                if let syn::ImplItem::Fn(method) = item {
+                    collect_block_effects(&method.block, imports, effects);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_expr_effects(expr: &syn::Expr, imports: &ImportMap, effects: &mut Vec<String>) {
+    match expr {
+        syn::Expr::Array(expr) => {
+            for element in &expr.elems {
+                collect_expr_effects(element, imports, effects);
+            }
+        }
+        syn::Expr::Assign(expr) => {
+            collect_expr_effects(expr.left.as_ref(), imports, effects);
+            collect_expr_effects(expr.right.as_ref(), imports, effects);
+        }
+        syn::Expr::Async(expr) => collect_block_effects(&expr.block, imports, effects),
+        syn::Expr::Await(expr) => collect_expr_effects(expr.base.as_ref(), imports, effects),
+        syn::Expr::Binary(expr) => {
+            collect_expr_effects(expr.left.as_ref(), imports, effects);
+            collect_expr_effects(expr.right.as_ref(), imports, effects);
+        }
+        syn::Expr::Block(expr) => collect_block_effects(&expr.block, imports, effects),
+        syn::Expr::Break(expr) => {
+            if let Some(value) = expr.expr.as_ref() {
+                collect_expr_effects(value.as_ref(), imports, effects);
+            }
+        }
+        syn::Expr::Call(expr) => {
+            if let syn::Expr::Path(path) = expr.func.as_ref() {
+                push_effects_for_path(&path.path, imports, effects);
+            } else {
+                collect_expr_effects(expr.func.as_ref(), imports, effects);
+            }
+            for argument in &expr.args {
+                collect_expr_effects(argument, imports, effects);
+            }
+        }
+        syn::Expr::Cast(expr) => collect_expr_effects(expr.expr.as_ref(), imports, effects),
+        syn::Expr::Closure(expr) => collect_expr_effects(expr.body.as_ref(), imports, effects),
+        syn::Expr::Field(expr) => collect_expr_effects(expr.base.as_ref(), imports, effects),
+        syn::Expr::ForLoop(expr) => {
+            collect_expr_effects(expr.expr.as_ref(), imports, effects);
+            collect_block_effects(&expr.body, imports, effects);
+        }
+        syn::Expr::Group(expr) => collect_expr_effects(expr.expr.as_ref(), imports, effects),
+        syn::Expr::If(expr) => {
+            collect_expr_effects(expr.cond.as_ref(), imports, effects);
+            collect_block_effects(&expr.then_branch, imports, effects);
+            if let Some((_, else_branch)) = expr.else_branch.as_ref() {
+                collect_expr_effects(else_branch.as_ref(), imports, effects);
+            }
+        }
+        syn::Expr::Index(expr) => {
+            collect_expr_effects(expr.expr.as_ref(), imports, effects);
+            collect_expr_effects(expr.index.as_ref(), imports, effects);
+        }
+        syn::Expr::Let(expr) => collect_expr_effects(expr.expr.as_ref(), imports, effects),
+        syn::Expr::Loop(expr) => collect_block_effects(&expr.body, imports, effects),
+        syn::Expr::Macro(expr) => {
+            let material = expr.mac.to_token_stream().to_string();
+            push_effect_if(effects, &material, "task-spawn", &["spawn"]);
+            push_effect_if(effects, &material, "unsafe-ffi", &["unsafe", "extern"]);
+        }
+        syn::Expr::Match(expr) => {
+            collect_expr_effects(expr.expr.as_ref(), imports, effects);
+            for arm in &expr.arms {
+                collect_expr_effects(arm.body.as_ref(), imports, effects);
+            }
+        }
+        syn::Expr::MethodCall(expr) => {
+            collect_expr_effects(expr.receiver.as_ref(), imports, effects);
+            for argument in &expr.args {
+                collect_expr_effects(argument, imports, effects);
+            }
+            if expr.method == "spawn" {
+                effects.push("task-spawn".to_owned());
+            }
+        }
+        syn::Expr::Paren(expr) => collect_expr_effects(expr.expr.as_ref(), imports, effects),
+        syn::Expr::Path(expr) => push_effects_for_path(&expr.path, imports, effects),
+        syn::Expr::Range(expr) => {
+            if let Some(start) = expr.start.as_ref() {
+                collect_expr_effects(start.as_ref(), imports, effects);
+            }
+            if let Some(end) = expr.end.as_ref() {
+                collect_expr_effects(end.as_ref(), imports, effects);
+            }
+        }
+        syn::Expr::Reference(expr) => collect_expr_effects(expr.expr.as_ref(), imports, effects),
+        syn::Expr::Repeat(expr) => {
+            collect_expr_effects(expr.expr.as_ref(), imports, effects);
+            collect_expr_effects(expr.len.as_ref(), imports, effects);
+        }
+        syn::Expr::Return(expr) => {
+            if let Some(value) = expr.expr.as_ref() {
+                collect_expr_effects(value.as_ref(), imports, effects);
+            }
+        }
+        syn::Expr::Struct(expr) => {
+            push_effects_for_path(&expr.path, imports, effects);
+            for field in &expr.fields {
+                collect_expr_effects(&field.expr, imports, effects);
+            }
+            if let Some(rest) = expr.rest.as_ref() {
+                collect_expr_effects(rest.as_ref(), imports, effects);
+            }
+        }
+        syn::Expr::Try(expr) => collect_expr_effects(expr.expr.as_ref(), imports, effects),
+        syn::Expr::TryBlock(expr) => collect_block_effects(&expr.block, imports, effects),
+        syn::Expr::Tuple(expr) => {
+            for element in &expr.elems {
+                collect_expr_effects(element, imports, effects);
+            }
+        }
+        syn::Expr::Unary(expr) => collect_expr_effects(expr.expr.as_ref(), imports, effects),
+        syn::Expr::Unsafe(expr) => {
+            effects.push("unsafe-ffi".to_owned());
+            collect_block_effects(&expr.block, imports, effects);
+        }
+        syn::Expr::While(expr) => {
+            collect_expr_effects(expr.cond.as_ref(), imports, effects);
+            collect_block_effects(&expr.body, imports, effects);
+        }
+        syn::Expr::Yield(expr) => {
+            if let Some(value) = expr.expr.as_ref() {
+                collect_expr_effects(value.as_ref(), imports, effects);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_use_aliases(tree: &syn::UseTree, prefix: Vec<String>, imports: &mut ImportMap) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            collect_use_aliases(&path.tree, next, imports);
+        }
+        syn::UseTree::Name(name) => {
+            let mut full_path = prefix;
+            full_path.push(name.ident.to_string());
+            imports.insert(name.ident.to_string(), full_path);
+        }
+        syn::UseTree::Rename(rename) => {
+            let mut full_path = prefix;
+            full_path.push(rename.ident.to_string());
+            imports.insert(rename.rename.to_string(), full_path);
+        }
+        syn::UseTree::Group(group) => {
+            for tree in &group.items {
+                collect_use_aliases(tree, prefix.clone(), imports);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
+}
+
+fn push_effects_for_path(path: &syn::Path, imports: &ImportMap, effects: &mut Vec<String>) {
+    let resolved = resolved_path_segments(path, imports);
+    if path_starts_with(&resolved, &["std", "env"]) {
+        effects.push("environment".to_owned());
+    }
+    if path_starts_with(&resolved, &["std", "fs"]) || path_starts_with(&resolved, &["tokio", "fs"])
+    {
+        effects.push("filesystem".to_owned());
+    }
+    if path_starts_with(&resolved, &["std", "process"]) {
+        effects.push("process".to_owned());
+    }
+    if path_starts_with(&resolved, &["reqwest"])
+        || path_starts_with(&resolved, &["hyper"])
+        || path_starts_with(&resolved, &["http"])
+        || path_ends_with_segments(&resolved, &["TcpStream"])
+        || path_ends_with_segments(&resolved, &["UdpSocket"])
+    {
+        effects.push("network".to_owned());
+    }
+    if path_starts_with(&resolved, &["rand"]) || path_ends_with_segments(&resolved, &["thread_rng"])
+    {
+        effects.push("random".to_owned());
+    }
+    if path_ends_with_segments(&resolved, &["SystemTime", "now"])
+        || path_ends_with_segments(&resolved, &["Instant", "now"])
+    {
+        effects.push("wall-clock".to_owned());
+    }
+    if path_ends_with_segments(&resolved, &["spawn"]) {
+        effects.push("task-spawn".to_owned());
+    }
+}
+
+fn resolved_path_segments(path: &syn::Path, imports: &ImportMap) -> Vec<String> {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    let Some(first) = segments.first().cloned() else {
+        return segments;
+    };
+    if let Some(imported_path) = imports.get(&first) {
+        let mut resolved = imported_path.clone();
+        resolved.extend(segments.into_iter().skip(1));
+        return resolved;
+    }
+    segments
+}
+
+fn path_starts_with(path: &[String], prefix: &[&str]) -> bool {
+    path.len() >= prefix.len()
+        && path
+            .iter()
+            .zip(prefix.iter())
+            .all(|(segment, expected)| segment == expected)
+}
+
+fn path_ends_with_segments(path: &[String], suffix: &[&str]) -> bool {
+    path.len() >= suffix.len()
+        && path[path.len() - suffix.len()..]
+            .iter()
+            .zip(suffix.iter())
+            .all(|(segment, expected)| segment == expected)
+}
+
+fn push_effect_if(effects: &mut Vec<String>, material: &str, effect: &str, needles: &[&str]) {
+    if needles.iter().any(|needle| material.contains(needle)) {
+        effects.push(effect.to_owned());
+    }
+}
+
+fn determinism_for_effects(effects: &[String]) -> &'static str {
+    if effects.is_empty() {
+        return "deterministic";
+    }
+    if effects.iter().any(|effect| effect == "random") {
+        return "nondeterministic";
+    }
+    if effects.iter().any(|effect| effect == "wall-clock") {
+        return "time-dependent";
+    }
+    if effects.iter().any(|effect| effect == "environment") {
+        return "environment-dependent";
+    }
+    if effects.iter().any(|effect| effect == "filesystem") {
+        return "filesystem-dependent";
+    }
+    if effects.iter().any(|effect| effect == "process") {
+        return "process-dependent";
+    }
+    if effects.iter().any(|effect| effect == "network") {
+        return "external-io-dependent";
+    }
+    if effects.iter().any(|effect| effect == "task-spawn") {
+        return "scheduler-dependent";
+    }
+    if effects.iter().any(|effect| effect == "unsafe-ffi") {
+        return "external-ffi-dependent";
+    }
+    "effect-dependent"
+}
+
+fn replay_policy_for_function(path: &str, effects: &[String]) -> &'static str {
+    if effects.iter().any(|effect| effect == "network") {
+        return "record-or-adapter-required";
+    }
+    if !effects.is_empty() || function_needs_review(path) {
+        return "review-required";
+    }
+    "typed-draft"
 }
 
 fn join_path(module_path: &[String], leaf: &str) -> String {

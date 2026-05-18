@@ -63,6 +63,7 @@ impl NetworkModel {
                                 kind: "network-delivery-failed".to_owned(),
                                 label: Some("ward.network".to_owned()),
                                 value: None,
+                                io: None,
                             }],
                         }),
                     };
@@ -83,6 +84,7 @@ pub(crate) fn events_for_action(action: &str, seed: u64) -> Vec<ScenarioEvent> {
         kind: format!("network-{}", normalize_event_part(action)),
         label: Some("ward.network".to_owned()),
         value: Some(seed),
+        io: None,
     }]
 }
 
@@ -103,6 +105,7 @@ fn state_event(kind: &str, state: &str, seed: u64) -> ScenarioEvent {
         kind: kind.to_owned(),
         label: Some(format!("ward.network:{state}")),
         value: Some(seed),
+        io: None,
     }
 }
 

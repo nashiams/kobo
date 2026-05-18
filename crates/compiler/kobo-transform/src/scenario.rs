@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
-    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
-    ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioModeledBoundary, ScenarioOp,
-    ScenarioOpKind, ScenarioProgram,
+    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryCallArgument,
+    ScenarioBoundaryPolicy, ScenarioCallGraphScc, ScenarioCoverageFacts, ScenarioExternalCallShape,
+    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
+use quote::ToTokens;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -17,6 +18,7 @@ use syn::{
 
 type BindingMap = HashMap<String, String>;
 type BoolMap = HashMap<String, bool>;
+type ExternalBindingMap = HashMap<String, ExternalBoundaryValue>;
 type ImportMap = HashMap<String, Vec<String>>;
 type BoundaryPolicyMap = HashMap<String, BoundaryPolicyFact>;
 type FunctionMap<'a> = HashMap<String, &'a ItemFn>;
@@ -26,6 +28,14 @@ type FunctionSccMap = HashMap<String, usize>;
 struct BindingEnv {
     bindings: BindingMap,
     bools: BoolMap,
+    external_values: ExternalBindingMap,
+    imports: ImportMap,
+}
+
+#[derive(Clone, Debug)]
+struct ExternalBoundaryValue {
+    crate_name: String,
+    type_path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -132,7 +142,7 @@ fn lower_function(
         },
         active_functions: Vec::new(),
     };
-    let mut env = BindingEnv::default();
+    let mut env = BindingEnv::with_imports(imports.clone());
     lowerer.execute_function(&function.sig.ident.to_string(), function, &mut env);
     lowerer.operations.push(ScenarioOp {
         span: KoboSpan::generated(ast.file_id),
@@ -428,6 +438,13 @@ fn collect_call_graph_edges(functions: &FunctionMap<'_>) -> HashMap<String, Vec<
 }
 
 impl BindingEnv {
+    fn with_imports(imports: ImportMap) -> Self {
+        Self {
+            imports,
+            ..Self::default()
+        }
+    }
+
     fn bind(&mut self, local: String, obligation_key: String) {
         self.bindings.insert(local, obligation_key);
     }
@@ -436,12 +453,24 @@ impl BindingEnv {
         self.bools.insert(local, value);
     }
 
+    fn bind_external(&mut self, local: String, value: ExternalBoundaryValue) {
+        self.external_values.insert(local, value);
+    }
+
     fn resolve(&self, local: &str) -> Option<String> {
         self.bindings.get(local).cloned()
     }
 
     fn resolve_bool(&self, local: &str) -> Option<bool> {
         self.bools.get(local).copied()
+    }
+
+    fn resolve_external(&self, local: &str) -> Option<&ExternalBoundaryValue> {
+        self.external_values.get(local)
+    }
+
+    fn bind_imports_from_use(&mut self, item_use: &ItemUse) {
+        collect_use_tree_aliases(&item_use.tree, Vec::new(), &mut self.imports);
     }
 }
 
@@ -487,9 +516,15 @@ impl<'a> ScenarioLowerer<'a> {
     }
 
     fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) {
+        let saved_imports = env.imports.clone();
         for statement in &block.stmts {
+            if let Stmt::Item(Item::Use(item_use)) = statement {
+                env.bind_imports_from_use(item_use);
+                continue;
+            }
             self.execute_statement(statement, env);
         }
+        env.imports = saved_imports;
     }
 
     fn execute_statement(&mut self, statement: &'a Stmt, env: &mut BindingEnv) {
@@ -548,6 +583,12 @@ impl<'a> ScenarioLowerer<'a> {
         {
             env.bind_bool(binding, value);
             return;
+        }
+        if let Some(binding) = pat_ident(&local.pat) {
+            if let Some(value) = self.record_external_boundary_expr(init.expr.as_ref(), env) {
+                env.bind_external(binding, value);
+                return;
+            }
         }
         self.execute_expr(init.expr.as_ref(), env);
     }
@@ -706,87 +747,213 @@ impl<'a> ScenarioLowerer<'a> {
                 return true;
             }
         }
-        if path_ends_with(&path.path, &["SystemTime", "now"]) {
+        let resolved_path = self.resolved_path_segments(&path.path, env);
+        if path_ends_with_segments(&resolved_path, &["SystemTime", "now"]) {
             self.raw_nondeterminism("SystemTime::now", call);
             return true;
         }
-        if path_ends_with(&path.path, &["Instant", "now"]) {
+        if path_ends_with_segments(&resolved_path, &["Instant", "now"]) {
             self.raw_nondeterminism("Instant::now", call);
             return true;
         }
-        if path_ends_with(&path.path, &["thread_rng"]) {
+        if path_ends_with_segments(&resolved_path, &["thread_rng"]) {
             self.raw_nondeterminism("thread_rng", call);
             return true;
         }
-        if path_first_ident(&path.path).as_deref() == Some("rand") {
+        if resolved_path
+            .first()
+            .is_some_and(|segment| segment == "rand")
+        {
             self.raw_nondeterminism("rand::", call);
             return true;
         }
-        if path_first_ident(&path.path).as_deref() == Some("std")
-            && path_has_segment(&path.path, "fs")
-        {
+        if path_starts_with(&resolved_path, &["std", "env"]) {
+            self.raw_nondeterminism("std::env", call);
+            return true;
+        }
+        if path_starts_with(&resolved_path, &["std", "process"]) {
+            self.raw_nondeterminism("std::process", call);
+            return true;
+        }
+        if path_ends_with_segments(&resolved_path, &["std", "thread", "sleep"]) {
+            self.raw_nondeterminism("std::thread::sleep", call);
+            return true;
+        }
+        if path_starts_with(&resolved_path, &["std", "fs"]) {
             self.uncontrolled_effect("std::fs", call);
             return true;
         }
-        if path_first_ident(&path.path).as_deref() == Some("std")
-            && path_has_segment(&path.path, "net")
-        {
+        if path_starts_with(&resolved_path, &["std", "net"]) {
             self.uncontrolled_effect("std::net", call);
             return true;
         }
-        if path_ends_with(&path.path, &["Client", "new"]) {
-            let crate_name = self.external_crate_name(&path.path);
-            let policy = self.boundary_policy_for(&crate_name);
-            if !is_replay_owned_policy(&policy.policy) {
-                self.record_opaque_boundary(&crate_name);
-            }
-            self.operations.push(ScenarioOp {
-                span: self.operation_span(call, "Client::new"),
-                kind: ScenarioOpKind::ExternalBoundary {
-                    call_path: Some(self.external_call_path(&path.path, &crate_name)),
-                    call_shape: ScenarioExternalCallShape::AssociatedFunction,
-                    crate_name,
-                    policy: policy.policy,
-                    reason: policy.reason,
-                },
-            });
-            return true;
-        }
-        if let Some(crate_name) = self.imported_external_crate(&path.path) {
-            let policy = self.boundary_policy_for(&crate_name);
-            if !is_replay_owned_policy(&policy.policy) {
-                self.record_opaque_boundary(&crate_name);
-            }
-            self.operations.push(ScenarioOp {
-                span: self.span(call),
-                kind: ScenarioOpKind::ExternalBoundary {
-                    call_path: Some(self.external_call_path(&path.path, &crate_name)),
-                    call_shape: self.external_call_shape(&path.path),
-                    crate_name,
-                    policy: policy.policy,
-                    reason: policy.reason,
-                },
-            });
+        if self.record_external_path_call(path, call, env).is_some() {
             return true;
         }
         false
+    }
+
+    fn record_external_boundary_expr(
+        &mut self,
+        expr: &'a Expr,
+        env: &mut BindingEnv,
+    ) -> Option<ExternalBoundaryValue> {
+        match expr {
+            Expr::Call(call) => {
+                let Expr::Path(path) = call.func.as_ref() else {
+                    return None;
+                };
+                self.record_external_path_call(path, call, env)
+            }
+            Expr::MethodCall(call) => self.record_external_method_call(call, env),
+            Expr::Await(await_expr) => {
+                self.record_external_boundary_expr(await_expr.base.as_ref(), env)
+            }
+            Expr::Paren(paren) => self.record_external_boundary_expr(paren.expr.as_ref(), env),
+            _ => None,
+        }
+    }
+
+    fn record_external_path_call(
+        &mut self,
+        path: &'a ExprPath,
+        call: &'a ExprCall,
+        env: &BindingEnv,
+    ) -> Option<ExternalBoundaryValue> {
+        if path_ends_with(&path.path, &["Client", "new"]) {
+            let crate_name = self.external_crate_name(&path.path, env);
+            let call_path = self.external_call_path(&path.path, &crate_name, env);
+            let return_type = associated_return_type_path(&call_path)
+                .unwrap_or_else(|| format!("{crate_name}::__KoboBoundaryValue"));
+            self.record_external_boundary_operation(
+                call,
+                crate_name.clone(),
+                Some(call_path),
+                boundary_call_arguments(&call.args),
+                Some(return_type.clone()),
+                ScenarioExternalCallShape::AssociatedFunction,
+            );
+            return Some(ExternalBoundaryValue {
+                crate_name,
+                type_path: return_type,
+            });
+        }
+        if let Some(crate_name) = self.imported_external_crate(&path.path, env) {
+            let call_path = self.external_call_path(&path.path, &crate_name, env);
+            let call_shape = self.external_call_shape(&path.path, env);
+            let return_type = match call_shape {
+                ScenarioExternalCallShape::AssociatedFunction => {
+                    associated_return_type_path(&call_path)
+                        .unwrap_or_else(|| format!("{crate_name}::__KoboBoundaryValue"))
+                }
+                ScenarioExternalCallShape::FreeFunction => {
+                    format!("{crate_name}::__KoboBoundaryValue")
+                }
+                ScenarioExternalCallShape::Method => {
+                    format!("{crate_name}::__KoboBoundaryValue")
+                }
+            };
+            self.record_external_boundary_operation(
+                call,
+                crate_name.clone(),
+                Some(call_path),
+                boundary_call_arguments(&call.args),
+                Some(return_type.clone()),
+                call_shape,
+            );
+            return Some(ExternalBoundaryValue {
+                crate_name,
+                type_path: return_type,
+            });
+        }
+        None
+    }
+
+    fn record_external_method_call(
+        &mut self,
+        call: &'a ExprMethodCall,
+        env: &BindingEnv,
+    ) -> Option<ExternalBoundaryValue> {
+        let receiver_name = receiver_ident(call.receiver.as_ref())?;
+        let receiver = env.resolve_external(&receiver_name)?.clone();
+        let call_path = format!("{}::{}", receiver.type_path, call.method);
+        let return_type = external_method_return_type(
+            &receiver.crate_name,
+            &receiver.type_path,
+            &call.method.to_string(),
+        );
+        self.record_external_boundary_operation(
+            call,
+            receiver.crate_name.clone(),
+            Some(call_path),
+            boundary_call_arguments(&call.args),
+            Some(return_type.clone()),
+            ScenarioExternalCallShape::Method,
+        );
+        Some(ExternalBoundaryValue {
+            crate_name: receiver.crate_name,
+            type_path: return_type,
+        })
+    }
+
+    fn record_external_boundary_operation(
+        &mut self,
+        node: &impl Spanned,
+        crate_name: String,
+        call_path: Option<String>,
+        call_arguments: Vec<ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
+        call_shape: ScenarioExternalCallShape,
+    ) {
+        let policy = self.boundary_policy_for(&crate_name);
+        if !is_replay_owned_policy(&policy.policy) {
+            self.record_opaque_boundary(&crate_name);
+        }
+        self.operations.push(ScenarioOp {
+            span: self.span(node),
+            kind: ScenarioOpKind::ExternalBoundary {
+                call_path,
+                call_arguments,
+                return_type,
+                call_shape,
+                crate_name,
+                policy: policy.policy,
+                reason: policy.reason,
+            },
+        });
     }
 
     fn execute_async(&mut self, expr_async: &'a ExprAsync, env: &mut BindingEnv) {
         self.execute_block(&expr_async.block, env);
     }
 
-    fn external_crate_name(&self, path: &Path) -> String {
+    fn external_crate_name(&self, path: &Path, env: &BindingEnv) -> String {
         let Some(first_ident) = path_first_ident(path) else {
             return "external".to_owned();
         };
-        self.imports
-            .get(&first_ident)
+        self.lookup_import(env, &first_ident)
             .and_then(|path| path.first().cloned())
             .unwrap_or(first_ident)
     }
 
-    fn external_call_path(&self, path: &Path, crate_name: &str) -> String {
+    fn resolved_path_segments(&self, path: &Path, env: &BindingEnv) -> Vec<String> {
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        let Some(first) = segments.first().cloned() else {
+            return segments;
+        };
+        if let Some(imported_path) = self.lookup_import(env, &first) {
+            let mut resolved = imported_path.clone();
+            resolved.extend(segments.into_iter().skip(1));
+            return resolved;
+        }
+        segments
+    }
+
+    fn external_call_path(&self, path: &Path, crate_name: &str, env: &BindingEnv) -> String {
         let mut segments = path
             .segments
             .iter()
@@ -796,7 +963,7 @@ impl<'a> ScenarioLowerer<'a> {
             if first == crate_name {
                 return segments.join("::");
             }
-            if let Some(imported_path) = self.imports.get(first) {
+            if let Some(imported_path) = self.lookup_import(env, first) {
                 if imported_path.first().is_some_and(|root| root == crate_name) {
                     let mut resolved = imported_path.clone();
                     resolved.extend(segments.into_iter().skip(1));
@@ -810,7 +977,7 @@ impl<'a> ScenarioLowerer<'a> {
         segments.join("::")
     }
 
-    fn external_call_shape(&self, path: &Path) -> ScenarioExternalCallShape {
+    fn external_call_shape(&self, path: &Path, env: &BindingEnv) -> ScenarioExternalCallShape {
         let segments = path
             .segments
             .iter()
@@ -819,7 +986,7 @@ impl<'a> ScenarioLowerer<'a> {
         let Some(first) = segments.first() else {
             return ScenarioExternalCallShape::FreeFunction;
         };
-        if let Some(imported_path) = self.imports.get(first) {
+        if let Some(imported_path) = self.lookup_import(env, first) {
             if segments.len() == 1 || imported_path_looks_like_module(imported_path) {
                 return ScenarioExternalCallShape::FreeFunction;
             }
@@ -831,15 +998,19 @@ impl<'a> ScenarioLowerer<'a> {
         ScenarioExternalCallShape::AssociatedFunction
     }
 
-    fn imported_external_crate(&self, path: &Path) -> Option<String> {
+    fn imported_external_crate(&self, path: &Path, env: &BindingEnv) -> Option<String> {
         let first_ident = path_first_ident(path)?;
-        let import_path = self.imports.get(&first_ident)?;
+        let import_path = self.lookup_import(env, &first_ident)?;
         let crate_name = import_path.first()?;
         (!matches!(
             crate_name.as_str(),
             "std" | "core" | "alloc" | "crate" | "self" | "super" | "kobo" | "ward"
         ))
         .then(|| crate_name.clone())
+    }
+
+    fn lookup_import<'b>(&'b self, env: &'b BindingEnv, local: &str) -> Option<&'b Vec<String>> {
+        env.imports.get(local).or_else(|| self.imports.get(local))
     }
 
     fn boundary_policy_for(&self, crate_name: &str) -> BoundaryPolicyFact {
@@ -884,7 +1055,7 @@ impl<'a> ScenarioLowerer<'a> {
             return true;
         }
 
-        let mut helper_env = BindingEnv::default();
+        let mut helper_env = BindingEnv::with_imports(self.imports.clone());
         for (input, argument) in function.sig.inputs.iter().zip(call.args.iter()) {
             let Some(parameter) = fn_arg_ident(input) else {
                 continue;
@@ -902,7 +1073,12 @@ impl<'a> ScenarioLowerer<'a> {
                 helper_env.bind(parameter.clone(), argument_binding);
             }
             if let Some(value) = self.eval_bool(argument, env) {
-                helper_env.bind_bool(parameter, value);
+                helper_env.bind_bool(parameter.clone(), value);
+            }
+            if let Some(external_value) =
+                expr_path_ident(argument).and_then(|name| env.resolve_external(&name).cloned())
+            {
+                helper_env.bind_external(parameter, external_value);
             }
         }
 
@@ -939,6 +1115,9 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(call),
                 kind: ScenarioOpKind::ModeledEffect { boundary },
             });
+            return;
+        }
+        if self.record_external_method_call(call, env).is_some() {
             return;
         }
         self.execute_expr(call.receiver.as_ref(), env);
@@ -1155,6 +1334,45 @@ fn function_returns_bool_literal(function: &ItemFn) -> Option<bool> {
         })
 }
 
+fn boundary_call_arguments(
+    arguments: &Punctuated<Expr, syn::token::Comma>,
+) -> Vec<ScenarioBoundaryCallArgument> {
+    arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| ScenarioBoundaryCallArgument {
+            index,
+            source: argument.to_token_stream().to_string(),
+        })
+        .collect()
+}
+
+fn associated_return_type_path(call_path: &str) -> Option<String> {
+    let mut segments = call_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    (segments.len() >= 2).then(|| {
+        let _method = segments.pop();
+        segments.join("::")
+    })
+}
+
+fn external_method_return_type(crate_name: &str, receiver_type: &str, method: &str) -> String {
+    match (crate_name, receiver_type, method) {
+        ("reqwest", "reqwest::Client", "get" | "post" | "put" | "delete" | "patch" | "request") => {
+            "reqwest::RequestBuilder".to_owned()
+        }
+        ("reqwest", "reqwest::RequestBuilder", "send") => "reqwest::Response".to_owned(),
+        ("sqlx", "sqlx::Pool", "begin") => "sqlx::Transaction".to_owned(),
+        ("sqlx", "sqlx::Pool", "acquire") => "sqlx::PoolConnection".to_owned(),
+        ("sqlx", "sqlx::Transaction", "commit" | "rollback") => {
+            "sqlx::__KoboBoundaryValue".to_owned()
+        }
+        _ => format!("{crate_name}::__KoboBoundaryValue"),
+    }
+}
+
 fn modeled_boundary(call: &ExprMethodCall) -> Option<ScenarioModeledBoundary> {
     if receiver_has_ward_member(call.receiver.as_ref(), "time") {
         return Some(ScenarioModeledBoundary::WardTime);
@@ -1330,10 +1548,20 @@ fn path_last_ident(path: &Path) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn path_has_segment(path: &Path, segment: &str) -> bool {
-    path.segments
-        .iter()
-        .any(|path_segment| path_segment.ident == segment)
+fn path_starts_with(path: &[String], prefix: &[&str]) -> bool {
+    path.len() >= prefix.len()
+        && path
+            .iter()
+            .zip(prefix.iter())
+            .all(|(segment, expected)| segment == expected)
+}
+
+fn path_ends_with_segments(path: &[String], suffix: &[&str]) -> bool {
+    path.len() >= suffix.len()
+        && path[path.len() - suffix.len()..]
+            .iter()
+            .zip(suffix.iter())
+            .all(|(segment, expected)| segment == expected)
 }
 
 fn path_ends_with(path: &Path, suffix: &[&str]) -> bool {

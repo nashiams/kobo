@@ -1505,7 +1505,7 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
             "Reduce the scenario, split it into smaller scenarios, or run it under a profile with a larger budget.".to_owned()
         }
         KErrorCode::K0107 => {
-            "Choose typed, model, record, activity, stub, outside, opaque, or debt for this boundary before claiming exact replay.".to_owned()
+            "Choose a typed/model policy, record it, wrap it as an activity, or keep this path partial with outside, opaque, or debt before claiming exact replay.".to_owned()
         }
         KErrorCode::K0116 => {
             "Use a modeled construct, split the scenario, or keep the witness partial until coverage is implemented.".to_owned()

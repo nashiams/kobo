@@ -173,7 +173,7 @@ fn apply_ecosystem_policy(
             if reason.is_none() {
                 *reason = crate_policy.reason.clone();
             }
-        } else {
+        } else if policy.default_is_configured {
             *boundary_policy = policy.default.clone();
         }
     }

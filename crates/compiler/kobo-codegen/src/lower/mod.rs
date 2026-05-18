@@ -42,7 +42,7 @@ pub(crate) fn lower(
     options: &CodegenOptions,
 ) -> LoweredFile {
     let mut file = ast.inner.clone();
-    let service_support_items = service::service_support_items(&file);
+    let service_support_items = service::service_support_items(ast, &file);
     let plan = LoweringPlan::from_kir(ast, kir, solution, kobo_path, options);
     let mut lowerer = Lowerer::new(ast, &plan, kir, options);
     lowerer.lower_items(&mut file.items);

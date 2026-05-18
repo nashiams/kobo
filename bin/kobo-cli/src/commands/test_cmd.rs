@@ -160,6 +160,20 @@ struct StatefulInputOperation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct ServiceRuntimeEvidence {
+    name: String,
+    buffer: usize,
+    source_line: usize,
+    methods: Vec<ServiceRuntimeMethodEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ServiceRuntimeMethodEvidence {
+    name: String,
+    variant: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct FuzzShrinkCandidate {
     removed_tail_operations: usize,
     operation_count: usize,
@@ -673,6 +687,10 @@ fn write_run_witness(
         }),
     );
     object.insert(
+        "service_runtime".to_owned(),
+        service_runtime_json(&document.source),
+    );
+    object.insert(
         "available_boundary_ledger_statuses".to_owned(),
         serde_json::json!([
             "modeled",
@@ -686,6 +704,152 @@ fn write_run_witness(
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
     Ok(witness_path)
+}
+
+fn service_runtime_json(source: &str) -> serde_json::Value {
+    serde_json::json!({
+        "services": service_runtime_services(source)
+            .into_iter()
+            .map(service_runtime_service_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn service_runtime_service_json(service: ServiceRuntimeEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "name": service.name,
+        "buffer": service.buffer,
+        "source_line": service.source_line,
+        "methods": service.methods
+            .into_iter()
+            .map(service_runtime_method_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn service_runtime_method_json(method: ServiceRuntimeMethodEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "name": method.name,
+        "variant": method.variant,
+    })
+}
+
+fn service_runtime_services(source: &str) -> Vec<ServiceRuntimeEvidence> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    let service_lines = service_attr_lines(source);
+    let mut service_index = 0usize;
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Impl(item_impl) = item else {
+                return None;
+            };
+            let evidence = service_runtime_from_impl(item_impl, service_lines.get(service_index));
+            if evidence.is_some() {
+                service_index += 1;
+            }
+            evidence
+        })
+        .collect()
+}
+
+fn service_runtime_from_impl(
+    item_impl: &syn::ItemImpl,
+    source_line: Option<&usize>,
+) -> Option<ServiceRuntimeEvidence> {
+    let attr = item_impl.attrs.iter().find(|attr| is_service_attr(attr))?;
+    let name = service_name_from_self_ty(&item_impl.self_ty)?;
+    let methods = service_runtime_methods(item_impl);
+    if methods.is_empty() {
+        return None;
+    }
+    Some(ServiceRuntimeEvidence {
+        name,
+        buffer: service_buffer_size(attr),
+        source_line: source_line.copied().unwrap_or(0),
+        methods,
+    })
+}
+
+fn service_attr_lines(source: &str) -> Vec<usize> {
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if line.contains("#[kobo::service") {
+                Some(index + 1)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn is_service_attr(attr: &syn::Attribute) -> bool {
+    let segments = attr.path().segments.iter().collect::<Vec<_>>();
+    segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "service"
+}
+
+fn service_name_from_self_ty(self_ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(type_path) = self_ty else {
+        return None;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn service_buffer_size(attr: &syn::Attribute) -> usize {
+    let syn::Meta::List(list) = &attr.meta else {
+        return 64;
+    };
+    let compact = list.tokens.to_string().replace(' ', "");
+    let Some(rest) = compact.strip_prefix("buffer=") else {
+        return 64;
+    };
+    rest.parse::<usize>().unwrap_or(64)
+}
+
+fn service_runtime_methods(item_impl: &syn::ItemImpl) -> Vec<ServiceRuntimeMethodEvidence> {
+    item_impl
+        .items
+        .iter()
+        .filter_map(|item| {
+            let syn::ImplItem::Fn(method) = item else {
+                return None;
+            };
+            if method.sig.asyncness.is_none() {
+                return None;
+            }
+            let name = method.sig.ident.to_string();
+            Some(ServiceRuntimeMethodEvidence {
+                variant: upper_camel_case(&name),
+                name,
+            })
+        })
+        .collect()
+}
+
+fn upper_camel_case(value: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = true;
+    for ch in value.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+            continue;
+        }
+        if capitalize_next {
+            result.extend(ch.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }
 
 fn validate_run_boundary_declarations(

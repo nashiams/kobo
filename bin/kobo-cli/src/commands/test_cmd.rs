@@ -1170,6 +1170,7 @@ fn ecosystem_boundaries_json(
             serde_json::json!({
                 "crate": decision.crate_name,
                 "call_path": decision.call_path,
+                "call_shape": decision.call_shape.as_str(),
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
                 "evidence": evidence,
@@ -1543,6 +1544,7 @@ fn boundary_decisions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "crate": decision.crate_name,
                 "call_path": decision.call_path,
+                "call_shape": decision.call_shape.as_str(),
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
                 "source_span": {

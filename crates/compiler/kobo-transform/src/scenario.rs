@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
     KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
-    ScenarioCoverageFacts, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioModeledBoundary, ScenarioOp,
+    ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
 use syn::punctuated::Punctuated;
@@ -16,7 +17,7 @@ use syn::{
 
 type BindingMap = HashMap<String, String>;
 type BoolMap = HashMap<String, bool>;
-type ImportMap = HashMap<String, String>;
+type ImportMap = HashMap<String, Vec<String>>;
 type BoundaryPolicyMap = HashMap<String, BoundaryPolicyFact>;
 type FunctionMap<'a> = HashMap<String, &'a ItemFn>;
 type FunctionSccMap = HashMap<String, usize>;
@@ -201,31 +202,31 @@ fn collect_use_crate_aliases(file: &File) -> ImportMap {
         let Item::Use(item_use) = item else {
             continue;
         };
-        collect_use_tree_aliases(&item_use.tree, None, &mut imports);
+        collect_use_tree_aliases(&item_use.tree, Vec::new(), &mut imports);
     }
     imports
 }
 
-fn collect_use_tree_aliases(tree: &UseTree, crate_name: Option<String>, imports: &mut ImportMap) {
+fn collect_use_tree_aliases(tree: &UseTree, prefix: Vec<String>, imports: &mut ImportMap) {
     match tree {
         UseTree::Path(path) => {
-            let root = crate_name.unwrap_or_else(|| path.ident.to_string());
-            collect_use_tree_aliases(&path.tree, Some(root), imports);
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            collect_use_tree_aliases(&path.tree, next, imports);
         }
         UseTree::Name(name) => {
-            if let Some(root) = crate_name {
-                imports.insert(name.ident.to_string(), root);
-            }
+            let mut full_path = prefix;
+            full_path.push(name.ident.to_string());
+            imports.insert(name.ident.to_string(), full_path);
         }
         UseTree::Rename(rename) => {
-            imports.insert(
-                rename.rename.to_string(),
-                crate_name.unwrap_or_else(|| rename.ident.to_string()),
-            );
+            let mut full_path = prefix;
+            full_path.push(rename.ident.to_string());
+            imports.insert(rename.rename.to_string(), full_path);
         }
         UseTree::Group(group) => {
             for tree in &group.items {
-                collect_use_tree_aliases(tree, crate_name.clone(), imports);
+                collect_use_tree_aliases(tree, prefix.clone(), imports);
             }
         }
         UseTree::Glob(_) => {}
@@ -743,6 +744,7 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.operation_span(call, "Client::new"),
                 kind: ScenarioOpKind::ExternalBoundary {
                     call_path: Some(self.external_call_path(&path.path, &crate_name)),
+                    call_shape: ScenarioExternalCallShape::AssociatedFunction,
                     crate_name,
                     policy: policy.policy,
                     reason: policy.reason,
@@ -759,6 +761,7 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(call),
                 kind: ScenarioOpKind::ExternalBoundary {
                     call_path: Some(self.external_call_path(&path.path, &crate_name)),
+                    call_shape: self.external_call_shape(&path.path),
                     crate_name,
                     policy: policy.policy,
                     reason: policy.reason,
@@ -779,7 +782,7 @@ impl<'a> ScenarioLowerer<'a> {
         };
         self.imports
             .get(&first_ident)
-            .cloned()
+            .and_then(|path| path.first().cloned())
             .unwrap_or(first_ident)
     }
 
@@ -793,13 +796,12 @@ impl<'a> ScenarioLowerer<'a> {
             if first == crate_name {
                 return segments.join("::");
             }
-            if self
-                .imports
-                .get(first)
-                .is_some_and(|imported_crate| imported_crate == crate_name)
-            {
-                segments.insert(0, crate_name.to_owned());
-                return segments.join("::");
+            if let Some(imported_path) = self.imports.get(first) {
+                if imported_path.first().is_some_and(|root| root == crate_name) {
+                    let mut resolved = imported_path.clone();
+                    resolved.extend(segments.into_iter().skip(1));
+                    return resolved.join("::");
+                }
             }
         }
         if let Some(first) = segments.first_mut() {
@@ -808,9 +810,31 @@ impl<'a> ScenarioLowerer<'a> {
         segments.join("::")
     }
 
+    fn external_call_shape(&self, path: &Path) -> ScenarioExternalCallShape {
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        let Some(first) = segments.first() else {
+            return ScenarioExternalCallShape::FreeFunction;
+        };
+        if let Some(imported_path) = self.imports.get(first) {
+            if segments.len() == 1 || imported_path_looks_like_module(imported_path) {
+                return ScenarioExternalCallShape::FreeFunction;
+            }
+            return ScenarioExternalCallShape::AssociatedFunction;
+        }
+        if segments.len() == 1 {
+            return ScenarioExternalCallShape::FreeFunction;
+        }
+        ScenarioExternalCallShape::AssociatedFunction
+    }
+
     fn imported_external_crate(&self, path: &Path) -> Option<String> {
         let first_ident = path_first_ident(path)?;
-        let crate_name = self.imports.get(&first_ident)?;
+        let import_path = self.imports.get(&first_ident)?;
+        let crate_name = import_path.first()?;
         (!matches!(
             crate_name.as_str(),
             "std" | "core" | "alloc" | "crate" | "self" | "super" | "kobo" | "ward"
@@ -828,14 +852,14 @@ impl<'a> ScenarioLowerer<'a> {
             })
     }
 
-    fn record_opaque_boundary(&mut self, crate_name: &str) {
+    fn record_opaque_boundary(&mut self, boundary: &str) {
         if !self
             .coverage
             .opaque_boundaries
             .iter()
-            .any(|boundary| boundary == crate_name)
+            .any(|existing| existing == boundary)
         {
-            self.coverage.opaque_boundaries.push(crate_name.to_owned());
+            self.coverage.opaque_boundaries.push(boundary.to_owned());
         }
     }
 
@@ -1057,6 +1081,19 @@ fn nearest_occurrence(source: &str, needle: &str, anchor: usize) -> Option<usize
         .match_indices(needle)
         .map(|(index, _)| index)
         .min_by_key(|index| index.abs_diff(anchor))
+}
+
+fn imported_path_looks_like_module(import_path: &[String]) -> bool {
+    import_path
+        .last()
+        .is_some_and(|segment| starts_with_module_identifier(segment))
+}
+
+fn starts_with_module_identifier(segment: &str) -> bool {
+    segment
+        .chars()
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_lowercase())
 }
 
 fn boundaries_from_operations(operations: &[ScenarioOp]) -> Vec<ScenarioBoundary> {

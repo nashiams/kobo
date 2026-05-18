@@ -55,11 +55,29 @@ pub enum ScenarioOpKind {
     ExternalBoundary {
         crate_name: String,
         call_path: Option<String>,
+        call_shape: ScenarioExternalCallShape,
         policy: ScenarioBoundaryPolicy,
         reason: Option<String>,
     },
     Loop,
     Return,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ScenarioExternalCallShape {
+    FreeFunction,
+    AssociatedFunction,
+    Method,
+}
+
+impl ScenarioExternalCallShape {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::FreeFunction => "free_function",
+            Self::AssociatedFunction => "associated_function",
+            Self::Method => "method",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

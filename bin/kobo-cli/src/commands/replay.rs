@@ -431,6 +431,7 @@ fn observed_boundary_matches(witness: &Value, expected_boundary: &Value, policy:
         observed["policy"].as_str() == Some(policy)
             && observed["crate"] == expected_boundary["crate"]
             && observed["call_path"] == expected_boundary["call_path"]
+            && observed["call_shape"] == expected_boundary["call_shape"]
             && observed["source_span"] == expected_boundary["source_span"]
     })
 }
@@ -486,6 +487,7 @@ fn ecosystem_boundaries_json(
                 serde_json::json!({
                     "crate": decision.crate_name,
                     "call_path": decision.call_path,
+                    "call_shape": decision.call_shape.as_str(),
                     "policy": decision.policy.as_str(),
                     "reason": decision.reason,
                     "evidence": evidence,

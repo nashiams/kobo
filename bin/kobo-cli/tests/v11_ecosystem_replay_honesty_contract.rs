@@ -159,6 +159,44 @@ fn exact_witness_supports_imported_free_function_stub_boundary() {
     assert_free_function_boundary_policy("stub", "scenario-stub", "boundary-stub");
 }
 
+#[test]
+fn exact_witness_supports_nested_imported_free_function_record_boundary() {
+    assert_nested_free_function_boundary_policy("record", "recorded-event", "boundary-record");
+}
+
+#[test]
+fn exact_witness_supports_nested_imported_free_function_model_boundary() {
+    assert_nested_free_function_boundary_policy("model", "modeled-facade", "boundary-model");
+}
+
+#[test]
+fn exact_witness_supports_nested_imported_free_function_stub_boundary() {
+    assert_nested_free_function_boundary_policy("stub", "scenario-stub", "boundary-stub");
+}
+
+#[test]
+fn exact_witness_supports_imported_module_free_function_record_boundary() {
+    assert_imported_module_free_function_boundary_policy(
+        "record",
+        "recorded-event",
+        "boundary-record",
+    );
+}
+
+#[test]
+fn exact_witness_supports_imported_module_free_function_model_boundary() {
+    assert_imported_module_free_function_boundary_policy(
+        "model",
+        "modeled-facade",
+        "boundary-model",
+    );
+}
+
+#[test]
+fn exact_witness_supports_imported_module_free_function_stub_boundary() {
+    assert_imported_module_free_function_boundary_policy("stub", "scenario-stub", "boundary-stub");
+}
+
 fn assert_free_function_boundary_policy(policy: &str, evidence: &str, event_kind: &str) {
     let project = TestProject::new(&format!("v11-free-function-{policy}-boundary"));
     let file = project.main_file(&format!(
@@ -197,6 +235,11 @@ fn recorded_gateway() {{
     );
     assert_contains(
         &witness["ecosystem_boundaries"].to_string(),
+        "free_function",
+        "free-function boundary evidence should expose semantic call shape",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
         evidence,
         "free-function boundary evidence should use the policy-specific evidence marker",
     );
@@ -209,6 +252,167 @@ fn recorded_gateway() {{
         &witness["events"].to_string(),
         "payments::charge@",
         "free-function boundary event should be call/span-specific",
+    );
+}
+
+fn assert_nested_free_function_boundary_policy(policy: &str, evidence: &str, event_kind: &str) {
+    let project = TestProject::new(&format!("v11-nested-free-function-{policy}-boundary"));
+    let file = project.main_file(&format!(
+        r#"
+#[kobo::boundary(crate = "payments", policy = "{policy}", reason = "nested free function gateway")]
+use payments::gateway::charge;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {{
+    let _result = charge();
+    ward.task();
+}}
+"#
+    ));
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "nested free-function boundary should compile and replay under --engine both",
+    );
+    let (witness_path, witness) = first_witness(&project);
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "payments::gateway::charge",
+        "nested free-function boundary evidence should retain the full module path",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "free_function",
+        "nested free-function boundary evidence should expose semantic call shape",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        evidence,
+        "nested free-function boundary evidence should use the policy-specific evidence marker",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        event_kind,
+        "generated harness and semantic trace should include the policy-specific boundary event",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        "payments::gateway::charge@",
+        "nested free-function boundary event should be call/span-specific",
+    );
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &replay,
+        "nested free-function exact witness should replay with the same call-shape evidence",
+    );
+}
+
+fn assert_imported_module_free_function_boundary_policy(
+    policy: &str,
+    evidence: &str,
+    event_kind: &str,
+) {
+    let project = TestProject::new(&format!("v11-module-free-function-{policy}-boundary"));
+    let file = project.main_file(&format!(
+        r#"
+#[kobo::boundary(crate = "payments", policy = "{policy}", reason = "imported module free function gateway")]
+use payments::gateway;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {{
+    let _result = gateway::charge();
+    ward.task();
+}}
+"#
+    ));
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "imported-module free-function boundary should compile and replay under --engine both",
+    );
+    let (witness_path, witness) = first_witness(&project);
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "payments::gateway::charge",
+        "imported-module free-function evidence should retain the full module path",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "free_function",
+        "imported-module free-function evidence should expose semantic call shape",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        evidence,
+        "imported-module free-function evidence should use the policy-specific evidence marker",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        event_kind,
+        "generated harness and semantic trace should include the policy-specific boundary event",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        "payments::gateway::charge@",
+        "imported-module free-function boundary event should be call/span-specific",
+    );
+    let harness_path = witness["harness_manifest"]["harness_rs_path"]
+        .as_str()
+        .expect("exact witness should record generated harness path");
+    let harness_source =
+        fs::read_to_string(harness_path).expect("harness source should be readable");
+    assert_contains(
+        &harness_source,
+        "pub mod gateway",
+        "generated harness should model imported module free functions as nested modules",
+    );
+    assert_contains(
+        &harness_source,
+        "pub fn charge()",
+        "generated harness should emit a module-level charge free function",
+    );
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &replay,
+        "imported-module free-function exact witness should replay with the same call-shape evidence",
     );
 }
 

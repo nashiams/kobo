@@ -96,6 +96,8 @@ pub(super) fn boundary_ledger_json(
         .map(|decision| {
             serde_json::json!({
                 "boundary": decision.crate_name,
+                "call_path": decision.call_path,
+                "call_shape": decision.call_shape.as_str(),
                 "status": boundary_status(&decision.policy),
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,

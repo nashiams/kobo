@@ -1,5 +1,5 @@
 use kobo_errors::KErrorCode;
-use kobo_ir::ScenarioProgram;
+use kobo_ir::{ScenarioExternalCallShape, ScenarioProgram};
 
 use crate::error::Result;
 use crate::harness_manifest::HarnessManifest;
@@ -121,6 +121,7 @@ pub struct RuntimeObligationSummary {
 pub struct BoundaryDecision {
     pub crate_name: String,
     pub call_path: Option<String>,
+    pub call_shape: ScenarioExternalCallShape,
     pub policy: BoundaryPolicyChoice,
     pub reason: Option<String>,
     pub span_start: usize,
@@ -234,6 +235,7 @@ pub enum ScenarioOperation {
     ExternalBoundary {
         crate_name: String,
         call_path: Option<String>,
+        call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span_start: usize,
@@ -470,6 +472,7 @@ impl<'a> Runtime<'a> {
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
                     call_path,
+                    call_shape,
                     policy,
                     reason,
                     span_start,
@@ -477,6 +480,7 @@ impl<'a> Runtime<'a> {
                 } => self.record_external_boundary(
                     crate_name.clone(),
                     call_path.clone(),
+                    call_shape.clone(),
                     policy.clone(),
                     reason.clone(),
                     (*span_start, *span_end),
@@ -654,6 +658,7 @@ impl<'a> Runtime<'a> {
         &mut self,
         crate_name: String,
         call_path: Option<String>,
+        call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span: (usize, usize),
@@ -664,12 +669,14 @@ impl<'a> Runtime<'a> {
         if !self.boundary_decisions.iter().any(|decision| {
             decision.crate_name == crate_name
                 && decision.call_path == call_path
+                && decision.call_shape == call_shape
                 && decision.span_start == span.0
                 && decision.span_end == span.1
         }) {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
                 call_path: call_path.clone(),
+                call_shape,
                 policy: policy.clone(),
                 reason: reason.clone(),
                 span_start: span.0,

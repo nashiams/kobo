@@ -78,6 +78,21 @@ pub fn charge_card() {
         "bindgen drafts should be explicitly review-required",
     );
     assert_contains(
+        &output.stdout,
+        "source_hash = ",
+        "bindgen should label package source/API hashes as source_hash",
+    );
+    assert_contains(
+        &output.stdout,
+        "declaration_hash = ",
+        "bindgen should include a self-checkable declaration hash",
+    );
+    assert!(
+        !output.stdout.contains("summary_hash = "),
+        "bindgen should not use .kobo-summary terminology for source/API hashes:\n{}",
+        output.stdout
+    );
+    assert_contains(
         &output.combined(),
         "K0127",
         "bindgen should emit the v0.11 review-required diagnostic",

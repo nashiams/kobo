@@ -6,7 +6,7 @@ use crate::config::KoboConfig;
 use crate::errors::DriverError;
 use crate::session::CompileSession;
 use kobo_ir::MustCallObligation;
-use quote::ToTokens;
+use syn::visit::Visit;
 
 /// Output produced by the multi-file build pipeline.
 pub struct BuildOutput {
@@ -284,7 +284,7 @@ fn summary_obligation_json(
     source: &str,
     config: &KoboConfig,
 ) -> serde_json::Value {
-    let applicable_types = vec![obligation.owner_type.clone()];
+    let applicable_types = vec![qualify_type_path(config, &obligation.owner_type)];
     let applicable_functions = obligation_applicable_functions(source, config, obligation);
     serde_json::json!({
         "type": obligation.owner_type,
@@ -302,6 +302,13 @@ fn summary_obligation_json(
     })
 }
 
+fn qualify_type_path(config: &KoboConfig, type_name: &str) -> String {
+    if type_name.contains("::") {
+        return type_name.to_owned();
+    }
+    format!("{}::{type_name}", package_name(config))
+}
+
 fn obligation_applicable_functions(
     source: &str,
     config: &KoboConfig,
@@ -317,11 +324,65 @@ fn obligation_applicable_functions(
             let syn::Item::Fn(function) = item else {
                 return None;
             };
-            let body = function.block.to_token_stream().to_string();
-            let signature = function.sig.to_token_stream().to_string();
-            (body.contains(&obligation.owner_type) || signature.contains(&obligation.owner_type))
+            function_references_type(function, &obligation.owner_type)
                 .then(|| format!("{package}::{}", function.sig.ident))
         })
+        .collect()
+}
+
+fn function_references_type(function: &syn::ItemFn, type_name: &str) -> bool {
+    let expected = split_path(type_name);
+    if expected.is_empty() {
+        return false;
+    }
+    let mut visitor = TypeReferenceVisitor {
+        expected,
+        found: false,
+    };
+    visitor.visit_signature(&function.sig);
+    visitor.visit_block(&function.block);
+    visitor.found
+}
+
+struct TypeReferenceVisitor {
+    expected: Vec<String>,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for TypeReferenceVisitor {
+    fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
+        self.record_path(&node.path);
+        syn::visit::visit_expr_struct(self, node);
+    }
+
+    fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
+        self.record_path(&node.path);
+        syn::visit::visit_type_path(self, node);
+    }
+}
+
+impl TypeReferenceVisitor {
+    fn record_path(&mut self, path: &syn::Path) {
+        let segments = path_segments(path);
+        if segments == self.expected
+            || (self.expected.len() == 1 && segments.last() == self.expected.first())
+        {
+            self.found = true;
+        }
+    }
+}
+
+fn split_path(path: &str) -> Vec<String> {
+    path.split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn path_segments(path: &syn::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
         .collect()
 }
 

@@ -1166,8 +1166,7 @@ fn ecosystem_boundaries_json(
     run.boundary_decisions
         .iter()
         .map(|decision| {
-            let evidence =
-                boundary_evidence_for_policy(decision.policy.as_str(), &decision.crate_name, run);
+            let evidence = boundary_evidence_for_policy(decision, run);
             serde_json::json!({
                 "crate": decision.crate_name,
                 "call_path": decision.call_path,
@@ -1214,7 +1213,7 @@ fn declaration_metadata_for_boundary(
         "path": path.display().to_string(),
         "version": version,
         "schema_version": schema_version,
-        "hash": declarations::stable_hash(&source),
+        "hash": declarations::declaration_hash(&source),
     }))
 }
 
@@ -1242,7 +1241,7 @@ fn declarations_json(
                 .and_then(|table| table.get("version"))
                 .and_then(toml::Value::as_str)
                 .unwrap_or("unknown");
-            let hash = declarations::stable_hash(&source);
+            let hash = declarations::declaration_hash(&source);
             Some(serde_json::json!({
                 "crate": decision.crate_name,
                 "path": path.display().to_string(),
@@ -1272,21 +1271,23 @@ fn summary_usage_json(config: &kobo_driver::KoboConfig) -> Vec<serde_json::Value
 }
 
 fn boundary_evidence_for_policy(
-    policy: &str,
-    crate_name: &str,
+    decision: &kobo_sim_core::BoundaryDecision,
     run: &FullDepthRun,
 ) -> &'static str {
-    match policy {
+    let expected_label = boundary_event_label(decision);
+    match decision.policy.as_str() {
         "record"
             if run.events.iter().any(|event| {
-                event.kind == "boundary-record" && event.label.as_deref() == Some(crate_name)
+                event.kind == "boundary-record"
+                    && event.label.as_deref() == Some(expected_label.as_str())
             }) =>
         {
             "recorded-event"
         }
         "activity"
             if run.events.iter().any(|event| {
-                event.kind == "boundary-activity" && event.label.as_deref() == Some(crate_name)
+                event.kind == "boundary-activity"
+                    && event.label.as_deref() == Some(expected_label.as_str())
             }) =>
         {
             "activity-result"
@@ -1298,6 +1299,18 @@ fn boundary_evidence_for_policy(
         "opaque" | "debt" => "assumption",
         _ => "unverified",
     }
+}
+
+fn boundary_event_label(decision: &kobo_sim_core::BoundaryDecision) -> String {
+    format!(
+        "{}@{}..{}",
+        decision
+            .call_path
+            .as_deref()
+            .unwrap_or(decision.crate_name.as_str()),
+        decision.span_start,
+        decision.span_end
+    )
 }
 
 fn obligations_json(source_path: &str, source: &str, run: &FullDepthRun) -> Vec<serde_json::Value> {

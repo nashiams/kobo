@@ -85,6 +85,134 @@ fn recorded_gateway() {
 }
 
 #[test]
+fn exact_witness_preserves_repeated_record_calls_from_same_crate() {
+    let project = TestProject::new("v11-repeated-record-boundary-events");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "record gateway construction")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let _first = Client::new();
+    let _second = Client::new();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "exact replay should support multiple recorded calls from the same crate",
+    );
+    let (_, witness) = first_witness(&project);
+    let boundary_events = witness["events"]
+        .as_array()
+        .expect("events should be an array")
+        .iter()
+        .filter(|event| event["kind"].as_str() == Some("boundary-record"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        boundary_events.len(),
+        2,
+        "both same-crate recorded calls should have independent boundary events:\n{}",
+        witness
+    );
+    assert_ne!(
+        boundary_events[0]["label"], boundary_events[1]["label"],
+        "same-crate recorded calls must carry distinct call/span labels:\n{}",
+        witness
+    );
+    assert_eq!(
+        witness["ecosystem_boundaries"]
+            .as_array()
+            .expect("ecosystem boundaries should be an array")
+            .len(),
+        2,
+        "witness should retain both same-crate ecosystem boundary decisions",
+    );
+}
+
+#[test]
+fn exact_witness_supports_imported_free_function_record_boundary() {
+    assert_free_function_boundary_policy("record", "recorded-event", "boundary-record");
+}
+
+#[test]
+fn exact_witness_supports_imported_free_function_model_boundary() {
+    assert_free_function_boundary_policy("model", "modeled-facade", "boundary-model");
+}
+
+#[test]
+fn exact_witness_supports_imported_free_function_stub_boundary() {
+    assert_free_function_boundary_policy("stub", "scenario-stub", "boundary-stub");
+}
+
+fn assert_free_function_boundary_policy(policy: &str, evidence: &str, event_kind: &str) {
+    let project = TestProject::new(&format!("v11-free-function-{policy}-boundary"));
+    let file = project.main_file(&format!(
+        r#"
+#[kobo::boundary(crate = "payments", policy = "{policy}", reason = "free function gateway")]
+use payments::charge;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {{
+    let _result = charge();
+    ward.task();
+}}
+"#
+    ));
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "free-function boundary should compile and replay under --engine both",
+    );
+    let (_, witness) = first_witness(&project);
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        "payments::charge",
+        "free-function boundary evidence should retain the function path",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        evidence,
+        "free-function boundary evidence should use the policy-specific evidence marker",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        event_kind,
+        "generated harness and semantic trace should include the policy-specific boundary event",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        "payments::charge@",
+        "free-function boundary event should be call/span-specific",
+    );
+}
+
+#[test]
 fn mutated_boundary_policy_breaks_exact_replay() {
     let project = TestProject::new("v11-mutated-boundary-policy");
     let file = project.main_file(
@@ -167,7 +295,12 @@ fn recorded_gateway() {
     );
     assert_success(&output, "fixture should create an exact witness");
     let (witness_path, mut witness) = first_witness(&project);
-    witness["ecosystem_boundaries"][0]["evidence"] = serde_json::json!("unverified");
+    assert_contains(
+        &witness["events"].to_string(),
+        "reqwest::Client::new",
+        "recorded boundary event should identify the call path",
+    );
+    witness["events"][0]["label"] = serde_json::json!("reqwest");
     fs::write(
         &witness_path,
         serde_json::to_string_pretty(&witness).expect("witness should serialize"),
@@ -184,12 +317,71 @@ fn recorded_gateway() {
     );
     assert_failure(
         &replay,
-        "record boundary without recorded event evidence must not replay as exact",
+        "crate-only event labels must not satisfy call-specific record evidence",
     );
     assert_contains(
         &replay.combined(),
         "K0124",
         "missing recorded event evidence should use K0124",
+    );
+}
+
+#[test]
+fn record_boundary_event_evidence_is_call_specific() {
+    let project = TestProject::new("v11-record-call-specific-evidence");
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "record", reason = "record gateway construction")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn recorded_gateway() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(&output, "fixture should create an exact witness");
+    let (witness_path, mut witness) = first_witness(&project);
+    assert_contains(
+        &witness["events"].to_string(),
+        "reqwest::Client::new",
+        "recorded boundary event should identify the call path",
+    );
+    witness["events"][0]["label"] = serde_json::json!("reqwest");
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).expect("witness should serialize"),
+    )
+    .expect("witness should write");
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &replay,
+        "crate-only event labels must not satisfy call-specific record evidence",
+    );
+    assert_contains(
+        &replay.combined(),
+        "K0124",
+        "call-specific record evidence drift should use K0124",
     );
 }
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -478,7 +479,11 @@ fn __kobo_block_on<F: std::future::Future>(future: F) -> F::Output {
 
     source.push_str(&storage_support_source(program, options)?);
     source.push_str(&network_support_source(program, options)?);
-    source.push_str(&external_boundary_support_source(program, options)?);
+    source.push_str(&external_boundary_support_source(
+        program,
+        generated_rust,
+        options,
+    )?);
     source.push_str(&tokio_support_source(program, options)?);
 
     let mut impls = Vec::new();
@@ -525,39 +530,211 @@ fn rust_method_name(action: &str) -> String {
 
 fn external_boundary_support_source(
     program: &ScenarioProgram,
+    generated_rust: &str,
     options: &ScenarioOptions,
 ) -> Result<String> {
-    let mut source = String::new();
-    let mut crate_names = Vec::new();
+    let mut crate_facades = BTreeMap::<String, BoundaryFacade>::new();
     for operation in &program.operations {
         let ScenarioOpKind::ExternalBoundary {
-            crate_name, policy, ..
+            crate_name,
+            call_path,
+            policy,
+            ..
         } = &operation.kind
         else {
             continue;
         };
-        if !is_replay_owned_boundary(policy)
-            || crate_names.iter().any(|existing| existing == crate_name)
-            || !is_rust_identifier(crate_name)
-        {
+        if !is_replay_owned_boundary(policy) || !is_rust_identifier(crate_name) {
             continue;
         }
-        crate_names.push(crate_name.clone());
+        let target = boundary_facade_target(call_path.as_deref());
         let event = ScenarioEvent {
             kind: format!("boundary-{}", policy.as_str()),
-            label: Some(crate_name.clone()),
+            label: Some(boundary_event_label(
+                crate_name,
+                call_path.as_deref(),
+                (operation.span.start as usize, operation.span.end as usize),
+            )),
             value: Some(options.seed),
         };
+        match target {
+            BoundaryFacadeTarget::Function { function_name }
+                if is_rust_identifier(&function_name) =>
+            {
+                crate_facades
+                    .entry(crate_name.clone())
+                    .or_default()
+                    .functions
+                    .entry(function_name)
+                    .or_default()
+                    .push(event);
+            }
+            BoundaryFacadeTarget::Method {
+                type_name,
+                method_name,
+            } if is_rust_identifier(&type_name) && is_rust_identifier(&method_name) => {
+                crate_facades
+                    .entry(crate_name.clone())
+                    .or_default()
+                    .methods
+                    .entry(type_name)
+                    .or_default()
+                    .entry(method_name)
+                    .or_default()
+                    .push(event);
+            }
+            _ => {}
+        }
+    }
+
+    let mut source = String::new();
+    for (crate_name, facade) in crate_facades {
         source.push_str("mod ");
-        source.push_str(crate_name);
+        source.push_str(&crate_name);
         source.push_str(" {\n");
-        source.push_str("    pub struct Client;\n");
-        source.push_str("    impl Client {\n");
-        source.push_str("        pub fn new() -> Self {\n            ");
-        source.push_str(&event_print_statement(&event)?);
-        source.push_str("\n            Client\n        }\n    }\n}\n");
+        for function_name in facade.functions.keys() {
+            source.push_str("    static ");
+            source.push_str(&boundary_counter_name("fn", function_name));
+            source.push_str(
+                ": std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);\n",
+            );
+        }
+        for (type_name, methods) in &facade.methods {
+            for method_name in methods.keys() {
+                source.push_str("    static ");
+                source.push_str(&boundary_counter_name(type_name, method_name));
+                source.push_str(
+                    ": std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);\n",
+                );
+            }
+            source.push_str("    pub struct ");
+            source.push_str(type_name);
+            source.push_str(";\n");
+        }
+        for (function_name, events) in &facade.functions {
+            source.push_str("    pub fn ");
+            source.push_str(function_name);
+            source.push_str("() {\n");
+            source.push_str(&boundary_event_sequence_source(
+                &boundary_counter_name("fn", function_name),
+                &format!("{crate_name}::{function_name}"),
+                events,
+            )?);
+            source.push_str("    }\n");
+        }
+        for (type_name, methods) in &facade.methods {
+            source.push_str("    impl ");
+            source.push_str(type_name);
+            source.push_str(" {\n");
+            for (method_name, events) in methods {
+                let associated = generated_rust.contains(&format!("{type_name}::{method_name}("));
+                if associated {
+                    source.push_str("        pub fn ");
+                    source.push_str(method_name);
+                    source.push_str("() -> Self {\n");
+                } else {
+                    source.push_str("        pub fn ");
+                    source.push_str(method_name);
+                    source.push_str("(self) -> Self {\n");
+                }
+                source.push_str(&boundary_event_sequence_source(
+                    &boundary_counter_name(type_name, method_name),
+                    &format!("{crate_name}::{type_name}::{method_name}"),
+                    events,
+                )?);
+                if associated {
+                    source.push_str("            ");
+                    source.push_str(type_name);
+                    source.push('\n');
+                } else {
+                    source.push_str("            self\n");
+                }
+                source.push_str("        }\n");
+            }
+            source.push_str("    }\n");
+        }
+        source.push_str("}\n");
     }
     Ok(source)
+}
+
+#[derive(Default)]
+struct BoundaryFacade {
+    functions: BTreeMap<String, Vec<ScenarioEvent>>,
+    methods: BTreeMap<String, BTreeMap<String, Vec<ScenarioEvent>>>,
+}
+
+enum BoundaryFacadeTarget {
+    Function {
+        function_name: String,
+    },
+    Method {
+        type_name: String,
+        method_name: String,
+    },
+}
+
+fn boundary_facade_target(call_path: Option<&str>) -> BoundaryFacadeTarget {
+    let Some(call_path) = call_path else {
+        return BoundaryFacadeTarget::Method {
+            type_name: "Client".to_owned(),
+            method_name: "new".to_owned(),
+        };
+    };
+    let segments = call_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() < 3 {
+        return BoundaryFacadeTarget::Function {
+            function_name: segments.last().unwrap_or(&"boundary").to_string(),
+        };
+    }
+    BoundaryFacadeTarget::Method {
+        type_name: segments[segments.len() - 2].to_owned(),
+        method_name: segments[segments.len() - 1].to_owned(),
+    }
+}
+
+fn boundary_counter_name(type_name: &str, method_name: &str) -> String {
+    format!(
+        "__KOBO_{}_{}_BOUNDARY_INDEX",
+        type_name.to_ascii_uppercase(),
+        method_name.to_ascii_uppercase()
+    )
+}
+
+fn boundary_event_sequence_source(
+    counter_name: &str,
+    label: &str,
+    events: &[ScenarioEvent],
+) -> Result<String> {
+    let mut source = String::new();
+    source.push_str("            let __kobo_index = ");
+    source.push_str(counter_name);
+    source.push_str(".fetch_add(1, std::sync::atomic::Ordering::SeqCst);\n");
+    source.push_str("            match __kobo_index {\n");
+    for (index, event) in events.iter().enumerate() {
+        source.push_str("                ");
+        source.push_str(&index.to_string());
+        source.push_str(" => { ");
+        source.push_str(&event_print_statement(event)?);
+        source.push_str(" }\n");
+    }
+    let overflow = ScenarioEvent {
+        kind: "boundary-overflow".to_owned(),
+        label: Some(label.to_owned()),
+        value: None,
+    };
+    source.push_str("                _ => { ");
+    source.push_str(&event_print_statement(&overflow)?);
+    source.push_str(" }\n");
+    source.push_str("            }\n");
+    Ok(source)
+}
+
+fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
+    format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
 }
 
 fn tokio_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {

@@ -30,32 +30,37 @@ pub(super) fn cmd_bindgen(path: &Path) -> anyhow::Result<()> {
     eprintln!(
         "warning[K0127]: bindgen produced a review-required declaration draft for `{crate_name}`"
     );
-    print!("schema_version = 0\n\n");
-    print!("[crate]\n");
-    print!("name = \"{crate_name}\"\n");
-    print!("version = \"{version}\"\n");
-    print!("source = \"bindgen\"\n");
-    print!("review_required = true\n");
-    print!(
-        "summary_hash = \"{}\"\n",
+    let mut declaration = String::new();
+    declaration.push_str("schema_version = 0\n\n");
+    declaration.push_str("[crate]\n");
+    declaration.push_str(&format!("name = \"{crate_name}\"\n"));
+    declaration.push_str(&format!("version = \"{version}\"\n"));
+    declaration.push_str("source = \"bindgen\"\n");
+    declaration.push_str("review_required = true\n");
+    declaration.push_str(&format!(
+        "source_hash = \"{}\"\n",
         stable_hash(&sources.hash_material)
-    );
+    ));
+    declaration.push_str("declaration_hash = \"__KOBO_DECLARATION_HASH__\"\n");
 
     for ty in &api.types {
-        print!("\n[[type]]\n");
-        print!("path = \"{crate_name}::{}\"\n", ty.path);
-        print!("kind = \"{}\"\n", ty.kind.as_str());
+        declaration.push_str("\n[[type]]\n");
+        declaration.push_str(&format!("path = \"{crate_name}::{}\"\n", ty.path));
+        declaration.push_str(&format!("kind = \"{}\"\n", ty.kind.as_str()));
         if !ty.generics.is_empty() {
-            print!("generics = [{}]\n", quoted_list(&ty.generics));
+            declaration.push_str(&format!("generics = [{}]\n", quoted_list(&ty.generics)));
         }
         if !ty.variants.is_empty() {
-            print!("variants = [{}]\n", quoted_list(&ty.variants));
+            declaration.push_str(&format!("variants = [{}]\n", quoted_list(&ty.variants)));
         }
         if !ty.trait_methods.is_empty() {
-            print!("trait_methods = [{}]\n", quoted_list(&ty.trait_methods));
+            declaration.push_str(&format!(
+                "trait_methods = [{}]\n",
+                quoted_list(&ty.trait_methods)
+            ));
         }
         if let Some(alias_target) = ty.alias_target.as_deref() {
-            print!("alias_target = \"{alias_target}\"\n");
+            declaration.push_str(&format!("alias_target = \"{alias_target}\"\n"));
         }
         if let Some(methods) = api.impl_methods.get(&ty.path) {
             let lifecycle = methods
@@ -64,34 +69,48 @@ pub(super) fn cmd_bindgen(path: &Path) -> anyhow::Result<()> {
                 .map(|method| format!("\"{method}\""))
                 .collect::<Vec<_>>();
             if !lifecycle.is_empty() {
-                print!("resource = true\n");
-                print!("must_call = [{}]\n", lifecycle.join(", "));
+                declaration.push_str("resource = true\n");
+                declaration.push_str(&format!("must_call = [{}]\n", lifecycle.join(", ")));
             }
         }
     }
 
     for function in &api.functions {
-        print!("\n[[function]]\n");
-        print!("path = \"{crate_name}::{}\"\n", function.path);
+        declaration.push_str("\n[[function]]\n");
+        declaration.push_str(&format!("path = \"{crate_name}::{}\"\n", function.path));
         if let Some(return_type) = function.return_type.as_deref() {
-            print!("returns = \"{crate_name}::{return_type}\"\n");
+            declaration.push_str(&format!("returns = \"{crate_name}::{return_type}\"\n"));
         }
         if function_needs_review(&function.path) {
-            print!(
+            declaration.push_str(&format!(
                 "review_question = \"confirm effects and replay policy for {crate_name}::{}\"\n",
                 function.path
-            );
+            ));
         }
     }
 
     for reexport in &api.reexports {
-        print!("\n[[adapter]]\n");
-        print!("path = \"{crate_name}::{}\"\n", reexport.path);
-        print!("target = \"{crate_name}::{}\"\n", reexport.target);
-        print!("review_question = \"confirm reexported API target and ecosystem policy\"\n");
+        declaration.push_str("\n[[adapter]]\n");
+        declaration.push_str(&format!("path = \"{crate_name}::{}\"\n", reexport.path));
+        declaration.push_str(&format!("target = \"{crate_name}::{}\"\n", reexport.target));
+        declaration
+            .push_str("review_question = \"confirm reexported API target and ecosystem policy\"\n");
     }
 
+    let declaration_hash = stable_hash(&declaration_without_hash(&declaration));
+    print!(
+        "{}",
+        declaration.replace("__KOBO_DECLARATION_HASH__", &declaration_hash)
+    );
     Ok(())
+}
+
+fn declaration_without_hash(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("declaration_hash ="))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 struct CrateSources {

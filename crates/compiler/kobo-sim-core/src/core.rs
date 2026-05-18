@@ -676,10 +676,11 @@ impl<'a> Runtime<'a> {
                 span_end: span.1,
             });
         }
+        let event_label = boundary_event_label(&crate_name, call_path.as_deref(), span);
         if is_replay_owned_boundary(&policy) {
             self.events.push(ScenarioEvent {
                 kind: format!("boundary-{}", policy.as_str()),
-                label: Some(crate_name),
+                label: Some(event_label),
                 value: Some(self.options.seed),
             });
             return;
@@ -687,7 +688,7 @@ impl<'a> Runtime<'a> {
         if is_explicit_partial_boundary(&policy) {
             self.events.push(ScenarioEvent {
                 kind: format!("boundary-{}", policy.as_str()),
-                label: Some(crate_name),
+                label: Some(event_label),
                 value: Some(self.options.seed),
             });
             return;
@@ -701,7 +702,7 @@ impl<'a> Runtime<'a> {
             primary_end: span.1,
             events: vec![ScenarioEvent {
                 kind: "boundary-policy-required".to_owned(),
-                label: Some(crate_name),
+                label: Some(event_label),
                 value: None,
             }],
         });
@@ -837,6 +838,10 @@ fn is_explicit_partial_boundary(policy: &BoundaryPolicyChoice) -> bool {
             | BoundaryPolicyChoice::Opaque
             | BoundaryPolicyChoice::Debt
     )
+}
+
+fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
+    format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
 }
 
 pub(crate) fn scheduler_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {

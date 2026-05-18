@@ -155,18 +155,17 @@ pub(super) fn parse_declaration_file(
             });
         }
     }
+    let observed_declaration_hash = declaration_hash(&source);
     if let Some(declared_hash) = crate_table
-        .get("summary_hash")
-        .or_else(|| crate_table.get("source_hash"))
+        .get("declaration_hash")
         .and_then(toml::Value::as_str)
     {
-        let observed_hash = stable_hash(&source_without_declared_hash(&source));
-        if declared_hash != observed_hash {
+        if declared_hash != observed_declaration_hash {
             return DeclarationLookup::Invalid(DeclarationError {
                 path: path.to_path_buf(),
-                key: "crate.summary_hash",
+                key: "crate.declaration_hash",
                 message: format!(
-                    "expected summary_hash `{declared_hash}`, found `{observed_hash}`"
+                    "expected declaration_hash `{declared_hash}`, found `{observed_declaration_hash}`"
                 ),
             });
         }
@@ -176,7 +175,7 @@ pub(super) fn parse_declaration_file(
         path: path.to_path_buf(),
         version: version.to_owned(),
         schema_version,
-        hash: stable_hash(&source),
+        hash: observed_declaration_hash,
         types: declaration_type_paths(&parsed),
         functions: declaration_function_paths(&parsed),
         function_facts: declaration_function_facts(&parsed),
@@ -222,10 +221,14 @@ fn source_without_declared_hash(source: &str) -> String {
         .lines()
         .filter(|line| {
             let trimmed = line.trim_start();
-            !trimmed.starts_with("summary_hash =") && !trimmed.starts_with("source_hash =")
+            !trimmed.starts_with("declaration_hash =")
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+pub(super) fn declaration_hash(source: &str) -> String {
+    stable_hash(&source_without_declared_hash(source))
 }
 
 pub(super) fn activity_covers_call(

@@ -372,11 +372,42 @@ fn validate_ecosystem_boundary_evidence(
             let payload = serde_json::json!({
                 "code": "K0124",
                 "message": "record boundary is missing recorded event evidence",
-                "expected": expected,
+                "expected": expected.clone(),
                 "observed": witness["ecosystem_boundaries"].clone(),
             });
             emit_replay_issue(&payload, error_format)?;
             anyhow::bail!("K0124 record boundary missing recorded evidence");
+        }
+    }
+    if let Some(expected_boundaries) = expected.as_array() {
+        for expected_boundary in expected_boundaries {
+            if expected_boundary["policy"].as_str() != Some("record") {
+                continue;
+            }
+            if !observed_boundary_matches(witness, expected_boundary, "record") {
+                continue;
+            }
+            let Some(expected_label) = boundary_event_label_from_json(expected_boundary) else {
+                continue;
+            };
+            if witness_events_contain_boundary_label(witness, "boundary-record", &expected_label) {
+                continue;
+            }
+            let payload = serde_json::json!({
+                "code": "K0124",
+                "message": "record boundary is missing call-specific recorded event evidence",
+                "expected_event": {
+                    "kind": "boundary-record",
+                    "label": expected_label,
+                },
+                "expected": expected.clone(),
+                "observed": {
+                    "ecosystem_boundaries": witness["ecosystem_boundaries"].clone(),
+                    "events": witness["events"].clone(),
+                },
+            });
+            emit_replay_issue(&payload, error_format)?;
+            anyhow::bail!("K0124 record boundary missing call-specific evidence");
         }
     }
     if witness["ecosystem_boundaries"] == expected {
@@ -390,6 +421,36 @@ fn validate_ecosystem_boundary_evidence(
     });
     emit_replay_issue(&payload, error_format)?;
     anyhow::bail!("K0129 ecosystem boundary evidence changed")
+}
+
+fn observed_boundary_matches(witness: &Value, expected_boundary: &Value, policy: &str) -> bool {
+    let Some(observed_boundaries) = witness["ecosystem_boundaries"].as_array() else {
+        return false;
+    };
+    observed_boundaries.iter().any(|observed| {
+        observed["policy"].as_str() == Some(policy)
+            && observed["crate"] == expected_boundary["crate"]
+            && observed["call_path"] == expected_boundary["call_path"]
+            && observed["source_span"] == expected_boundary["source_span"]
+    })
+}
+
+fn boundary_event_label_from_json(boundary: &Value) -> Option<String> {
+    let identity = boundary["call_path"]
+        .as_str()
+        .or_else(|| boundary["crate"].as_str())?;
+    let span = &boundary["source_span"];
+    let start = span["start"].as_u64()?;
+    let end = span["end"].as_u64()?;
+    Some(format!("{identity}@{start}..{end}"))
+}
+
+fn witness_events_contain_boundary_label(witness: &Value, kind: &str, label: &str) -> bool {
+    witness["events"].as_array().is_some_and(|events| {
+        events.iter().any(|event| {
+            event["kind"].as_str() == Some(kind) && event["label"].as_str() == Some(label)
+        })
+    })
 }
 
 fn validate_declaration_evidence(
@@ -421,11 +482,7 @@ fn ecosystem_boundaries_json(
         run.boundary_decisions
             .iter()
             .map(|decision| {
-                let evidence = boundary_evidence_for_policy(
-                    decision.policy.as_str(),
-                    &decision.crate_name,
-                    run,
-                );
+                let evidence = boundary_evidence_for_policy(decision, run);
                 serde_json::json!({
                     "crate": decision.crate_name,
                     "call_path": decision.call_path,
@@ -449,21 +506,23 @@ fn ecosystem_boundaries_json(
 }
 
 fn boundary_evidence_for_policy(
-    policy: &str,
-    crate_name: &str,
+    decision: &kobo_sim_core::BoundaryDecision,
     run: &kobo_sim_core::FullDepthRun,
 ) -> &'static str {
-    match policy {
+    let expected_label = boundary_event_label(decision);
+    match decision.policy.as_str() {
         "record"
             if run.events.iter().any(|event| {
-                event.kind == "boundary-record" && event.label.as_deref() == Some(crate_name)
+                event.kind == "boundary-record"
+                    && event.label.as_deref() == Some(expected_label.as_str())
             }) =>
         {
             "recorded-event"
         }
         "activity"
             if run.events.iter().any(|event| {
-                event.kind == "boundary-activity" && event.label.as_deref() == Some(crate_name)
+                event.kind == "boundary-activity"
+                    && event.label.as_deref() == Some(expected_label.as_str())
             }) =>
         {
             "activity-result"
@@ -475,6 +534,18 @@ fn boundary_evidence_for_policy(
         "opaque" | "debt" => "assumption",
         _ => "unverified",
     }
+}
+
+fn boundary_event_label(decision: &kobo_sim_core::BoundaryDecision) -> String {
+    format!(
+        "{}@{}..{}",
+        decision
+            .call_path
+            .as_deref()
+            .unwrap_or(decision.crate_name.as_str()),
+        decision.span_start,
+        decision.span_end
+    )
 }
 
 fn declarations_json(file: &Path, run: &kobo_sim_core::FullDepthRun) -> Value {
@@ -498,7 +569,7 @@ fn declarations_json(file: &Path, run: &kobo_sim_core::FullDepthRun) -> Value {
                     .and_then(|table| table.get("version"))
                     .and_then(toml::Value::as_str)
                     .unwrap_or("unknown");
-                let hash = declarations::stable_hash(&source);
+                let hash = declarations::declaration_hash(&source);
                 Some(serde_json::json!({
                     "crate": decision.crate_name,
                     "path": path.display().to_string(),
@@ -539,7 +610,7 @@ fn declaration_metadata_for_boundary(
                 "path": path.display().to_string(),
                 "version": version,
                 "schema_version": schema_version,
-                "hash": declarations::stable_hash(&source),
+                "hash": declarations::declaration_hash(&source),
             }))
         })
 }

@@ -61,6 +61,11 @@ fn main() {
         "applicable_types",
         "summary obligation facts should retain type applicability",
     );
+    assert_contains(
+        &summary["obligations"][0]["applicable_types"].to_string(),
+        "upstream_kobo::Transaction",
+        "summary applicability should qualify owner types with the producing crate",
+    );
 
     let summary_hash = summary["summary_hash"]
         .as_str()
@@ -151,6 +156,134 @@ hash = "{summary_hash}"
         !unrelated_debt.stdout.contains("Transaction"),
         "summary obligations should not apply when downstream source references no applicable type/function:\n{}",
         unrelated_debt.stdout
+    );
+
+    let text_only_consumer = TestProject::new("v11-summary-text-only-consumer");
+    text_only_consumer.main_file(
+        r#"
+// Transaction and upstream_kobo::main appear only in comments.
+fn main() {
+    let _message = "Transaction upstream_kobo::main";
+    struct Transaction;
+}
+"#,
+    );
+    text_only_consumer.write(
+        "Kobo.toml",
+        &format!(
+            r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.summary]]
+crate = "upstream_kobo"
+path = "{}"
+hash = "{summary_hash}"
+"#,
+            summary_path.display().to_string().replace('\\', "/")
+        ),
+    );
+    let text_only_debt = run_kobo(
+        &[
+            s("debt"),
+            path_arg(&text_only_consumer.root.join("src/main.kobo")),
+            s("--liveness"),
+            s("--json"),
+        ],
+        &text_only_consumer.root,
+    );
+    assert_success(
+        &text_only_debt,
+        "comments, strings, and local type names should not activate external summary applicability",
+    );
+    assert!(
+        !text_only_debt.stdout.contains("upstream_kobo::main"),
+        "summary applicability should be based on references, not raw text:\n{}",
+        text_only_debt.stdout
+    );
+
+    let local_type_consumer = TestProject::new("v11-summary-local-type-consumer");
+    local_type_consumer.main_file(
+        r#"
+fn main() {
+    struct Transaction;
+    let _local: Option<Transaction> = None;
+}
+"#,
+    );
+    local_type_consumer.write(
+        "Kobo.toml",
+        &format!(
+            r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.summary]]
+crate = "upstream_kobo"
+path = "{}"
+hash = "{summary_hash}"
+"#,
+            summary_path.display().to_string().replace('\\', "/")
+        ),
+    );
+    let local_type_debt = run_kobo(
+        &[
+            s("debt"),
+            path_arg(&local_type_consumer.root.join("src/main.kobo")),
+            s("--liveness"),
+            s("--json"),
+        ],
+        &local_type_consumer.root,
+    );
+    assert_success(
+        &local_type_debt,
+        "local same-name type references should not activate external summary applicability",
+    );
+    assert!(
+        !local_type_debt.stdout.contains("upstream_kobo::main"),
+        "local same-name type references should not activate upstream summary facts:\n{}",
+        local_type_debt.stdout
+    );
+
+    let other_crate_consumer = TestProject::new("v11-summary-other-crate-type-consumer");
+    other_crate_consumer.main_file(
+        r#"
+use other_kobo::Transaction;
+
+fn main() {
+    let _external: Option<Transaction> = None;
+}
+"#,
+    );
+    other_crate_consumer.write(
+        "Kobo.toml",
+        &format!(
+            r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.summary]]
+crate = "upstream_kobo"
+path = "{}"
+hash = "{summary_hash}"
+"#,
+            summary_path.display().to_string().replace('\\', "/")
+        ),
+    );
+    let other_crate_debt = run_kobo(
+        &[
+            s("debt"),
+            path_arg(&other_crate_consumer.root.join("src/main.kobo")),
+            s("--liveness"),
+            s("--json"),
+        ],
+        &other_crate_consumer.root,
+    );
+    assert_success(
+        &other_crate_debt,
+        "other-crate same-name references should not activate external summary applicability",
+    );
+    assert!(
+        !other_crate_debt.stdout.contains("upstream_kobo::main"),
+        "other-crate same-name references should not activate upstream summary facts:\n{}",
+        other_crate_debt.stdout
     );
 
     let downstream = TestProject::new("v11-summary-downstream");

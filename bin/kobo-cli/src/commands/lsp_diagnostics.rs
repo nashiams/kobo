@@ -5,7 +5,7 @@ use kobo_driver::run_check_pipeline;
 use kobo_errors::{DiagDecision, DiagLabel, KDiagnostic, KErrorCode, Severity};
 use kobo_ir::{GuaranteePolicy, GuaranteeProfile, KoboSpan};
 use serde_json::{json, Value};
-use syn::visit::Visit;
+use syn::{spanned::Spanned, visit::Visit};
 
 use crate::ErrorFormat;
 
@@ -50,126 +50,146 @@ fn declaration_boundary_diagnostics(
         return Ok(Vec::new());
     };
     let source = std::fs::read_to_string(file)?;
-    let external_boundary = external_replay_boundary(&source, &session.config);
+    let external_boundaries = external_replay_boundaries(&source, &session.config);
     let mut diagnostics = Vec::new();
-    for mut boundary in source_boundary_policies(&source) {
+    for boundary in source_boundary_policies(&source) {
         let Some(crate_name) = boundary.crate_name.as_deref() else {
             continue;
         };
-        if boundary.call_path.is_none() {
-            if let Some(external) = external_boundary.as_ref() {
-                if external.crate_name == crate_name {
-                    boundary.call_path = external.call_path.clone();
-                }
-            }
+        let mut boundary_calls = Vec::new();
+        if boundary.call_path.is_some() {
+            boundary_calls.push(ExternalReplayBoundary {
+                crate_name: crate_name.to_owned(),
+                call_path: boundary.call_path.clone(),
+                span_start: boundary.span_start,
+                span_end: boundary.span_end,
+            });
+        } else {
+            boundary_calls.extend(
+                external_boundaries
+                    .iter()
+                    .filter(|external| external.crate_name == crate_name)
+                    .cloned(),
+            );
         }
-        let span = KoboSpan::new(
-            boundary.span_start as u32,
-            boundary.span_end as u32,
-            file_id,
-        );
-        let expected_version = dependency_version(&session.config, crate_name);
-        match declarations::load_declaration(file, crate_name, expected_version.as_deref()) {
-            DeclarationLookup::Missing if boundary.policy == "typed" => {
-                diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0122,
-                    Severity::Error,
-                    DiagLabel::primary(span, format!("typed boundary `{crate_name}` has no declaration")),
-                    format!(
-                        "`{crate_name}` is marked typed, but Kobo could not find a matching kobo.d.toml declaration"
-                    ),
-                    DiagDecision("add a declaration file or choose record, activity, opaque, or debt".to_owned()),
-                ));
+        if boundary_calls.is_empty() {
+            boundary_calls.push(ExternalReplayBoundary {
+                crate_name: crate_name.to_owned(),
+                call_path: None,
+                span_start: boundary.span_start,
+                span_end: boundary.span_end,
+            });
+        }
+        for boundary_call in boundary_calls {
+            let span = KoboSpan::new(
+                boundary_call.span_start as u32,
+                boundary_call.span_end as u32,
+                file_id,
+            );
+            let expected_version = dependency_version(&session.config, crate_name);
+            match declarations::load_declaration(file, crate_name, expected_version.as_deref()) {
+                DeclarationLookup::Missing if boundary.policy == "typed" => {
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0122,
+                        Severity::Error,
+                        DiagLabel::primary(span, format!("typed boundary `{crate_name}` has no declaration")),
+                        format!(
+                            "`{crate_name}` is marked typed, but Kobo could not find a matching kobo.d.toml declaration"
+                        ),
+                        DiagDecision("add a declaration file or choose record, activity, opaque, or debt".to_owned()),
+                    ));
+                }
+                DeclarationLookup::Invalid(error) if boundary.policy == "typed" => {
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0121,
+                        Severity::Error,
+                        DiagLabel::primary(
+                            span,
+                            format!("invalid declaration metadata for `{crate_name}`"),
+                        ),
+                        format!(
+                            "{} `{}` in {}: {}",
+                            "invalid declaration key",
+                            error.key,
+                            error.path.display(),
+                            error.message
+                        ),
+                        DiagDecision(
+                            "fix the declaration file before using typed ecosystem policy"
+                                .to_owned(),
+                        ),
+                    ));
+                }
+                DeclarationLookup::Valid(info)
+                    if boundary.policy == "typed"
+                        && !declarations::declaration_covers_call(
+                            &info,
+                            boundary_call.call_path.as_deref(),
+                        ) =>
+                {
+                    let call_path = boundary_call
+                        .call_path
+                        .as_deref()
+                        .unwrap_or("<unknown external call>");
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0121,
+                        Severity::Error,
+                        DiagLabel::primary(
+                            span,
+                            format!("typed declaration for `{crate_name}` does not cover boundary call"),
+                        ),
+                        format!(
+                            "{} does not cover boundary call `{call_path}`",
+                            info.path.display()
+                        ),
+                        DiagDecision(
+                            "add function-level declaration evidence for this call or choose another boundary policy".to_owned(),
+                        ),
+                    ));
+                }
+                DeclarationLookup::Valid(info)
+                    if boundary.policy == "typed"
+                        && declarations::typed_call_has_replay_critical_effects(
+                            &info,
+                            boundary_call.call_path.as_deref(),
+                        ) =>
+                {
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0121,
+                        Severity::Error,
+                        DiagLabel::primary(
+                            span,
+                            format!("typed declaration for `{crate_name}` still has replay-critical effects"),
+                        ),
+                        format!(
+                            "{} still has replay-critical effects for typed boundary `{crate_name}`",
+                            info.path.display()
+                        ),
+                        DiagDecision(
+                            "change this boundary to record/activity/model or mark the function pure/deterministic with no effects".to_owned(),
+                        ),
+                    ));
+                }
+                DeclarationLookup::Valid(info)
+                    if boundary.policy == "activity"
+                        && !declarations::activity_covers_call(
+                            Some(&info),
+                            boundary_call.call_path.as_deref(),
+                        ) =>
+                {
+                    diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0125,
+                        Severity::Warning,
+                        DiagLabel::primary(span, format!("activity boundary `{crate_name}` lacks retry metadata")),
+                        format!(
+                            "activity declaration for `{crate_name}` in {} does not declare retry and idempotency metadata",
+                            info.path.display()
+                        ),
+                        DiagDecision("record retry, idempotency, and compensation semantics in the declaration".to_owned()),
+                    ));
+                }
+                _ => {}
             }
-            DeclarationLookup::Invalid(error) if boundary.policy == "typed" => {
-                diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0121,
-                    Severity::Error,
-                    DiagLabel::primary(
-                        span,
-                        format!("invalid declaration metadata for `{crate_name}`"),
-                    ),
-                    format!(
-                        "{} `{}` in {}: {}",
-                        "invalid declaration key",
-                        error.key,
-                        error.path.display(),
-                        error.message
-                    ),
-                    DiagDecision(
-                        "fix the declaration file before using typed ecosystem policy".to_owned(),
-                    ),
-                ));
-            }
-            DeclarationLookup::Valid(info)
-                if boundary.policy == "typed"
-                    && !declarations::declaration_covers_call(
-                        &info,
-                        boundary.call_path.as_deref(),
-                    ) =>
-            {
-                let call_path = boundary
-                    .call_path
-                    .as_deref()
-                    .unwrap_or("<unknown external call>");
-                diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0121,
-                    Severity::Error,
-                    DiagLabel::primary(
-                        span,
-                        format!("typed declaration for `{crate_name}` does not cover boundary call"),
-                    ),
-                    format!(
-                        "{} does not cover boundary call `{call_path}`",
-                        info.path.display()
-                    ),
-                    DiagDecision(
-                        "add function-level declaration evidence for this call or choose another boundary policy".to_owned(),
-                    ),
-                ));
-            }
-            DeclarationLookup::Valid(info)
-                if boundary.policy == "typed"
-                    && declarations::typed_call_has_replay_critical_effects(
-                        &info,
-                        boundary.call_path.as_deref(),
-                    ) =>
-            {
-                diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0121,
-                    Severity::Error,
-                    DiagLabel::primary(
-                        span,
-                        format!("typed declaration for `{crate_name}` still has replay-critical effects"),
-                    ),
-                    format!(
-                        "{} still has replay-critical effects for typed boundary `{crate_name}`",
-                        info.path.display()
-                    ),
-                    DiagDecision(
-                        "change this boundary to record/activity/model or mark the function pure/deterministic with no effects".to_owned(),
-                    ),
-                ));
-            }
-            DeclarationLookup::Valid(info)
-                if boundary.policy == "activity"
-                    && !declarations::activity_covers_call(
-                        Some(&info),
-                        boundary.call_path.as_deref(),
-                    ) =>
-            {
-                diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0125,
-                    Severity::Warning,
-                    DiagLabel::primary(span, format!("activity boundary `{crate_name}` lacks retry metadata")),
-                    format!(
-                        "activity declaration for `{crate_name}` in {} does not declare retry and idempotency metadata",
-                        info.path.display()
-                    ),
-                    DiagDecision("record retry, idempotency, and compensation semantics in the declaration".to_owned()),
-                ));
-            }
-            _ => {}
         }
     }
     Ok(diagnostics)
@@ -186,35 +206,50 @@ fn replay_boundary_diagnostics(
         return Ok(Vec::new());
     }
     let source = std::fs::read_to_string(file)?;
-    let Some(boundary) = external_replay_boundary(&source, &session.config) else {
+    let boundaries = external_replay_boundaries(&source, &session.config);
+    let covered_crates = source_boundary_policies(&source)
+        .into_iter()
+        .filter_map(|policy| policy.crate_name)
+        .collect::<std::collections::BTreeSet<_>>();
+    let boundaries = boundaries
+        .into_iter()
+        .filter(|boundary| !covered_crates.contains(&boundary.crate_name))
+        .collect::<Vec<_>>();
+    if boundaries.is_empty() {
         return Ok(Vec::new());
-    };
+    }
     let Some((file_id, _)) = session.file_set().iter_files().next() else {
         return Ok(Vec::new());
     };
-    let span = KoboSpan::new(
-        boundary.span_start as u32,
-        boundary.span_end as u32,
-        file_id,
-    );
-    Ok(vec![KDiagnostic::new(
-        KErrorCode::K0107,
-        Severity::Warning,
-        DiagLabel::primary(
-            span,
-            format!(
-                "unmodeled external boundary `{}`; choose typed, model, record, activity, stub, outside, opaque, or debt",
-                boundary.crate_name
-            ),
-        ),
-        format!(
-            "unmodeled external boundary `{}`; choose typed, model, record, activity, stub, outside, opaque, or debt. Available policies: typed, model, record, activity, stub, outside, opaque, debt.",
-            boundary.crate_name
-        ),
-        DiagDecision("select an explicit boundary policy for replay-critical evidence".to_owned()),
-    )])
+    Ok(boundaries
+        .into_iter()
+        .map(|boundary| {
+            let span = KoboSpan::new(
+                boundary.span_start as u32,
+                boundary.span_end as u32,
+                file_id,
+            );
+            KDiagnostic::new(
+                KErrorCode::K0107,
+                Severity::Warning,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "unmodeled external boundary `{}`; choose typed, model, record, activity, stub, outside, opaque, or debt",
+                        boundary.crate_name
+                    ),
+                ),
+                format!(
+                    "unmodeled external boundary `{}`; choose typed, model, record, activity, stub, outside, opaque, or debt. Available policies: typed, model, record, activity, stub, outside, opaque, debt.",
+                    boundary.crate_name
+                ),
+                DiagDecision("select an explicit boundary policy for replay-critical evidence".to_owned()),
+            )
+        })
+        .collect())
 }
 
+#[derive(Clone)]
 struct ExternalReplayBoundary {
     crate_name: String,
     call_path: Option<String>,
@@ -336,26 +371,37 @@ fn syn_path_ends_with(path: &syn::Path, suffix: &[&str]) -> bool {
             .all(|(left, right)| left == right)
 }
 
-fn external_replay_boundary(
+fn external_replay_boundaries(
     source: &str,
     config: &kobo_driver::KoboConfig,
-) -> Option<ExternalReplayBoundary> {
-    let parsed = syn::parse_file(source).ok()?;
+) -> Vec<ExternalReplayBoundary> {
+    let Ok(parsed) = syn::parse_file(source) else {
+        return Vec::new();
+    };
     let imports = ImportIndex::from_file(&parsed);
-    let dependency_names = config
-        .dependencies
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
+    let dependency_names = dependency_names(config);
     let mut visitor = ExternalBoundaryVisitor {
         source,
         imports,
         dependency_names,
         bindings: std::collections::BTreeMap::new(),
-        found: None,
+        found: Vec::new(),
     };
     visitor.visit_file(&parsed);
     visitor.found
+}
+
+fn dependency_names(config: &kobo_driver::KoboConfig) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for (alias, value) in &config.dependencies {
+        names.insert(alias.clone());
+        if let toml::Value::Table(table) = value {
+            if let Some(package) = table.get("package").and_then(toml::Value::as_str) {
+                names.insert(package.to_owned());
+            }
+        }
+    }
+    names
 }
 
 #[derive(Default)]
@@ -423,14 +469,11 @@ struct ExternalBoundaryVisitor<'a> {
     imports: ImportIndex,
     dependency_names: std::collections::BTreeSet<String>,
     bindings: std::collections::BTreeMap<String, Vec<String>>,
-    found: Option<ExternalReplayBoundary>,
+    found: Vec<ExternalReplayBoundary>,
 }
 
 impl<'ast> Visit<'ast> for ExternalBoundaryVisitor<'_> {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if self.found.is_some() {
-            return;
-        }
         if let syn::Expr::Path(path) = node.func.as_ref() {
             let segments = path
                 .path
@@ -440,18 +483,14 @@ impl<'ast> Visit<'ast> for ExternalBoundaryVisitor<'_> {
                 .collect::<Vec<_>>();
             if let Some((crate_name, call_path)) = self.resolve_call_path(&segments) {
                 let needle = call_path.clone().unwrap_or_else(|| segments.join("::"));
-                let start = self
-                    .source
-                    .find(&needle)
-                    .or_else(|| self.source.find(&crate_name))
-                    .unwrap_or(0);
-                self.found = Some(ExternalReplayBoundary {
-                    span_start: start,
-                    span_end: start + crate_name.len(),
+                let (span_start, span_end) = span_offsets(self.source, path.path.span())
+                    .unwrap_or_else(|| fallback_span(self.source, &needle, &crate_name));
+                self.push_boundary(ExternalReplayBoundary {
+                    span_start,
+                    span_end,
                     crate_name,
                     call_path,
                 });
-                return;
             }
         }
         syn::visit::visit_expr_call(self, node);
@@ -465,21 +504,19 @@ impl<'ast> Visit<'ast> for ExternalBoundaryVisitor<'_> {
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if self.found.is_some() {
-            return;
-        }
         if let Some((crate_name, call_path)) = self.resolve_method_call_path(node) {
-            let start = call_path
-                .as_deref()
-                .and_then(|path| self.source.find(path))
-                .or_else(|| self.source.find(&crate_name))
-                .unwrap_or(0);
-            self.found = Some(ExternalReplayBoundary {
-                span_start: start,
-                span_end: start + crate_name.len(),
+            let needle = call_path.clone().unwrap_or_else(|| crate_name.clone());
+            let (span_start, span_end) = span_offsets(self.source, node.span())
+                .unwrap_or_else(|| fallback_span(self.source, &needle, &crate_name));
+            self.push_boundary(ExternalReplayBoundary {
+                span_start,
+                span_end,
                 crate_name,
                 call_path,
             });
+            for arg in &node.args {
+                self.visit_expr(arg);
+            }
             return;
         }
         syn::visit::visit_expr_method_call(self, node);
@@ -487,6 +524,18 @@ impl<'ast> Visit<'ast> for ExternalBoundaryVisitor<'_> {
 }
 
 impl ExternalBoundaryVisitor<'_> {
+    fn push_boundary(&mut self, boundary: ExternalReplayBoundary) {
+        if self.found.iter().any(|existing| {
+            existing.crate_name == boundary.crate_name
+                && existing.call_path == boundary.call_path
+                && existing.span_start == boundary.span_start
+                && existing.span_end == boundary.span_end
+        }) {
+            return;
+        }
+        self.found.push(boundary);
+    }
+
     fn resolve_call_path(&self, segments: &[String]) -> Option<(String, Option<String>)> {
         let resolved = self.resolve_segments(segments)?;
         let crate_name = resolved.first()?.clone();
@@ -581,6 +630,42 @@ impl ExternalBoundaryVisitor<'_> {
         }
         None
     }
+}
+
+fn span_offsets(source: &str, span: proc_macro2::Span) -> Option<(usize, usize)> {
+    let start = byte_offset_for_line_column(source, span.start().line, span.start().column)?;
+    let end = byte_offset_for_line_column(source, span.end().line, span.end().column)?;
+    Some((start, end.max(start + 1)))
+}
+
+fn byte_offset_for_line_column(source: &str, target_line: usize, column: usize) -> Option<usize> {
+    if target_line == 0 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for (line_index, line) in source.split_inclusive('\n').enumerate() {
+        if line_index + 1 == target_line {
+            return Some(offset + column.min(line.len()));
+        }
+        offset += line.len();
+    }
+    (target_line == source.lines().count() + 1).then_some(offset)
+}
+
+fn fallback_span(source: &str, needle: &str, crate_name: &str) -> (usize, usize) {
+    let start = source
+        .find(needle)
+        .or_else(|| source.find(crate_name))
+        .unwrap_or(0);
+    let width = if source
+        .get(start..)
+        .is_some_and(|tail| tail.starts_with(needle))
+    {
+        needle.len()
+    } else {
+        crate_name.len()
+    };
+    (start, start + width.max(1))
 }
 
 fn print_lsp_payload(

@@ -1345,6 +1345,10 @@ fn is_replay_owned_boundary(policy: &BoundaryPolicyChoice) -> bool {
     )
 }
 
+fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
+    format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
+}
+
 impl<'a> SimulationRuntime<'a> {
     fn record_raw_failure(&mut self, operation: &str, span: (usize, usize)) {
         if self.raw_failure.is_some() {
@@ -1410,10 +1414,11 @@ impl<'a> SimulationRuntime<'a> {
                 span_end: span.1,
             });
         }
+        let event_label = boundary_event_label(&crate_name, call_path.as_deref(), span);
         if is_replay_owned_boundary(&policy) {
             self.events.push(SimEvent {
                 kind: format!("boundary-{}", policy.as_str()),
-                label: Some(crate_name),
+                label: Some(event_label),
                 value: Some(self.seed),
             });
             return;
@@ -1429,7 +1434,7 @@ impl<'a> SimulationRuntime<'a> {
                 primary_end: span.1,
                 events: vec![SimEvent {
                     kind: "boundary-policy-required".to_owned(),
-                    label: Some(crate_name),
+                    label: Some(event_label),
                     value: None,
                 }],
             });

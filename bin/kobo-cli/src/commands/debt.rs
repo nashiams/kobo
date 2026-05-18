@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Context;
@@ -7,6 +8,7 @@ use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_driver::{lifetime_erasure_debt_report, run_kir_phase};
 use kobo_ir::MustCallObligation;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
+use syn::visit::Visit;
 
 use super::session::build_session;
 
@@ -189,12 +191,198 @@ fn summary_obligation_applies(
     applicable_types: &[String],
     applicable_functions: &[String],
 ) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    let applicability = SummaryApplicability::from_file(&file);
     applicable_types
         .iter()
-        .any(|type_name| source.contains(type_name))
+        .any(|type_name| applicability.references_type(type_name))
         || applicable_functions
             .iter()
-            .any(|function| source.contains(function))
+            .any(|function| applicability.references_function(function))
+}
+
+struct SummaryApplicability {
+    local_types: BTreeSet<String>,
+    imports: BTreeMap<String, Vec<String>>,
+    referenced_paths: Vec<Vec<String>>,
+    call_paths: Vec<Vec<String>>,
+}
+
+impl SummaryApplicability {
+    fn from_file(file: &syn::File) -> Self {
+        let mut applicability = Self {
+            local_types: local_type_names(file),
+            imports: import_paths(file),
+            referenced_paths: Vec::new(),
+            call_paths: Vec::new(),
+        };
+        applicability.visit_file(file);
+        applicability
+    }
+
+    fn references_type(&self, expected: &str) -> bool {
+        let expected_segments = split_path(expected);
+        self.referenced_paths
+            .iter()
+            .any(|path| self.type_path_matches(path, &expected_segments))
+    }
+
+    fn references_function(&self, expected: &str) -> bool {
+        let expected_segments = split_path(expected);
+        self.call_paths
+            .iter()
+            .any(|path| self.path_matches(path, &expected_segments))
+    }
+
+    fn path_matches(&self, path: &[String], expected: &[String]) -> bool {
+        if expected.is_empty() {
+            return false;
+        }
+        self.resolved_candidates(path).into_iter().any(|candidate| {
+            candidate == expected || (expected.len() == 1 && candidate.last() == expected.first())
+        })
+    }
+
+    fn type_path_matches(&self, path: &[String], expected: &[String]) -> bool {
+        if expected.is_empty() {
+            return false;
+        }
+        self.resolved_candidates(path).into_iter().any(|candidate| {
+            if candidate == expected {
+                return !(expected.len() == 1
+                    && candidate.len() == 1
+                    && self.local_types.contains(&expected[0]));
+            }
+            expected.len() == 1
+                && candidate.last() == expected.first()
+                && !(candidate.len() == 1 && self.local_types.contains(&expected[0]))
+        })
+    }
+
+    fn resolved_candidates(&self, path: &[String]) -> Vec<Vec<String>> {
+        let mut candidates = vec![path.to_vec()];
+        if let Some(first) = path.first() {
+            if let Some(imported) = self.imports.get(first) {
+                let mut resolved = imported.clone();
+                resolved.extend(path.iter().skip(1).cloned());
+                candidates.push(resolved);
+            }
+        }
+        candidates
+    }
+}
+
+impl<'ast> Visit<'ast> for SummaryApplicability {
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            self.call_paths.push(path_segments(&path.path));
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
+        self.referenced_paths.push(path_segments(&node.path));
+        syn::visit::visit_expr_struct(self, node);
+    }
+
+    fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
+        self.referenced_paths.push(path_segments(&node.path));
+        syn::visit::visit_type_path(self, node);
+    }
+}
+
+fn local_type_names(file: &syn::File) -> BTreeSet<String> {
+    let mut collector = LocalTypeCollector::default();
+    collector.visit_file(file);
+    collector.names
+}
+
+#[derive(Default)]
+struct LocalTypeCollector {
+    names: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for LocalTypeCollector {
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        self.names.insert(item.ident.to_string());
+        syn::visit::visit_item_struct(self, item);
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+        self.names.insert(item.ident.to_string());
+        syn::visit::visit_item_enum(self, item);
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        self.names.insert(item.ident.to_string());
+        syn::visit::visit_item_type(self, item);
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        self.names.insert(item.ident.to_string());
+        syn::visit::visit_item_trait(self, item);
+    }
+
+    fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+        self.names.insert(item.ident.to_string());
+        syn::visit::visit_item_union(self, item);
+    }
+}
+
+fn import_paths(file: &syn::File) -> BTreeMap<String, Vec<String>> {
+    let mut imports = BTreeMap::new();
+    for item in &file.items {
+        if let syn::Item::Use(item_use) = item {
+            collect_use_tree(&item_use.tree, Vec::new(), &mut imports);
+        }
+    }
+    imports
+}
+
+fn collect_use_tree(
+    tree: &syn::UseTree,
+    prefix: Vec<String>,
+    imports: &mut BTreeMap<String, Vec<String>>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            collect_use_tree(&path.tree, next, imports);
+        }
+        syn::UseTree::Name(name) => {
+            let mut full = prefix;
+            full.push(name.ident.to_string());
+            imports.insert(name.ident.to_string(), full);
+        }
+        syn::UseTree::Rename(rename) => {
+            let mut full = prefix;
+            full.push(rename.ident.to_string());
+            imports.insert(rename.rename.to_string(), full);
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_tree(item, prefix.clone(), imports);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
+}
+
+fn split_path(path: &str) -> Vec<String> {
+    path.split("::")
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn path_segments(path: &syn::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect()
 }
 
 fn string_array_field(value: &serde_json::Value, key: &str) -> Option<Vec<String>> {

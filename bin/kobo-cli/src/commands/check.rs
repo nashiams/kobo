@@ -11,7 +11,7 @@ use kobo_errors::{
     KDiagnostic, KErrorCode, Severity, SuggestionApplicability,
 };
 use kobo_ir::{FileSetBuilder, GuaranteePolicy, KoboSpan, ScenarioBoundaryPolicy};
-use syn::visit::Visit;
+use syn::{spanned::Spanned, visit::Visit};
 
 use crate::{ErrorFormat, GuaranteeProfileArg, PolicyOutputFormat};
 
@@ -566,258 +566,281 @@ fn project_boundary_policy_diagnostics(
 ) -> anyhow::Result<Vec<BoundaryPolicyEvidence>> {
     let source = std::fs::read_to_string(file)?;
     let boundary = parse_boundary_attr(&source);
-    let Some(boundary_call) = external_replay_boundary(&source, &session.config)
-        .or_else(|| boundary.as_ref()?.as_replay_boundary())
-    else {
+    let mut boundary_calls = external_replay_boundaries(&source, &session.config);
+    if boundary_calls.is_empty() {
+        if let Some(boundary_call) = boundary
+            .as_ref()
+            .and_then(BoundaryPolicy::as_replay_boundary)
+        {
+            boundary_calls.push(boundary_call);
+        }
+    }
+    if boundary_calls.is_empty() {
         return Ok(Vec::new());
-    };
-    let package_identity = package_identity_for(&session.config, file, &boundary_call.crate_name);
+    }
 
     let Some((file_id, _)) = session.file_set().iter_files().next() else {
         return Ok(Vec::new());
     };
-    let span = kobo_ir::KoboSpan::new(
-        boundary_call.span_start as u32,
-        boundary_call.span_end as u32,
-        file_id,
-    );
-
-    let Some(decision) = boundary_policy_decision(
-        &session.config.ecosystem_policy,
-        boundary.as_ref(),
-        &boundary_call,
-    ) else {
-        push_boundary_prompt(
-            session,
-            span,
-            format!(
-                "unmodeled external boundary `{}`; choose typed, model, record, activity, stub, outside, opaque, or debt",
-                boundary_call.crate_name
-            ),
+    let mut evidence = Vec::new();
+    for boundary_call in boundary_calls {
+        let package_identity =
+            package_identity_for(&session.config, file, &boundary_call.crate_name);
+        let span = kobo_ir::KoboSpan::new(
+            boundary_call.span_start as u32,
+            boundary_call.span_end as u32,
+            file_id,
         );
-        return Ok(Vec::new());
-    };
 
-    if matches!(decision.source, BoundaryPolicySource::Source) && decision.reason.is_none() {
-        push_boundary_prompt(
-            session,
-            span,
-            format!(
-                "boundary policy `{}` for `{}` requires a reason",
-                decision.policy.as_str(),
-                boundary_call.crate_name
-            ),
-        );
-        return Ok(Vec::new());
-    }
-
-    let reason = decision
-        .reason
-        .clone()
-        .unwrap_or_else(|| match decision.source {
-            BoundaryPolicySource::ProjectCrate => "project ecosystem crate policy".to_owned(),
-            BoundaryPolicySource::ProjectDefault => "project ecosystem default policy".to_owned(),
-            BoundaryPolicySource::Source => "source boundary policy".to_owned(),
-        });
-
-    let severity = resolve_severity(KErrorCode::K0108, session.guarantee_policy())
-        .unwrap_or(Severity::Warning);
-    session.diagnostics.push(
-        KDiagnostic::new(
-            KErrorCode::K0108,
-            severity,
-            DiagLabel::primary(
+        let Some(decision) = boundary_policy_decision(
+            &session.config.ecosystem_policy,
+            boundary.as_ref(),
+            &boundary_call,
+        ) else {
+            push_boundary_prompt(
+                session,
                 span,
                 format!(
-                    "boundary policy `{}` recorded for {}",
+                    "unmodeled external boundary `{}`; choose typed, model, record, activity, stub, outside, opaque, or debt",
+                    boundary_call.crate_name
+                ),
+            );
+            continue;
+        };
+
+        if matches!(decision.source, BoundaryPolicySource::Source) && decision.reason.is_none() {
+            push_boundary_prompt(
+                session,
+                span,
+                format!(
+                    "boundary policy `{}` for `{}` requires a reason",
                     decision.policy.as_str(),
                     boundary_call.crate_name
                 ),
-            ),
-            format!(
-                "boundary policy `{}` recorded for `{}`: {reason}",
-                decision.policy.as_str(),
-                boundary_call.crate_name
-            ),
-            DiagDecision("review this policy before claiming exact replay".to_owned()),
-        )
-        .with_suppression(DiagnosticSuppression::new(span, reason.clone())),
-    );
-
-    let declaration = match declarations::load_declaration(
-        file,
-        &boundary_call.crate_name,
-        package_identity.version.as_deref(),
-    ) {
-        DeclarationLookup::Valid(info) => {
-            if decision.policy == ScenarioBoundaryPolicy::Typed
-                && !declarations::declaration_covers_call(&info, boundary_call.call_path.as_deref())
-            {
-                session.diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0121,
-                    Severity::Error,
-                    DiagLabel::primary(
-                        span,
-                        format!(
-                            "typed declaration for `{}` does not cover boundary call",
-                            boundary_call.crate_name
-                        ),
-                    ),
-                    format!(
-                        "{} does not declare coverage for `{}`",
-                        info.path.display(),
-                        boundary_call
-                            .call_path
-                            .as_deref()
-                            .unwrap_or(boundary_call.crate_name.as_str())
-                    ),
-                    DiagDecision(
-                        "add function/type/adapter metadata for this call or choose record/activity/opaque"
-                            .to_owned(),
-                    ),
-                ));
-            }
-            if decision.policy == ScenarioBoundaryPolicy::Typed
-                && declarations::typed_call_has_replay_critical_effects(
-                    &info,
-                    boundary_call.call_path.as_deref(),
-                )
-            {
-                session.diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0121,
-                    Severity::Error,
-                    DiagLabel::primary(
-                        span,
-                        format!(
-                            "typed declaration for `{}` still has replay-critical effects",
-                            boundary_call.crate_name
-                        ),
-                    ),
-                    format!(
-                        "{} declares replay-critical effects for `{}`; typed exact replay requires no remaining replay-critical effects",
-                        info.path.display(),
-                        boundary_call
-                            .call_path
-                            .as_deref()
-                            .unwrap_or(boundary_call.crate_name.as_str())
-                    ),
-                    DiagDecision(
-                        "change this boundary to record/activity/model or mark the function pure/deterministic with no effects"
-                            .to_owned(),
-                    ),
-                ));
-            }
-            Some(info)
+            );
+            continue;
         }
-        DeclarationLookup::Missing if decision.policy == ScenarioBoundaryPolicy::Typed => {
-            session.diagnostics.push(KDiagnostic::new(
-                KErrorCode::K0122,
-                Severity::Error,
+
+        let reason = decision
+            .reason
+            .clone()
+            .unwrap_or_else(|| match decision.source {
+                BoundaryPolicySource::ProjectCrate => "project ecosystem crate policy".to_owned(),
+                BoundaryPolicySource::ProjectDefault => {
+                    "project ecosystem default policy".to_owned()
+                }
+                BoundaryPolicySource::Source => "source boundary policy".to_owned(),
+            });
+
+        let severity = resolve_severity(KErrorCode::K0108, session.guarantee_policy())
+            .unwrap_or(Severity::Warning);
+        session.diagnostics.push(
+            KDiagnostic::new(
+                KErrorCode::K0108,
+                severity,
                 DiagLabel::primary(
                     span,
                     format!(
-                        "typed boundary for `{}` has no declaration file",
+                        "boundary policy `{}` recorded for {}",
+                        decision.policy.as_str(),
                         boundary_call.crate_name
                     ),
                 ),
                 format!(
-                    "`{}` is marked typed, but Kobo could not find a matching kobo.d.toml declaration",
+                    "boundary policy `{}` recorded for `{}`: {reason}",
+                    decision.policy.as_str(),
+                    boundary_call.crate_name
+                ),
+                DiagDecision("review this policy before claiming exact replay".to_owned()),
+            )
+            .with_suppression(DiagnosticSuppression::new(span, reason.clone())),
+        );
+
+        let declaration = match declarations::load_declaration(
+            file,
+            &boundary_call.crate_name,
+            package_identity.version.as_deref(),
+        ) {
+            DeclarationLookup::Valid(info) => {
+                if decision.policy == ScenarioBoundaryPolicy::Typed
+                    && !declarations::declaration_covers_call(
+                        &info,
+                        boundary_call.call_path.as_deref(),
+                    )
+                {
+                    session.diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0121,
+                        Severity::Error,
+                        DiagLabel::primary(
+                            span,
+                            format!(
+                                "typed declaration for `{}` does not cover boundary call",
+                                boundary_call.crate_name
+                            ),
+                        ),
+                        format!(
+                            "{} does not declare coverage for `{}`",
+                            info.path.display(),
+                            boundary_call
+                                .call_path
+                                .as_deref()
+                                .unwrap_or(boundary_call.crate_name.as_str())
+                        ),
+                        DiagDecision(
+                            "add function/type/adapter metadata for this call or choose record/activity/opaque"
+                                .to_owned(),
+                        ),
+                    ));
+                }
+                if decision.policy == ScenarioBoundaryPolicy::Typed
+                    && declarations::typed_call_has_replay_critical_effects(
+                        &info,
+                        boundary_call.call_path.as_deref(),
+                    )
+                {
+                    session.diagnostics.push(KDiagnostic::new(
+                        KErrorCode::K0121,
+                        Severity::Error,
+                        DiagLabel::primary(
+                            span,
+                            format!(
+                                "typed declaration for `{}` still has replay-critical effects",
+                                boundary_call.crate_name
+                            ),
+                        ),
+                        format!(
+                            "{} declares replay-critical effects for `{}`; typed exact replay requires no remaining replay-critical effects",
+                            info.path.display(),
+                            boundary_call
+                                .call_path
+                                .as_deref()
+                                .unwrap_or(boundary_call.crate_name.as_str())
+                        ),
+                        DiagDecision(
+                            "change this boundary to record/activity/model or mark the function pure/deterministic with no effects"
+                                .to_owned(),
+                        ),
+                    ));
+                }
+                Some(info)
+            }
+            DeclarationLookup::Missing if decision.policy == ScenarioBoundaryPolicy::Typed => {
+                session.diagnostics.push(KDiagnostic::new(
+                    KErrorCode::K0122,
+                    Severity::Error,
+                    DiagLabel::primary(
+                        span,
+                        format!(
+                            "typed boundary for `{}` has no declaration file",
+                            boundary_call.crate_name
+                        ),
+                    ),
+                    format!(
+                        "`{}` is marked typed, but Kobo could not find a matching kobo.d.toml declaration",
+                        boundary_call.crate_name
+                    ),
+                    DiagDecision(
+                        "add a declaration file or change this boundary to record, activity, opaque, or debt"
+                            .to_owned(),
+                    ),
+                ));
+                None
+            }
+            DeclarationLookup::Invalid(error)
+                if decision.policy == ScenarioBoundaryPolicy::Typed =>
+            {
+                session.diagnostics.push(KDiagnostic::new(
+                    KErrorCode::K0121,
+                    Severity::Error,
+                    DiagLabel::primary(
+                        span,
+                        format!(
+                            "invalid declaration metadata for `{}`",
+                            boundary_call.crate_name
+                        ),
+                    ),
+                    format!(
+                        "{} key `{}` is invalid for `{}`: {}",
+                        error.path.display(),
+                        error.key,
+                        boundary_call.crate_name,
+                        error.message
+                    ),
+                    DiagDecision(
+                        "fix the declaration file before using typed ecosystem policy".to_owned(),
+                    ),
+                ));
+                None
+            }
+            DeclarationLookup::Invalid(_) | DeclarationLookup::Missing => None,
+        };
+        if decision.policy == ScenarioBoundaryPolicy::Activity
+            && !declarations::activity_covers_call(
+                declaration.as_ref(),
+                boundary_call.call_path.as_deref(),
+            )
+        {
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0125,
+                Severity::Warning,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "activity boundary for `{}` is missing retry metadata",
+                        boundary_call.crate_name
+                    ),
+                ),
+                format!(
+                    "`{}` activity metadata should include retry, idempotency, recorded result, and compensation information",
                     boundary_call.crate_name
                 ),
                 DiagDecision(
-                    "add a declaration file or change this boundary to record, activity, opaque, or debt"
+                    "add retry/idempotency/result/compensation metadata before using activity evidence for replay review".to_owned(),
+                ),
+            ));
+        }
+        let adapter_package = session
+            .config
+            .ecosystem_policy
+            .adapter_for(&boundary_call.crate_name)
+            .map(|adapter| adapter.package.clone());
+        if decision.policy == ScenarioBoundaryPolicy::Model && adapter_package.is_none() {
+            session.diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0123,
+                Severity::Error,
+                DiagLabel::primary(
+                    span,
+                    format!(
+                        "model boundary for `{}` has no adapter package",
+                        boundary_call.crate_name
+                    ),
+                ),
+                format!(
+                    "`{}` is marked model, but no [[ecosystem.adapter]] package was configured",
+                    boundary_call.crate_name
+                ),
+                DiagDecision(
+                    "install an adapter package, change the boundary to record/activity/opaque, or accept debt"
                         .to_owned(),
                 ),
             ));
-            None
         }
-        DeclarationLookup::Invalid(error) if decision.policy == ScenarioBoundaryPolicy::Typed => {
-            session.diagnostics.push(KDiagnostic::new(
-                KErrorCode::K0121,
-                Severity::Error,
-                DiagLabel::primary(
-                    span,
-                    format!(
-                        "invalid declaration metadata for `{}`",
-                        boundary_call.crate_name
-                    ),
-                ),
-                format!(
-                    "{} key `{}` is invalid for `{}`: {}",
-                    error.path.display(),
-                    error.key,
-                    boundary_call.crate_name,
-                    error.message
-                ),
-                DiagDecision(
-                    "fix the declaration file before using typed ecosystem policy".to_owned(),
-                ),
-            ));
-            None
-        }
-        DeclarationLookup::Invalid(_) | DeclarationLookup::Missing => None,
-    };
-    if decision.policy == ScenarioBoundaryPolicy::Activity
-        && !declarations::activity_covers_call(
-            declaration.as_ref(),
-            boundary_call.call_path.as_deref(),
-        )
-    {
-        session.diagnostics.push(KDiagnostic::new(
-            KErrorCode::K0125,
-            Severity::Warning,
-            DiagLabel::primary(
-                span,
-                format!(
-                    "activity boundary for `{}` is missing retry metadata",
-                    boundary_call.crate_name
-                ),
-            ),
-            format!(
-                "`{}` activity metadata should include retry, idempotency, recorded result, and compensation information",
-                boundary_call.crate_name
-            ),
-            DiagDecision(
-                "add retry/idempotency/result/compensation metadata before using activity evidence for replay review".to_owned(),
-            ),
-        ));
-    }
-    let adapter_package = session
-        .config
-        .ecosystem_policy
-        .adapter_for(&boundary_call.crate_name)
-        .map(|adapter| adapter.package.clone());
-    if decision.policy == ScenarioBoundaryPolicy::Model && adapter_package.is_none() {
-        session.diagnostics.push(KDiagnostic::new(
-            KErrorCode::K0123,
-            Severity::Error,
-            DiagLabel::primary(
-                span,
-                format!("model boundary for `{}` has no adapter package", boundary_call.crate_name),
-            ),
-            format!(
-                "`{}` is marked model, but no [[ecosystem.adapter]] package was configured",
-                boundary_call.crate_name
-            ),
-            DiagDecision(
-                "install an adapter package, change the boundary to record/activity/opaque, or accept debt"
-                    .to_owned(),
-            ),
-        ));
+
+        evidence.push(BoundaryPolicyEvidence {
+            crate_name: boundary_call.crate_name,
+            policy: decision.policy,
+            reason: decision.reason,
+            source: decision.source,
+            package_identity,
+            declaration,
+            span_start: boundary_call.span_start,
+            span_end: boundary_call.span_end,
+            call_path: boundary_call.call_path,
+            adapter_package,
+        });
     }
 
-    Ok(vec![BoundaryPolicyEvidence {
-        crate_name: boundary_call.crate_name,
-        policy: decision.policy,
-        reason: decision.reason,
-        source: decision.source,
-        package_identity,
-        declaration,
-        span_start: boundary_call.span_start,
-        span_end: boundary_call.span_end,
-        call_path: boundary_call.call_path,
-        adapter_package,
-    }])
+    Ok(evidence)
 }
 
 fn emit_boundary_policy_evidence(
@@ -1355,18 +1378,20 @@ impl BoundaryPolicy {
     }
 }
 
-fn external_replay_boundary(
+fn external_replay_boundaries(
     source: &str,
     config: &kobo_driver::KoboConfig,
-) -> Option<ExternalReplayBoundary> {
-    parsed_external_boundary(source, config)
+) -> Vec<ExternalReplayBoundary> {
+    parsed_external_boundaries(source, config)
 }
 
-fn parsed_external_boundary(
+fn parsed_external_boundaries(
     source: &str,
     config: &kobo_driver::KoboConfig,
-) -> Option<ExternalReplayBoundary> {
-    let parsed = syn::parse_file(source).ok()?;
+) -> Vec<ExternalReplayBoundary> {
+    let Ok(parsed) = syn::parse_file(source) else {
+        return Vec::new();
+    };
     let import_index = ImportIndex::from_file(&parsed);
     let dependency_names = dependency_names(config);
     let mut visitor = ExternalBoundaryVisitor {
@@ -1374,7 +1399,7 @@ fn parsed_external_boundary(
         imports: import_index,
         dependency_names,
         bindings: BTreeMap::new(),
-        found: None,
+        found: Vec::new(),
     };
     visitor.visit_file(&parsed);
     visitor.found
@@ -1462,14 +1487,11 @@ struct ExternalBoundaryVisitor<'a> {
     imports: ImportIndex,
     dependency_names: BTreeSet<String>,
     bindings: BTreeMap<String, Vec<String>>,
-    found: Option<ExternalReplayBoundary>,
+    found: Vec<ExternalReplayBoundary>,
 }
 
 impl<'ast> Visit<'ast> for ExternalBoundaryVisitor<'_> {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if self.found.is_some() {
-            return;
-        }
         if let syn::Expr::Path(path) = node.func.as_ref() {
             let segments = path
                 .path
@@ -1482,39 +1504,33 @@ impl<'ast> Visit<'ast> for ExternalBoundaryVisitor<'_> {
                     .as_deref()
                     .and_then(|path| self.source.find(path).map(|_| path.to_owned()))
                     .unwrap_or_else(|| segments.join("::"));
-                let start = self
-                    .source
-                    .find(&needle)
-                    .or_else(|| self.source.find(&crate_name))
-                    .unwrap_or(0);
-                self.found = Some(ExternalReplayBoundary {
-                    span_start: start,
-                    span_end: start + crate_name.len(),
+                let (span_start, span_end) = span_offsets(self.source, path.path.span())
+                    .unwrap_or_else(|| fallback_span(self.source, &needle, &crate_name));
+                self.push_boundary(ExternalReplayBoundary {
+                    span_start,
+                    span_end,
                     crate_name,
                     call_path,
                 });
-                return;
             }
         }
         syn::visit::visit_expr_call(self, node);
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if self.found.is_some() {
-            return;
-        }
         if let Some((crate_name, call_path)) = self.resolve_method_call_path(node) {
-            let start = call_path
-                .as_deref()
-                .and_then(|path| self.source.find(path))
-                .or_else(|| self.source.find(&crate_name))
-                .unwrap_or(0);
-            self.found = Some(ExternalReplayBoundary {
-                span_start: start,
-                span_end: start + crate_name.len(),
+            let needle = call_path.clone().unwrap_or_else(|| crate_name.clone());
+            let (span_start, span_end) = span_offsets(self.source, node.span())
+                .unwrap_or_else(|| fallback_span(self.source, &needle, &crate_name));
+            self.push_boundary(ExternalReplayBoundary {
+                span_start,
+                span_end,
                 crate_name,
                 call_path,
             });
+            for arg in &node.args {
+                self.visit_expr(arg);
+            }
             return;
         }
         syn::visit::visit_expr_method_call(self, node);
@@ -1529,6 +1545,18 @@ impl<'ast> Visit<'ast> for ExternalBoundaryVisitor<'_> {
 }
 
 impl ExternalBoundaryVisitor<'_> {
+    fn push_boundary(&mut self, boundary: ExternalReplayBoundary) {
+        if self.found.iter().any(|existing| {
+            existing.crate_name == boundary.crate_name
+                && existing.call_path == boundary.call_path
+                && existing.span_start == boundary.span_start
+                && existing.span_end == boundary.span_end
+        }) {
+            return;
+        }
+        self.found.push(boundary);
+    }
+
     fn resolve_call_path(&self, segments: &[String]) -> Option<(String, Option<String>)> {
         let resolved = self.resolve_segments(segments)?;
         let crate_name = resolved.first()?.clone();
@@ -1619,6 +1647,42 @@ impl ExternalBoundaryVisitor<'_> {
         }
         None
     }
+}
+
+fn span_offsets(source: &str, span: proc_macro2::Span) -> Option<(usize, usize)> {
+    let start = byte_offset_for_line_column(source, span.start().line, span.start().column)?;
+    let end = byte_offset_for_line_column(source, span.end().line, span.end().column)?;
+    Some((start, end.max(start + 1)))
+}
+
+fn byte_offset_for_line_column(source: &str, target_line: usize, column: usize) -> Option<usize> {
+    if target_line == 0 {
+        return None;
+    }
+    let mut offset = 0usize;
+    for (line_index, line) in source.split_inclusive('\n').enumerate() {
+        if line_index + 1 == target_line {
+            return Some(offset + column.min(line.len()));
+        }
+        offset += line.len();
+    }
+    (target_line == source.lines().count() + 1).then_some(offset)
+}
+
+fn fallback_span(source: &str, needle: &str, crate_name: &str) -> (usize, usize) {
+    let start = source
+        .find(needle)
+        .or_else(|| source.find(crate_name))
+        .unwrap_or(0);
+    let width = if source
+        .get(start..)
+        .is_some_and(|tail| tail.starts_with(needle))
+    {
+        needle.len()
+    } else {
+        crate_name.len()
+    };
+    (start, start + width.max(1))
 }
 
 fn parse_boundary_attr(source: &str) -> Option<BoundaryPolicy> {

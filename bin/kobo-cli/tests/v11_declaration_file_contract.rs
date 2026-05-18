@@ -289,7 +289,7 @@ fn declaration_with_wrong_declared_hash_emits_k0121() {
 name = "sqlx"
 version = "0.8"
 source = "bindgen"
-summary_hash = "wrong-hash"
+declaration_hash = "wrong-hash"
 
 [[function]]
 path = "sqlx::Pool::connect_lazy"
@@ -316,8 +316,237 @@ determinism = "deterministic"
     );
     assert_contains(
         &output.combined(),
-        "summary_hash",
+        "declaration_hash",
         "declaration hash mismatch should name the hash field",
+    );
+}
+
+#[test]
+fn typed_declaration_validates_every_external_call() {
+    let project = TestProject::new("v11-declaration-multiple-calls");
+    write_sqlx_project(&project);
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "manual"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "sqlx", policy = "typed", reason = "typed declaration supplied")]
+use sqlx::Pool;
+
+fn main() {
+    let _pool = Pool::connect_lazy();
+    let _other = Pool::acquire();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "typed policy must validate every external call, not only the first",
+    );
+    assert_contains(
+        &output.combined(),
+        "sqlx::Pool::acquire",
+        "missing coverage should name the later external call",
+    );
+
+    let lsp = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(&lsp, "LSP should render multi-call typed declaration gaps");
+    assert_contains(
+        &lsp.stdout,
+        "sqlx::Pool::acquire",
+        "LSP should validate the later external call too",
+    );
+}
+
+#[test]
+fn repeated_external_calls_keep_distinct_call_site_spans() {
+    let project = TestProject::new("v11-declaration-repeated-call-spans");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "repeated_calls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = "0.12"
+"#,
+    );
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.12"
+source = "bindgen"
+
+[[function]]
+path = "reqwest::Client::new"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "typed", reason = "typed declaration supplied")]
+use reqwest::Client;
+
+fn main() {
+    // reqwest::Client::new in a comment must not become the source span.
+    let _first = Client::new();
+    let _second = Client::new();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "typed repeated call fixture should satisfy replay-critical check",
+    );
+    let evidences = output
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value["category"].as_str() == Some("boundary-policy-evidence"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        evidences.len(),
+        2,
+        "each repeated external call should produce independent boundary evidence:\n{}",
+        output.stdout
+    );
+    assert_ne!(
+        evidences[0]["span"]["byte_start"], evidences[1]["span"]["byte_start"],
+        "repeated calls must not collapse onto one global text-search span:\n{}",
+        output.stdout
+    );
+    let source = fs::read_to_string(&file).expect("source should read");
+    for evidence in evidences {
+        let start = evidence["span"]["byte_start"]
+            .as_u64()
+            .expect("span start should be numeric") as usize;
+        let line = source[..start].lines().count() + 1;
+        assert_ne!(
+            line, 6,
+            "boundary span should point at the real call site, not the earlier comment:\n{}",
+            output.stdout
+        );
+    }
+}
+
+#[test]
+fn lsp_repeated_external_call_diagnostics_keep_distinct_ranges() {
+    let project = TestProject::new("v11-declaration-lsp-repeated-call-spans");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "repeated_lsp_calls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = "0.12"
+"#,
+    );
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.12"
+source = "bindgen"
+
+[[function]]
+path = "reqwest::Client::other"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "typed", reason = "typed declaration supplied")]
+use reqwest::Client;
+
+fn main() {
+    // reqwest::Client::new in a comment must not become the diagnostic range.
+    let _first = Client::new();
+    let _second = Client::new();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "LSP should render repeated call declaration diagnostics",
+    );
+    let diagnostics = output
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value["code"].as_str() == Some("K0121"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "LSP declaration diagnostics should cover both repeated calls:\n{}",
+        output.stdout
+    );
+    assert_ne!(
+        diagnostics[0]["range"]["start"], diagnostics[1]["range"]["start"],
+        "LSP ranges should be call-site specific for repeated calls:\n{}",
+        output.stdout
     );
 }
 

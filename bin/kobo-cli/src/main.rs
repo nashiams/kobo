@@ -309,7 +309,10 @@ pub(crate) enum KoboCommand {
     /// Show ownership debt report for a .kobo file.
     Debt {
         #[arg(value_name = "FILE")]
-        file: PathBuf,
+        file: Option<PathBuf>,
+        /// Scan a standalone Rust Cargo project without requiring Kobo sources.
+        #[arg(long, value_name = "DIR")]
+        cargo: Option<PathBuf>,
         /// Output JSON (schema_version=1, stable from v0.4)
         #[arg(long)]
         json: bool,

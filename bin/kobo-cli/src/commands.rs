@@ -265,6 +265,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         } => fix::cmd_fix(&file, dry_run, apply, json),
         KoboCommand::Debt {
             file,
+            cargo,
             json,
             summary,
             borrows,
@@ -277,19 +278,29 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 eprintln!("kobo debt --watch is planned for v0.5");
                 return Ok(());
             }
+            if let Some(cargo_root) = cargo {
+                anyhow::ensure!(
+                    !(borrows || patterns || errors || liveness),
+                    "kobo debt --cargo supports default, --summary, and --json output only"
+                );
+                return debt::cmd_debt_cargo(&cargo_root, json, summary);
+            }
+            let Some(file) = file else {
+                anyhow::bail!("kobo debt requires FILE or --cargo DIR");
+            };
             if borrows {
-                return debt::cmd_debt_borrows(&file, json);
+                return debt::cmd_debt_borrows(file.as_path(), json);
             }
             if patterns {
-                return debt::cmd_debt_patterns(&file, json);
+                return debt::cmd_debt_patterns(file.as_path(), json);
             }
             if errors {
-                return debt::cmd_debt_errors(&file, json);
+                return debt::cmd_debt_errors(file.as_path(), json);
             }
             if liveness {
-                return debt::cmd_debt_liveness(&file, json);
+                return debt::cmd_debt_liveness(file.as_path(), json);
             }
-            debt::cmd_debt(&file, json, summary)
+            debt::cmd_debt(file.as_path(), json, summary)
         }
         KoboCommand::Init { name, from_cargo } => init::cmd_init(name.as_deref(), from_cargo),
         KoboCommand::Build {

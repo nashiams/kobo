@@ -22,10 +22,44 @@ pub struct KoboConfig {
     pub package_name: String,
     pub package_version: String,
     pub dependencies: HashMap<String, toml::Value>,
+    pub workspace_dependencies: HashMap<String, toml::Value>,
     pub copy_types: Vec<String>,
     pub mutating_methods: Vec<String>,
+    pub ecosystem_policy: EcosystemPolicyConfig,
     pub src_dir: PathBuf,
     pub enable_parse_recovery: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcosystemPolicyConfig {
+    pub default: kobo_ir::ScenarioBoundaryPolicy,
+    pub default_is_configured: bool,
+    pub replay_unknown: kobo_ir::ScenarioBoundaryPolicy,
+    pub crates: Vec<EcosystemCratePolicy>,
+    pub adapters: Vec<EcosystemAdapterPolicy>,
+    pub summaries: Vec<EcosystemSummaryPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcosystemCratePolicy {
+    pub name: String,
+    pub policy: kobo_ir::ScenarioBoundaryPolicy,
+    pub reason: Option<String>,
+    pub retry: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcosystemAdapterPolicy {
+    pub crate_name: String,
+    pub package: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcosystemSummaryPolicy {
+    pub crate_name: String,
+    pub path: PathBuf,
+    pub hash: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -50,6 +84,8 @@ struct RawKoboConfig {
     mutating_methods: RawMutatingMethodsSection,
     #[serde(default)]
     guarantees: RawGuaranteesSection,
+    #[serde(default)]
+    ecosystem: RawEcosystemSection,
     #[serde(default)]
     profiles: HashMap<String, RawProfileSection>,
     mode: Option<LegacyMode>,
@@ -127,6 +163,42 @@ struct RawGuaranteesSection {
     errors: Option<ErrorPolicy>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RawEcosystemSection {
+    default: Option<String>,
+    replay_unknown: Option<String>,
+    #[serde(default, rename = "crate")]
+    crates: Vec<RawEcosystemCrateSection>,
+    #[serde(default)]
+    adapter: Vec<RawEcosystemAdapterSection>,
+    #[serde(default)]
+    summary: Vec<RawEcosystemSummarySection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawEcosystemCrateSection {
+    name: String,
+    policy: Option<String>,
+    reason: Option<String>,
+    retry: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawEcosystemAdapterSection {
+    #[serde(rename = "crate")]
+    crate_name: String,
+    package: String,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawEcosystemSummarySection {
+    #[serde(rename = "crate")]
+    crate_name: String,
+    path: PathBuf,
+    hash: String,
+}
+
 /// Errors produced while loading or parsing `Kobo.toml`.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -144,6 +216,9 @@ pub enum ConfigError {
     },
     #[error("failed to parse TOML: {0}")]
     ParseError(String),
+
+    #[error("K0120 ecosystem policy parse error at {key}: unknown boundary policy `{value}`")]
+    InvalidEcosystemPolicy { key: String, value: String },
 }
 
 impl Default for KoboConfig {
@@ -160,11 +235,38 @@ impl Default for KoboConfig {
             package_name: String::new(),
             package_version: String::new(),
             dependencies: HashMap::new(),
+            workspace_dependencies: HashMap::new(),
             copy_types: Vec::new(),
             mutating_methods: Vec::new(),
+            ecosystem_policy: EcosystemPolicyConfig::default(),
             src_dir: PathBuf::from("src"),
             enable_parse_recovery: false,
         }
+    }
+}
+
+impl Default for EcosystemPolicyConfig {
+    fn default() -> Self {
+        Self {
+            default: kobo_ir::ScenarioBoundaryPolicy::Opaque,
+            default_is_configured: false,
+            replay_unknown: kobo_ir::ScenarioBoundaryPolicy::Debt,
+            crates: Vec::new(),
+            adapters: Vec::new(),
+            summaries: Vec::new(),
+        }
+    }
+}
+
+impl EcosystemPolicyConfig {
+    pub fn crate_policy(&self, crate_name: &str) -> Option<&EcosystemCratePolicy> {
+        self.crates.iter().find(|policy| policy.name == crate_name)
+    }
+
+    pub fn adapter_for(&self, crate_name: &str) -> Option<&EcosystemAdapterPolicy> {
+        self.adapters
+            .iter()
+            .find(|adapter| adapter.crate_name == crate_name)
     }
 }
 
@@ -178,9 +280,11 @@ pub fn load_config_for(crate_dir: &Path, workspace_root: &Path) -> Result<KoboCo
     let mut config = KoboConfig::default();
 
     apply_config_layer(&mut config, workspace_root)?;
+    apply_cargo_manifest_layer(&mut config, workspace_root)?;
 
     if crate_dir != workspace_root {
         apply_config_layer(&mut config, crate_dir)?;
+        apply_cargo_manifest_layer(&mut config, crate_dir)?;
     }
 
     Ok(config)
@@ -192,7 +296,7 @@ fn apply_config_layer(config: &mut KoboConfig, config_dir: &Path) -> Result<(), 
         return Ok(());
     };
 
-    raw_config.merge_into(config, config_dir);
+    raw_config.merge_into(config, config_dir)?;
     Ok(())
 }
 
@@ -214,8 +318,59 @@ fn read_optional_config(config_path: &Path) -> Result<Option<RawKoboConfig>, Con
         })
 }
 
+fn apply_cargo_manifest_layer(
+    config: &mut KoboConfig,
+    manifest_dir: &Path,
+) -> Result<(), ConfigError> {
+    let manifest_path = manifest_dir.join("Cargo.toml");
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+
+    let source = fs::read_to_string(&manifest_path).map_err(|source| ConfigError::Io {
+        path: manifest_path.clone(),
+        source,
+    })?;
+    let parsed = source
+        .parse::<toml::Value>()
+        .map_err(|source| ConfigError::Parse {
+            path: manifest_path,
+            source: Box::new(source),
+        })?;
+
+    if let Some(package) = parsed.get("package").and_then(toml::Value::as_table) {
+        if let Some(name) = package.get("name").and_then(toml::Value::as_str) {
+            config.package_name = name.to_owned();
+        }
+        if let Some(version) = package.get("version").and_then(toml::Value::as_str) {
+            config.package_version = version.to_owned();
+        }
+    }
+
+    if let Some(workspace_dependencies) = parsed
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(toml::Value::as_table)
+    {
+        config.workspace_dependencies = workspace_dependencies
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+    }
+
+    let Some(dependencies) = parsed.get("dependencies").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    config.dependencies = dependencies
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    Ok(())
+}
+
 impl RawKoboConfig {
-    fn merge_into(self, config: &mut KoboConfig, config_dir: &Path) {
+    fn merge_into(self, config: &mut KoboConfig, config_dir: &Path) -> Result<(), ConfigError> {
         if let Some(profile) = self.profile.or(self.kobo.profile).or_else(|| {
             self.mode
                 .or(self.kobo.mode)
@@ -297,7 +452,77 @@ impl RawKoboConfig {
         if !self.mutating_methods.methods.is_empty() {
             config.mutating_methods = self.mutating_methods.methods;
         }
+        self.ecosystem
+            .apply_to(&mut config.ecosystem_policy, config_dir)?;
+        Ok(())
     }
+}
+
+impl RawEcosystemSection {
+    fn apply_to(
+        self,
+        policy: &mut EcosystemPolicyConfig,
+        config_dir: &Path,
+    ) -> Result<(), ConfigError> {
+        if let Some(default) = self.default.as_deref() {
+            let default = parse_boundary_policy("ecosystem.default", default)?;
+            policy.default = default;
+            policy.default_is_configured = true;
+        }
+        if let Some(replay_unknown) = self.replay_unknown.as_deref() {
+            let replay_unknown = parse_boundary_policy("ecosystem.replay_unknown", replay_unknown)?;
+            policy.replay_unknown = replay_unknown;
+        }
+        for crate_policy in self.crates {
+            policy
+                .crates
+                .retain(|existing| existing.name != crate_policy.name);
+            policy.crates.push(EcosystemCratePolicy {
+                name: crate_policy.name,
+                policy: match crate_policy.policy.as_deref() {
+                    Some(value) => parse_boundary_policy("ecosystem.crate.policy", value)?,
+                    None => policy.default.clone(),
+                },
+                reason: crate_policy.reason,
+                retry: crate_policy.retry,
+            });
+        }
+        for adapter in self.adapter {
+            policy
+                .adapters
+                .retain(|existing| existing.crate_name != adapter.crate_name);
+            policy.adapters.push(EcosystemAdapterPolicy {
+                crate_name: adapter.crate_name,
+                package: adapter.package,
+                reason: adapter.reason,
+            });
+        }
+        for summary in self.summary {
+            policy
+                .summaries
+                .retain(|existing| existing.crate_name != summary.crate_name);
+            policy.summaries.push(EcosystemSummaryPolicy {
+                crate_name: summary.crate_name,
+                path: resolve_output_dir(config_dir, summary.path),
+                hash: summary.hash,
+            });
+        }
+        Ok(())
+    }
+}
+
+fn parse_boundary_policy(
+    key: &str,
+    value: &str,
+) -> Result<kobo_ir::ScenarioBoundaryPolicy, ConfigError> {
+    let policy = kobo_ir::ScenarioBoundaryPolicy::from_str(value);
+    if matches!(policy, kobo_ir::ScenarioBoundaryPolicy::Unselected) && value != "unselected" {
+        return Err(ConfigError::InvalidEcosystemPolicy {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        });
+    }
+    Ok(policy)
 }
 
 impl RawGuaranteesSection {
@@ -345,7 +570,7 @@ pub fn parse_kobo_config(toml_str: &str) -> Result<KoboConfig, ConfigError> {
     let mut config = KoboConfig::default();
     // Use a dummy config_dir since we can't resolve paths from a raw string.
     let dummy_dir = Path::new(".");
-    raw.merge_into(&mut config, dummy_dir);
+    raw.merge_into(&mut config, dummy_dir)?;
     Ok(config)
 }
 

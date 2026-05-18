@@ -54,6 +54,7 @@ pub enum ScenarioOpKind {
     },
     ExternalBoundary {
         crate_name: String,
+        call_path: Option<String>,
         policy: ScenarioBoundaryPolicy,
         reason: Option<String>,
     },
@@ -63,8 +64,10 @@ pub enum ScenarioOpKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ScenarioBoundaryPolicy {
+    Typed,
     Model,
     Record,
+    Activity,
     Stub,
     Outside,
     Opaque,
@@ -75,8 +78,10 @@ pub enum ScenarioBoundaryPolicy {
 impl ScenarioBoundaryPolicy {
     pub const fn as_str(&self) -> &'static str {
         match self {
+            Self::Typed => "typed",
             Self::Model => "model",
             Self::Record => "record",
+            Self::Activity => "activity",
             Self::Stub => "stub",
             Self::Outside => "outside",
             Self::Opaque => "opaque",
@@ -87,8 +92,10 @@ impl ScenarioBoundaryPolicy {
 
     pub fn from_str(value: &str) -> Self {
         match value {
+            "typed" => Self::Typed,
             "model" => Self::Model,
             "record" => Self::Record,
+            "activity" => Self::Activity,
             "stub" => Self::Stub,
             "outside" => Self::Outside,
             "opaque" => Self::Opaque,

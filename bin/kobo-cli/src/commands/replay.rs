@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::ErrorFormat;
 
+use super::declarations;
 use super::sim_model;
 use super::witness_evidence;
 
@@ -117,6 +118,14 @@ fn replay_v1(
         &options,
         kobo_sim_core::EngineMode::Both,
     )?;
+    validate_ecosystem_boundary_evidence(
+        witness,
+        &verified_source.path,
+        &session.config,
+        &run,
+        error_format,
+    )?;
+    validate_declaration_evidence(witness, &verified_source.path, &run, error_format)?;
     validate_removed_events_replay_safe(witness, &run.events, error_format)?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
@@ -136,6 +145,8 @@ fn replay_v1(
         "call_graph_obligation_summaries": witness_evidence::call_graph_obligation_summaries_json(&scenario_program, &run),
         "replay_grade": witness_evidence::replay_grade_json(&run, fuzz_enabled),
         "boundary_ledger": witness_evidence::boundary_ledger_json(&scenario_program, &run),
+        "ecosystem_boundaries": ecosystem_boundaries_json(&verified_source.path, &session.config, &run),
+        "declarations": declarations_json(&verified_source.path, &run),
         "inferred_obligations": inferred_obligations.clone(),
         "lifecycle_inference": {
             "mode": "observe",
@@ -159,6 +170,8 @@ fn replay_v1(
         "call_graph_obligation_summaries": witness["call_graph_obligation_summaries"].clone(),
         "replay_grade": witness["replay_grade"].clone(),
         "boundary_ledger": witness["boundary_ledger"].clone(),
+        "ecosystem_boundaries": witness["ecosystem_boundaries"].clone(),
+        "declarations": witness["declarations"].clone(),
         "inferred_obligations": witness["inferred_obligations"].clone(),
         "lifecycle_inference": witness["lifecycle_inference"].clone(),
         "failure": witness_failure_json(witness),
@@ -341,6 +354,194 @@ fn ecosystem_scope(run: &kobo_sim_core::FullDepthRun) -> String {
         .as_ref()
         .map(|manifest| manifest.execution_scope.clone())
         .unwrap_or_else(|| "semantic-only".to_owned())
+}
+
+fn validate_ecosystem_boundary_evidence(
+    witness: &Value,
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    run: &kobo_sim_core::FullDepthRun,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let expected = ecosystem_boundaries_json(file, config, run);
+    if let Some(boundaries) = witness["ecosystem_boundaries"].as_array() {
+        if boundaries.iter().any(|boundary| {
+            boundary["policy"].as_str() == Some("record")
+                && boundary["evidence"].as_str() != Some("recorded-event")
+        }) {
+            let payload = serde_json::json!({
+                "code": "K0124",
+                "message": "record boundary is missing recorded event evidence",
+                "expected": expected,
+                "observed": witness["ecosystem_boundaries"].clone(),
+            });
+            emit_replay_issue(&payload, error_format)?;
+            anyhow::bail!("K0124 record boundary missing recorded evidence");
+        }
+    }
+    if witness["ecosystem_boundaries"] == expected {
+        return Ok(());
+    }
+    let payload = serde_json::json!({
+        "code": "K0129",
+        "message": "ecosystem boundary evidence changed; exact replay would overclaim external coverage",
+        "expected": expected,
+        "observed": witness["ecosystem_boundaries"].clone(),
+    });
+    emit_replay_issue(&payload, error_format)?;
+    anyhow::bail!("K0129 ecosystem boundary evidence changed")
+}
+
+fn validate_declaration_evidence(
+    witness: &Value,
+    file: &Path,
+    run: &kobo_sim_core::FullDepthRun,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let expected = declarations_json(file, run);
+    if witness["declarations"] == expected {
+        return Ok(());
+    }
+    let payload = serde_json::json!({
+        "code": "K0129",
+        "message": "declaration evidence changed; exact replay would overclaim typed boundary coverage",
+        "expected": expected,
+        "observed": witness["declarations"].clone(),
+    });
+    emit_replay_issue(&payload, error_format)?;
+    anyhow::bail!("K0129 declaration evidence changed")
+}
+
+fn ecosystem_boundaries_json(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    run: &kobo_sim_core::FullDepthRun,
+) -> Value {
+    Value::Array(
+        run.boundary_decisions
+            .iter()
+            .map(|decision| {
+                let evidence = boundary_evidence_for_policy(
+                    decision.policy.as_str(),
+                    &decision.crate_name,
+                    run,
+                );
+                serde_json::json!({
+                    "crate": decision.crate_name,
+                    "call_path": decision.call_path,
+                    "policy": decision.policy.as_str(),
+                    "reason": decision.reason,
+                    "evidence": evidence,
+                    "source_span": {
+                        "start": decision.span_start,
+                        "end": decision.span_end,
+                    },
+                    "declaration": declaration_metadata_for_boundary(file, run, &decision.crate_name),
+                    "adapter": config.ecosystem_policy.adapter_for(&decision.crate_name).map(|adapter| serde_json::json!({
+                        "package": adapter.package,
+                        "reason": adapter.reason,
+                    })),
+                    "full_ecosystem_exploration": false,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn boundary_evidence_for_policy(
+    policy: &str,
+    crate_name: &str,
+    run: &kobo_sim_core::FullDepthRun,
+) -> &'static str {
+    match policy {
+        "record"
+            if run.events.iter().any(|event| {
+                event.kind == "boundary-record" && event.label.as_deref() == Some(crate_name)
+            }) =>
+        {
+            "recorded-event"
+        }
+        "activity"
+            if run.events.iter().any(|event| {
+                event.kind == "boundary-activity" && event.label.as_deref() == Some(crate_name)
+            }) =>
+        {
+            "activity-result"
+        }
+        "model" => "modeled-facade",
+        "typed" => "declaration",
+        "stub" => "scenario-stub",
+        "outside" => "outside-assumption",
+        "opaque" | "debt" => "assumption",
+        _ => "unverified",
+    }
+}
+
+fn declarations_json(file: &Path, run: &kobo_sim_core::FullDepthRun) -> Value {
+    Value::Array(
+        run.boundary_decisions
+            .iter()
+            .filter_map(|decision| {
+                if decision.policy.as_str() != "typed" {
+                    return None;
+                }
+                let path = declarations::declaration_path_for(file, &decision.crate_name)?;
+                let source = std::fs::read_to_string(&path).ok()?;
+                let parsed = source.parse::<toml::Value>().ok()?;
+                let schema_version = parsed
+                    .get("schema_version")
+                    .and_then(toml::Value::as_integer)
+                    .unwrap_or(0);
+                let version = parsed
+                    .get("crate")
+                    .and_then(toml::Value::as_table)
+                    .and_then(|table| table.get("version"))
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("unknown");
+                let hash = declarations::stable_hash(&source);
+                Some(serde_json::json!({
+                    "crate": decision.crate_name,
+                    "path": path.display().to_string(),
+                    "version": version,
+                    "schema_version": schema_version,
+                    "hash": hash,
+                    "declaration_version": version,
+                    "declaration_hash": hash,
+                }))
+            })
+            .collect(),
+    )
+}
+
+fn declaration_metadata_for_boundary(
+    file: &Path,
+    run: &kobo_sim_core::FullDepthRun,
+    crate_name: &str,
+) -> Option<Value> {
+    run.boundary_decisions
+        .iter()
+        .find(|decision| decision.crate_name == crate_name && decision.policy.as_str() == "typed")
+        .and_then(|_| {
+            let path = declarations::declaration_path_for(file, crate_name)?;
+            let source = std::fs::read_to_string(&path).ok()?;
+            let parsed = source.parse::<toml::Value>().ok()?;
+            let schema_version = parsed
+                .get("schema_version")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or(0);
+            let version = parsed
+                .get("crate")
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get("version"))
+                .and_then(toml::Value::as_str)
+                .unwrap_or("unknown");
+            Some(serde_json::json!({
+                "path": path.display().to_string(),
+                "version": version,
+                "schema_version": schema_version,
+                "hash": declarations::stable_hash(&source),
+            }))
+        })
 }
 
 fn full_ecosystem_exploration(run: &kobo_sim_core::FullDepthRun) -> bool {
@@ -709,6 +910,7 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["call_graph_obligation_summaries"][..]);
             required.push(&["replay_grade"][..]);
             required.push(&["boundary_ledger"][..]);
+            required.push(&["ecosystem_boundaries"][..]);
             required.push(&["inferred_obligations"][..]);
             required.push(&["lifecycle_inference", "mode"][..]);
         }

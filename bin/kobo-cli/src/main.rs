@@ -177,6 +177,42 @@ pub(crate) enum KoboCommand {
         #[arg(long, help = "Emit JSON")]
         json: bool,
     },
+    /// Generate a draft Kobo declaration file from a Rust crate.
+    Bindgen {
+        #[arg(long, value_name = "PATH")]
+        path: PathBuf,
+    },
+    /// Add a Cargo dependency without requiring Kobo metadata packages.
+    Add {
+        #[arg(value_name = "CRATE")]
+        crate_name: String,
+        #[arg(long, value_name = "LIST")]
+        features: Option<String>,
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+        #[arg(long, value_name = "URL")]
+        git: Option<String>,
+        #[arg(long = "no-default-features")]
+        no_default_features: bool,
+        #[arg(long, value_name = "PATH")]
+        manifest_path: Option<PathBuf>,
+        #[arg(long, value_name = "MEMBER")]
+        member: Option<String>,
+    },
+    /// Record an optional kobo-types package for a dependency.
+    AddTypes {
+        #[arg(value_name = "CRATE")]
+        crate_name: String,
+    },
+    /// Record an optional Kobo adapter package for a dependency.
+    AddAdapter {
+        #[arg(value_name = "CRATE")]
+        crate_name: String,
+    },
+    /// Seed Kobo ecosystem metadata from Cargo dependencies.
+    MigrateCargoDeps,
     /// Run the pipeline through the KIR phase only and print KIR nodes.
     Dump {
         #[arg(value_name = "FILE")]
@@ -316,8 +352,11 @@ pub(crate) enum KoboCommand {
     /// Create a new Kobo project skeleton.
     Init {
         /// Name (and directory) for the new project.
-        #[arg(value_name = "NAME")]
-        name: String,
+        #[arg(value_name = "NAME", required_unless_present = "from_cargo")]
+        name: Option<String>,
+        /// Create Kobo metadata for an existing Cargo project.
+        #[arg(long)]
+        from_cargo: bool,
     },
     /// Build all .kobo files in a Kobo project.
     Build {
@@ -399,6 +438,8 @@ pub(crate) enum SimCommand {
         why: bool,
         #[arg(long)]
         backend_recommendations: bool,
+        #[arg(long)]
+        fix_plan: bool,
     },
     /// List deterministic-testing backend metadata.
     Backends {

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_sim_core::backend;
 use serde_json::{json, Value};
+use syn::visit::Visit;
 
 use super::sim_model;
 
@@ -153,9 +154,14 @@ pub(super) fn cmd_sim_scout(
     json_output: bool,
     why: bool,
     backend_recommendations: bool,
+    fix_plan: bool,
 ) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read {}", file.display()))?;
+
+    if fix_plan {
+        return print_value(fix_plan_source(&source, file), json_output);
+    }
 
     if backend_recommendations {
         let recommendations = backend_recommendations_for(&source);
@@ -178,6 +184,245 @@ pub(super) fn cmd_sim_scout(
         scout_source(&source, file)
     };
     print_value(scout, json_output)
+}
+
+fn fix_plan_source(source: &str, file: &Path) -> serde_json::Value {
+    let classes = ReplayClassSet::from_source(source);
+    let mut items = Vec::new();
+    push_fix_plan(
+        &mut items,
+        classes.wall_clock,
+        "wall-clock",
+        "replace direct clock reads with kobo.time.now or record a time boundary",
+        "kobo.time.now",
+        ["typed", "record", "activity"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.random,
+        "random",
+        "replace raw random reads with a seeded scenario fixture or recorded boundary",
+        "kobo.random.seeded",
+        ["typed", "record", "activity"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.environment,
+        "environment",
+        "move environment reads into explicit scenario input or recorded configuration",
+        "kobo.config.input",
+        ["typed", "record", "activity"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.http_database,
+        "http-database",
+        "add a declaration or mark the side effect as record/activity before exact replay",
+        "kobo bindgen --path <crate>",
+        ["typed", "record", "activity", "opaque", "debt"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.task_spawn,
+        "task-spawn",
+        "route task creation through kobo.task.spawn or select an explicit task boundary policy",
+        "kobo.task.spawn",
+        ["model", "record", "activity"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.filesystem,
+        "filesystem",
+        "move file IO behind a declaration, fixture, or activity boundary",
+        "kobo.fs.fixture",
+        ["typed", "record", "activity", "outside"],
+    );
+    push_fix_plan(
+        &mut items,
+        classes.process,
+        "process",
+        "replace process-state reads with an explicit fixture or recorded activity",
+        "kobo.process.fixture",
+        ["typed", "record", "activity", "outside"],
+    );
+
+    serde_json::json!({
+        "version": "v0.11",
+        "target": file.display().to_string(),
+        "fix_plan": items,
+    })
+}
+
+#[derive(Default)]
+struct ReplayClassSet {
+    wall_clock: bool,
+    random: bool,
+    environment: bool,
+    http_database: bool,
+    task_spawn: bool,
+    filesystem: bool,
+    process: bool,
+}
+
+impl ReplayClassSet {
+    fn from_source(source: &str) -> Self {
+        let Ok(file) = syn::parse_file(source) else {
+            return Self::default();
+        };
+        let imports = ImportIndex::from_file(&file);
+        let mut visitor = ReplayClassVisitor {
+            imports,
+            classes: Self::default(),
+        };
+        visitor.visit_file(&file);
+        visitor.classes
+    }
+}
+
+#[derive(Default)]
+struct ImportIndex {
+    aliases: std::collections::BTreeMap<String, String>,
+}
+
+impl ImportIndex {
+    fn from_file(file: &syn::File) -> Self {
+        let mut aliases = std::collections::BTreeMap::new();
+        for item in &file.items {
+            if let syn::Item::Use(item_use) = item {
+                collect_use_tree(&item_use.tree, None, &mut aliases);
+            }
+        }
+        Self { aliases }
+    }
+}
+
+fn collect_use_tree(
+    tree: &syn::UseTree,
+    root: Option<String>,
+    aliases: &mut std::collections::BTreeMap<String, String>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let next_root = root.unwrap_or_else(|| path.ident.to_string());
+            aliases.insert(path.ident.to_string(), next_root.clone());
+            collect_use_tree(&path.tree, Some(next_root), aliases);
+        }
+        syn::UseTree::Name(name) => {
+            if let Some(root) = root {
+                aliases.insert(name.ident.to_string(), root);
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            if let Some(root) = root {
+                aliases.insert(rename.rename.to_string(), root);
+            }
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_tree(item, root.clone(), aliases);
+            }
+        }
+        syn::UseTree::Glob(_) => {}
+    }
+}
+
+struct ReplayClassVisitor {
+    imports: ImportIndex,
+    classes: ReplayClassSet,
+}
+
+impl<'ast> Visit<'ast> for ReplayClassVisitor {
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            let segments = path_segments(&path.path);
+            self.classify_path(&segments);
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        let method = node.method.to_string();
+        if matches!(method.as_str(), "spawn" | "spawn_local") {
+            self.classes.task_spawn = true;
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+}
+
+impl ReplayClassVisitor {
+    fn classify_path(&mut self, segments: &[String]) {
+        let resolved = self.resolved_segments(segments);
+        let names = resolved.iter().map(String::as_str).collect::<Vec<_>>();
+        if path_ends_with(&names, &["SystemTime", "now"])
+            || path_ends_with(&names, &["Instant", "now"])
+        {
+            self.classes.wall_clock = true;
+        }
+        if names.first() == Some(&"rand") || path_ends_with(&names, &["thread_rng"]) {
+            self.classes.random = true;
+        }
+        if names.first() == Some(&"std") && names.get(1) == Some(&"env") {
+            self.classes.environment = true;
+        }
+        if names.first() == Some(&"std") && names.get(1) == Some(&"fs") {
+            self.classes.filesystem = true;
+        }
+        if names.first() == Some(&"std") && names.get(1) == Some(&"process") {
+            self.classes.process = true;
+        }
+        if names
+            .first()
+            .is_some_and(|name| matches!(*name, "reqwest" | "sqlx"))
+            || path_ends_with(&names, &["Client", "new"])
+        {
+            self.classes.http_database = true;
+        }
+        if names.first() == Some(&"tokio") && names.contains(&"spawn") {
+            self.classes.task_spawn = true;
+        }
+    }
+
+    fn resolved_segments(&self, segments: &[String]) -> Vec<String> {
+        let Some(first) = segments.first() else {
+            return Vec::new();
+        };
+        if let Some(root) = self.imports.aliases.get(first) {
+            let mut resolved = vec![root.clone()];
+            resolved.extend(segments.iter().skip(1).cloned());
+            resolved
+        } else {
+            segments.to_vec()
+        }
+    }
+}
+
+fn path_segments(path: &syn::Path) -> Vec<String> {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect()
+}
+
+fn path_ends_with(path: &[&str], suffix: &[&str]) -> bool {
+    path.len() >= suffix.len() && path[path.len() - suffix.len()..] == *suffix
+}
+
+fn push_fix_plan<const N: usize>(
+    items: &mut Vec<serde_json::Value>,
+    present: bool,
+    class: &str,
+    action: &str,
+    first_step: &str,
+    policies: [&str; N],
+) {
+    if present {
+        items.push(serde_json::json!({
+            "class": class,
+            "action": action,
+            "first_step": first_step,
+            "policy_options": policies.to_vec(),
+        }));
+    }
 }
 
 fn target_signature(source: &str, symbol: &str) -> Option<TargetSignature> {

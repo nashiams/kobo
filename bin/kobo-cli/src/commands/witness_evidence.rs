@@ -420,8 +420,10 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
 
 fn boundary_status(policy: &BoundaryPolicyChoice) -> &'static str {
     match policy {
+        BoundaryPolicyChoice::Typed => "typed",
         BoundaryPolicyChoice::Model | BoundaryPolicyChoice::Stub => "modeled",
         BoundaryPolicyChoice::Record => "recordable",
+        BoundaryPolicyChoice::Activity => "activity",
         BoundaryPolicyChoice::Outside => "outside",
         BoundaryPolicyChoice::Opaque => "opaque",
         BoundaryPolicyChoice::Debt | BoundaryPolicyChoice::Unselected => "debt",

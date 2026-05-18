@@ -98,7 +98,7 @@ fn network_profile_explain() -> &'static str {
      In v0.9 network is design-only. Kobo records the boundary and recommendation, but does not claim executable network replay.\n\n\
      How to fix\n\
      Option 1: Treat this as a boundary-design prompt in v0.9.\n\
-     Option 2: Choose model, record, stub, outside, opaque, or debt for replay-critical calls.\n\
+     Option 2: Choose typed, model, record, activity, stub, outside, opaque, or debt for replay-critical calls.\n\
      Option 3: Wait for later scheduler/network backend work before claiming exact network replay.\n\n\
      Example\n\
      Problem:\nA target constructs `reqwest::Client` inside a scenario.\n\n\

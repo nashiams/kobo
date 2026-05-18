@@ -742,6 +742,23 @@ impl<'a> ScenarioLowerer<'a> {
             self.operations.push(ScenarioOp {
                 span: self.operation_span(call, "Client::new"),
                 kind: ScenarioOpKind::ExternalBoundary {
+                    call_path: Some(self.external_call_path(&path.path, &crate_name)),
+                    crate_name,
+                    policy: policy.policy,
+                    reason: policy.reason,
+                },
+            });
+            return true;
+        }
+        if let Some(crate_name) = self.imported_external_crate(&path.path) {
+            let policy = self.boundary_policy_for(&crate_name);
+            if !is_replay_owned_policy(&policy.policy) {
+                self.record_opaque_boundary(&crate_name);
+            }
+            self.operations.push(ScenarioOp {
+                span: self.span(call),
+                kind: ScenarioOpKind::ExternalBoundary {
+                    call_path: Some(self.external_call_path(&path.path, &crate_name)),
                     crate_name,
                     policy: policy.policy,
                     reason: policy.reason,
@@ -764,6 +781,41 @@ impl<'a> ScenarioLowerer<'a> {
             .get(&first_ident)
             .cloned()
             .unwrap_or(first_ident)
+    }
+
+    fn external_call_path(&self, path: &Path, crate_name: &str) -> String {
+        let mut segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        if let Some(first) = segments.first() {
+            if first == crate_name {
+                return segments.join("::");
+            }
+            if self
+                .imports
+                .get(first)
+                .is_some_and(|imported_crate| imported_crate == crate_name)
+            {
+                segments.insert(0, crate_name.to_owned());
+                return segments.join("::");
+            }
+        }
+        if let Some(first) = segments.first_mut() {
+            *first = crate_name.to_owned();
+        }
+        segments.join("::")
+    }
+
+    fn imported_external_crate(&self, path: &Path) -> Option<String> {
+        let first_ident = path_first_ident(path)?;
+        let crate_name = self.imports.get(&first_ident)?;
+        (!matches!(
+            crate_name.as_str(),
+            "std" | "core" | "alloc" | "crate" | "self" | "super" | "kobo" | "ward"
+        ))
+        .then(|| crate_name.clone())
     }
 
     fn boundary_policy_for(&self, crate_name: &str) -> BoundaryPolicyFact {
@@ -1011,20 +1063,24 @@ fn boundaries_from_operations(operations: &[ScenarioOp]) -> Vec<ScenarioBoundary
     let mut boundaries = Vec::new();
     for operation in operations {
         let ScenarioOpKind::ExternalBoundary {
-            crate_name, policy, ..
+            crate_name,
+            call_path,
+            policy,
+            ..
         } = &operation.kind
         else {
             continue;
         };
+        let boundary_name = call_path.as_ref().unwrap_or(crate_name);
         if boundaries
             .iter()
-            .any(|boundary: &ScenarioBoundary| boundary.name == *crate_name)
+            .any(|boundary: &ScenarioBoundary| boundary.name == *boundary_name)
         {
             continue;
         }
         boundaries.push(ScenarioBoundary {
             span: operation.span,
-            name: crate_name.clone(),
+            name: boundary_name.clone(),
             decision: policy.as_str().to_owned(),
         });
     }
@@ -1144,6 +1200,7 @@ fn is_replay_owned_policy(policy: &ScenarioBoundaryPolicy) -> bool {
         policy,
         ScenarioBoundaryPolicy::Model
             | ScenarioBoundaryPolicy::Record
+            | ScenarioBoundaryPolicy::Activity
             | ScenarioBoundaryPolicy::Stub
     )
 }

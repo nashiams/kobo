@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::Context;
 use toml::Value as TomlValue;
@@ -29,6 +30,8 @@ struct DoctorReport {
     build_rs: bool,
     rust_version: Option<String>,
     dependencies: Vec<DependencyEvidence>,
+    resolved_packages: Vec<ResolvedPackageEvidence>,
+    metadata_status: String,
     proc_macro_candidates: Vec<String>,
     hotspots: Vec<String>,
     hints: Vec<String>,
@@ -39,7 +42,17 @@ struct DependencyEvidence {
     section: &'static str,
     version: Option<String>,
     package: Option<String>,
+    source: Option<String>,
     default_features: Option<bool>,
+    features: Vec<String>,
+}
+
+struct ResolvedPackageEvidence {
+    id: String,
+    name: String,
+    version: String,
+    source: Option<String>,
+    manifest_path: Option<String>,
     features: Vec<String>,
 }
 
@@ -112,6 +125,7 @@ impl DoctorReport {
             .as_ref()
             .map(collect_dependencies)
             .unwrap_or_default();
+        let (metadata_status, resolved_packages) = cargo_metadata_packages(root);
         let rust_version = parsed.as_ref().and_then(project_rust_version);
         let build_rs = build_rs || parsed.as_ref().is_some_and(package_declares_build_script);
         let proc_macro_candidates = proc_macro_candidates(&dependencies, &lower);
@@ -159,6 +173,8 @@ impl DoctorReport {
             build_rs,
             rust_version,
             dependencies,
+            resolved_packages,
+            metadata_status,
             proc_macro_candidates,
             hotspots,
             hints,
@@ -175,6 +191,8 @@ impl DoctorReport {
             "build_rs": self.build_rs,
             "rust_version": self.rust_version.as_deref(),
             "dependencies": self.dependencies.iter().map(DependencyEvidence::to_json).collect::<Vec<_>>(),
+            "cargo_metadata_status": self.metadata_status,
+            "resolved_packages": self.resolved_packages.iter().map(ResolvedPackageEvidence::to_json).collect::<Vec<_>>(),
             "proc_macro_candidates": &self.proc_macro_candidates,
             "hotspots": self.hotspots,
             "hints": self.hints,
@@ -189,10 +207,120 @@ impl DependencyEvidence {
             "section": self.section,
             "version": self.version,
             "package": self.package,
+            "source": self.source,
             "default_features": self.default_features,
             "features": self.features,
+            "identity": self.identity(),
         })
     }
+
+    fn identity(&self) -> String {
+        let package = self.package.as_deref().unwrap_or(&self.name);
+        let source = self.source.as_deref().unwrap_or_else(|| {
+            self.version
+                .as_deref()
+                .map(|_| "registry")
+                .unwrap_or("unspecified")
+        });
+        let default_features = self
+            .default_features
+            .map(|value| format!("default-features={value}"))
+            .unwrap_or_else(|| "default-features=unspecified".to_owned());
+        let features = if self.features.is_empty() {
+            "features=<none>".to_owned()
+        } else {
+            format!("features={}", self.features.join(","))
+        };
+        format!(
+            "alias={};package={package};section={};source={source};{};{}",
+            self.name, self.section, default_features, features
+        )
+    }
+}
+
+impl ResolvedPackageEvidence {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "version": self.version,
+            "source": self.source,
+            "manifest_path": self.manifest_path,
+            "features": self.features,
+            "identity": format!(
+                "id={};name={};version={};source={};features={}",
+                self.id,
+                self.name,
+                self.version,
+                self.source.as_deref().unwrap_or("workspace-or-path"),
+                if self.features.is_empty() { "<none>".to_owned() } else { self.features.join(",") }
+            ),
+        })
+    }
+}
+
+fn cargo_metadata_packages(root: &Path) -> (String, Vec<ResolvedPackageEvidence>) {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--offline"])
+        .current_dir(root)
+        .output();
+    let Ok(output) = output else {
+        return ("unavailable".to_owned(), Vec::new());
+    };
+    if !output.status.success() {
+        return ("unavailable-offline".to_owned(), Vec::new());
+    }
+    let Ok(metadata) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return ("invalid-json".to_owned(), Vec::new());
+    };
+    let mut feature_map = std::collections::BTreeMap::<String, Vec<String>>::new();
+    if let Some(nodes) = metadata
+        .get("resolve")
+        .and_then(|resolve| resolve.get("nodes"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for node in nodes {
+            let Some(id) = node.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let features = node
+                .get("features")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            feature_map.insert(id.to_owned(), features);
+        }
+    }
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|package| {
+            let id = package.get("id")?.as_str()?.to_owned();
+            Some(ResolvedPackageEvidence {
+                features: feature_map.remove(&id).unwrap_or_default(),
+                id,
+                name: package.get("name")?.as_str()?.to_owned(),
+                version: package.get("version")?.as_str()?.to_owned(),
+                source: package
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                manifest_path: package
+                    .get("manifest_path")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            })
+        })
+        .collect::<Vec<_>>();
+    ("resolved-offline".to_owned(), packages)
 }
 
 impl SelfHostReport {
@@ -428,6 +556,7 @@ fn dependency_evidence(
             section,
             version: Some(version.to_owned()),
             package: None,
+            source: Some("registry".to_owned()),
             default_features: None,
             features: Vec::new(),
         });
@@ -442,6 +571,17 @@ fn dependency_evidence(
         .get("package")
         .and_then(TomlValue::as_str)
         .map(str::to_owned);
+    let source = table
+        .get("path")
+        .and_then(TomlValue::as_str)
+        .map(|path| format!("path={path}"))
+        .or_else(|| {
+            table
+                .get("git")
+                .and_then(TomlValue::as_str)
+                .map(|git| format!("git={git}"))
+        })
+        .or_else(|| version.as_ref().map(|_| "registry".to_owned()));
     let default_features = table.get("default-features").and_then(TomlValue::as_bool);
     let features = table
         .get("features")
@@ -460,6 +600,7 @@ fn dependency_evidence(
         section,
         version,
         package,
+        source,
         default_features,
         features,
     })

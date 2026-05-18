@@ -120,14 +120,19 @@ pub struct RuntimeObligationSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoundaryDecision {
     pub crate_name: String,
+    pub call_path: Option<String>,
     pub policy: BoundaryPolicyChoice,
     pub reason: Option<String>,
+    pub span_start: usize,
+    pub span_end: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BoundaryPolicyChoice {
+    Typed,
     Model,
     Record,
+    Activity,
     Stub,
     Outside,
     Opaque,
@@ -138,8 +143,10 @@ pub enum BoundaryPolicyChoice {
 impl BoundaryPolicyChoice {
     pub const fn as_str(&self) -> &'static str {
         match self {
+            Self::Typed => "typed",
             Self::Model => "model",
             Self::Record => "record",
+            Self::Activity => "activity",
             Self::Stub => "stub",
             Self::Outside => "outside",
             Self::Opaque => "opaque",
@@ -226,6 +233,7 @@ pub enum ScenarioOperation {
     },
     ExternalBoundary {
         crate_name: String,
+        call_path: Option<String>,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span_start: usize,
@@ -461,12 +469,14 @@ impl<'a> Runtime<'a> {
                 }),
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
+                    call_path,
                     policy,
                     reason,
                     span_start,
                     span_end,
                 } => self.record_external_boundary(
                     crate_name.clone(),
+                    call_path.clone(),
                     policy.clone(),
                     reason.clone(),
                     (*span_start, *span_end),
@@ -643,6 +653,7 @@ impl<'a> Runtime<'a> {
     fn record_external_boundary(
         &mut self,
         crate_name: String,
+        call_path: Option<String>,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span: (usize, usize),
@@ -650,15 +661,19 @@ impl<'a> Runtime<'a> {
         if !is_replay_owned_boundary(&policy) && !self.opaque_boundaries.contains(&crate_name) {
             self.opaque_boundaries.push(crate_name.clone());
         }
-        if !self
-            .boundary_decisions
-            .iter()
-            .any(|decision| decision.crate_name == crate_name)
-        {
+        if !self.boundary_decisions.iter().any(|decision| {
+            decision.crate_name == crate_name
+                && decision.call_path == call_path
+                && decision.span_start == span.0
+                && decision.span_end == span.1
+        }) {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
+                call_path: call_path.clone(),
                 policy: policy.clone(),
                 reason: reason.clone(),
+                span_start: span.0,
+                span_end: span.1,
             });
         }
         if is_replay_owned_boundary(&policy) {
@@ -680,7 +695,7 @@ impl<'a> Runtime<'a> {
         self.set_failure_once(ScenarioFailure {
             code: KErrorCode::K0107,
             message: format!(
-                "external replay boundary `{crate_name}` must choose one policy: model, record, stub, outside, opaque, debt"
+                "external replay boundary `{crate_name}` must choose one policy: typed, model, record, activity, stub, outside, opaque, debt"
             ),
             primary_start: span.0,
             primary_end: span.1,
@@ -816,7 +831,11 @@ fn is_replay_owned_boundary(policy: &BoundaryPolicyChoice) -> bool {
 fn is_explicit_partial_boundary(policy: &BoundaryPolicyChoice) -> bool {
     matches!(
         policy,
-        BoundaryPolicyChoice::Outside | BoundaryPolicyChoice::Opaque | BoundaryPolicyChoice::Debt
+        BoundaryPolicyChoice::Typed
+            | BoundaryPolicyChoice::Activity
+            | BoundaryPolicyChoice::Outside
+            | BoundaryPolicyChoice::Opaque
+            | BoundaryPolicyChoice::Debt
     )
 }
 

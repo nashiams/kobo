@@ -17,6 +17,7 @@ use proptest::test_runner::{
 
 use crate::ErrorFormat;
 
+use super::declarations;
 use super::sim_model::{self, ScenarioDocument};
 use super::witness_evidence;
 
@@ -100,6 +101,7 @@ pub(super) fn cmd_test(
             inject,
             fuzz_plan.as_ref(),
             witness_dir,
+            &session.config,
             &run,
         )?);
     }
@@ -557,6 +559,7 @@ fn write_run_witness(
     inject: Option<&str>,
     fuzz_plan: Option<&FuzzPlan>,
     witness_dir: Option<&Path>,
+    config: &kobo_driver::KoboConfig,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -615,11 +618,12 @@ fn write_run_witness(
         "modeled_boundaries": modeled_boundaries_json(run),
         "opaque_boundaries": run.opaque_boundaries.clone(),
         "boundary_policies": boundary_policies_json(run),
+        "ecosystem_boundaries": ecosystem_boundaries_json(file, config, run),
         "boundary_assumptions": boundary_assumptions_json(run),
         "obligations": obligations_json(&source_path, &document.source, run),
         "obligation_events": obligation_events_json(run),
         "boundary_decisions": boundary_decisions_json(run),
-        "available_boundary_policies": ["model", "record", "stub", "outside", "opaque", "debt"],
+        "available_boundary_policies": ["typed", "model", "record", "activity", "stub", "outside", "opaque", "debt"],
         "failure": failure_json(&source_path, &document.source, run, primary_span),
         "source_spans": source_spans_json(&source_path, &document.source, run),
         "events": witness_events.clone(),
@@ -646,6 +650,14 @@ fn write_run_witness(
     object.insert(
         "inferred_obligations".to_owned(),
         inferred_obligations.clone(),
+    );
+    object.insert(
+        "declarations".to_owned(),
+        serde_json::Value::Array(declarations_json(file, config, run)),
+    );
+    object.insert(
+        "summaries".to_owned(),
+        serde_json::Value::Array(summary_usage_json(config)),
     );
     object.insert(
         "lifecycle_inference".to_owned(),
@@ -1089,7 +1101,7 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
             "Reduce the scenario, split it into smaller scenarios, or run it under a profile with a larger budget.".to_owned()
         }
         KErrorCode::K0107 => {
-            "Choose model, record, stub, outside, opaque, or debt for this boundary before claiming exact replay.".to_owned()
+            "Choose typed, model, record, activity, stub, outside, opaque, or debt for this boundary before claiming exact replay.".to_owned()
         }
         KErrorCode::K0116 => {
             "Use a modeled construct, split the scenario, or keep the witness partial until coverage is implemented.".to_owned()
@@ -1144,6 +1156,148 @@ fn boundary_policies_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
         }));
     }
     policies
+}
+
+fn ecosystem_boundaries_json(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    run: &FullDepthRun,
+) -> Vec<serde_json::Value> {
+    run.boundary_decisions
+        .iter()
+        .map(|decision| {
+            let evidence =
+                boundary_evidence_for_policy(decision.policy.as_str(), &decision.crate_name, run);
+            serde_json::json!({
+                "crate": decision.crate_name,
+                "call_path": decision.call_path,
+                "policy": decision.policy.as_str(),
+                "reason": decision.reason,
+                "evidence": evidence,
+                "source_span": {
+                    "start": decision.span_start,
+                    "end": decision.span_end,
+                },
+                "declaration": declaration_metadata_for_boundary(file, &decision.crate_name, decision.policy.as_str()),
+                "adapter": config.ecosystem_policy.adapter_for(&decision.crate_name).map(|adapter| serde_json::json!({
+                    "package": adapter.package,
+                    "reason": adapter.reason,
+                })),
+                "full_ecosystem_exploration": false,
+            })
+        })
+        .collect()
+}
+
+fn declaration_metadata_for_boundary(
+    file: &Path,
+    crate_name: &str,
+    policy: &str,
+) -> Option<serde_json::Value> {
+    if policy != "typed" {
+        return None;
+    }
+    let path = declarations::declaration_path_for(file, crate_name)?;
+    let source = std::fs::read_to_string(&path).ok()?;
+    let parsed = source.parse::<toml::Value>().ok()?;
+    let schema_version = parsed
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        .unwrap_or(0);
+    let version = parsed
+        .get("crate")
+        .and_then(toml::Value::as_table)
+        .and_then(|table| table.get("version"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("unknown");
+    Some(serde_json::json!({
+        "path": path.display().to_string(),
+        "version": version,
+        "schema_version": schema_version,
+        "hash": declarations::stable_hash(&source),
+    }))
+}
+
+fn declarations_json(
+    file: &Path,
+    _config: &kobo_driver::KoboConfig,
+    run: &FullDepthRun,
+) -> Vec<serde_json::Value> {
+    run.boundary_decisions
+        .iter()
+        .filter_map(|decision| {
+            if decision.policy.as_str() != "typed" {
+                return None;
+            }
+            let path = declarations::declaration_path_for(file, &decision.crate_name)?;
+            let source = std::fs::read_to_string(&path).ok()?;
+            let parsed = source.parse::<toml::Value>().ok()?;
+            let schema_version = parsed
+                .get("schema_version")
+                .and_then(toml::Value::as_integer)
+                .unwrap_or(0);
+            let version = parsed
+                .get("crate")
+                .and_then(toml::Value::as_table)
+                .and_then(|table| table.get("version"))
+                .and_then(toml::Value::as_str)
+                .unwrap_or("unknown");
+            let hash = declarations::stable_hash(&source);
+            Some(serde_json::json!({
+                "crate": decision.crate_name,
+                "path": path.display().to_string(),
+                "version": version,
+                "schema_version": schema_version,
+                "hash": hash,
+                "declaration_version": version,
+                "declaration_hash": hash,
+            }))
+        })
+        .collect()
+}
+
+fn summary_usage_json(config: &kobo_driver::KoboConfig) -> Vec<serde_json::Value> {
+    config
+        .ecosystem_policy
+        .summaries
+        .iter()
+        .map(|summary| {
+            serde_json::json!({
+                "crate": summary.crate_name,
+                "path": summary.path.display().to_string(),
+                "summary_hash": summary.hash,
+            })
+        })
+        .collect()
+}
+
+fn boundary_evidence_for_policy(
+    policy: &str,
+    crate_name: &str,
+    run: &FullDepthRun,
+) -> &'static str {
+    match policy {
+        "record"
+            if run.events.iter().any(|event| {
+                event.kind == "boundary-record" && event.label.as_deref() == Some(crate_name)
+            }) =>
+        {
+            "recorded-event"
+        }
+        "activity"
+            if run.events.iter().any(|event| {
+                event.kind == "boundary-activity" && event.label.as_deref() == Some(crate_name)
+            }) =>
+        {
+            "activity-result"
+        }
+        "model" => "modeled-facade",
+        "typed" => "declaration",
+        "stub" => "scenario-stub",
+        "outside" => "outside-assumption",
+        "opaque" | "debt" => "assumption",
+        _ => "unverified",
+    }
 }
 
 fn obligations_json(source_path: &str, source: &str, run: &FullDepthRun) -> Vec<serde_json::Value> {
@@ -1375,8 +1529,13 @@ fn boundary_decisions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
         .map(|decision| {
             serde_json::json!({
                 "crate": decision.crate_name,
+                "call_path": decision.call_path,
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
+                "source_span": {
+                    "start": decision.span_start,
+                    "end": decision.span_end,
+                },
             })
         })
         .collect()

@@ -70,7 +70,8 @@ pub(super) fn cmd_debt_liveness(file: &Path, json: bool) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read {}", file.display()))?;
 
-    let findings = build_liveness_findings(&source, kir.must_call_obligations());
+    let mut findings = build_liveness_findings(&source, kir.must_call_obligations());
+    findings.extend(summary_liveness_findings(&session.config, &source)?);
     if json {
         let values = findings
             .iter()
@@ -95,6 +96,120 @@ pub(super) fn cmd_debt_liveness(file: &Path, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn summary_liveness_findings(
+    config: &kobo_driver::KoboConfig,
+    source: &str,
+) -> anyhow::Result<Vec<LivenessFinding>> {
+    let mut findings = Vec::new();
+    for summary in &config.ecosystem_policy.summaries {
+        let summary_source = std::fs::read_to_string(&summary.path)
+            .with_context(|| format!("failed to read .kobo-summary {}", summary.path.display()))?;
+        let parsed = serde_json::from_str::<serde_json::Value>(&summary_source)
+            .with_context(|| format!("failed to parse .kobo-summary {}", summary.path.display()))?;
+        let schema_version = parsed
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if schema_version != 1 {
+            anyhow::bail!(
+                "K0126: .kobo-summary version mismatch for {}: expected 1, found {}",
+                summary.crate_name,
+                schema_version
+            );
+        }
+        let actual_hash = parsed
+            .get("summary_hash")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<missing>");
+        if actual_hash != summary.hash {
+            anyhow::bail!(
+                "K0126: .kobo-summary hash mismatch for {}: expected {}, found {}",
+                summary.crate_name,
+                summary.hash,
+                actual_hash
+            );
+        }
+        let Some(obligations) = parsed
+            .get("obligations")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for obligation in obligations {
+            let owner_type = obligation
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("external obligation")
+                .to_owned();
+            let actions = obligation
+                .get("terminal_actions")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let applicable_types = string_array_field(obligation, "applicable_types")
+                .filter(|types| !types.is_empty())
+                .unwrap_or_else(|| vec![owner_type.clone()]);
+            let applicable_functions = string_array_field(obligation, "applicable_functions")
+                .filter(|functions| !functions.is_empty())
+                .unwrap_or_else(|| vec![summary.crate_name.clone()]);
+            if !summary_obligation_applies(source, &applicable_types, &applicable_functions) {
+                continue;
+            }
+            findings.push(LivenessFinding {
+                code: "K0126",
+                owner_type,
+                actions,
+                function: applicable_functions
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| summary.crate_name.clone()),
+                binding: None,
+                applicable_types,
+                applicable_functions,
+                message: "liveness fact imported from .kobo-summary".to_owned(),
+                reason: Some(format!(
+                    "summary {} schema 1 hash {}",
+                    summary.path.display(),
+                    summary.hash
+                )),
+            });
+        }
+    }
+    Ok(findings)
+}
+
+fn summary_obligation_applies(
+    source: &str,
+    applicable_types: &[String],
+    applicable_functions: &[String],
+) -> bool {
+    applicable_types
+        .iter()
+        .any(|type_name| source.contains(type_name))
+        || applicable_functions
+            .iter()
+            .any(|function| source.contains(function))
+}
+
+fn string_array_field(value: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+}
+
 #[derive(Debug)]
 struct LivenessFinding {
     code: &'static str,
@@ -102,6 +217,8 @@ struct LivenessFinding {
     actions: Vec<String>,
     function: String,
     binding: Option<String>,
+    applicable_types: Vec<String>,
+    applicable_functions: Vec<String>,
     message: String,
     reason: Option<String>,
 }
@@ -118,6 +235,11 @@ impl LivenessFinding {
             "warning[{}]: {}{} in `{}`: {} ({})",
             self.code, self.owner_type, binding, self.function, self.message, action_list
         );
+        line.push_str(&format!(
+            "; applicability: types=[{}] functions=[{}]",
+            self.applicable_types.join(", "),
+            self.applicable_functions.join(", ")
+        ));
         if let Some(reason) = &self.reason {
             line.push_str(&format!("; reason: {reason}"));
         }
@@ -131,6 +253,10 @@ impl LivenessFinding {
             "actions": self.actions,
             "function": self.function,
             "binding": self.binding,
+            "applicability": {
+                "types": self.applicable_types,
+                "functions": self.applicable_functions,
+            },
             "message": self.message,
             "reason": self.reason,
         })
@@ -185,6 +311,8 @@ fn build_liveness_findings(
                             actions: actions.clone(),
                             function: function.name.clone(),
                             binding: Some(binding),
+                            applicable_types: vec![obligation.owner_type.clone()],
+                            applicable_functions: vec![function.name.clone()],
                             message: "must_call liveness obligation suppressed".to_owned(),
                             reason: Some(reason.clone()),
                         });
@@ -199,6 +327,8 @@ fn build_liveness_findings(
                             actions: actions.clone(),
                             function: function.name.clone(),
                             binding: Some(binding),
+                            applicable_types: vec![obligation.owner_type.clone()],
+                            applicable_functions: vec![function.name.clone()],
                             message: "`#[kobo::suppress(K0100)]` requires a reason".to_owned(),
                             reason: None,
                         });
@@ -210,6 +340,8 @@ fn build_liveness_findings(
                             actions: actions.clone(),
                             function: function.name.clone(),
                             binding: Some(binding),
+                            applicable_types: vec![obligation.owner_type.clone()],
+                            applicable_functions: vec![function.name.clone()],
                             message: "may leave without a required call".to_owned(),
                             reason: None,
                         });
@@ -253,6 +385,8 @@ fn escape_finding(
         actions: actions.to_vec(),
         function: function.name.clone(),
         binding: None,
+        applicable_types: vec![obligation.owner_type.clone()],
+        applicable_functions: vec![function.name.clone()],
         message: "obligation escapes local analysis through a return value".to_owned(),
         reason: None,
     })

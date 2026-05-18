@@ -107,14 +107,19 @@ pub(super) struct RuntimeObligationSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BoundaryDecision {
     pub crate_name: String,
+    pub call_path: Option<String>,
     pub policy: BoundaryPolicyChoice,
     pub reason: Option<String>,
+    pub span_start: usize,
+    pub span_end: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum BoundaryPolicyChoice {
+    Typed,
     Model,
     Record,
+    Activity,
     Stub,
     Outside,
     Opaque,
@@ -170,8 +175,10 @@ impl ModeledBoundary {
 impl BoundaryPolicyChoice {
     pub(super) const fn as_str(&self) -> &'static str {
         match self {
+            Self::Typed => "typed",
             Self::Model => "model",
             Self::Record => "record",
+            Self::Activity => "activity",
             Self::Stub => "stub",
             Self::Outside => "outside",
             Self::Opaque => "opaque",
@@ -181,10 +188,12 @@ impl BoundaryPolicyChoice {
     }
 }
 
-pub(super) fn boundary_policy_choices() -> [BoundaryPolicyChoice; 6] {
+pub(super) fn boundary_policy_choices() -> [BoundaryPolicyChoice; 8] {
     [
+        BoundaryPolicyChoice::Typed,
         BoundaryPolicyChoice::Model,
         BoundaryPolicyChoice::Record,
+        BoundaryPolicyChoice::Activity,
         BoundaryPolicyChoice::Stub,
         BoundaryPolicyChoice::Outside,
         BoundaryPolicyChoice::Opaque,
@@ -253,6 +262,7 @@ pub(super) enum ScenarioOperation {
     },
     ExternalBoundary {
         crate_name: String,
+        call_path: Option<String>,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span_start: usize,
@@ -734,12 +744,14 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
         },
         sim_core::ScenarioOperation::ExternalBoundary {
             crate_name,
+            call_path,
             policy,
             reason,
             span_start,
             span_end,
         } => ScenarioOperation::ExternalBoundary {
             crate_name,
+            call_path,
             policy: convert_core_policy(policy),
             reason,
             span_start,
@@ -767,8 +779,10 @@ fn convert_core_boundary(boundary: sim_core::ModeledBoundary) -> ModeledBoundary
 
 fn convert_core_policy(policy: sim_core::BoundaryPolicyChoice) -> BoundaryPolicyChoice {
     match policy {
+        sim_core::BoundaryPolicyChoice::Typed => BoundaryPolicyChoice::Typed,
         sim_core::BoundaryPolicyChoice::Model => BoundaryPolicyChoice::Model,
         sim_core::BoundaryPolicyChoice::Record => BoundaryPolicyChoice::Record,
+        sim_core::BoundaryPolicyChoice::Activity => BoundaryPolicyChoice::Activity,
         sim_core::BoundaryPolicyChoice::Stub => BoundaryPolicyChoice::Stub,
         sim_core::BoundaryPolicyChoice::Outside => BoundaryPolicyChoice::Outside,
         sim_core::BoundaryPolicyChoice::Opaque => BoundaryPolicyChoice::Opaque,
@@ -1029,12 +1043,14 @@ impl<'a> SimulationRuntime<'a> {
                 } => self.record_uncontrolled_failure(operation, (*span_start, *span_end)),
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
+                    call_path,
                     policy,
                     reason,
                     span_start,
                     span_end,
                 } => self.record_external_boundary(
                     crate_name.clone(),
+                    call_path.clone(),
                     policy.clone(),
                     reason.clone(),
                     (*span_start, *span_end),
@@ -1371,6 +1387,7 @@ impl<'a> SimulationRuntime<'a> {
     fn record_external_boundary(
         &mut self,
         crate_name: String,
+        call_path: Option<String>,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span: (usize, usize),
@@ -1378,15 +1395,19 @@ impl<'a> SimulationRuntime<'a> {
         if !is_replay_owned_boundary(&policy) && !self.opaque_boundaries.contains(&crate_name) {
             self.opaque_boundaries.push(crate_name.clone());
         }
-        if !self
-            .boundary_decisions
-            .iter()
-            .any(|decision| decision.crate_name == crate_name)
-        {
+        if !self.boundary_decisions.iter().any(|decision| {
+            decision.crate_name == crate_name
+                && decision.call_path == call_path
+                && decision.span_start == span.0
+                && decision.span_end == span.1
+        }) {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
+                call_path: call_path.clone(),
                 policy: policy.clone(),
                 reason,
+                span_start: span.0,
+                span_end: span.1,
             });
         }
         if is_replay_owned_boundary(&policy) {
@@ -1398,7 +1419,7 @@ impl<'a> SimulationRuntime<'a> {
             return;
         }
         if self.boundary_failure.is_none() {
-            let choices = "model, record, stub, outside, opaque, debt";
+            let choices = "typed, model, record, activity, stub, outside, opaque, debt";
             self.boundary_failure = Some(ScenarioFailure {
                 code: KErrorCode::K0107,
                 message: format!(

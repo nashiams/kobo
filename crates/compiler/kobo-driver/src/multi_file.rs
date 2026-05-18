@@ -5,6 +5,8 @@ use std::process::Command;
 use crate::config::KoboConfig;
 use crate::errors::DriverError;
 use crate::session::CompileSession;
+use kobo_ir::MustCallObligation;
+use quote::ToTokens;
 
 /// Output produced by the multi-file build pipeline.
 pub struct BuildOutput {
@@ -40,7 +42,11 @@ fn collect_kobo_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Generates a `Cargo.toml` for the Rust project inside `gen_dir`.
-pub fn generate_cargo_toml(config: &KoboConfig, gen_dir: &Path) -> std::io::Result<()> {
+pub fn generate_cargo_toml(
+    config: &KoboConfig,
+    project_dir: &Path,
+    gen_dir: &Path,
+) -> std::io::Result<()> {
     let name = if config.package_name.is_empty() {
         "kobo_project"
     } else {
@@ -57,15 +63,36 @@ pub fn generate_cargo_toml(config: &KoboConfig, gen_dir: &Path) -> std::io::Resu
 name = "{name}"
 version = "{version}"
 edition = "2021"
-
-[workspace]
 "#
     );
+    if let Some(build_script) = package_build_script(project_dir) {
+        cargo.push_str(&format!("build = \"{build_script}\"\n"));
+    }
+
+    cargo.push_str("\n[workspace]\n");
+
+    if !config.workspace_dependencies.is_empty() {
+        cargo.push_str("\n[workspace.dependencies]\n");
+        for (dep_name, dep_value) in &config.workspace_dependencies {
+            let generated_value =
+                dependency_value_for_generated_project(project_dir, gen_dir, dep_value);
+            match &generated_value {
+                toml::Value::String(ver) => {
+                    cargo.push_str(&format!("{dep_name} = \"{ver}\"\n"));
+                }
+                other => {
+                    cargo.push_str(&format!("{dep_name} = {other}\n"));
+                }
+            }
+        }
+    }
 
     if !config.dependencies.is_empty() {
         cargo.push_str("\n[dependencies]\n");
         for (dep_name, dep_value) in &config.dependencies {
-            match dep_value {
+            let generated_value =
+                dependency_value_for_generated_project(project_dir, gen_dir, dep_value);
+            match &generated_value {
                 toml::Value::String(ver) => {
                     cargo.push_str(&format!("{dep_name} = \"{ver}\"\n"));
                 }
@@ -78,6 +105,49 @@ edition = "2021"
 
     fs::create_dir_all(gen_dir)?;
     fs::write(gen_dir.join("Cargo.toml"), cargo)
+}
+
+fn dependency_value_for_generated_project(
+    project_dir: &Path,
+    gen_dir: &Path,
+    value: &toml::Value,
+) -> toml::Value {
+    let toml::Value::Table(table) = value else {
+        return value.clone();
+    };
+    let mut table = table.clone();
+    if let Some(path_value) = table
+        .get("path")
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+    {
+        let source_path = if Path::new(&path_value).is_absolute() {
+            PathBuf::from(&path_value)
+        } else {
+            project_dir.join(&path_value)
+        };
+        table.insert(
+            "path".to_owned(),
+            toml::Value::String(path_from_generated_project(gen_dir, &source_path)),
+        );
+    }
+    toml::Value::Table(table)
+}
+
+fn path_from_generated_project(gen_dir: &Path, source_path: &Path) -> String {
+    if let Some(project_dir) = gen_dir.parent().and_then(Path::parent) {
+        if let Ok(relative_to_project) = source_path.strip_prefix(project_dir) {
+            return normalize_manifest_path(PathBuf::from("../..").join(relative_to_project));
+        }
+    }
+    normalize_manifest_path(source_path.to_path_buf())
+}
+
+fn normalize_manifest_path(path: PathBuf) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Runs the build pipeline: discovers .kobo files, compiles each to .rs,
@@ -101,8 +171,14 @@ pub fn run_build_pipeline(
 
     let src_dir = project_dir.join(&config.src_dir);
     let mut rs_files = Vec::new();
+    let mut summary_obligations = Vec::new();
+    let mut summary_functions = Vec::new();
+    let mut summary_source = String::new();
 
     for kobo_path in &kobo_files {
+        let source = fs::read_to_string(kobo_path)?;
+        summary_source.push_str(&source);
+        summary_functions.extend(summary_functions_json(&source, config));
         let rel = kobo_path
             .strip_prefix(&src_dir)
             .map_err(|e| DriverError::TransformFailed {
@@ -120,22 +196,40 @@ pub fn run_build_pipeline(
         build_config.output_dir = Some(rs_out.parent().unwrap_or(&gen_src_dir).to_path_buf());
 
         let mut session = CompileSession::new(build_config);
-        let rs_source = crate::pipeline::run_pipeline(&mut session, kobo_path).map_err(|()| {
-            DriverError::TransformFailed {
-                file: kobo_path.clone(),
-                message: "compilation failed".to_string(),
-            }
-        })?;
+        let artifacts =
+            crate::pipeline::run_codegen_pipeline(&mut session, kobo_path).map_err(|()| {
+                DriverError::TransformFailed {
+                    file: kobo_path.clone(),
+                    message: "compilation failed".to_string(),
+                }
+            })?;
 
-        fs::write(&rs_out, &rs_source)?;
+        fs::write(&rs_out, &artifacts.rs_source)?;
+        summary_obligations.extend(
+            artifacts
+                .must_call_obligations
+                .iter()
+                .map(|obligation| summary_obligation_json(obligation, &source, config)),
+        );
         rs_files.push(rs_out);
     }
 
-    generate_cargo_toml(config, &gen_dir).map_err(|e| DriverError::CargoTomlGenFailed {
-        message: e.to_string(),
+    copy_build_script_if_present(project_dir, &gen_dir)?;
+
+    generate_cargo_toml(config, project_dir, &gen_dir).map_err(|e| {
+        DriverError::CargoTomlGenFailed {
+            message: e.to_string(),
+        }
     })?;
 
     let cargo_toml_path = gen_dir.join("Cargo.toml");
+    write_kobo_summary(
+        config,
+        &gen_dir,
+        stable_hash(&summary_source),
+        summary_functions,
+        summary_obligations,
+    )?;
 
     // Shell out to `cargo build`.
     let cargo_output = Command::new("cargo")
@@ -185,6 +279,174 @@ pub fn run_build_pipeline(
     })
 }
 
+fn summary_obligation_json(
+    obligation: &MustCallObligation,
+    source: &str,
+    config: &KoboConfig,
+) -> serde_json::Value {
+    let applicable_types = vec![obligation.owner_type.clone()];
+    let applicable_functions = obligation_applicable_functions(source, config, obligation);
+    serde_json::json!({
+        "type": obligation.owner_type,
+        "applicable_types": applicable_types.clone(),
+        "applicable_functions": applicable_functions.clone(),
+        "applicability": {
+            "types": applicable_types,
+            "functions": applicable_functions,
+        },
+        "terminal_actions": obligation
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn obligation_applicable_functions(
+    source: &str,
+    config: &KoboConfig,
+    obligation: &MustCallObligation,
+) -> Vec<String> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    let package = package_name(config);
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Fn(function) = item else {
+                return None;
+            };
+            let body = function.block.to_token_stream().to_string();
+            let signature = function.sig.to_token_stream().to_string();
+            (body.contains(&obligation.owner_type) || signature.contains(&obligation.owner_type))
+                .then(|| format!("{package}::{}", function.sig.ident))
+        })
+        .collect()
+}
+
+fn summary_functions_json(source: &str, config: &KoboConfig) -> Vec<serde_json::Value> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Fn(function) = item else {
+                return None;
+            };
+            let name = function.sig.ident.to_string();
+            Some(serde_json::json!({
+                "path": format!("{}::{name}", package_name(config)),
+                "creates": [],
+                "transfers": [],
+                "discharges": [],
+                "returns": [],
+                "effects": effect_tags_for_function(function),
+                "boundaries": boundary_tags_for_function(function),
+            }))
+        })
+        .collect()
+}
+
+fn package_name(config: &KoboConfig) -> &str {
+    if config.package_name.is_empty() {
+        "kobo_project"
+    } else {
+        &config.package_name
+    }
+}
+
+fn effect_tags_for_function(function: &syn::ItemFn) -> Vec<&'static str> {
+    let body = quote::quote!(#function).to_string();
+    let mut effects = Vec::new();
+    if body.contains("std :: fs") {
+        effects.push("filesystem");
+    }
+    if body.contains("std :: env") {
+        effects.push("environment");
+    }
+    if body.contains("std :: process") {
+        effects.push("process");
+    }
+    effects
+}
+
+fn boundary_tags_for_function(function: &syn::ItemFn) -> Vec<String> {
+    function
+        .attrs
+        .iter()
+        .filter(|attr| {
+            attr.path()
+                .segments
+                .iter()
+                .any(|segment| segment.ident == "boundary")
+        })
+        .map(|_| "source-boundary".to_owned())
+        .collect()
+}
+
+fn write_kobo_summary(
+    config: &KoboConfig,
+    gen_dir: &Path,
+    source_hash: String,
+    functions: Vec<serde_json::Value>,
+    obligations: Vec<serde_json::Value>,
+) -> std::io::Result<()> {
+    let summary_body = serde_json::json!({
+        "schema_version": 1,
+        "crate": if config.package_name.is_empty() { "kobo_project" } else { &config.package_name },
+        "crate_version": if config.package_version.is_empty() { "0.1.0" } else { &config.package_version },
+        "source_hash": source_hash,
+        "functions": functions,
+        "obligations": obligations,
+    });
+    let summary_hash = stable_hash(&summary_body.to_string());
+    let mut summary = summary_body;
+    summary["summary_hash"] = serde_json::Value::String(summary_hash);
+    fs::write(
+        gen_dir.join(".kobo-summary"),
+        serde_json::to_string_pretty(&summary).expect(".kobo-summary should serialize"),
+    )
+}
+
+fn stable_hash(source: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn package_build_script(project_dir: &Path) -> Option<String> {
+    let manifest = fs::read_to_string(project_dir.join("Cargo.toml")).ok()?;
+    let parsed = manifest.parse::<toml::Value>().ok()?;
+    parsed
+        .get("package")?
+        .get("build")
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            project_dir
+                .join("build.rs")
+                .is_file()
+                .then(|| "build.rs".to_owned())
+        })
+}
+
+fn copy_build_script_if_present(project_dir: &Path, gen_dir: &Path) -> std::io::Result<()> {
+    let Some(build_script) = package_build_script(project_dir) else {
+        return Ok(());
+    };
+    let source = project_dir.join(&build_script);
+    if source.is_file() {
+        fs::create_dir_all(gen_dir)?;
+        fs::copy(source, gen_dir.join(build_script))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,7 +484,7 @@ mod tests {
             .dependencies
             .insert("log".to_string(), toml::Value::String("0.4".to_string()));
 
-        generate_cargo_toml(&config, &tmp).unwrap();
+        generate_cargo_toml(&config, &tmp, &tmp).unwrap();
 
         let content = fs::read_to_string(tmp.join("Cargo.toml")).unwrap();
         assert!(content.contains("name = \"test_pkg\""));

@@ -1,8 +1,11 @@
 mod bench;
+mod bindgen;
 mod build;
 mod check;
 mod debt;
+mod declarations;
 mod doctor;
+mod ecosystem;
 mod explain;
 mod fix;
 mod fmt;
@@ -152,6 +155,29 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 output_format,
             })
         }
+        KoboCommand::Bindgen { path } => bindgen::cmd_bindgen(&path),
+        KoboCommand::Add {
+            crate_name,
+            features,
+            version,
+            path,
+            git,
+            no_default_features,
+            manifest_path,
+            member,
+        } => ecosystem::cmd_add(
+            &crate_name,
+            features.as_deref(),
+            version.as_deref(),
+            path.as_deref(),
+            git.as_deref(),
+            no_default_features,
+            manifest_path.as_deref(),
+            member.as_deref(),
+        ),
+        KoboCommand::AddTypes { crate_name } => ecosystem::cmd_add_types(&crate_name),
+        KoboCommand::AddAdapter { crate_name } => ecosystem::cmd_add_adapter(&crate_name),
+        KoboCommand::MigrateCargoDeps => ecosystem::cmd_migrate_cargo_deps(),
         KoboCommand::Dump { file } => run::cmd_dump(&file),
         KoboCommand::Perf {
             file,
@@ -179,7 +205,8 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 json,
                 why,
                 backend_recommendations,
-            } => sim::cmd_sim_scout(&file, json, why, backend_recommendations),
+                fix_plan,
+            } => sim::cmd_sim_scout(&file, json, why, backend_recommendations, fix_plan),
             SimCommand::Backends { json } => sim::cmd_sim_backends(json),
         },
         KoboCommand::Test {
@@ -248,7 +275,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             }
             debt::cmd_debt(&file, json, summary)
         }
-        KoboCommand::Init { name } => init::cmd_init(&name),
+        KoboCommand::Init { name, from_cargo } => init::cmd_init(name.as_deref(), from_cargo),
         KoboCommand::Build {
             checked,
             strict,

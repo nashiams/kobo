@@ -80,10 +80,12 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                 }
                 ScenarioOpKind::ExternalBoundary {
                     crate_name,
+                    call_path,
                     policy,
                     reason,
                 } => Some(ScenarioOperation::ExternalBoundary {
                     crate_name: crate_name.clone(),
+                    call_path: call_path.clone(),
                     policy: boundary_policy(policy),
                     reason: reason.clone(),
                     span_start,
@@ -110,8 +112,10 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
 
 fn boundary_policy(policy: &ScenarioBoundaryPolicy) -> BoundaryPolicyChoice {
     match policy {
+        ScenarioBoundaryPolicy::Typed => BoundaryPolicyChoice::Typed,
         ScenarioBoundaryPolicy::Model => BoundaryPolicyChoice::Model,
         ScenarioBoundaryPolicy::Record => BoundaryPolicyChoice::Record,
+        ScenarioBoundaryPolicy::Activity => BoundaryPolicyChoice::Activity,
         ScenarioBoundaryPolicy::Stub => BoundaryPolicyChoice::Stub,
         ScenarioBoundaryPolicy::Outside => BoundaryPolicyChoice::Outside,
         ScenarioBoundaryPolicy::Opaque => BoundaryPolicyChoice::Opaque,

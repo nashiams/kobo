@@ -1,5 +1,5 @@
 use anyhow::Context;
-use kobo_driver::{load_config, run_codegen_pipeline};
+use kobo_driver::{load_config, run_codegen_pipeline, DriverError};
 use kobo_errors::{ColorMode, KErrorCode, Severity};
 use kobo_ir::GuaranteePolicy;
 
@@ -47,7 +47,14 @@ pub(super) fn cmd_build(
         config.guarantee_policy = policy;
     }
 
-    let output = kobo_driver::run_build_pipeline(&config, &cwd)?;
+    let output = match kobo_driver::run_build_pipeline(&config, &cwd) {
+        Ok(output) => output,
+        Err(DriverError::CargoBuildFailed { stderr, exit_code }) => {
+            emit_cargo_compatibility_diagnostic(&stderr, exit_code, error_format)?;
+            anyhow::bail!("cargo build failed (exit code {exit_code}): {stderr}");
+        }
+        Err(error) => return Err(error.into()),
+    };
 
     if let Some(bin) = &output.binary_path {
         eprintln!("Build succeeded: {}", bin.display());
@@ -59,6 +66,30 @@ pub(super) fn cmd_build(
         eprint!("{diag}");
     }
 
+    Ok(())
+}
+
+fn emit_cargo_compatibility_diagnostic(
+    stderr: &str,
+    exit_code: i32,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    let message = "Cargo build failed while preserving normal Cargo dependency behavior";
+    match error_format {
+        ErrorFormat::Json => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "code": "K0128",
+                "message": message,
+                "exit_code": exit_code,
+                "cargo_stderr": stderr,
+            }))?
+        ),
+        ErrorFormat::Human => {
+            eprintln!("error[K0128]: {message}");
+            eprint!("{stderr}");
+        }
+    }
     Ok(())
 }
 

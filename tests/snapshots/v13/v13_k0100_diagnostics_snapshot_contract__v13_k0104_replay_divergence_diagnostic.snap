@@ -214,9 +214,11 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
         "status": "comparable"
       },
       "model_run": {
+        "engine": "legacy-directive-interpreter",
         "events": [],
         "obligations": [],
-        "source": "not_requested"
+        "source": "not_requested",
+        "steps_executed": 0
       },
       "obligations": {
         "implementation_states": [],
@@ -525,9 +527,11 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
         "status": "comparable"
       },
       "model_run": {
+        "engine": "legacy-directive-interpreter",
         "events": [],
         "obligations": [],
-        "source": "not_requested"
+        "source": "not_requested",
+        "steps_executed": 0
       },
       "obligations": {
         "implementation_states": [],

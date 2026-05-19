@@ -236,6 +236,11 @@ pub(super) enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    BranchUnresolved {
+        binding: String,
+        span_start: usize,
+        span_end: usize,
+    },
     UnsupportedContainer {
         binding: String,
         type_name: String,
@@ -705,6 +710,15 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
             span_start,
             span_end,
         },
+        sim_core::ScenarioOperation::BranchUnresolved {
+            binding,
+            span_start,
+            span_end,
+        } => ScenarioOperation::BranchUnresolved {
+            binding,
+            span_start,
+            span_end,
+        },
         sim_core::ScenarioOperation::UnsupportedContainer {
             binding,
             type_name,
@@ -876,6 +890,18 @@ impl ScenarioOperation {
                 span_end,
             } => {
                 output.push_str("move:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::BranchUnresolved {
+                binding,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("branch-unresolved:");
                 output.push_str(binding);
                 output.push(':');
                 output.push_str(&span_start.to_string());
@@ -1060,6 +1086,11 @@ impl<'a> SimulationRuntime<'a> {
                     span_start,
                     span_end,
                 } => self.mark_binding_moved(binding, (*span_start, *span_end)),
+                ScenarioOperation::BranchUnresolved {
+                    binding,
+                    span_start,
+                    span_end,
+                } => self.record_branch_unresolved_failure(binding, (*span_start, *span_end)),
                 ScenarioOperation::UnsupportedContainer {
                     binding,
                     type_name,
@@ -1493,6 +1524,25 @@ impl<'a> SimulationRuntime<'a> {
             events: vec![SimEvent {
                 kind: "unsupported-container".to_owned(),
                 label: Some(format!("{binding}:{container}:{type_name}")),
+                value: None,
+            }],
+        });
+    }
+
+    fn record_branch_unresolved_failure(&mut self, binding: &str, span: (usize, usize)) {
+        if self.unsupported_container_failure.is_some() {
+            return;
+        }
+        self.unsupported_container_failure = Some(ScenarioFailure {
+            code: KErrorCode::K0100,
+            message: format!(
+                "strict liveness: unresolved obligation `{binding}` reaches one branch exit"
+            ),
+            primary_start: span.0,
+            primary_end: span.1,
+            events: vec![SimEvent {
+                kind: "branch-unresolved".to_owned(),
+                label: Some(binding.to_owned()),
                 value: None,
             }],
         });

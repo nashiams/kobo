@@ -36,6 +36,9 @@ pub enum ScenarioOpKind {
     MoveBinding {
         binding: String,
     },
+    BranchUnresolved {
+        binding: String,
+    },
     UnsupportedContainer {
         binding: String,
         type_name: String,

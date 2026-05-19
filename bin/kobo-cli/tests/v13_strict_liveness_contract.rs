@@ -269,6 +269,38 @@ fn alias_shadow_case() {
 }
 
 #[test]
+fn conditional_discharge_does_not_hide_leaking_branch() {
+    let project = TestProject::new("v13-strict-conditional-branch");
+    let source = delivery_source(
+        r#"
+fn runtime_flag(input: i32) -> bool { input > 0 }
+
+#[kobo::scenario(profile = "sync")]
+fn conditional_branch_case() {
+    let token = Delivery {};
+    if runtime_flag(1) {
+        token.ack();
+    } else {
+        let _lost = token;
+    }
+}
+"#,
+    );
+
+    let (output, witness) = run_strict_witness(&project, &source, "conditional_branch_case");
+    assert_failure(
+        &output,
+        "strict liveness must reject the branch that leaks the token",
+    );
+    assert_strict_error(&witness, "branch_exit", "token");
+    assert_contains(
+        &witness["formal_core"].to_string(),
+        "branch",
+        "ordinary if should lower into Core branch evidence",
+    );
+}
+
+#[test]
 fn helper_summary_proves_discharge_without_manual_annotation() {
     let project = TestProject::new("v13-strict-helper");
     let source = delivery_source(

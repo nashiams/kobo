@@ -43,6 +43,13 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     span_start,
                     span_end,
                 }),
+                ScenarioOpKind::BranchUnresolved { binding } => {
+                    Some(ScenarioOperation::BranchUnresolved {
+                        binding: binding.clone(),
+                        span_start,
+                        span_end,
+                    })
+                }
                 ScenarioOpKind::UnsupportedContainer {
                     binding,
                     type_name,

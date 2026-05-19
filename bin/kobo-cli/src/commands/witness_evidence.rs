@@ -333,6 +333,12 @@ impl FunctionSummaryBuilder {
                         .escapes
                         .push(format!("{binding}->{container}"));
                 }
+                ScenarioOpKind::BranchUnresolved { binding } => {
+                    builder
+                        .summary_mut(&program.target)
+                        .leaks
+                        .push(format!("{binding}->branch_exit"));
+                }
                 ScenarioOpKind::MoveBinding { .. }
                 | ScenarioOpKind::CoreTerminator { .. }
                 | ScenarioOpKind::ModeledEffect { .. }
@@ -399,6 +405,7 @@ fn operation_coverage_label(operation: &kobo_ir::ScenarioOp) -> String {
         ScenarioOpKind::Discharge { .. } => "obligation-discharge".to_owned(),
         ScenarioOpKind::Transfer { .. } => "obligation-transfer".to_owned(),
         ScenarioOpKind::MoveBinding { .. } => "obligation-move".to_owned(),
+        ScenarioOpKind::BranchUnresolved { .. } => "obligation-branch-unresolved".to_owned(),
         ScenarioOpKind::ModeledEffect { boundary } => {
             format!("modeled.{}", modeled_boundary_label(boundary))
         }

@@ -231,6 +231,11 @@ pub enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    BranchUnresolved {
+        binding: String,
+        span_start: usize,
+        span_end: usize,
+    },
     UnsupportedContainer {
         binding: String,
         type_name: String,
@@ -451,6 +456,24 @@ impl<'a> Runtime<'a> {
                         obligation.drop_span = Some((*span_start, *span_end));
                     }
                 }
+                ScenarioOperation::BranchUnresolved {
+                    binding,
+                    span_start,
+                    span_end,
+                } => self.set_failure_once(ScenarioFailure {
+                    code: KErrorCode::K0100,
+                    message: format!(
+                        "strict liveness: unresolved obligation `{binding}` reaches one branch exit"
+                    ),
+                    primary_start: *span_start,
+                    primary_end: *span_end,
+                    events: vec![ScenarioEvent {
+                        kind: "branch-unresolved".to_owned(),
+                        label: Some(binding.clone()),
+                        value: None,
+                        io: None,
+                    }],
+                }),
                 ScenarioOperation::UnsupportedContainer {
                     binding,
                     type_name,

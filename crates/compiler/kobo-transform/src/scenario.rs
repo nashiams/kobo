@@ -27,7 +27,7 @@ type FunctionMap<'a> = HashMap<String, &'a ItemFn>;
 type FunctionSccMap = HashMap<String, usize>;
 type MethodShapeMap = HashMap<String, HashMap<String, MethodShape>>;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BindingEnv {
     bindings: BindingMap,
     bools: BoolMap,
@@ -573,6 +573,18 @@ impl BindingEnv {
         self.terminal_actions.get(obligation_key).cloned()
     }
 
+    fn active_obligations(&self) -> HashSet<String> {
+        self.terminal_actions.keys().cloned().collect()
+    }
+
+    fn has_active_obligation(&self, obligation_key: &str) -> bool {
+        self.terminal_actions.contains_key(obligation_key)
+    }
+
+    fn discharge_obligation(&mut self, obligation_key: &str) {
+        self.terminal_actions.remove(obligation_key);
+    }
+
     fn resolve_bool(&self, local: &str) -> Option<bool> {
         self.bools.get(local).copied()
     }
@@ -910,10 +922,37 @@ impl<'a> ScenarioLowerer<'a> {
                 }
             }
             None => {
-                self.execute_block(&expr_if.then_branch, env);
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_if),
+                    kind: ScenarioOpKind::Select { branch_count: 2 },
+                });
+                let mut then_env = env.clone();
+                let mut else_env = env.clone();
+                self.execute_block(&expr_if.then_branch, &mut then_env);
                 if let Some((_, else_expr)) = expr_if.else_branch.as_ref() {
-                    self.execute_expr(else_expr.as_ref(), env);
+                    self.execute_expr(else_expr.as_ref(), &mut else_env);
                 }
+                self.record_branch_unresolved(expr_if, env, &then_env, &else_env);
+                merge_branch_env(env, then_env, else_env);
+            }
+        }
+    }
+
+    fn record_branch_unresolved(
+        &mut self,
+        expr_if: &'a ExprIf,
+        before: &BindingEnv,
+        then_env: &BindingEnv,
+        else_env: &BindingEnv,
+    ) {
+        for binding in before.active_obligations() {
+            let then_active = then_env.has_active_obligation(&binding);
+            let else_active = else_env.has_active_obligation(&binding);
+            if then_active != else_active {
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_if),
+                    kind: ScenarioOpKind::BranchUnresolved { binding },
+                });
             }
         }
     }
@@ -1402,8 +1441,12 @@ impl<'a> ScenarioLowerer<'a> {
             {
                 self.operations.push(ScenarioOp {
                     span: self.span(call),
-                    kind: ScenarioOpKind::Discharge { binding, action },
+                    kind: ScenarioOpKind::Discharge {
+                        binding: binding.clone(),
+                        action,
+                    },
                 });
+                env.discharge_obligation(&binding);
                 return;
             }
         }
@@ -1910,6 +1953,26 @@ fn lifecycle_template_from_shape(
         }
         _ => None,
     }
+}
+
+fn merge_branch_env(env: &mut BindingEnv, then_env: BindingEnv, else_env: BindingEnv) {
+    let mut merged_actions = HashMap::new();
+    let bindings = then_env
+        .terminal_actions
+        .keys()
+        .chain(else_env.terminal_actions.keys())
+        .cloned()
+        .collect::<HashSet<_>>();
+    for binding in bindings {
+        if let Some(actions) = then_env
+            .terminal_actions
+            .get(&binding)
+            .or_else(|| else_env.terminal_actions.get(&binding))
+        {
+            merged_actions.insert(binding, actions.clone());
+        }
+    }
+    env.terminal_actions = merged_actions;
 }
 
 fn type_has_terminal_action(

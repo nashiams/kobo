@@ -1862,6 +1862,16 @@ fn terminal_failure_events(
                     }]);
                 }
             }
+            ScenarioOpKind::BranchUnresolved { binding } => {
+                if failure_events.is_none() {
+                    failure_events = Some(vec![ScenarioEvent {
+                        kind: "branch-unresolved".to_owned(),
+                        label: Some(binding.clone()),
+                        value: None,
+                        io: None,
+                    }]);
+                }
+            }
             ScenarioOpKind::ModeledEffect { boundary } => {
                 if failure_events.is_none() {
                     let active_obligation = obligations

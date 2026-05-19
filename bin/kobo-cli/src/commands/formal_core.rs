@@ -385,6 +385,27 @@ fn apply_statement_liveness(
                 active.remove(binding);
             }
         }
+        CoreStatementKind::ObligationBranchUnresolved => {
+            let Some(binding) = statement.binding.as_ref() else {
+                return;
+            };
+            let obligation = active.get(binding).cloned().unwrap_or(ActiveObligation {
+                binding: binding.clone(),
+                source_span: source_span_from_kobo(source_path, source, statement.source_span),
+            });
+            let source_span = source_span_from_kobo(source_path, source, statement.source_span);
+            if !has_error(analysis, "branch_exit", binding, source_span.start) {
+                analysis.errors.push(StrictLivenessError {
+                    exit_kind: "branch_exit".to_owned(),
+                    binding: binding.clone(),
+                    obligation_span: obligation.source_span,
+                    source_span,
+                    message: format!(
+                        "strict liveness: unresolved obligation `{binding}` reaches one branch exit"
+                    ),
+                });
+            }
+        }
         CoreStatementKind::UnsupportedContainer => {
             let binding = statement
                 .binding

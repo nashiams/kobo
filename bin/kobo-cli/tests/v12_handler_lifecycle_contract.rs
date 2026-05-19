@@ -257,8 +257,8 @@ fn handler_tokens_emit_must_call_metadata() {
     );
     assert_contains(
         &witness["handler_lifecycle"].to_string(),
-        "lowered-guard-calls",
-        "handler witness should cite lowered lifecycle guard calls instead of raw source token shape",
+        "lowered-function-guard-scan",
+        "handler witness should cite the lowered function guard scan instead of raw source token shape",
     );
 }
 

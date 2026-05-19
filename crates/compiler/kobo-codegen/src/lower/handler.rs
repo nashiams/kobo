@@ -1,5 +1,6 @@
-use quote::{quote, ToTokens};
+use quote::quote;
 use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
 
 use crate::HandlerLifecycleEvidence;
 
@@ -8,7 +9,6 @@ struct HandlerSpec {
     name: String,
     source_line: usize,
     cleanup_hook: Option<syn::Path>,
-    terminal_actions: Vec<String>,
 }
 
 impl HandlerSpec {
@@ -22,16 +22,12 @@ impl HandlerSpec {
 
 pub(crate) struct HandlerSupport {
     pub(crate) items: Vec<syn::Item>,
-    pub(crate) evidence: Vec<HandlerLifecycleEvidence>,
 }
 
 pub(crate) fn handler_support(ast: &kobo_parser::KoboFile, file: &syn::File) -> HandlerSupport {
     let specs = handler_specs(ast, file);
     if specs.is_empty() {
-        return HandlerSupport {
-            items: Vec::new(),
-            evidence: Vec::new(),
-        };
+        return HandlerSupport { items: Vec::new() };
     }
 
     HandlerSupport {
@@ -46,7 +42,6 @@ pub(crate) fn handler_support(ast: &kobo_parser::KoboFile, file: &syn::File) -> 
             handler_guard_impl_item(),
             handler_guard_drop_impl_item(),
         ],
-        evidence: specs.iter().map(handler_evidence).collect(),
     }
 }
 
@@ -72,11 +67,7 @@ fn handler_specs(ast: &kobo_parser::KoboFile, file: &syn::File) -> Vec<HandlerSp
             let syn::Item::Fn(function) = item else {
                 return None;
             };
-            handler_spec(ast, &function.attrs, &function.sig).map(|mut spec| {
-                spec.terminal_actions =
-                    terminal_actions_from_lowered_guard(&function.sig, &function.block);
-                spec
-            })
+            handler_spec(ast, &function.attrs, &function.sig)
         })
         .collect()
 }
@@ -91,7 +82,134 @@ fn handler_spec(
         name: signature.ident.to_string(),
         source_line: source_line(ast, handler_attr),
         cleanup_hook: attrs.iter().find_map(cleanup_hook_path),
-        terminal_actions: Vec::new(),
+    })
+}
+
+pub(crate) fn handler_evidence_from_lowered_file(
+    file: &syn::File,
+) -> Vec<HandlerLifecycleEvidence> {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Fn(function) = item else {
+                return None;
+            };
+            lowered_handler_evidence(function)
+        })
+        .collect()
+}
+
+fn lowered_handler_evidence(function: &syn::ItemFn) -> Option<HandlerLifecycleEvidence> {
+    let (name, source_line) = lowered_handler_source(&function.attrs)?;
+    let lowered_scan = LoweredHandlerGuardScan::scan(&function.block);
+    Some(HandlerLifecycleEvidence {
+        name,
+        source_line,
+        cleanup_hook: lowered_scan.cleanup_hook,
+        terminal_actions: lowered_scan.terminal_actions,
+        tracing_boundary: "drop-closes-span".to_owned(),
+        metrics_boundary: "handler-entry-exit-counters".to_owned(),
+        cleanup_boundary: "registered-success-error-cancel".to_owned(),
+        cancel_cleanup: "drop-runs-registered-cleanup".to_owned(),
+        terminal_evidence_source: "lowered-function-guard-scan".to_owned(),
+    })
+}
+
+fn lowered_handler_source(attrs: &[syn::Attribute]) -> Option<(String, usize)> {
+    attrs.iter().filter_map(doc_attr_value).find_map(|doc| {
+        let parts = doc.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 4 || parts[0] != "kobo:" || parts[1] != "handler" {
+            return None;
+        }
+        let source_line = parts[3].strip_prefix("source_line=")?.parse().ok()?;
+        Some((parts[2].to_owned(), source_line))
+    })
+}
+
+fn doc_attr_value(attr: &syn::Attribute) -> Option<String> {
+    if !attr.path().is_ident("doc") {
+        return None;
+    }
+    let syn::Meta::NameValue(name_value) = &attr.meta else {
+        return None;
+    };
+    let syn::Expr::Lit(expr_lit) = &name_value.value else {
+        return None;
+    };
+    let syn::Lit::Str(lit) = &expr_lit.lit else {
+        return None;
+    };
+    Some(lit.value())
+}
+
+#[derive(Default)]
+struct LoweredHandlerGuardScan {
+    cleanup_hook: Option<String>,
+    terminal_actions: Vec<String>,
+}
+
+impl LoweredHandlerGuardScan {
+    fn scan(block: &syn::Block) -> Self {
+        let mut visitor = LoweredHandlerGuardVisitor::default();
+        visitor.visit_block(block);
+        Self {
+            cleanup_hook: visitor.cleanup_hook,
+            terminal_actions: visitor.terminal_actions,
+        }
+    }
+}
+
+#[derive(Default)]
+struct LoweredHandlerGuardVisitor {
+    cleanup_hook: Option<String>,
+    terminal_actions: Vec<String>,
+}
+
+impl LoweredHandlerGuardVisitor {
+    fn push_terminal_action(&mut self, action: &str) {
+        if !self.terminal_actions.iter().any(|seen| seen == action) {
+            self.terminal_actions.push(action.to_owned());
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for LoweredHandlerGuardVisitor {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if guard_receiver(&node.receiver) {
+            match node.method.to_string().as_str() {
+                "record_reply" => self.push_terminal_action("reply"),
+                "record_reject" => self.push_terminal_action("reject"),
+                "record_cancel" => self.push_terminal_action("cancel"),
+                "register_cleanup" => {
+                    if let Some(hook) = first_lit_str_arg(&node.args) {
+                        self.cleanup_hook = Some(hook);
+                    }
+                }
+                _ => {}
+            }
+        }
+        visit::visit_expr_method_call(self, node);
+    }
+}
+
+fn guard_receiver(receiver: &syn::Expr) -> bool {
+    let syn::Expr::Path(path) = receiver else {
+        return false;
+    };
+    path.path.is_ident("__kobo_handler_guard")
+}
+
+fn first_lit_str_arg(
+    args: &syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>,
+) -> Option<String> {
+    args.iter().find_map(|arg| {
+        let syn::Expr::Lit(expr_lit) = arg else {
+            return None;
+        };
+        let syn::Lit::Str(lit) = &expr_lit.lit else {
+            return None;
+        };
+        Some(lit.value())
     })
 }
 
@@ -451,40 +569,6 @@ fn handler_guard_impl_item() -> syn::Item {
                 }
             }
         }
-    }
-}
-
-fn terminal_actions_from_lowered_guard(
-    signature: &syn::Signature,
-    block: &syn::Block,
-) -> Vec<String> {
-    let mut actions = Vec::new();
-    actions.push("reply".to_owned());
-    if returns_result(signature) {
-        actions.push("reject".to_owned());
-    }
-    if original_body_mentions_cancel(block) {
-        actions.push("cancel".to_owned());
-    }
-    actions
-}
-
-fn original_body_mentions_cancel(block: &syn::Block) -> bool {
-    let rendered = block.to_token_stream().to_string();
-    rendered.contains(". cancel (") || rendered.contains(".cancel(")
-}
-
-fn handler_evidence(spec: &HandlerSpec) -> HandlerLifecycleEvidence {
-    HandlerLifecycleEvidence {
-        name: spec.name.clone(),
-        source_line: spec.source_line,
-        cleanup_hook: spec.cleanup_name(),
-        terminal_actions: spec.terminal_actions.clone(),
-        tracing_boundary: "drop-closes-span".to_owned(),
-        metrics_boundary: "handler-entry-exit-counters".to_owned(),
-        cleanup_boundary: "registered-success-error-cancel".to_owned(),
-        cancel_cleanup: "drop-runs-registered-cleanup".to_owned(),
-        terminal_evidence_source: "lowered-guard-calls".to_owned(),
     }
 }
 

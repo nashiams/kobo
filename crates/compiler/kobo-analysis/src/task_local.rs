@@ -5,6 +5,14 @@ pub struct TaskLocalWarning {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskLocalCapture {
+    pub binding_name: String,
+    pub type_name: String,
+    pub source_offset: usize,
+    pub is_explicit_local: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TaskLocalWarningKind {
     NormalSpawnNonSendCapture {
         binding_name: String,
@@ -17,30 +25,15 @@ pub enum TaskLocalWarningKind {
 
 pub fn scan_source_task_local_warnings(source: &str) -> Vec<TaskLocalWarning> {
     let mut warnings = Vec::new();
-    let non_send_bindings = non_send_bindings(source);
-    for binding in &non_send_bindings {
-        let mut search_offset = 0usize;
-        while let Some(found) = source[search_offset..].find("spawn") {
-            let spawn_offset = search_offset + found;
-            let Some(block) = spawn_block(source, spawn_offset) else {
-                search_offset = spawn_offset + "spawn".len();
-                continue;
-            };
-            if block.is_local {
-                search_offset = block.end;
-                continue;
-            }
-            let body = &source[block.body_start..block.body_end];
-            if contains_ident(body, &binding.name) {
-                warnings.push(TaskLocalWarning {
-                    kind: TaskLocalWarningKind::NormalSpawnNonSendCapture {
-                        binding_name: binding.name.clone(),
-                        type_name: binding.type_name.clone(),
-                    },
-                    source_offset: spawn_offset,
-                });
-            }
-            search_offset = block.end;
+    for capture in scan_source_task_local_captures(source) {
+        if !capture.is_explicit_local {
+            warnings.push(TaskLocalWarning {
+                kind: TaskLocalWarningKind::NormalSpawnNonSendCapture {
+                    binding_name: capture.binding_name,
+                    type_name: capture.type_name,
+                },
+                source_offset: capture.source_offset,
+            });
         }
     }
 
@@ -71,6 +64,32 @@ pub fn scan_source_task_local_warnings(source: &str) -> Vec<TaskLocalWarning> {
     }
 
     warnings
+}
+
+pub fn scan_source_task_local_captures(source: &str) -> Vec<TaskLocalCapture> {
+    let mut captures = Vec::new();
+    let non_send_bindings = non_send_bindings(source);
+    for binding in &non_send_bindings {
+        let mut search_offset = 0usize;
+        while let Some(found) = source[search_offset..].find("spawn") {
+            let spawn_offset = search_offset + found;
+            let Some(block) = spawn_block(source, spawn_offset) else {
+                search_offset = spawn_offset + "spawn".len();
+                continue;
+            };
+            let body = &source[block.body_start..block.body_end];
+            if contains_ident(body, &binding.name) {
+                captures.push(TaskLocalCapture {
+                    binding_name: binding.name.clone(),
+                    type_name: binding.type_name.clone(),
+                    source_offset: spawn_offset,
+                    is_explicit_local: block.is_local,
+                });
+            }
+            search_offset = block.end;
+        }
+    }
+    captures
 }
 
 struct NonSendBinding {
@@ -258,6 +277,28 @@ async fn f() {
 "#,
         );
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn captures_are_scoped_to_the_spawn_body() {
+        let captures = scan_source_task_local_captures(
+            r#"
+use std::rc::Rc;
+async fn f() {
+    let local_state = Rc::new(1);
+    spawn local { println!("{}", local_state); };
+    let cross_state = Rc::new(2);
+    spawn { println!("{}", cross_state); };
+}
+"#,
+        );
+        assert_eq!(captures.len(), 2);
+        assert!(captures
+            .iter()
+            .any(|capture| { capture.binding_name == "local_state" && capture.is_explicit_local }));
+        assert!(captures.iter().any(|capture| {
+            capture.binding_name == "cross_state" && !capture.is_explicit_local
+        }));
     }
 
     #[test]

@@ -250,6 +250,16 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
         "parallel witness evidence should cite structured proof checks",
     );
     assert_contains(
+        &witness["parallel_lowering"].to_string(),
+        "accepted-lowering-gate",
+        "parallel witness evidence should prove the loop crossed the accepted lowering gate",
+    );
+    assert_contains(
+        &witness["parallel_lowering"].to_string(),
+        "no-K0061-blockers",
+        "parallel witness evidence should state that blocking parallel diagnostics were absent",
+    );
+    assert_contains(
         &witness["task_local_zones"].to_string(),
         "local_state",
         "integrated task-local witness should include the non-Send captured binding",

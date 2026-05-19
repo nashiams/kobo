@@ -768,6 +768,9 @@ impl<'a> Lowerer<'a> {
             .collect::<Vec<_>>();
         let safety_checks = match lowering {
             "rayon-par-iter" => vec![
+                "accepted-lowering-gate".to_owned(),
+                "analysis-diagnostics-clean".to_owned(),
+                "no-K0061-blockers".to_owned(),
                 "send-sync".to_owned(),
                 "shared-mutation-rejected".to_owned(),
                 "ward-boundary-policy-checked".to_owned(),
@@ -777,9 +780,16 @@ impl<'a> Lowerer<'a> {
             "boundary-policy" => vec!["explicit-boundary-policy".to_owned()],
             _ => Vec::new(),
         };
+        let analysis_gate = match lowering {
+            "rayon-par-iter" => "accepted-lowering-gate:no-K0061-blockers",
+            "serial" => "policy-gate:serial-order",
+            "boundary-policy" => "policy-gate:ward-boundary",
+            _ => "not-applicable",
+        };
         let proof = format!(
-            "{} iterator={} captures=[{}] checks=[{}]",
+            "{} gate={} iterator={} captures=[{}] checks=[{}]",
             lowering,
+            analysis_gate,
             iterator,
             captured_bindings.join(","),
             safety_checks.join(",")
@@ -788,6 +798,7 @@ impl<'a> Lowerer<'a> {
             source_line,
             lowering: lowering.to_owned(),
             policy: policy.to_owned(),
+            analysis_gate: analysis_gate.to_owned(),
             proof,
             iterator,
             captured_bindings,

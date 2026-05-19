@@ -862,6 +862,7 @@ fn parallel_loop_json(loop_evidence: &kobo_codegen::ParallelLoopEvidence) -> ser
         "source_line": loop_evidence.source_line,
         "lowering": &loop_evidence.lowering,
         "policy": &loop_evidence.policy,
+        "analysis_gate": &loop_evidence.analysis_gate,
         "proof": &loop_evidence.proof,
         "iterator": &loop_evidence.iterator,
         "captured_bindings": &loop_evidence.captured_bindings,

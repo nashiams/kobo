@@ -81,6 +81,7 @@ pub struct ParallelLoopEvidence {
     pub source_line: usize,
     pub lowering: String,
     pub policy: String,
+    pub analysis_gate: String,
     pub proof: String,
     pub iterator: String,
     pub captured_bindings: Vec<String>,

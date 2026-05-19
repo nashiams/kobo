@@ -2,8 +2,9 @@ use std::path::Path;
 
 use kobo_analysis::{
     analyze_send_violations, facts_to_diagnostics, run_analysis, scan_source_cancel_safety,
-    scan_source_handler_leaks, scan_source_parallel_warnings, scan_source_task_local_warnings,
-    ParallelWarningKind, SpawnSite as AnalysisSpawnSite, TaskLocalWarningKind,
+    scan_source_handler_leaks, scan_source_parallel_warnings, scan_source_task_local_captures,
+    scan_source_task_local_warnings, ParallelWarningKind, SpawnSite as AnalysisSpawnSite,
+    TaskLocalWarningKind,
 };
 use kobo_errors::{
     resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
@@ -245,8 +246,9 @@ fn binding_is_captured_by_explicit_local_spawn(
     binding_name: &str,
 ) -> bool {
     session.file_set().iter_files().any(|(_, entry)| {
-        let source = entry.source();
-        source.contains("spawn local") && source.contains(binding_name)
+        scan_source_task_local_captures(entry.source())
+            .iter()
+            .any(|capture| capture.is_explicit_local && capture.binding_name == binding_name)
     })
 }
 

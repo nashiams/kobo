@@ -22,8 +22,9 @@ surfaces, recordings capture replayable boundary evidence, and opaque boundaries
 keep unknown external internals visible instead of pretending they are
 deterministic.
 
-Kobo can replay modeled wards and recorded boundaries. It does not claim that
-arbitrary crate internals are deterministic.
+Kobo can replay modeled wards and recorded boundaries. Unknown crate internals
+stay outside the replay claim unless they are exposed through recorded boundary
+evidence.
 
 ## CLI Workflow
 
@@ -44,3 +45,11 @@ The primary workflow is:
 witness links, and Rust navigation through rust-analyzer/source-map delegation.
 The VS Code contribution under `editors/vscode` registers `.kobo` syntax and the
 run, replay, and explain actions.
+
+## Guides
+
+- [Modeled Ward Tutorial](docs/modeled-wards.md)
+- [Strict Liveness Reference](docs/replay-and-strict-liveness.md)
+- [Failure Lab](docs/failure-lab.md)
+- [Editor And Clean Rust Workflow](docs/editor-clean-rust-workflow.md)
+- [Migration Guide](docs/migration-guide.md)

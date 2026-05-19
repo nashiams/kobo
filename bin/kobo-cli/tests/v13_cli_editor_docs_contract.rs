@@ -475,13 +475,8 @@ fn formatting_delegates_rust_shaped_code_to_rustfmt() {
 
 #[test]
 fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
-    let readme = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("README.md"),
-    )
-    .expect("README should read");
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).expect("README should read");
     for expected in [
         "modeled wards",
         "ports",
@@ -496,5 +491,96 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
     }
     for forbidden in ["gradual typing", "formally proves arbitrary"] {
         assert_not_contains(&readme, forbidden, "README should avoid overclaim");
+    }
+
+    let docs = [
+        (
+            "docs/modeled-wards.md",
+            [
+                "Modeled Ward Tutorial",
+                "attribute form",
+                "first-class ward syntax",
+                "ports",
+                "recordings",
+                "opaque boundaries",
+                "source spans",
+            ],
+        ),
+        (
+            "docs/replay-and-strict-liveness.md",
+            [
+                "Strict Liveness Reference",
+                "Core CFG",
+                "join",
+                "transfer",
+                "proof failure",
+                "replay validation",
+                "mode invariant",
+            ],
+        ),
+        (
+            "docs/failure-lab.md",
+            [
+                "Failure Lab",
+                "durable queue",
+                "async gateway",
+                "crash-after-ack",
+                "cancellation",
+                "orphan task",
+                "request-token",
+            ],
+        ),
+        (
+            "docs/editor-clean-rust-workflow.md",
+            [
+                "Editor Workflow",
+                "kobo-lsp",
+                "witness links",
+                "rust-analyzer",
+                "inspect --clean --cargo",
+                "zero Kobo dependency",
+                "rustfmt",
+            ],
+        ),
+        (
+            "docs/migration-guide.md",
+            [
+                "Migration Guide",
+                "Script",
+                "Checked",
+                "Strict",
+                "scoped modes",
+                "debt",
+                "mode invariant",
+            ],
+        ),
+    ];
+
+    let mut combined = readme;
+    for (relative, required_terms) in docs {
+        let path = repo_root.join(relative);
+        assert!(path.is_file(), "{relative} should be shipped documentation");
+        let contents = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{relative} should read: {error}"));
+        for expected in required_terms {
+            assert_contains(
+                &contents,
+                expected,
+                "documentation page should cover required workflow detail",
+            );
+        }
+        combined.push_str(&contents);
+    }
+    for forbidden in [
+        "gradual typing",
+        "formally proves arbitrary",
+        "arbitrary crate internals are deterministic",
+        "first-class ward syntax is required",
+    ] {
+        assert_not_contains(
+            &combined,
+            forbidden,
+            "v0.13 docs should avoid overclaim language",
+        );
     }
 }

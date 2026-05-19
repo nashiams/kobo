@@ -309,7 +309,62 @@ fn append_scenario_metadata(mut output: String, source: &str) -> String {
 }
 
 fn scenario_metadata_output(source: &str) -> String {
-    append_scenario_metadata(String::new(), source)
+    append_ward_metadata(append_scenario_metadata(String::new(), source), source)
+}
+
+fn append_ward_metadata(mut output: String, source: &str) -> String {
+    if !source.contains("ward ") {
+        return output;
+    }
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    let mut in_ward = false;
+    let mut depth = 0_i32;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("ward ") {
+            let name = rest
+                .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+                .next()
+                .unwrap_or(rest);
+            output.push_str(&format!("// kobo: ward {name}\n"));
+            in_ward = true;
+        }
+        if in_ward {
+            if let Some(rest) = trimmed.strip_prefix("state ") {
+                let name = rest.split(':').next().unwrap_or(rest).trim();
+                output.push_str(&format!("// kobo: state {name}\n"));
+            } else if let Some(rest) = trimmed.strip_prefix("obligation ") {
+                output.push_str(&format!("// kobo: obligation {}\n", rest.trim()));
+            } else if let Some(rest) = trimmed.strip_prefix("invariant ") {
+                let name = rest
+                    .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+                    .next()
+                    .unwrap_or(rest);
+                output.push_str(&format!("// kobo: invariant {name}\n"));
+            } else if let Some(rest) = trimmed.strip_prefix("scenario ") {
+                let name = rest
+                    .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+                    .next()
+                    .unwrap_or(rest);
+                output.push_str(&format!("// kobo: scenario {name}\n"));
+            } else if let Some(rest) = trimmed.strip_prefix("port ") {
+                output.push_str(&format!("// kobo: port {}\n", rest.trim()));
+            } else if let Some(rest) = trimmed.strip_prefix("recording ") {
+                output.push_str(&format!("// kobo: recording {}\n", rest.trim()));
+            } else if let Some(rest) = trimmed.strip_prefix("debt ") {
+                output.push_str(&format!("// kobo: debt {}\n", rest.trim()));
+            }
+            depth += trimmed.matches('{').count() as i32;
+            depth -= trimmed.matches('}').count() as i32;
+            if depth <= 0 && trimmed.contains('}') {
+                in_ward = false;
+                depth = 0;
+            }
+        }
+    }
+    output
 }
 
 struct ScenarioMetadata {

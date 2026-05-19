@@ -206,6 +206,13 @@ pub(super) fn inferred_obligations_json(
                     serde_json::Value::String("unresolved_terminal_action".to_owned())
                 };
 
+                let source_span = span_json_for_binding(
+                    source_path,
+                    source,
+                    obligation.declaration_span,
+                    &obligation.binding,
+                );
+
                 serde_json::json!({
                     "id": format!("{}:{}", template.id, obligation.binding),
                     "kind": template.kind,
@@ -214,7 +221,7 @@ pub(super) fn inferred_obligations_json(
                     "binding": obligation.binding,
                     "state": state,
                     "terminal_actions": obligation.actions.clone(),
-                    "source_span": span_json(source_path, source, obligation.declaration_span),
+                    "source_span": source_span,
                     "confidence": template.confidence,
                     "coverage_loss": coverage_loss,
                 })
@@ -503,6 +510,22 @@ fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_jso
         "mapped": span.1 > span.0,
         "snippet": line_snippet(source, span.0),
     })
+}
+
+fn span_json_for_binding(
+    source_path: &str,
+    source: &str,
+    span: (usize, usize),
+    binding: &str,
+) -> serde_json::Value {
+    let value = span_json(source_path, source, span);
+    if value["snippet"].as_str().is_some_and(|snippet| !snippet.is_empty()) {
+        return value;
+    }
+    let Some(start) = source.find(binding) else {
+        return value;
+    };
+    span_json(source_path, source, (start, start + binding.len()))
 }
 
 fn one_based_line_for_offset(source: &str, offset: usize) -> usize {

@@ -11,7 +11,7 @@ use kobo_parser::{
     parse_file_recovering, postprocess_strict_markers, preprocess_bridge_blocks_mapped,
     preprocess_concurrent_sugar_mapped, preprocess_kobo_keywords_mapped,
     preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid, v05_keyword_configs,
-    KoboFile, PreprocessSourceMap, RecoveryMode,
+    KoboFile, PreprocessSourceMap, PreprocessedSource, RecoveryMode,
 };
 use kobo_transform::{build_kir, TransformOptions};
 
@@ -46,9 +46,15 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
 
     // v0.5 preprocessing: rewrite @strict → marker attributes before syn parse.
     // v0.10 preprocessing: rewrite concurrent-state sugar to Kobo attributes.
-    let concurrent_mapped = preprocess_concurrent_sugar_mapped(&source, file_id);
-    let mut rewritten = concurrent_mapped.rewritten;
-    let mut preprocess_source_map = concurrent_mapped.source_map;
+    let ward_mapped = preprocess_ward_syntax_mapped(&source, file_id);
+    let mut rewritten = ward_mapped.rewritten;
+    let mut preprocess_source_map = ward_mapped.source_map;
+
+    let concurrent_mapped = preprocess_concurrent_sugar_mapped(&rewritten, file_id);
+    rewritten = concurrent_mapped.rewritten;
+    preprocess_source_map = concurrent_mapped
+        .source_map
+        .compose_with(&preprocess_source_map);
 
     let configs = v05_keyword_configs();
     if let Err(e) = preprocess_strict_reject_invalid(&rewritten, &configs) {
@@ -222,6 +228,250 @@ fn mask_field_capability_views(source: &str) -> String {
         search_start = end;
     }
     output
+}
+
+fn preprocess_ward_syntax_mapped(source: &str, file_id: FileId) -> PreprocessedSource<()> {
+    if !source.contains("ward ") {
+        return PreprocessedSource {
+            rewritten: source.to_owned(),
+            source_map: PreprocessSourceMap::identity_for(source, file_id),
+            metadata: (),
+        };
+    }
+
+    let mut rewritten = String::with_capacity(source.len() + 256);
+    let mut source_map = PreprocessSourceMap::default();
+    let mut cursor = 0;
+    while let Some(ward_start) = find_ward_keyword(source, cursor) {
+        let Some(ward) = parse_ward_block(source, ward_start) else {
+            break;
+        };
+        push_rewrite_segment(&mut rewritten, &mut source_map, file_id, source, cursor, ward_start);
+        let generated_start = rewritten.len();
+        rewritten.push_str(&ward_to_attribute_source(&ward));
+        source_map.push_segment(
+            KoboSpan::new(generated_start as u32, rewritten.len() as u32, file_id),
+            KoboSpan::new(ward.start as u32, ward.end as u32, file_id),
+        );
+        cursor = ward.end;
+    }
+    push_rewrite_segment(
+        &mut rewritten,
+        &mut source_map,
+        file_id,
+        source,
+        cursor,
+        source.len(),
+    );
+    PreprocessedSource {
+        rewritten,
+        source_map,
+        metadata: (),
+    }
+}
+
+fn push_rewrite_segment(
+    rewritten: &mut String,
+    source_map: &mut PreprocessSourceMap,
+    file_id: FileId,
+    source: &str,
+    start: usize,
+    end: usize,
+) {
+    if start >= end {
+        return;
+    }
+    let rewritten_start = rewritten.len();
+    rewritten.push_str(&source[start..end]);
+    source_map.push_segment(
+        KoboSpan::new(rewritten_start as u32, rewritten.len() as u32, file_id),
+        KoboSpan::new(start as u32, end as u32, file_id),
+    );
+}
+
+struct WardBlock {
+    name: String,
+    start: usize,
+    end: usize,
+    body: String,
+}
+
+struct WardFacts {
+    states: Vec<(String, String)>,
+    obligations: Vec<(String, Vec<String>)>,
+    scenarios: Vec<(String, String)>,
+    metadata_comments: Vec<String>,
+}
+
+fn find_ward_keyword(source: &str, from: usize) -> Option<usize> {
+    let mut cursor = from;
+    while let Some(relative) = source[cursor..].find("ward") {
+        let start = cursor + relative;
+        let end = start + "ward".len();
+        let before = source.as_bytes().get(start.saturating_sub(1));
+        let after = source.as_bytes().get(end);
+        if !before.is_some_and(is_ident_byte) && !after.is_some_and(is_ident_byte) {
+            return Some(start);
+        }
+        cursor = end;
+    }
+    None
+}
+
+fn parse_ward_block(source: &str, start: usize) -> Option<WardBlock> {
+    let mut name_start = start + "ward".len();
+    while source
+        .as_bytes()
+        .get(name_start)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        name_start += 1;
+    }
+    let mut name_end = name_start;
+    while source
+        .as_bytes()
+        .get(name_end)
+        .is_some_and(is_ident_byte)
+    {
+        name_end += 1;
+    }
+    let name = source[name_start..name_end].to_owned();
+    let brace_start = source[name_end..].find('{')? + name_end;
+    let brace_end = matching_brace_in_source(source, brace_start)?;
+    Some(WardBlock {
+        name,
+        start,
+        end: brace_end + 1,
+        body: source[brace_start + 1..brace_end].to_owned(),
+    })
+}
+
+fn ward_to_attribute_source(ward: &WardBlock) -> String {
+    let facts = parse_ward_facts(&ward.body);
+    let mut output = String::new();
+    output.push_str("#[kobo::ward]\n");
+    output.push_str(&format!("struct {} {{\n", ward.name));
+    for (name, ty) in &facts.states {
+        output.push_str(&format!("    {name}: {ty},\n"));
+    }
+    output.push_str("}\n\n");
+    for (type_name, actions) in &facts.obligations {
+        output.push_str(&format!(
+            "#[kobo::must_call({})]\nstruct {type_name} {{}}\n\n",
+            actions.join(" | ")
+        ));
+        output.push_str(&format!("impl {type_name} {{\n"));
+        for action in actions {
+            output.push_str(&format!("    fn {action}(self) {{}}\n"));
+        }
+        output.push_str("}\n\n");
+    }
+    for comment in &facts.metadata_comments {
+        output.push_str(comment);
+        output.push('\n');
+    }
+    for (name, body) in &facts.scenarios {
+        output.push_str("#[kobo::scenario(profile = \"sync\")]\n");
+        output.push_str(&format!("fn {name}() {{\n{body}\n}}\n\n"));
+    }
+    output
+}
+
+fn parse_ward_facts(body: &str) -> WardFacts {
+    let mut facts = WardFacts {
+        states: Vec::new(),
+        obligations: Vec::new(),
+        scenarios: Vec::new(),
+        metadata_comments: Vec::new(),
+    };
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("state ") {
+            if let Some((name, ty)) = rest.split_once(':') {
+                facts
+                    .states
+                    .push((name.trim().to_owned(), ty.trim().to_owned()));
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("obligation ") {
+            if let Some((type_name, actions)) = rest.split_once(" must ") {
+                facts.obligations.push((
+                    type_name.trim().to_owned(),
+                    actions
+                        .split('|')
+                        .map(str::trim)
+                        .filter(|action| !action.is_empty())
+                        .map(str::to_owned)
+                        .collect(),
+                ));
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("invariant ") {
+            let name = rest
+                .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+                .next()
+                .unwrap_or(rest)
+                .trim();
+            facts
+                .metadata_comments
+                .push(format!("// kobo: invariant {name}"));
+        } else if let Some(rest) = trimmed.strip_prefix("port ") {
+            facts
+                .metadata_comments
+                .push(format!("// kobo: port {}", rest.trim()));
+        } else if let Some(rest) = trimmed.strip_prefix("recording ") {
+            facts
+                .metadata_comments
+                .push(format!("// kobo: recording {}", rest.trim()));
+        } else if let Some(rest) = trimmed.strip_prefix("debt ") {
+            facts
+                .metadata_comments
+                .push(format!("// kobo: debt {}", rest.trim()));
+        }
+    }
+    let mut search = 0;
+    while let Some(relative) = body[search..].find("scenario ") {
+        let scenario_start = search + relative;
+        let name_start = scenario_start + "scenario ".len();
+        let name_end = body[name_start..]
+            .find(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+            .map(|relative| name_start + relative)
+            .unwrap_or(body.len());
+        let name = body[name_start..name_end].trim().to_owned();
+        let Some(brace_start) = body[name_end..].find('{').map(|relative| name_end + relative)
+        else {
+            break;
+        };
+        let Some(brace_end) = matching_brace_in_source(body, brace_start) else {
+            break;
+        };
+        facts.scenarios.push((
+            name,
+            body[brace_start + 1..brace_end].trim_matches('\n').to_owned(),
+        ));
+        search = brace_end + 1;
+    }
+    facts
+}
+
+fn matching_brace_in_source(source: &str, open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth = 0_usize;
+    for (index, byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_ident_byte(byte: &u8) -> bool {
+    byte.is_ascii_alphanumeric() || *byte == b'_'
 }
 
 #[derive(Clone)]

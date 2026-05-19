@@ -125,6 +125,33 @@ fn dual_run_executes_structured_ward_model_block() {
 }
 
 #[test]
+fn dual_run_interprets_model_transitions_not_expectation_lines() {
+    let project = TestProject::new("v13-dual-transition-model");
+    let source = dual_source(
+        "    model {\n        ward.task();\n    }",
+        "        ward.task();",
+    );
+
+    let (output, witness) = run_dual_witness(&project, &source, "dual_case");
+    assert_success(
+        &output,
+        "model transition steps should execute into comparable events",
+    );
+    let comparison = &witness["model_vs_implementation"];
+    assert_eq!(comparison["status"], "matched");
+    assert_contains(
+        &comparison["model_run"]["events"].to_string(),
+        "deterministic-task",
+        "model interpreter should emit the transition event, not copy the source token",
+    );
+    assert_contains(
+        &comparison["model_run"]["ir"].to_string(),
+        "ward.task",
+        "witness should expose the typed model IR step",
+    );
+}
+
+#[test]
 fn dual_run_reports_trace_divergence_with_source_spans() {
     let project = TestProject::new("v13-dual-trace-divergence");
     let source = dual_source(

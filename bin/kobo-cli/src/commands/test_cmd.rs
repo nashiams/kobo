@@ -97,7 +97,7 @@ pub(super) fn cmd_test(
         &mut run,
     );
     apply_trace_checks(&strict_source_path, &document.source, &mut run);
-    apply_model_vs_implementation(&strict_source_path, &document.source, &mut run);
+    apply_model_vs_implementation(&strict_source_path, &document.source, seed, &mut run);
     validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
@@ -2354,18 +2354,40 @@ impl TraceCheckKind {
 
 #[derive(Clone)]
 struct ModelEventExpectation {
-    event: String,
     span: (usize, usize),
 }
 
 #[derive(Clone)]
 struct ModelObligationExpectation {
     binding: String,
-    state: String,
     span: (usize, usize),
 }
 
+#[derive(Clone)]
+struct WardModelStep {
+    kind: WardModelStepKind,
+    span: (usize, usize),
+}
+
+#[derive(Clone)]
+enum WardModelStepKind {
+    EmitEvent(String),
+    SetObligation { binding: String, state: String },
+    BoundaryCall(ModelBoundaryCall),
+}
+
+#[derive(Clone, Copy)]
+enum ModelBoundaryCall {
+    WardTime,
+    WardRandom,
+    WardTask,
+    WardTaskLocal,
+    WardStorage,
+    WardNetwork,
+}
+
 struct ModelComparisonSpec {
+    steps: Vec<WardModelStep>,
     events: Vec<ModelEventExpectation>,
     obligations: Vec<ModelObligationExpectation>,
     source: &'static str,
@@ -2374,6 +2396,8 @@ struct ModelComparisonSpec {
 struct WardModelRun {
     source: &'static str,
     engine: &'static str,
+    seed: u64,
+    ir: Vec<WardModelStep>,
     events: Vec<String>,
     obligations: Vec<(String, String)>,
     steps_executed: usize,
@@ -2386,11 +2410,16 @@ struct ModelComparisonFailure {
     span: (usize, usize),
 }
 
-fn apply_model_vs_implementation(source_path: &str, source: &str, run: &mut FullDepthRun) {
+fn apply_model_vs_implementation(
+    source_path: &str,
+    source: &str,
+    seed: u64,
+    run: &mut FullDepthRun,
+) {
     if run.failure.is_some() {
         return;
     }
-    let Some(failure) = model_comparison_failure(source_path, source, run) else {
+    let Some(failure) = model_comparison_failure(source_path, source, seed, run) else {
         return;
     };
     run.failure = Some(ScenarioFailure {
@@ -2419,7 +2448,7 @@ pub(super) fn model_vs_implementation_json(
         return serde_json::json!({
             "status": "not_requested",
             "scheduler_seed": model_scheduler_seed_json(seed),
-            "model_run": model_run_json(&execute_ward_model(&spec)),
+            "model_run": model_run_json(&execute_ward_model(&spec, seed)),
             "trace": {
                 "status": "not_requested",
                 "model_events": [],
@@ -2434,7 +2463,7 @@ pub(super) fn model_vs_implementation_json(
         });
     }
 
-    let model_run = execute_ward_model(&spec);
+    let model_run = execute_ward_model(&spec, seed);
     let trace = model_trace_comparison_json(source_path, source, run, &spec, &model_run);
     let obligations = model_obligation_comparison_json(source_path, source, run, &spec, &model_run);
     let status = if boundary["status"] == "downgraded" {
@@ -2462,13 +2491,14 @@ pub(super) fn model_vs_implementation_json(
 fn model_comparison_failure(
     source_path: &str,
     source: &str,
+    seed: u64,
     run: &FullDepthRun,
 ) -> Option<ModelComparisonFailure> {
     let spec = parse_model_comparison_spec(source);
     if !spec.requested() || model_boundary_downgrade(run) {
         return None;
     }
-    let model_run = execute_ward_model(&spec);
+    let model_run = execute_ward_model(&spec, seed);
     if let Some(diff) = first_model_trace_difference(run, &model_run, &spec) {
         let model = diff.model.as_deref().unwrap_or("<missing model event>");
         let implementation = diff
@@ -2635,10 +2665,8 @@ fn first_model_trace_difference(
         let implementation = implementation_events.get(index).cloned();
         if model != implementation {
             let span = spec
-                .events
-                .get(index)
-                .or_else(|| spec.events.last())
-                .map(|expectation| expectation.span)
+                .event_span(index)
+                .or_else(|| spec.steps.last().map(|step| step.span))
                 .unwrap_or((0, 0));
             return Some(ModelTraceDifference {
                 index,
@@ -2669,12 +2697,7 @@ fn first_model_obligation_difference(
                 }
             });
         if implementation.as_deref() != Some(state.as_str()) {
-            let span = spec
-                .obligations
-                .iter()
-                .find(|expectation| expectation.binding == *binding)
-                .map(|expectation| expectation.span)
-                .unwrap_or((0, 0));
+            let span = spec.obligation_span(binding).unwrap_or((0, 0));
             return Some(ModelObligationDifference {
                 binding: binding.clone(),
                 model: Some(state.clone()),
@@ -2753,6 +2776,7 @@ fn model_scheduler_seed_json(seed: u64) -> serde_json::Value {
 
 fn parse_model_comparison_spec(source: &str) -> ModelComparisonSpec {
     let mut spec = ModelComparisonSpec {
+        steps: Vec::new(),
         events: Vec::new(),
         obligations: Vec::new(),
         source: "not_requested",
@@ -2784,8 +2808,10 @@ fn parse_structured_model_blocks(block: &WardBlock<'_>, spec: &mut ModelComparis
     let cleaned = scrub_comments_and_strings(block.body);
     let mut cursor = 0;
     while let Some(model_start) = find_word(&cleaned, cursor, "model") {
-        let Some(open) = find_byte(&cleaned, model_start, b'{') else {
-            break;
+        let after_model = model_start + "model".len();
+        let Some(open) = model_block_open(&cleaned, after_model) else {
+            cursor = after_model;
+            continue;
         };
         let Some(close) = matching_brace(&cleaned, open) else {
             break;
@@ -2795,6 +2821,20 @@ fn parse_structured_model_blocks(block: &WardBlock<'_>, spec: &mut ModelComparis
         parse_structured_model_statements(model_body, block.body_start + open + 1, spec);
         cursor = close + 1;
     }
+}
+
+fn model_block_open(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut cursor = from;
+    while let Some(byte) = bytes.get(cursor) {
+        if *byte == b'{' {
+            return Some(cursor);
+        }
+        if !byte.is_ascii_whitespace() {
+            return None;
+        }
+        cursor += 1;
+    }
+    None
 }
 
 fn parse_structured_model_statements(
@@ -2842,10 +2882,11 @@ fn parse_model_directive(rest: &str, span: (usize, usize), spec: &mut ModelCompa
     if let Some(event) = rest.strip_prefix("event ") {
         let event = event.trim().trim_matches([';', '}']);
         if !event.is_empty() {
-            spec.events.push(ModelEventExpectation {
-                event: event.to_owned(),
+            spec.steps.push(WardModelStep {
+                kind: WardModelStepKind::EmitEvent(event.to_owned()),
                 span,
             });
+            spec.events.push(ModelEventExpectation { span });
         }
     } else if let Some(obligation) = rest.strip_prefix("obligation ") {
         let mut parts = obligation.split_whitespace();
@@ -2856,23 +2897,126 @@ fn parse_model_directive(rest: &str, span: (usize, usize), spec: &mut ModelCompa
             return;
         };
         if matches!(state, "discharged" | "leaked") {
+            spec.steps.push(WardModelStep {
+                kind: WardModelStepKind::SetObligation {
+                    binding: binding.to_owned(),
+                    state: state.to_owned(),
+                },
+                span,
+            });
             spec.obligations.push(ModelObligationExpectation {
                 binding: binding.to_owned(),
-                state: state.to_owned(),
                 span,
             });
         }
+    } else if let Some(boundary) = parse_model_boundary_call(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::BoundaryCall(boundary),
+            span,
+        });
+    }
+}
+
+fn parse_model_boundary_call(rest: &str) -> Option<ModelBoundaryCall> {
+    let mut normalized = rest.trim().trim_matches([';', '}']).trim();
+    normalized = normalized.strip_suffix("()").unwrap_or(normalized).trim();
+    match normalized {
+        "ward.time" => Some(ModelBoundaryCall::WardTime),
+        "ward.random" => Some(ModelBoundaryCall::WardRandom),
+        "ward.task" => Some(ModelBoundaryCall::WardTask),
+        "ward.task.local" => Some(ModelBoundaryCall::WardTaskLocal),
+        "ward.storage" => Some(ModelBoundaryCall::WardStorage),
+        "ward.network" => Some(ModelBoundaryCall::WardNetwork),
+        _ => None,
     }
 }
 
 impl ModelComparisonSpec {
     fn requested(&self) -> bool {
-        !self.events.is_empty() || !self.obligations.is_empty()
+        !self.steps.is_empty()
+    }
+
+    fn event_span(&self, index: usize) -> Option<(usize, usize)> {
+        self.steps
+            .iter()
+            .filter(|step| step.kind.emits_event())
+            .nth(index)
+            .map(|step| step.span)
+    }
+
+    fn obligation_span(&self, binding: &str) -> Option<(usize, usize)> {
+        self.steps.iter().find_map(|step| match &step.kind {
+            WardModelStepKind::SetObligation {
+                binding: candidate, ..
+            } if candidate == binding => Some(step.span),
+            _ => None,
+        })
     }
 }
 
-fn execute_ward_model(spec: &ModelComparisonSpec) -> WardModelRun {
-    let steps_executed = spec.events.len() + spec.obligations.len();
+impl WardModelStepKind {
+    fn emits_event(&self) -> bool {
+        matches!(
+            self,
+            Self::EmitEvent(_)
+                | Self::BoundaryCall(ModelBoundaryCall::WardTime)
+                | Self::BoundaryCall(ModelBoundaryCall::WardRandom)
+                | Self::BoundaryCall(ModelBoundaryCall::WardTask)
+                | Self::BoundaryCall(ModelBoundaryCall::WardTaskLocal)
+                | Self::BoundaryCall(ModelBoundaryCall::WardStorage)
+                | Self::BoundaryCall(ModelBoundaryCall::WardNetwork)
+        )
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::EmitEvent(event) => serde_json::json!({
+                "kind": "emit_event",
+                "event": event,
+            }),
+            Self::SetObligation { binding, state } => serde_json::json!({
+                "kind": "set_obligation",
+                "binding": binding,
+                "state": state,
+            }),
+            Self::BoundaryCall(boundary) => serde_json::json!({
+                "kind": "boundary_call",
+                "target": boundary.as_str(),
+                "emits": boundary.event_kind(),
+            }),
+        }
+    }
+}
+
+impl ModelBoundaryCall {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WardTime => "ward.time",
+            Self::WardRandom => "ward.random",
+            Self::WardTask => "ward.task",
+            Self::WardTaskLocal => "ward.task.local",
+            Self::WardStorage => "ward.storage",
+            Self::WardNetwork => "ward.network",
+        }
+    }
+
+    fn event_kind(self) -> &'static str {
+        match self {
+            Self::WardTime => "deterministic-time",
+            Self::WardRandom => "deterministic-random",
+            Self::WardTask | Self::WardTaskLocal => "deterministic-task",
+            Self::WardStorage => "storage-boundary",
+            Self::WardNetwork => "network-boundary",
+        }
+    }
+}
+
+fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardModelRun {
+    let mut interpreter = WardModelInterpreter::new(seed);
+    for step in &spec.steps {
+        interpreter.execute(step);
+    }
+    let (events, obligations) = interpreter.finish();
     WardModelRun {
         source: spec.source,
         engine: if spec.source == "ward_model" {
@@ -2880,17 +3024,57 @@ fn execute_ward_model(spec: &ModelComparisonSpec) -> WardModelRun {
         } else {
             "legacy-directive-interpreter"
         },
-        events: spec
-            .events
-            .iter()
-            .map(|expectation| expectation.event.clone())
-            .collect(),
-        obligations: spec
+        seed,
+        ir: spec.steps.clone(),
+        events,
+        obligations,
+        steps_executed: spec.steps.len(),
+    }
+}
+
+struct WardModelInterpreter {
+    seed: u64,
+    events: Vec<String>,
+    obligations: Vec<(String, String)>,
+}
+
+impl WardModelInterpreter {
+    fn new(seed: u64) -> Self {
+        Self {
+            seed,
+            events: Vec::new(),
+            obligations: Vec::new(),
+        }
+    }
+
+    fn execute(&mut self, step: &WardModelStep) {
+        match &step.kind {
+            WardModelStepKind::EmitEvent(event) => self.events.push(event.clone()),
+            WardModelStepKind::SetObligation { binding, state } => {
+                self.set_obligation(binding, state);
+            }
+            WardModelStepKind::BoundaryCall(boundary) => {
+                self.events.push(boundary.event_kind().to_owned());
+            }
+        }
+    }
+
+    fn set_obligation(&mut self, binding: &str, state: &str) {
+        if let Some((_, existing)) = self
             .obligations
-            .iter()
-            .map(|expectation| (expectation.binding.clone(), expectation.state.clone()))
-            .collect(),
-        steps_executed,
+            .iter_mut()
+            .find(|(candidate, _)| candidate == binding)
+        {
+            *existing = state.to_owned();
+            return;
+        }
+        self.obligations
+            .push((binding.to_owned(), state.to_owned()));
+    }
+
+    fn finish(self) -> (Vec<String>, Vec<(String, String)>) {
+        let _ = self.seed;
+        (self.events, self.obligations)
     }
 }
 
@@ -2898,6 +3082,19 @@ fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
     serde_json::json!({
         "source": model_run.source,
         "engine": model_run.engine,
+        "seed": model_run.seed,
+        "ir": model_run
+            .ir
+            .iter()
+            .map(|step| {
+                let mut value = step.kind.to_json();
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("span_start".to_owned(), serde_json::json!(step.span.0));
+                    object.insert("span_end".to_owned(), serde_json::json!(step.span.1));
+                }
+                value
+            })
+            .collect::<Vec<_>>(),
         "events": model_run.events,
         "obligations": model_run
             .obligations

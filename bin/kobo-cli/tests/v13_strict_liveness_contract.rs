@@ -293,6 +293,24 @@ fn conditional_branch_case() {
         "strict liveness must reject the branch that leaks the token",
     );
     assert_strict_error(&witness, "branch_exit", "token");
+    assert_eq!(
+        witness["strict_liveness"]["dataflow"]["engine"],
+        "core_cfg_forward"
+    );
+    assert_eq!(
+        witness["strict_liveness"]["dataflow"]["join_semantics"],
+        "semantic_obligation_state"
+    );
+    assert_contains(
+        &witness["strict_liveness"]["dataflow"]["states"].to_string(),
+        "owned",
+        "strict liveness evidence should name the unresolved Core state",
+    );
+    assert_contains(
+        &witness["strict_liveness"]["dataflow"]["states"].to_string(),
+        "discharged",
+        "strict liveness evidence should name resolved Core states",
+    );
     assert_contains(
         &witness["formal_core"].to_string(),
         "branch",
@@ -327,6 +345,17 @@ fn helper_case() {
             .iter()
             .any(|summary| summary["discharges"].to_string().contains("delivery")),
         "helper discharge should be visible in summaries: {summaries:?}"
+    );
+    assert!(
+        witness["strict_liveness"]["resolved_paths"]
+            .as_array()
+            .expect("strict liveness should expose resolved paths")
+            .iter()
+            .any(|path| path["binding"].as_str() == Some("delivery")
+                && path["resolution"].as_str() == Some("summary_proved_discharge")
+                && path["reason"].as_str() == Some("helper_reordered")),
+        "helper transfer should be resolved by the callee summary, not left pending: {}",
+        witness["strict_liveness"]
     );
 }
 

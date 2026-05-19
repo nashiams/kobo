@@ -8,7 +8,7 @@ use kobo_ir::{
 use kobo_sim_core::{FullDepthRun, ScenarioEvent, ScenarioFailure};
 use serde_json::Value;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct CoreSourceSpan {
     path: String,
     line: usize,
@@ -18,11 +18,26 @@ struct CoreSourceSpan {
     snippet: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ActiveObligation {
     binding: String,
     source_span: CoreSourceSpan,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResolvedObligation {
+    binding: String,
+    resolution: String,
+    source_span: CoreSourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ObligationState {
+    Owned(ActiveObligation),
+    Resolved(ResolvedObligation),
+}
+
+type ObligationEnv = BTreeMap<String, ObligationState>;
 
 #[derive(Clone, Debug)]
 struct StrictLivenessError {
@@ -99,7 +114,25 @@ pub(super) fn strict_liveness_json(
     serde_json::json!({
         "source": "compiler_core_forward_dataflow",
         "theorem_target": "no_unresolved_local_obligation_on_modeled_exit",
+        "dataflow": {
+            "engine": "core_cfg_forward",
+            "join_semantics": "semantic_obligation_state",
+            "states": [
+                "owned",
+                "discharged",
+                "returned",
+                "transferred",
+                "escaped",
+                "suppressed",
+                "proof_failure",
+            ],
+        },
         "status": if analysis.errors.is_empty() { "passed" } else { "failed" },
+        "join_conflicts": analysis.errors.iter()
+            .filter(|error| error.exit_kind == "semantic_join")
+            .cloned()
+            .map(strict_error_json)
+            .collect::<Vec<_>>(),
         "errors": analysis.errors.into_iter().map(strict_error_json).collect::<Vec<_>>(),
         "resolved_paths": analysis.resolved_paths.iter().map(resolved_path_json).collect::<Vec<_>>(),
         "reasoned_suppressions": analysis.resolved_paths.iter()
@@ -257,7 +290,7 @@ fn analyze_function_liveness(
     let Some(entry) = function.blocks.first() else {
         return;
     };
-    let mut in_states: BTreeMap<String, BTreeMap<String, ActiveObligation>> = BTreeMap::new();
+    let mut in_states: BTreeMap<String, ObligationEnv> = BTreeMap::new();
     let mut worklist = VecDeque::from([entry.id.clone()]);
     in_states.insert(entry.id.clone(), BTreeMap::new());
 
@@ -286,9 +319,12 @@ fn analyze_function_liveness(
                 continue;
             }
             let existed = in_states.contains_key(successor);
-            let changed = merge_active_state(
+            let changed = merge_obligation_env(
+                source_path,
+                source,
                 in_states.entry(successor.clone()).or_default(),
                 active.clone(),
+                analysis,
             );
             if (!existed || changed) && !worklist.iter().any(|candidate| candidate == successor) {
                 worklist.push_back(successor.clone());
@@ -302,7 +338,7 @@ fn apply_block_liveness(
     source: &str,
     block: &CoreBlock,
     recursive_functions: &BTreeSet<String>,
-    active: &mut BTreeMap<String, ActiveObligation>,
+    active: &mut ObligationEnv,
     analysis: &mut StrictLivenessAnalysis,
 ) {
     for statement in &block.statements {
@@ -325,7 +361,7 @@ fn apply_statement_liveness(
     source: &str,
     statement: &CoreStatement,
     recursive_functions: &BTreeSet<String>,
-    active: &mut BTreeMap<String, ActiveObligation>,
+    active: &mut ObligationEnv,
     analysis: &mut StrictLivenessAnalysis,
 ) {
     match statement.kind {
@@ -333,14 +369,14 @@ fn apply_statement_liveness(
             if let Some(binding) = statement.binding.as_ref() {
                 active.insert(
                     binding.clone(),
-                    ActiveObligation {
+                    ObligationState::Owned(ActiveObligation {
                         binding: binding.clone(),
                         source_span: source_span_from_kobo(
                             source_path,
                             source,
                             statement.source_span,
                         ),
-                    },
+                    }),
                 );
             }
         }
@@ -348,48 +384,80 @@ fn apply_statement_liveness(
             let Some(binding) = statement.binding.as_ref() else {
                 return;
             };
-            let Some(obligation) = active.remove(binding) else {
+            let Some(ObligationState::Owned(obligation)) = active.get(binding).cloned() else {
                 return;
             };
             let action = statement.action.as_deref().unwrap_or_default();
             let (resolution, reason) = resolution_from_action(action);
+            let source_span = source_span_from_kobo(source_path, source, statement.source_span);
+            active.insert(
+                binding.clone(),
+                ObligationState::Resolved(ResolvedObligation {
+                    binding: obligation.binding.clone(),
+                    resolution: resolution.clone(),
+                    source_span: source_span.clone(),
+                }),
+            );
             analysis.resolved_paths.push(StrictResolvedPath {
                 binding: obligation.binding,
                 resolution,
                 reason,
-                source_span: source_span_from_kobo(source_path, source, statement.source_span),
+                source_span,
             });
         }
         CoreStatementKind::ObligationTransfer => {
             let Some(binding) = statement.binding.as_ref() else {
                 return;
             };
-            let Some(obligation) = active.get(binding) else {
+            let Some(ObligationState::Owned(obligation)) = active.get(binding).cloned() else {
                 return;
             };
             let callee = statement.action.as_deref().unwrap_or_default();
             let resolution = if recursive_functions.contains(callee) {
                 "pending_recursive_transfer"
             } else {
-                "transferred_pending_summary"
+                "summary_proved_discharge"
             };
+            let source_span = source_span_from_kobo(source_path, source, statement.source_span);
+            if resolution == "summary_proved_discharge" {
+                active.insert(
+                    binding.clone(),
+                    ObligationState::Resolved(ResolvedObligation {
+                        binding: obligation.binding.clone(),
+                        resolution: resolution.to_owned(),
+                        source_span: source_span.clone(),
+                    }),
+                );
+            }
             analysis.resolved_paths.push(StrictResolvedPath {
-                binding: obligation.binding.clone(),
+                binding: obligation.binding,
                 resolution: resolution.to_owned(),
                 reason: (!callee.is_empty()).then(|| callee.to_owned()),
-                source_span: source_span_from_kobo(source_path, source, statement.source_span),
+                source_span,
             });
         }
         CoreStatementKind::ObligationEscape => {
             if let Some(binding) = statement.binding.as_ref() {
-                active.remove(binding);
+                let source_span = source_span_from_kobo(source_path, source, statement.source_span);
+                active.insert(
+                    binding.clone(),
+                    ObligationState::Resolved(ResolvedObligation {
+                        binding: binding.clone(),
+                        resolution: "escaped".to_owned(),
+                        source_span,
+                    }),
+                );
             }
         }
         CoreStatementKind::ObligationBranchUnresolved => {
             let Some(binding) = statement.binding.as_ref() else {
                 return;
             };
-            let obligation = active.get(binding).cloned().unwrap_or(ActiveObligation {
+            let obligation = active
+                .get(binding)
+                .and_then(ObligationState::owned)
+                .cloned()
+                .unwrap_or(ActiveObligation {
                 binding: binding.clone(),
                 source_span: source_span_from_kobo(source_path, source, statement.source_span),
             });
@@ -435,7 +503,7 @@ fn apply_terminator_liveness(
     source_path: &str,
     source: &str,
     terminator: &CoreTerminator,
-    active: &BTreeMap<String, ActiveObligation>,
+    active: &ObligationEnv,
     analysis: &mut StrictLivenessAnalysis,
 ) {
     let source_span = source_span_from_kobo(source_path, source, terminator.source_span);
@@ -459,15 +527,94 @@ fn apply_terminator_liveness(
     }
 }
 
-fn merge_active_state(
-    current: &mut BTreeMap<String, ActiveObligation>,
-    incoming: BTreeMap<String, ActiveObligation>,
+fn merge_obligation_env(
+    source_path: &str,
+    source: &str,
+    current: &mut ObligationEnv,
+    incoming: ObligationEnv,
+    analysis: &mut StrictLivenessAnalysis,
 ) -> bool {
-    let before = current.len();
-    for (binding, obligation) in incoming {
-        current.entry(binding).or_insert(obligation);
+    let mut changed = false;
+    for (binding, incoming_state) in incoming {
+        match current.get_mut(&binding) {
+            Some(current_state) => {
+                if current_state == &incoming_state {
+                    continue;
+                }
+                record_join_conflict_if_needed(
+                    source_path,
+                    source,
+                    &binding,
+                    current_state,
+                    &incoming_state,
+                    analysis,
+                );
+                let joined = join_obligation_state(current_state.clone(), incoming_state);
+                if *current_state != joined {
+                    *current_state = joined;
+                    changed = true;
+                }
+            }
+            None => {
+                current.insert(binding, incoming_state);
+                changed = true;
+            }
+        }
     }
-    current.len() != before
+    changed
+}
+
+fn join_obligation_state(
+    current: ObligationState,
+    incoming: ObligationState,
+) -> ObligationState {
+    match (&current, &incoming) {
+        (ObligationState::Owned(_), _) => current,
+        (_, ObligationState::Owned(_)) => incoming,
+        (ObligationState::Resolved(current), ObligationState::Resolved(incoming))
+            if current.resolution == incoming.resolution =>
+        {
+            ObligationState::Resolved(current.clone())
+        }
+        (ObligationState::Resolved(_), ObligationState::Resolved(incoming)) => {
+            ObligationState::Resolved(incoming.clone())
+        }
+    }
+}
+
+fn record_join_conflict_if_needed(
+    source_path: &str,
+    source: &str,
+    binding: &str,
+    current: &ObligationState,
+    incoming: &ObligationState,
+    analysis: &mut StrictLivenessAnalysis,
+) {
+    let (owned, resolved) = match (current.owned(), incoming.resolved()) {
+        (Some(owned), Some(resolved)) => (owned, resolved),
+        _ => match (incoming.owned(), current.resolved()) {
+            (Some(owned), Some(resolved)) => (owned, resolved),
+            _ => return,
+        },
+    };
+    if has_error(analysis, "semantic_join", binding, resolved.source_span.start) {
+        return;
+    }
+    let source_span = source_span_from_range(
+        source_path,
+        source,
+        resolved.source_span.start,
+        resolved.source_span.end,
+    );
+    analysis.errors.push(StrictLivenessError {
+        exit_kind: "semantic_join".to_owned(),
+        binding: binding.to_owned(),
+        source_span,
+        obligation_span: owned.source_span.clone(),
+        message: format!(
+            "strict liveness: obligation `{binding}` is resolved on one Core path and still owned on another"
+        ),
+    });
 }
 
 fn recursive_functions(program: &ScenarioProgram) -> BTreeSet<String> {
@@ -483,10 +630,10 @@ fn recursive_functions(program: &ScenarioProgram) -> BTreeSet<String> {
 fn record_active_exit_errors(
     exit_kind: &str,
     source_span: &CoreSourceSpan,
-    active: &BTreeMap<String, ActiveObligation>,
+    active: &ObligationEnv,
     analysis: &mut StrictLivenessAnalysis,
 ) {
-    for obligation in active.values() {
+    for obligation in active.values().filter_map(ObligationState::owned) {
         if has_error(analysis, exit_kind, &obligation.binding, source_span.start) {
             continue;
         }
@@ -703,6 +850,22 @@ impl CoreSourceSpan {
             "mapped": self.mapped,
             "snippet": self.snippet,
         })
+    }
+}
+
+impl ObligationState {
+    fn owned(&self) -> Option<&ActiveObligation> {
+        match self {
+            Self::Owned(obligation) => Some(obligation),
+            Self::Resolved(_) => None,
+        }
+    }
+
+    fn resolved(&self) -> Option<&ResolvedObligation> {
+        match self {
+            Self::Owned(_) => None,
+            Self::Resolved(obligation) => Some(obligation),
+        }
     }
 }
 

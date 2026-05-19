@@ -36,6 +36,11 @@ pub enum ScenarioOpKind {
     MoveBinding {
         binding: String,
     },
+    UnsupportedContainer {
+        binding: String,
+        type_name: String,
+        container: String,
+    },
     ModeledEffect {
         boundary: ScenarioModeledBoundary,
     },

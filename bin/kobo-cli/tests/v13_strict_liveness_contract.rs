@@ -360,6 +360,33 @@ fn arc_mutex_case() {
 }
 
 #[test]
+fn arc_mutex_text_bait_does_not_create_container_failure() {
+    let project = TestProject::new("v13-strict-arc-mutex-text-bait");
+    let source = delivery_source(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn arc_mutex_text_bait_case() {
+    let _message = "Arc::new(Mutex::new(Delivery {})) should not count";
+    // Arc<Mutex<Delivery>> in a comment should not count.
+}
+"#,
+    );
+
+    let (output, witness) = run_strict_witness(&project, &source, "arc_mutex_text_bait_case");
+    assert_success(
+        &output,
+        "comments and strings should not create unsupported-container facts",
+    );
+    assert!(
+        !witness["strict_liveness"]
+            .to_string()
+            .contains("unsupported_container"),
+        "strict evidence should not include source-string container bait: {}",
+        witness["strict_liveness"]
+    );
+}
+
+#[test]
 fn opaque_boundary_exit_with_unresolved_obligation_fails() {
     let project = TestProject::new("v13-strict-opaque-exit");
     let source = delivery_source(

@@ -39,6 +39,7 @@ pub enum CoreStatementKind {
     ObligationTransfer,
     ObligationMove,
     ObligationEscape,
+    UnsupportedContainer,
     Call,
 }
 
@@ -158,6 +159,16 @@ fn statement_from_operation(index: usize, operation: &ScenarioOp) -> Option<Core
             kind: CoreStatementKind::ObligationMove,
             binding: Some(binding.clone()),
             action: None,
+            boundary: None,
+            source_span,
+        }),
+        ScenarioOpKind::UnsupportedContainer {
+            binding, container, ..
+        } => Some(CoreStatement {
+            id: format!("stmt-{index}"),
+            kind: CoreStatementKind::UnsupportedContainer,
+            binding: Some(binding.clone()),
+            action: Some(container.clone()),
             boundary: None,
             source_span,
         }),
@@ -282,6 +293,7 @@ impl CoreStatementKind {
             Self::ObligationTransfer => "obligation_transfer",
             Self::ObligationMove => "obligation_move",
             Self::ObligationEscape => "obligation_escape",
+            Self::UnsupportedContainer => "unsupported_container",
             Self::Call => "call",
         }
     }

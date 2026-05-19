@@ -236,6 +236,13 @@ pub(super) enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    UnsupportedContainer {
+        binding: String,
+        type_name: String,
+        container: String,
+        span_start: usize,
+        span_end: usize,
+    },
     ModeledEffect {
         boundary: ModeledBoundary,
         span_start: usize,
@@ -308,6 +315,7 @@ struct SimulationRuntime<'a> {
     budget_failure: Option<ScenarioFailure>,
     raw_failure: Option<ScenarioFailure>,
     uncontrolled_failure: Option<ScenarioFailure>,
+    unsupported_container_failure: Option<ScenarioFailure>,
     cancel_failure: Option<ScenarioFailure>,
     injection_failure: Option<ScenarioFailure>,
     boundary_failure: Option<ScenarioFailure>,
@@ -697,6 +705,19 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
             span_start,
             span_end,
         },
+        sim_core::ScenarioOperation::UnsupportedContainer {
+            binding,
+            type_name,
+            container,
+            span_start,
+            span_end,
+        } => ScenarioOperation::UnsupportedContainer {
+            binding,
+            type_name,
+            container,
+            span_start,
+            span_end,
+        },
         sim_core::ScenarioOperation::StorageEvent {
             action,
             span_start,
@@ -861,6 +882,24 @@ impl ScenarioOperation {
                 output.push(':');
                 output.push_str(&span_end.to_string());
             }
+            Self::UnsupportedContainer {
+                binding,
+                type_name,
+                container,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("unsupported-container:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(type_name);
+                output.push(':');
+                output.push_str(container);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
             Self::ModeledEffect {
                 boundary,
                 span_start,
@@ -981,6 +1020,7 @@ impl<'a> SimulationRuntime<'a> {
             budget_failure: None,
             raw_failure: None,
             uncontrolled_failure: None,
+            unsupported_container_failure: None,
             cancel_failure: None,
             injection_failure: None,
             boundary_failure: None,
@@ -1020,6 +1060,18 @@ impl<'a> SimulationRuntime<'a> {
                     span_start,
                     span_end,
                 } => self.mark_binding_moved(binding, (*span_start, *span_end)),
+                ScenarioOperation::UnsupportedContainer {
+                    binding,
+                    type_name,
+                    container,
+                    span_start,
+                    span_end,
+                } => self.record_unsupported_container_failure(
+                    binding,
+                    type_name,
+                    container,
+                    (*span_start, *span_end),
+                ),
                 ScenarioOperation::ModeledEffect {
                     boundary,
                     span_start,
@@ -1096,6 +1148,7 @@ impl<'a> SimulationRuntime<'a> {
             .budget_failure
             .or(self.raw_failure)
             .or(self.uncontrolled_failure)
+            .or(self.unsupported_container_failure)
             .or(self.injection_failure)
             .or(self.cancel_failure)
             .or(liveness_failure)
@@ -1415,6 +1468,31 @@ impl<'a> SimulationRuntime<'a> {
             events: vec![SimEvent {
                 kind: "uncontrolled-effect".to_owned(),
                 label: Some(operation.to_owned()),
+                value: None,
+            }],
+        });
+    }
+
+    fn record_unsupported_container_failure(
+        &mut self,
+        binding: &str,
+        type_name: &str,
+        container: &str,
+        span: (usize, usize),
+    ) {
+        if self.unsupported_container_failure.is_some() {
+            return;
+        }
+        self.unsupported_container_failure = Some(ScenarioFailure {
+            code: KErrorCode::K0100,
+            message: format!(
+                "strict liveness: {container} containing {type_name} `{binding}` needs an obligation-aware wrapper or declaration"
+            ),
+            primary_start: span.0,
+            primary_end: span.1,
+            events: vec![SimEvent {
+                kind: "unsupported-container".to_owned(),
+                label: Some(format!("{binding}:{container}:{type_name}")),
                 value: None,
             }],
         });

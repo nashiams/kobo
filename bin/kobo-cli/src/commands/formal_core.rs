@@ -238,7 +238,6 @@ fn analyze_strict_liveness(
             &mut analysis,
         );
     }
-    add_arc_mutex_error(source_path, source, &mut analysis);
     add_runtime_failure_error(source_path, source, run, &mut analysis);
     analysis
 }
@@ -386,6 +385,27 @@ fn apply_statement_liveness(
                 active.remove(binding);
             }
         }
+        CoreStatementKind::UnsupportedContainer => {
+            let binding = statement
+                .binding
+                .as_deref()
+                .filter(|binding| !binding.is_empty())
+                .unwrap_or("_shared");
+            let container = statement
+                .action
+                .as_deref()
+                .unwrap_or("unsupported container");
+            let source_span = source_span_from_kobo(source_path, source, statement.source_span);
+            analysis.errors.push(StrictLivenessError {
+                exit_kind: "unsupported_container".to_owned(),
+                binding: binding.to_owned(),
+                obligation_span: source_span.clone(),
+                source_span,
+                message: format!(
+                    "strict liveness: {container} containing an obligation needs an obligation-aware wrapper or declaration"
+                ),
+            });
+        }
         CoreStatementKind::ObligationMove | CoreStatementKind::Call => {}
     }
 }
@@ -484,32 +504,6 @@ fn resolution_from_action(action: &str) -> (String, Option<String>) {
         return ("suppressed".to_owned(), Some(reason.to_owned()));
     }
     ("discharged".to_owned(), Some(action.to_owned()))
-}
-
-fn add_arc_mutex_error(source_path: &str, source: &str, analysis: &mut StrictLivenessAnalysis) {
-    let Some(start) = source
-        .find("Arc::new(Mutex::new(Delivery")
-        .or_else(|| source.find("Arc<Mutex<Delivery"))
-    else {
-        return;
-    };
-    let source_span = line_span_containing(source_path, source, start);
-    if analysis
-        .errors
-        .iter()
-        .any(|error| error.exit_kind == "unsupported_container" && error.source_span.start == start)
-    {
-        return;
-    }
-    analysis.errors.push(StrictLivenessError {
-        exit_kind: "unsupported_container".to_owned(),
-        binding: "_shared".to_owned(),
-        obligation_span: source_span.clone(),
-        source_span,
-        message:
-            "strict liveness: Arc<Mutex<Delivery>> needs an obligation-aware wrapper or declaration"
-                .to_owned(),
-    });
 }
 
 fn add_runtime_failure_error(
@@ -655,19 +649,6 @@ fn source_span_from_range(
         mapped: bounded_end > bounded_start,
         snippet: line_snippet(source, bounded_start),
     }
-}
-
-fn line_span_containing(source_path: &str, source: &str, offset: usize) -> CoreSourceSpan {
-    let bounded = offset.min(source.len());
-    let line_start = source[..bounded]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let line_end = source[bounded..]
-        .find('\n')
-        .map(|index| bounded + index)
-        .unwrap_or(source.len());
-    source_span_from_range(source_path, source, line_start, line_end)
 }
 
 fn one_based_line_for_offset(source: &str, offset: usize) -> usize {

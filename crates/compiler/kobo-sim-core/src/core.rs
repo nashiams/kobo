@@ -231,6 +231,13 @@ pub enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    UnsupportedContainer {
+        binding: String,
+        type_name: String,
+        container: String,
+        span_start: usize,
+        span_end: usize,
+    },
     ModeledEffect {
         boundary: ModeledBoundary,
         span_start: usize,
@@ -444,6 +451,26 @@ impl<'a> Runtime<'a> {
                         obligation.drop_span = Some((*span_start, *span_end));
                     }
                 }
+                ScenarioOperation::UnsupportedContainer {
+                    binding,
+                    type_name,
+                    container,
+                    span_start,
+                    span_end,
+                } => self.set_failure_once(ScenarioFailure {
+                    code: KErrorCode::K0100,
+                    message: format!(
+                        "strict liveness: {container} containing {type_name} `{binding}` needs an obligation-aware wrapper or declaration"
+                    ),
+                    primary_start: *span_start,
+                    primary_end: *span_end,
+                    events: vec![ScenarioEvent {
+                        kind: "unsupported-container".to_owned(),
+                        label: Some(format!("{binding}:{container}:{type_name}")),
+                        value: None,
+                        io: None,
+                    }],
+                }),
                 ScenarioOperation::ModeledEffect {
                     boundary,
                     span_start,

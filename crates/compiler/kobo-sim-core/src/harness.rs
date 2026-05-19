@@ -1848,6 +1848,20 @@ fn terminal_failure_events(
                 value: None,
                 io: None,
             }),
+            ScenarioOpKind::UnsupportedContainer {
+                binding,
+                type_name,
+                container,
+            } => {
+                if failure_events.is_none() {
+                    failure_events = Some(vec![ScenarioEvent {
+                        kind: "unsupported-container".to_owned(),
+                        label: Some(format!("{binding}:{container}:{type_name}")),
+                        value: None,
+                        io: None,
+                    }]);
+                }
+            }
             ScenarioOpKind::ModeledEffect { boundary } => {
                 if failure_events.is_none() {
                     let active_obligation = obligations

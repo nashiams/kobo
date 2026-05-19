@@ -82,6 +82,12 @@ struct LifecycleTemplateShape {
     actions: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+struct UnsupportedContainerShape {
+    type_name: String,
+    container: String,
+}
+
 #[derive(Default)]
 struct TarjanState {
     next_index: usize,
@@ -701,6 +707,19 @@ impl<'a> ScenarioLowerer<'a> {
             self.record_reasoned_suppression(local, &creation.binding);
             return;
         }
+        if let Some((binding, type_name, container, span)) =
+            self.unsupported_obligation_container(local, init.expr.as_ref())
+        {
+            self.operations.push(ScenarioOp {
+                span,
+                kind: ScenarioOpKind::UnsupportedContainer {
+                    binding,
+                    type_name,
+                    container,
+                },
+            });
+            return;
+        }
         if let Some((binding, type_name)) = local_static_type(local, init.expr.as_ref()) {
             env.bind_type(binding, type_name);
             return;
@@ -783,6 +802,21 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(call),
             },
         )
+    }
+
+    fn unsupported_obligation_container(
+        &self,
+        local: &'a Local,
+        expr: &'a Expr,
+    ) -> Option<(String, String, String, KoboSpan)> {
+        let binding = pat_ident(&local.pat)?;
+        let container = obligation_container_shape(expr, self.must_call_types)?;
+        Some((
+            binding,
+            container.type_name,
+            container.container,
+            self.span(expr),
+        ))
     }
 
     fn execute_expr(&mut self, expr: &'a Expr, env: &mut BindingEnv) {
@@ -1754,6 +1788,50 @@ fn expr_static_type_from_initializer(expr: &Expr) -> Option<String> {
         Expr::Struct(struct_expr) => path_last_ident(&struct_expr.path),
         Expr::Paren(paren) => expr_static_type_from_initializer(paren.expr.as_ref()),
         _ => None,
+    }
+}
+
+fn obligation_container_shape(
+    expr: &Expr,
+    must_call_types: &HashMap<String, Vec<String>>,
+) -> Option<UnsupportedContainerShape> {
+    let expr = peel_paren_expr(expr);
+    let Expr::Call(arc_call) = expr else {
+        return None;
+    };
+    let Expr::Path(arc_path) = arc_call.func.as_ref() else {
+        return None;
+    };
+    if !path_ends_with(&arc_path.path, &["Arc", "new"]) {
+        return None;
+    }
+    let mutex_expr = arc_call.args.first()?;
+    let Expr::Call(mutex_call) = peel_paren_expr(mutex_expr) else {
+        return None;
+    };
+    let Expr::Path(mutex_path) = mutex_call.func.as_ref() else {
+        return None;
+    };
+    if !path_ends_with(&mutex_path.path, &["Mutex", "new"]) {
+        return None;
+    }
+    let inner_expr = mutex_call.args.first()?;
+    let Expr::Struct(inner_struct) = peel_paren_expr(inner_expr) else {
+        return None;
+    };
+    let type_name = path_last_ident(&inner_struct.path)?;
+    must_call_types
+        .contains_key(&type_name)
+        .then(|| UnsupportedContainerShape {
+            type_name,
+            container: "Arc<Mutex>".to_owned(),
+        })
+}
+
+fn peel_paren_expr(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(paren) => peel_paren_expr(paren.expr.as_ref()),
+        other => other,
     }
 }
 

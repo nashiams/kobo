@@ -325,6 +325,14 @@ impl FunctionSummaryBuilder {
                         .escapes
                         .push(operation.clone());
                 }
+                ScenarioOpKind::UnsupportedContainer {
+                    binding, container, ..
+                } => {
+                    builder
+                        .summary_mut(&program.target)
+                        .escapes
+                        .push(format!("{binding}->{container}"));
+                }
                 ScenarioOpKind::MoveBinding { .. }
                 | ScenarioOpKind::CoreTerminator { .. }
                 | ScenarioOpKind::ModeledEffect { .. }
@@ -402,6 +410,13 @@ fn operation_coverage_label(operation: &kobo_ir::ScenarioOp) -> String {
         }
         ScenarioOpKind::UncontrolledEffect { operation } => {
             format!("uncontrolled-effect.{operation}")
+        }
+        ScenarioOpKind::UnsupportedContainer {
+            type_name,
+            container,
+            ..
+        } => {
+            format!("unsupported-container.{container}.{type_name}")
         }
         ScenarioOpKind::ExternalBoundary {
             crate_name, policy, ..

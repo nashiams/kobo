@@ -43,6 +43,17 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     span_start,
                     span_end,
                 }),
+                ScenarioOpKind::UnsupportedContainer {
+                    binding,
+                    type_name,
+                    container,
+                } => Some(ScenarioOperation::UnsupportedContainer {
+                    binding: binding.clone(),
+                    type_name: type_name.clone(),
+                    container: container.clone(),
+                    span_start,
+                    span_end,
+                }),
                 ScenarioOpKind::ModeledEffect { boundary } => {
                     Some(ScenarioOperation::ModeledEffect {
                         boundary: modeled_boundary(boundary),

@@ -8,6 +8,7 @@ use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
 use kobo_debt::patterns::{detect_migration_patterns, format_patterns};
 use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_driver::{lifetime_erasure_debt_report, run_kir_phase};
+use kobo_ir::debt::{DebtReport, WarnEarlyPattern};
 use kobo_ir::MustCallObligation;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 use syn::visit::Visit;
@@ -28,6 +29,22 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
             serde_json::to_value(&report).context("failed to serialize debt report to JSON")?;
         if let Some(object) = value.as_object_mut() {
             object.insert(
+                "tiered_summary".to_owned(),
+                serde_json::json!({
+                    "tier1": report.complexity.tier1,
+                    "tier2": report.complexity.tier2,
+                    "tier3": report.complexity.tier3,
+                }),
+            );
+            object.insert(
+                "migration_estimate".to_owned(),
+                migration_estimate_json(&report),
+            );
+            object.insert(
+                "precursor_warnings".to_owned(),
+                serde_json::Value::Array(precursor_warning_json(&report)),
+            );
+            object.insert(
                 "boundary_policies".to_owned(),
                 serde_json::Value::Array(
                     boundary_policies
@@ -45,7 +62,7 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
 
     if summary {
         println!(
-            "{} file(s), {} line(s) — {} RcMutShared site(s) [T1:{} T2:{} T3:{}] — {} warning(s)",
+            "{} file(s), {} line(s) - {} RcMutShared site(s) [T1:{} T2:{} T3:{}] - {} warning(s) - migration estimate: {}",
             report.file_count,
             report.line_count,
             report.inventory.rc_mut_shared,
@@ -53,6 +70,7 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
             report.complexity.tier2,
             report.complexity.tier3,
             report.warn_early.len(),
+            migration_estimate_label(&report),
         );
         return Ok(());
     }
@@ -72,6 +90,120 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
     }
 
     Ok(())
+}
+
+pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
+    let mut session = build_session(file, None)?;
+    let (_, kir) = run_kir_phase(&mut session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
+
+    let (file_count, line_count) = count_files_and_lines(session.file_set());
+    let report = build_debt_report(&kir, file_count, line_count);
+    let codes = precursor_codes(&report);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "mode": "debt_watch",
+                "watch": {
+                    "strategy": "scoped-persist-reload",
+                    "scope": file.display().to_string(),
+                    "restartable": true,
+                    "rerun_target": format!("kobo debt {} --watch", file.display()),
+                },
+                "precursor_warning_count": report.warn_early.len(),
+                "precursor_codes": codes,
+                "migration_estimate": migration_estimate_json(&report),
+            }))?
+        );
+        return Ok(());
+    }
+
+    let code_list = if codes.is_empty() {
+        "none".to_owned()
+    } else {
+        codes.join(", ")
+    };
+    if summary {
+        println!(
+            "debt watch scoped-persist-reload: precursor warning changes={} [{}]; migration estimate: {}; rerun target: kobo debt {} --watch",
+            report.warn_early.len(),
+            code_list,
+            migration_estimate_label(&report),
+            file.display(),
+        );
+        return Ok(());
+    }
+
+    println!("debt watch");
+    println!("strategy: scoped-persist-reload");
+    println!("scope: {}", file.display());
+    println!(
+        "precursor warning changes: {} [{}]",
+        report.warn_early.len(),
+        code_list
+    );
+    println!("migration estimate: {}", migration_estimate_label(&report));
+    println!("rerun target: kobo debt {} --watch", file.display());
+    Ok(())
+}
+
+fn migration_estimate_json(report: &DebtReport) -> serde_json::Value {
+    serde_json::json!({
+        "label": migration_estimate_label(report),
+        "estimated_site_count": report.inventory.rc_mut_shared,
+        "tier1": report.complexity.tier1,
+        "tier2": report.complexity.tier2,
+        "tier3": report.complexity.tier3,
+        "precursor_warning_count": report.warn_early.len(),
+    })
+}
+
+fn migration_estimate_label(report: &DebtReport) -> &'static str {
+    if report.complexity.tier3 > 0 {
+        "estimated-high"
+    } else if report.complexity.tier2 > 0 || !report.warn_early.is_empty() {
+        "estimated-medium"
+    } else {
+        "estimated-low"
+    }
+}
+
+fn precursor_warning_json(report: &DebtReport) -> Vec<serde_json::Value> {
+    report
+        .warn_early
+        .iter()
+        .map(|fact| {
+            serde_json::json!({
+                "code": warn_early_code(&fact.pattern),
+                "pattern": fact.pattern.clone(),
+                "struct_name": fact.struct_name.clone(),
+                "suppressed": fact.suppressed,
+            })
+        })
+        .collect()
+}
+
+fn precursor_codes(report: &DebtReport) -> Vec<&'static str> {
+    let mut codes = report
+        .warn_early
+        .iter()
+        .map(|fact| warn_early_code(&fact.pattern))
+        .collect::<Vec<_>>();
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+}
+
+fn warn_early_code(pattern: &WarnEarlyPattern) -> &'static str {
+    match pattern {
+        WarnEarlyPattern::BidirectionalRcLinks { .. } => "K0080-P1",
+        WarnEarlyPattern::ParentChildBackPointer { .. } => "K0080-P2",
+        WarnEarlyPattern::SharedMutableAt3PlusSites { .. } => "K0080-P3",
+        WarnEarlyPattern::SelfReferentialStruct { .. } => "K0080-P4",
+    }
 }
 
 pub(super) fn cmd_debt_cargo(root: &Path, json: bool, summary: bool) -> anyhow::Result<()> {

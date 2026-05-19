@@ -275,13 +275,9 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             liveness,
             watch,
         } => {
-            if watch {
-                eprintln!("kobo debt --watch is planned for v0.5");
-                return Ok(());
-            }
             if let Some(cargo_root) = cargo {
                 anyhow::ensure!(
-                    !(borrows || patterns || errors || liveness),
+                    !(borrows || patterns || errors || liveness || watch),
                     "kobo debt --cargo supports default, --summary, and --json output only"
                 );
                 return debt::cmd_debt_cargo(&cargo_root, json, summary);
@@ -289,6 +285,9 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             let Some(file) = file else {
                 anyhow::bail!("kobo debt requires FILE or --cargo DIR");
             };
+            if watch {
+                return debt::cmd_debt_watch(file.as_path(), json, summary);
+            }
             if borrows {
                 return debt::cmd_debt_borrows(file.as_path(), json);
             }

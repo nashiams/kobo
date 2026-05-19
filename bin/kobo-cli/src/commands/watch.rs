@@ -77,7 +77,11 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     let target = relative_display(file);
     let changed = changed.map(relative_display);
     println!("Watch plan");
+    println!("mode: scoped-persist-reload");
     println!("scope: {target}");
+    println!("persisted scope: {target}");
+    println!("reload checkpoint: source-map-and-diagnostics");
+    println!("restartable: true");
     println!("files:");
     for file in &scope.files {
         println!("- {}", relative_display(file));

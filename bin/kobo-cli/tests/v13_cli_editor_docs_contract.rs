@@ -298,6 +298,107 @@ ward Demo {
 }
 
 #[test]
+fn lsp_stdio_handles_framed_hover_actions_links_and_navigation() {
+    let lsp = env!("CARGO_BIN_EXE_kobo-lsp");
+    let source = r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+impl Token {
+    fn close(self) {}
+}
+
+#[kobo::scenario(profile = "sync")]
+fn run() {
+    let token = Token {};
+}
+"#;
+    let uri = "file:///workspace/src/main.kobo";
+    let requests = [
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": uri, "text": source}}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/hover",
+            "params": {"textDocument": {"uri": uri}, "position": {"line": 10, "character": 12}}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/codeAction",
+            "params": {"textDocument": {"uri": uri}, "range": {"start": {"line": 10, "character": 8}, "end": {"line": 10, "character": 13}}}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "textDocument/documentLink",
+            "params": {"textDocument": {"uri": uri}}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "textDocument/definition",
+            "params": {"textDocument": {"uri": uri}, "position": {"line": 10, "character": 12}}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "kobo/runnables",
+            "params": {"textDocument": {"uri": uri}}
+        }),
+    ];
+    let request = requests
+        .into_iter()
+        .map(|value| {
+            let body = value.to_string();
+            format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+        })
+        .collect::<String>();
+
+    let mut child = Command::new(lsp)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("kobo-lsp --stdio should launch");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(request.as_bytes())
+        .expect("framed requests should write");
+    let output = child
+        .wait_with_output()
+        .expect("kobo-lsp should finish bounded framed stdio request");
+    let lsp_output = command_output(output);
+    assert_success(&lsp_output, "kobo-lsp framed stdio session");
+    assert_contains(
+        &lsp_output.stdout,
+        "Content-Length:",
+        "stdio server should use standard LSP message framing",
+    );
+    for expected in [
+        "textDocument/publishDiagnostics",
+        "must_call obligation",
+        "kobo explain K0100",
+        "generated-rust",
+        "rust-analyzer",
+        "kobo.testScenario",
+    ] {
+        assert_contains(
+            &lsp_output.stdout,
+            expected,
+            "framed LSP response should include protocol feature",
+        );
+    }
+}
+
+#[test]
 fn vscode_extension_contract_exposes_syntax_and_actions() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let package = root.join("editors/vscode/package.json");

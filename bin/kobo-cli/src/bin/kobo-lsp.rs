@@ -9,7 +9,7 @@ use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
-        println!("kobo-lsp 0.8.5");
+        println!("kobo-lsp {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -29,18 +29,52 @@ fn run_stdio() -> anyhow::Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     if input.trim().is_empty() {
-        println!("{}", kobo_lsp::initialize_response(serde_json::Value::Null));
+        emit_protocol_value(
+            &kobo_lsp::initialize_response(serde_json::Value::Null),
+            false,
+        );
         return Ok(());
     }
+    let framed = has_lsp_framing(&input);
+    let mut documents = std::collections::BTreeMap::<String, String>::new();
     for value in parse_json_rpc_inputs(&input) {
         match value["method"].as_str() {
             Some("initialize") => {
                 let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
-                println!("{}", kobo_lsp::initialize_response(id));
+                emit_protocol_value(&kobo_lsp::initialize_response(id), framed);
             }
             Some("textDocument/didOpen") => {
-                if let Some(notification) = publish_diagnostics_for_open_document(&value) {
-                    println!("{notification}");
+                if let Some((uri, text, notification)) = open_document_notification(&value) {
+                    documents.insert(uri, text);
+                    emit_protocol_value(&notification, framed);
+                }
+            }
+            Some("textDocument/hover") => {
+                if let Some(response) = document_feature_response(&value, &documents, "hover") {
+                    emit_protocol_value(&response, framed);
+                }
+            }
+            Some("textDocument/codeAction") => {
+                if let Some(response) = document_feature_response(&value, &documents, "codeActions")
+                {
+                    emit_protocol_value(&response, framed);
+                }
+            }
+            Some("textDocument/documentLink") => {
+                if let Some(response) =
+                    document_feature_response(&value, &documents, "documentLinks")
+                {
+                    emit_protocol_value(&response, framed);
+                }
+            }
+            Some("textDocument/definition") => {
+                if let Some(response) = definition_response(&value, &documents) {
+                    emit_protocol_value(&response, framed);
+                }
+            }
+            Some("kobo/runnables") => {
+                if let Some(response) = document_feature_response(&value, &documents, "runnables") {
+                    emit_protocol_value(&response, framed);
                 }
             }
             _ => {}
@@ -49,22 +83,87 @@ fn run_stdio() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn publish_diagnostics_for_open_document(value: &serde_json::Value) -> Option<serde_json::Value> {
+fn open_document_notification(
+    value: &serde_json::Value,
+) -> Option<(String, String, serde_json::Value)> {
     let document = &value["params"]["textDocument"];
     let uri = document["uri"].as_str()?;
     let text = document["text"].as_str()?;
     let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
-    Some(serde_json::json!({
+    let notification = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "textDocument/publishDiagnostics",
         "params": {
             "uri": uri,
             "diagnostics": snapshot["diagnostics"].clone(),
         },
-    }))
+    });
+    Some((uri.to_owned(), text.to_owned(), notification))
+}
+
+fn document_feature_response(
+    value: &serde_json::Value,
+    documents: &std::collections::BTreeMap<String, String>,
+    key: &str,
+) -> Option<serde_json::Value> {
+    let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let uri = value["params"]["textDocument"]["uri"].as_str()?;
+    let text = documents.get(uri).map(String::as_str).unwrap_or_default();
+    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
+    Some(json_rpc_response(id, snapshot[key].clone()))
+}
+
+fn definition_response(
+    value: &serde_json::Value,
+    documents: &std::collections::BTreeMap<String, String>,
+) -> Option<serde_json::Value> {
+    let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let uri = value["params"]["textDocument"]["uri"].as_str()?;
+    let text = documents.get(uri).map(String::as_str).unwrap_or_default();
+    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
+    let result = serde_json::json!([{
+        "uri": uri,
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 1},
+        },
+        "data": {
+            "delegate": snapshot["definitionProvider"]["delegate"].clone(),
+            "source_map": snapshot["definitionProvider"]["source_map"].clone(),
+            "target": format!("{uri}#generated-rust"),
+        }
+    }]);
+    Some(json_rpc_response(id, result))
+}
+
+fn json_rpc_response(id: serde_json::Value, result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": result,
+    })
+}
+
+fn emit_protocol_value(value: &serde_json::Value, framed: bool) {
+    let body = value.to_string();
+    if framed {
+        print!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+    } else {
+        println!("{body}");
+    }
+}
+
+fn has_lsp_framing(input: &str) -> bool {
+    input
+        .get(.."Content-Length:".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Content-Length:"))
 }
 
 fn parse_json_rpc_inputs(input: &str) -> Vec<serde_json::Value> {
+    let framed = parse_framed_json_rpc_inputs(input);
+    if !framed.is_empty() {
+        return framed;
+    }
     let mut values = Vec::new();
     for line in input
         .lines()
@@ -83,6 +182,77 @@ fn parse_json_rpc_inputs(input: &str) -> Vec<serde_json::Value> {
         }
     }
     values
+}
+
+fn parse_framed_json_rpc_inputs(input: &str) -> Vec<serde_json::Value> {
+    let mut values = Vec::new();
+    let bytes = input.as_bytes();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let Some(header_start) = find_case_insensitive(bytes, cursor, b"content-length:") else {
+            break;
+        };
+        let Some(header_end) = find_header_end(bytes, header_start) else {
+            break;
+        };
+        let header = &input[header_start..header_end];
+        let Some(length) = content_length(header) else {
+            cursor = header_end + 1;
+            continue;
+        };
+        let body_start = if bytes.get(header_end) == Some(&b'\r') {
+            header_end + 4
+        } else {
+            header_end + 2
+        };
+        let body_end = body_start.saturating_add(length);
+        let Some(body) = input.get(body_start..body_end) else {
+            break;
+        };
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+            values.push(value);
+        }
+        cursor = body_end;
+    }
+    values
+}
+
+fn find_case_insensitive(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(needle.len())
+        .position(|window| {
+            window
+                .iter()
+                .zip(needle)
+                .all(|(left, right)| left.eq_ignore_ascii_case(right))
+        })
+        .map(|relative| from + relative)
+}
+
+fn find_header_end(bytes: &[u8], from: usize) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|relative| from + relative)
+        .or_else(|| {
+            bytes
+                .get(from..)?
+                .windows(2)
+                .position(|window| window == b"\n\n")
+                .map(|relative| from + relative)
+        })
+}
+
+fn content_length(header: &str) -> Option<usize> {
+    header.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse().ok())
+            .flatten()
+    })
 }
 
 fn diagnostics_file_arg(args: &[String]) -> Option<PathBuf> {

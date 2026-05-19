@@ -216,7 +216,9 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "model_run": {
         "engine": "legacy-directive-interpreter",
         "events": [],
+        "ir": [],
         "obligations": [],
+        "seed": 0,
         "source": "not_requested",
         "steps_executed": 0
       },
@@ -529,7 +531,9 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "model_run": {
         "engine": "legacy-directive-interpreter",
         "events": [],
+        "ir": [],
         "obligations": [],
+        "seed": 0,
         "source": "not_requested",
         "steps_executed": 0
       },

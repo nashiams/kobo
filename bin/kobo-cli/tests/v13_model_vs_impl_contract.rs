@@ -152,6 +152,38 @@ fn dual_run_interprets_model_transitions_not_expectation_lines() {
 }
 
 #[test]
+fn dual_run_records_typed_state_transitions_and_scheduler_assumptions() {
+    let project = TestProject::new("v13-dual-typed-model-ir");
+    let source = dual_source(
+        "    model {\n        state phase pending;\n        scheduler async;\n        transition dispatch -> ward.task;\n    }",
+        "        ward.task();",
+    );
+
+    let (output, witness) = run_dual_witness(&project, &source, "dual_case");
+    assert_success(
+        &output,
+        "typed ward model state and transition IR should execute and match",
+    );
+    let model_run = &witness["model_vs_implementation"]["model_run"];
+    assert_eq!(model_run["semantics"], "typed_ward_model_ir");
+    assert_contains(
+        &model_run["ir"].to_string(),
+        "transition",
+        "model IR should preserve the named transition",
+    );
+    assert_contains(
+        &model_run["states"].to_string(),
+        "phase",
+        "model IR should record typed state facts",
+    );
+    assert_eq!(model_run["scheduler_assumptions"]["preset"], "async");
+    assert_eq!(
+        model_run["scheduler_assumptions"]["same_as_implementation"],
+        Value::Bool(true)
+    );
+}
+
+#[test]
 fn dual_run_reports_trace_divergence_with_source_spans() {
     let project = TestProject::new("v13-dual-trace-divergence");
     let source = dual_source(

@@ -2373,6 +2373,12 @@ struct WardModelStep {
 enum WardModelStepKind {
     EmitEvent(String),
     SetObligation { binding: String, state: String },
+    SetState { name: String, value: String },
+    SchedulerAssumption { preset: String },
+    Transition {
+        name: String,
+        boundary: ModelBoundaryCall,
+    },
     BoundaryCall(ModelBoundaryCall),
 }
 
@@ -2399,7 +2405,9 @@ struct WardModelRun {
     seed: u64,
     ir: Vec<WardModelStep>,
     events: Vec<String>,
+    states: Vec<(String, String)>,
     obligations: Vec<(String, String)>,
+    scheduler_preset: Option<String>,
     steps_executed: usize,
 }
 
@@ -2909,12 +2917,61 @@ fn parse_model_directive(rest: &str, span: (usize, usize), spec: &mut ModelCompa
                 span,
             });
         }
+    } else if let Some((name, value)) = parse_model_state(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::SetState { name, value },
+            span,
+        });
+    } else if let Some(preset) = parse_model_scheduler(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::SchedulerAssumption { preset },
+            span,
+        });
+    } else if let Some((name, boundary)) = parse_model_transition(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::Transition { name, boundary },
+            span,
+        });
     } else if let Some(boundary) = parse_model_boundary_call(rest) {
         spec.steps.push(WardModelStep {
             kind: WardModelStepKind::BoundaryCall(boundary),
             span,
         });
     }
+}
+
+fn parse_model_state(rest: &str) -> Option<(String, String)> {
+    let state = rest.strip_prefix("state ")?;
+    let state = state.trim().trim_matches([';', '}']).trim();
+    if let Some((name, value)) = state.split_once('=') {
+        let name = name.trim();
+        let value = value.trim().trim_matches('"');
+        if !name.is_empty() && !value.is_empty() {
+            return Some((name.to_owned(), value.to_owned()));
+        }
+    }
+    let mut parts = state.split_whitespace();
+    let name = parts.next()?;
+    let value = parts.next()?;
+    Some((name.to_owned(), value.to_owned()))
+}
+
+fn parse_model_scheduler(rest: &str) -> Option<String> {
+    let preset = rest
+        .strip_prefix("scheduler ")?
+        .trim()
+        .trim_matches([';', '}'])
+        .trim();
+    (!preset.is_empty()).then(|| preset.to_owned())
+}
+
+fn parse_model_transition(rest: &str) -> Option<(String, ModelBoundaryCall)> {
+    let transition = rest.strip_prefix("transition ")?;
+    let transition = transition.trim().trim_matches([';', '}']).trim();
+    let (name, target) = transition.split_once("->")?;
+    let name = name.trim();
+    let boundary = parse_model_boundary_call(target.trim())?;
+    (!name.is_empty()).then(|| (name.to_owned(), boundary))
 }
 
 fn parse_model_boundary_call(rest: &str) -> Option<ModelBoundaryCall> {
@@ -2959,6 +3016,7 @@ impl WardModelStepKind {
         matches!(
             self,
             Self::EmitEvent(_)
+                | Self::Transition { .. }
                 | Self::BoundaryCall(ModelBoundaryCall::WardTime)
                 | Self::BoundaryCall(ModelBoundaryCall::WardRandom)
                 | Self::BoundaryCall(ModelBoundaryCall::WardTask)
@@ -2978,6 +3036,21 @@ impl WardModelStepKind {
                 "kind": "set_obligation",
                 "binding": binding,
                 "state": state,
+            }),
+            Self::SetState { name, value } => serde_json::json!({
+                "kind": "set_state",
+                "name": name,
+                "value": value,
+            }),
+            Self::SchedulerAssumption { preset } => serde_json::json!({
+                "kind": "scheduler_assumption",
+                "preset": preset,
+            }),
+            Self::Transition { name, boundary } => serde_json::json!({
+                "kind": "transition",
+                "name": name,
+                "target": boundary.as_str(),
+                "emits": boundary.event_kind(),
             }),
             Self::BoundaryCall(boundary) => serde_json::json!({
                 "kind": "boundary_call",
@@ -3016,7 +3089,7 @@ fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardModelRun {
     for step in &spec.steps {
         interpreter.execute(step);
     }
-    let (events, obligations) = interpreter.finish();
+    let (events, states, obligations, scheduler_preset) = interpreter.finish();
     WardModelRun {
         source: spec.source,
         engine: if spec.source == "ward_model" {
@@ -3027,7 +3100,9 @@ fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardModelRun {
         seed,
         ir: spec.steps.clone(),
         events,
+        states,
         obligations,
+        scheduler_preset,
         steps_executed: spec.steps.len(),
     }
 }
@@ -3035,7 +3110,9 @@ fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardModelRun {
 struct WardModelInterpreter {
     seed: u64,
     events: Vec<String>,
+    states: Vec<(String, String)>,
     obligations: Vec<(String, String)>,
+    scheduler_preset: Option<String>,
 }
 
 impl WardModelInterpreter {
@@ -3043,7 +3120,9 @@ impl WardModelInterpreter {
         Self {
             seed,
             events: Vec::new(),
+            states: Vec::new(),
             obligations: Vec::new(),
+            scheduler_preset: None,
         }
     }
 
@@ -3053,10 +3132,28 @@ impl WardModelInterpreter {
             WardModelStepKind::SetObligation { binding, state } => {
                 self.set_obligation(binding, state);
             }
+            WardModelStepKind::SetState { name, value } => {
+                self.set_state(name, value);
+            }
+            WardModelStepKind::SchedulerAssumption { preset } => {
+                self.scheduler_preset = Some(preset.clone());
+            }
+            WardModelStepKind::Transition { boundary, .. } => {
+                self.events.push(boundary.event_kind().to_owned());
+            }
             WardModelStepKind::BoundaryCall(boundary) => {
                 self.events.push(boundary.event_kind().to_owned());
             }
         }
+    }
+
+    fn set_state(&mut self, name: &str, value: &str) {
+        if let Some((_, existing)) = self.states.iter_mut().find(|(candidate, _)| candidate == name)
+        {
+            *existing = value.to_owned();
+            return;
+        }
+        self.states.push((name.to_owned(), value.to_owned()));
     }
 
     fn set_obligation(&mut self, binding: &str, state: &str) {
@@ -3072,9 +3169,19 @@ impl WardModelInterpreter {
             .push((binding.to_owned(), state.to_owned()));
     }
 
-    fn finish(self) -> (Vec<String>, Vec<(String, String)>) {
+    fn finish(self) -> (
+        Vec<String>,
+        Vec<(String, String)>,
+        Vec<(String, String)>,
+        Option<String>,
+    ) {
         let _ = self.seed;
-        (self.events, self.obligations)
+        (
+            self.events,
+            self.states,
+            self.obligations,
+            self.scheduler_preset,
+        )
     }
 }
 
@@ -3082,6 +3189,7 @@ fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
     serde_json::json!({
         "source": model_run.source,
         "engine": model_run.engine,
+        "semantics": "typed_ward_model_ir",
         "seed": model_run.seed,
         "ir": model_run
             .ir
@@ -3096,6 +3204,16 @@ fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
             })
             .collect::<Vec<_>>(),
         "events": model_run.events,
+        "states": model_run
+            .states
+            .iter()
+            .map(|(name, value)| {
+                serde_json::json!({
+                    "name": name,
+                    "value": value,
+                })
+            })
+            .collect::<Vec<_>>(),
         "obligations": model_run
             .obligations
             .iter()
@@ -3106,6 +3224,11 @@ fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
                 })
             })
             .collect::<Vec<_>>(),
+        "scheduler_assumptions": {
+            "preset": model_run.scheduler_preset,
+            "seed": model_run.seed,
+            "same_as_implementation": true,
+        },
         "steps_executed": model_run.steps_executed,
     })
 }

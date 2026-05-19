@@ -34,7 +34,10 @@ pub(crate) fn modeled_boundary_events(
     options: &ScenarioOptions,
 ) -> Vec<ScenarioEvent> {
     let mut events = vec![deterministic_boundary_event(boundary, options.seed)];
-    if matches!(boundary, ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal) {
+    if matches!(
+        boundary,
+        ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal
+    ) {
         let mut scheduler = SchedulerModel::new(options);
         scheduler.record_task_boundary(boundary.as_str());
         events.extend(scheduler.into_events());
@@ -55,7 +58,10 @@ pub(crate) fn schedule_failure(
     span: (usize, usize),
 ) -> Option<ScenarioFailure> {
     if !matches!(options.sim_profile.as_str(), "deep" | "exhaustive")
-        || !matches!(boundary, ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal)
+        || !matches!(
+            boundary,
+            ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal
+        )
     {
         return None;
     }

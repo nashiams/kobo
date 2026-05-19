@@ -418,13 +418,19 @@ pub(crate) enum KoboCommand {
     /// File-watcher re-run on save.
     Watch {
         #[arg(value_name = "FILE")]
-        file: PathBuf,
+        file: Option<PathBuf>,
         /// Simple mode: save → compile → run (no state persistence)
         #[arg(long)]
         simple: bool,
         /// Build mode: save → codegen → cargo build (full rebuild cycle)
         #[arg(long)]
         build: bool,
+        /// Print a bounded watch plan without entering the watch loop.
+        #[arg(long)]
+        plan: bool,
+        /// File to treat as changed when rendering a watch plan.
+        #[arg(long, value_name = "FILE")]
+        changed: Option<PathBuf>,
     },
     /// Explain a Kobo diagnostic code.
     Explain {

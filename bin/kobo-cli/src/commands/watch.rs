@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::session::{build_session, render_diagnostics};
@@ -12,7 +12,19 @@ use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
 ///
 /// In `--build` mode: runs the full codegen pipeline on each change, producing
 /// generated Rust output — suitable for continuous build feedback (S-29).
-pub(super) fn cmd_watch(file: &Path, simple: bool, build: bool) -> anyhow::Result<()> {
+pub(super) fn cmd_watch(
+    file: Option<&Path>,
+    simple: bool,
+    build: bool,
+    plan: bool,
+    changed: Option<&Path>,
+) -> anyhow::Result<()> {
+    if plan {
+        return cmd_watch_plan(file, changed);
+    }
+    let Some(file) = file else {
+        anyhow::bail!("unscoped workspace watch is disabled; pass a FILE or use --plan FILE");
+    };
     if !simple && !build {
         println!("Use --simple for basic save-and-recheck mode, or --build for codegen+compile.");
         return Ok(());
@@ -53,6 +65,92 @@ pub(super) fn cmd_watch(file: &Path, simple: bool, build: bool) -> anyhow::Resul
     }
 
     Ok(())
+}
+
+fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result<()> {
+    let Some(file) = file else {
+        anyhow::bail!(
+            "unscoped workspace watch is disabled; pass an explicit FILE to plan invalidation"
+        );
+    };
+    let scope = watch_scope(file)?;
+    let target = relative_display(file);
+    let changed = changed.map(relative_display);
+    println!("Watch plan");
+    println!("scope: {target}");
+    println!("files:");
+    for file in &scope.files {
+        println!("- {}", relative_display(file));
+    }
+    println!("rerun targets:");
+    println!("rerun target: kobo check {target}");
+    println!("rerun target: kobo inspect {target}");
+    if let Some(changed) = changed {
+        println!("invalidated: {changed}");
+        println!("reason: changed file belongs to scoped watch plan");
+        println!("rerun target: kobo check {target}");
+        println!("rerun target: kobo inspect {target}");
+    }
+    Ok(())
+}
+
+struct WatchScope {
+    files: Vec<PathBuf>,
+}
+
+fn watch_scope(file: &Path) -> anyhow::Result<WatchScope> {
+    let root = file.parent().unwrap_or_else(|| Path::new("."));
+    let mut files = Vec::new();
+    collect_kobo_watch_files(root, &mut files)?;
+    if !files.iter().any(|candidate| same_path(candidate, file)) {
+        files.push(file.to_path_buf());
+    }
+    files.sort();
+    Ok(WatchScope { files })
+}
+
+fn collect_kobo_watch_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|error| anyhow::anyhow!("cannot read watch scope {}: {error}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| anyhow::anyhow!("cannot read watch entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches!(name, "target" | ".git" | ".kobo"))
+            {
+                continue;
+            }
+            collect_kobo_watch_files(&path, files)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("kobo") {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    left.canonicalize().ok() == right.canonicalize().ok()
+}
+
+fn relative_display(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    absolute
+        .strip_prefix(&cwd)
+        .unwrap_or(&absolute)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Get file modification time.

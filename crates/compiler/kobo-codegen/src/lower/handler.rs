@@ -35,10 +35,7 @@ pub(crate) fn append_handler_support_items(file: &mut syn::File, items: Vec<syn:
     file.items.extend(items);
 }
 
-pub(crate) fn lower_item_function(
-    ast: &kobo_parser::KoboFile,
-    function: &mut syn::ItemFn,
-) -> bool {
+pub(crate) fn lower_item_function(ast: &kobo_parser::KoboFile, function: &mut syn::ItemFn) -> bool {
     let Some(spec) = handler_spec(ast, &function.attrs, &function.sig) else {
         return false;
     };

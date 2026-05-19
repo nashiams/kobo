@@ -118,8 +118,7 @@ fn non_send_bindings(source: &str) -> Vec<NonSendBinding> {
 
 fn spawn_block(source: &str, offset: usize) -> Option<SpawnBlock> {
     let bytes = source.as_bytes();
-    if offset + "spawn".len() > bytes.len() || &bytes[offset..offset + "spawn".len()] != b"spawn"
-    {
+    if offset + "spawn".len() > bytes.len() || &bytes[offset..offset + "spawn".len()] != b"spawn" {
         return None;
     }
     let preceded_by_ident = offset > 0 && is_ident_byte(bytes[offset - 1]);
@@ -133,8 +132,7 @@ fn spawn_block(source: &str, offset: usize) -> Option<SpawnBlock> {
     let mut is_local = false;
     if cursor + "local".len() <= bytes.len()
         && &bytes[cursor..cursor + "local".len()] == b"local"
-        && (cursor + "local".len() == bytes.len()
-            || !is_ident_byte(bytes[cursor + "local".len()]))
+        && (cursor + "local".len() == bytes.len() || !is_ident_byte(bytes[cursor + "local".len()]))
     {
         is_local = true;
         cursor = skip_ws(bytes, cursor + "local".len());

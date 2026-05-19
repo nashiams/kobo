@@ -12,7 +12,9 @@ pub(crate) fn lower_for_loop(for_loop: &mut syn::ExprForLoop) -> ParallelLowerin
     let Some(attr) = parallel_attr(&for_loop.attrs).cloned() else {
         return ParallelLowering::None;
     };
-    for_loop.attrs.retain(|candidate| !is_parallel_attr(candidate));
+    for_loop
+        .attrs
+        .retain(|candidate| !is_parallel_attr(candidate));
 
     if attr_has_value(&attr, "order", "serial") {
         return ParallelLowering::SerialPolicy;
@@ -53,7 +55,12 @@ pub(crate) fn insert_rayon_import(file: &mut syn::File) {
     if file.items.iter().any(is_rayon_prelude_use) {
         return;
     }
-    file.items.insert(0, syn::parse_quote!(use rayon::prelude::*;));
+    file.items.insert(
+        0,
+        syn::parse_quote!(
+            use rayon::prelude::*;
+        ),
+    );
 }
 
 fn parallel_attr(attrs: &[syn::Attribute]) -> Option<&syn::Attribute> {
@@ -117,5 +124,8 @@ fn is_rayon_prelude_use(item: &syn::Item) -> bool {
     let syn::Item::Use(item_use) = item else {
         return false;
     };
-    item_use.to_token_stream().to_string().contains("rayon :: prelude")
+    item_use
+        .to_token_stream()
+        .to_string()
+        .contains("rayon :: prelude")
 }

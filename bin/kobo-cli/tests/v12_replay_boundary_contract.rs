@@ -149,7 +149,10 @@ fn record_value_mutation_changes_witness_digest() {
         ],
         &first.root,
     );
-    assert_success(&first_output, "first record fixture should create a witness");
+    assert_success(
+        &first_output,
+        "first record fixture should create a witness",
+    );
     let (first_path, first_value) = first_witness(&first);
 
     let second = TestProject::new("v12-record-digest-second");
@@ -165,7 +168,10 @@ fn record_value_mutation_changes_witness_digest() {
         ],
         &second.root,
     );
-    assert_success(&second_output, "second record fixture should create a witness");
+    assert_success(
+        &second_output,
+        "second record fixture should create a witness",
+    );
     let (second_path, second_value) = first_witness(&second);
 
     assert_ne!(
@@ -365,7 +371,11 @@ async fn send_receipt() {
         "unconfigured service boundary should require a replay policy",
     );
     let combined = output.combined();
-    assert_contains(&combined, "K0107", "diagnostic should be the boundary policy error");
+    assert_contains(
+        &combined,
+        "K0107",
+        "diagnostic should be the boundary policy error",
+    );
     assert_contains(
         &combined,
         "record it, wrap it as an activity, or keep this path partial",

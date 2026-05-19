@@ -139,13 +139,17 @@ fn replay_v1(
         witness_evidence::inferred_obligations_json(source_display, &verified_source.source, &run);
     let fuzz_enabled = witness["fuzz"]["enabled"].as_bool().unwrap_or(false);
     let summaries = summary_usage_json(&session.config)?;
+    let runtime_profile = runtime_profile_json(&session.config, sim_profile, seed, &run);
+    let runtime_profile_hash =
+        kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
     let expected = serde_json::json!({
         "backend": backend_for_profile(&run.profile),
         "backend_replay": replay_token(&verified_source.hash, seed, &run),
         "ecosystem_scope": ecosystem_scope(&run),
         "full_ecosystem_exploration": full_ecosystem_exploration(&run),
         "replay_contract": replay_contract_json(&run),
-        "execution_digest": execution_digest_json(&run),
+        "runtime_profile": runtime_profile,
+        "execution_digest": execution_digest_json(&run, &runtime_profile_hash),
         "harness_manifest": run.harness_manifest.clone(),
         "operation_coverage": witness_evidence::operation_coverage_json(&scenario_program, &run),
         "function_summaries": witness_evidence::function_summaries_json(&scenario_program, &run),
@@ -171,6 +175,7 @@ fn replay_v1(
         "ecosystem_scope": witness["ecosystem_scope"].clone(),
         "full_ecosystem_exploration": witness["full_ecosystem_exploration"].clone(),
         "replay_contract": witness["replay_contract"].clone(),
+        "runtime_profile": witness["runtime_profile"].clone(),
         "execution_digest": witness["execution_digest"].clone(),
         "harness_manifest": witness["harness_manifest"].clone(),
         "operation_coverage": witness["operation_coverage"].clone(),
@@ -322,7 +327,38 @@ fn witness_failure_json(witness: &Value) -> Value {
     })
 }
 
-fn execution_digest_json(run: &kobo_sim_core::FullDepthRun) -> Value {
+fn runtime_profile_json(
+    config: &kobo_driver::KoboConfig,
+    sim_profile: &str,
+    seed: u64,
+    run: &kobo_sim_core::FullDepthRun,
+) -> Value {
+    let profile = &config.runtime_profile;
+    serde_json::json!({
+        "service": {
+            "buffer": profile.service_buffer,
+            "backpressure": profile.service_backpressure,
+        },
+        "scenario": {
+            "scheduler": profile.scheduler,
+            "sim_profile": sim_profile,
+            "backend_profile": run.profile,
+            "seed": seed,
+            "event_budget": profile.scenario_event_budget,
+        },
+        "record": {
+            "default": profile.record,
+        },
+        "activity": {
+            "default": profile.activity,
+        },
+        "runtime": {
+            "cancellation": profile.cancellation,
+        },
+    })
+}
+
+fn execution_digest_json(run: &kobo_sim_core::FullDepthRun, runtime_profile_hash: &str) -> Value {
     serde_json::json!({
         "engine": "semantic-sim",
         "semantic_engine": run.digest.semantic_engine.as_str(),
@@ -340,6 +376,7 @@ fn execution_digest_json(run: &kobo_sim_core::FullDepthRun) -> Value {
         "harness_manifest_hash": run.digest.harness_manifest_hash.as_deref(),
         "harness_exit_code": run.digest.harness_exit_code,
         "harness_event_count": run.digest.harness_event_count,
+        "runtime_profile_hash": runtime_profile_hash,
     })
 }
 

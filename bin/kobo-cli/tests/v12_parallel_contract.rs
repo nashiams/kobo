@@ -74,7 +74,9 @@ fn crunch(values: Vec<u64>) {
 
     let generated = inspect_source(
         "parallel-arc-allowed",
-        &unsafe_source.replace("std::rc::Rc", "std::sync::Arc").replace("Rc::new", "Arc::new"),
+        &unsafe_source
+            .replace("std::rc::Rc", "std::sync::Arc")
+            .replace("Rc::new", "Arc::new"),
     );
     assert_contains(
         &generated,
@@ -96,7 +98,10 @@ fn crunch(values: Vec<u64>) {
 }
 "#;
     let file = project.main_file(source);
-    let output = run_kobo(&[s("inspect"), s("--strict"), path_arg(&file)], &project.root);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
     let mutation_line = one_based_line_of(source, "output.push");
 
     assert_failure(&output, "parallel loop mutating shared output should fail");
@@ -177,7 +182,10 @@ fn crunch(values: Vec<u64>) {
 }
 "#;
     let file = project.main_file(source);
-    let output = run_kobo(&[s("inspect"), s("--strict"), path_arg(&file)], &project.root);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
 
     assert_failure(
         &output,
@@ -191,7 +199,10 @@ fn crunch(values: Vec<u64>) {
 
     let generated = inspect_source(
         "parallel-ward-boundary-policy",
-        &source.replace("#[kobo::parallel]", "#[kobo::parallel(policy = \"outside\")]"),
+        &source.replace(
+            "#[kobo::parallel]",
+            "#[kobo::parallel(policy = \"outside\")]",
+        ),
     );
     assert_contains(
         &generated,
@@ -215,7 +226,10 @@ fn crunch(values: Vec<u64>) {
 }
 "#;
     let file = project.main_file(source);
-    let output = run_kobo(&[s("inspect"), s("--strict"), path_arg(&file)], &project.root);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
 
     assert_failure(&output, "non-Send parallel capture should fail");
     for expected in ["non-Send", "state", "Rc"] {

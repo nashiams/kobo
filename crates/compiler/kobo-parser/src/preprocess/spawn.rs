@@ -294,49 +294,45 @@ pub fn preprocess_spawn_blocks(source: &str, file_id: FileId) -> (String, Vec<Sp
 
         // Look for `spawn` keyword.
         if let Some((brace_pos, is_local)) = spawn_block_at(source, pos) {
-                    let spawn_start = pos;
-                    let body_start = brace_pos + 1;
-                    let macro_name = if is_local {
-                        "__kobo_spawn_local_block"
-                    } else {
-                        "__kobo_spawn_block"
-                    };
-                    let macro_open = format!("{macro_name}!({{");
+            let spawn_start = pos;
+            let body_start = brace_pos + 1;
+            let macro_name = if is_local {
+                "__kobo_spawn_local_block"
+            } else {
+                "__kobo_spawn_block"
+            };
+            let macro_open = format!("{macro_name}!({{");
 
-                    // Find closing brace to record the full span info.
-                    if let Some(brace_end) = find_matching_brace(source, brace_pos) {
-                        let generated_macro_start = result.len();
-                        let generated_body_start = generated_macro_start + macro_open.len();
-                        infos.push(SpawnBlockInfo {
-                            span: KoboSpan::new(
-                                spawn_start as u32,
-                                (brace_end + 1) as u32,
-                                file_id,
-                            ),
-                            body_span: KoboSpan::new(body_start as u32, brace_end as u32, file_id),
-                            generated_macro_span: KoboSpan::new(
-                                generated_macro_start as u32,
-                                (generated_macro_start + macro_name.len() + "!".len()) as u32,
-                                file_id,
-                            ),
-                            generated_body_span: KoboSpan::new(
-                                generated_body_start as u32,
-                                generated_body_start as u32,
-                                file_id,
-                            ),
-                            generated_close_span: KoboSpan::new(0, 0, file_id),
-                            is_local,
-                        });
-                    }
+            // Find closing brace to record the full span info.
+            if let Some(brace_end) = find_matching_brace(source, brace_pos) {
+                let generated_macro_start = result.len();
+                let generated_body_start = generated_macro_start + macro_open.len();
+                infos.push(SpawnBlockInfo {
+                    span: KoboSpan::new(spawn_start as u32, (brace_end + 1) as u32, file_id),
+                    body_span: KoboSpan::new(body_start as u32, brace_end as u32, file_id),
+                    generated_macro_span: KoboSpan::new(
+                        generated_macro_start as u32,
+                        (generated_macro_start + macro_name.len() + "!".len()) as u32,
+                        file_id,
+                    ),
+                    generated_body_span: KoboSpan::new(
+                        generated_body_start as u32,
+                        generated_body_start as u32,
+                        file_id,
+                    ),
+                    generated_close_span: KoboSpan::new(0, 0, file_id),
+                    is_local,
+                });
+            }
 
-                    // Emit macro open and the `{`.
-                    result.push_str(&macro_open);
-                    if !infos.is_empty() {
-                        spawn_close_depths.push((brace_depth, infos.len() - 1));
-                    }
-                    brace_depth += 1;
-                    pos = body_start;
-                    continue;
+            // Emit macro open and the `{`.
+            result.push_str(&macro_open);
+            if !infos.is_empty() {
+                spawn_close_depths.push((brace_depth, infos.len() - 1));
+            }
+            brace_depth += 1;
+            pos = body_start;
+            continue;
         }
 
         // Track brace depth for non-spawn braces.

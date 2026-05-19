@@ -259,7 +259,10 @@ fn handler_disconnect_case_is_scenario_testable() {
         &project.root,
     );
 
-    assert_success(&output, "client disconnect path should be scenario-testable");
+    assert_success(
+        &output,
+        "client disconnect path should be scenario-testable",
+    );
     let witness = first_witness(&project);
     assert_contains(
         &witness["events"].to_string(),

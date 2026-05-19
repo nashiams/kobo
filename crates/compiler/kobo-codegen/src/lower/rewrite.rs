@@ -286,10 +286,11 @@ impl<'a> Lowerer<'a> {
             function.block.stmts.push(loop_body);
         }
         // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
-        let is_handler = !lowered_handler && function.attrs.iter().any(|attr| {
-            let segments: Vec<_> = attr.path().segments.iter().collect();
-            segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
-        });
+        let is_handler = !lowered_handler
+            && function.attrs.iter().any(|attr| {
+                let segments: Vec<_> = attr.path().segments.iter().collect();
+                segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
+            });
         if is_handler {
             // S-56: Per-request isolation — clone Arc params into locals, then wrap in catch_unwind.
             let original_stmts = std::mem::take(&mut function.block.stmts);
@@ -563,9 +564,8 @@ impl<'a> Lowerer<'a> {
                 }
 
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
-                let use_spawn_local =
-                    spawn::is_spawn_local_block_macro(&stmt_macro.mac)
-                        || self.any_captured_non_send(&captured);
+                let use_spawn_local = spawn::is_spawn_local_block_macro(&stmt_macro.mac)
+                    || self.any_captured_non_send(&captured);
                 if use_spawn_local {
                     self.needs_local_set = true;
                 }

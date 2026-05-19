@@ -6,8 +6,13 @@ pub struct ParallelWarning {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParallelWarningKind {
-    NonSendCapture { binding_name: String, type_name: String },
-    SharedMutation { binding_name: String },
+    NonSendCapture {
+        binding_name: String,
+        type_name: String,
+    },
+    SharedMutation {
+        binding_name: String,
+    },
     MissingBoundaryPolicy,
 }
 
@@ -152,7 +157,15 @@ fn loop_extent(lines: &[LineInfo<'_>], start_index: usize) -> Option<(usize, usi
             return Some((start?, line.offset + line.text.len()));
         }
     }
-    start.map(|start| (start, lines.last().map(|line| line.offset + line.text.len()).unwrap_or(start)))
+    start.map(|start| {
+        (
+            start,
+            lines
+                .last()
+                .map(|line| line.offset + line.text.len())
+                .unwrap_or(start),
+        )
+    })
 }
 
 fn mutation_offset(source: &str, binding: &str) -> Option<usize> {

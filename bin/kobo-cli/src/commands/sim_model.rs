@@ -1347,12 +1347,14 @@ fn modeled_effect_event(boundary: ModeledBoundary, seed: u64, has_time_jump: boo
         },
         ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal => SimEvent {
             kind: "deterministic-task".to_owned(),
-            label: Some(match boundary {
-                ModeledBoundary::WardTask => "ward.task",
-                ModeledBoundary::WardTaskLocal => "ward.task.local",
-                _ => unreachable!(),
-            }
-            .to_owned()),
+            label: Some(
+                match boundary {
+                    ModeledBoundary::WardTask => "ward.task",
+                    ModeledBoundary::WardTaskLocal => "ward.task.local",
+                    _ => unreachable!(),
+                }
+                .to_owned(),
+            ),
             value: Some(seed),
         },
         ModeledBoundary::WardStorage => SimEvent {

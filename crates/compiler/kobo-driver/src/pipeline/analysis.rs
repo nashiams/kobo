@@ -240,7 +240,10 @@ fn project_strict_async_diagnostics(session: &mut CompileSession, kir: &Kir) {
     }
 }
 
-fn binding_is_captured_by_explicit_local_spawn(session: &CompileSession, binding_name: &str) -> bool {
+fn binding_is_captured_by_explicit_local_spawn(
+    session: &CompileSession,
+    binding_name: &str,
+) -> bool {
     session.file_set().iter_files().any(|(_, entry)| {
         let source = entry.source();
         source.contains("spawn local") && source.contains(binding_name)

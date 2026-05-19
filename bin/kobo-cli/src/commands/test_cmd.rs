@@ -706,7 +706,7 @@ fn write_run_witness(
     );
     object.insert(
         "service_runtime".to_owned(),
-        service_runtime_json(&document.source),
+        service_runtime_json(&document.source, config),
     );
     object.insert(
         "handler_lifecycle".to_owned(),
@@ -728,9 +728,9 @@ fn write_run_witness(
     Ok(witness_path)
 }
 
-fn service_runtime_json(source: &str) -> serde_json::Value {
+fn service_runtime_json(source: &str, config: &kobo_driver::KoboConfig) -> serde_json::Value {
     serde_json::json!({
-        "services": service_runtime_services(source)
+        "services": service_runtime_services(source, config.runtime_profile.service_buffer)
             .into_iter()
             .map(service_runtime_service_json)
             .collect::<Vec<_>>(),
@@ -787,8 +787,9 @@ fn service_runtime_method_json(method: ServiceRuntimeMethodEvidence) -> serde_js
     })
 }
 
-fn service_runtime_services(source: &str) -> Vec<ServiceRuntimeEvidence> {
-    let Ok(file) = syn::parse_file(source) else {
+fn service_runtime_services(source: &str, default_buffer: usize) -> Vec<ServiceRuntimeEvidence> {
+    let parse_source = evidence_parse_source(source);
+    let Ok(file) = syn::parse_file(&parse_source) else {
         return Vec::new();
     };
     let service_lines = service_attr_lines(source);
@@ -799,7 +800,11 @@ fn service_runtime_services(source: &str) -> Vec<ServiceRuntimeEvidence> {
             let syn::Item::Impl(item_impl) = item else {
                 return None;
             };
-            let evidence = service_runtime_from_impl(item_impl, service_lines.get(service_index));
+            let evidence = service_runtime_from_impl(
+                item_impl,
+                service_lines.get(service_index),
+                default_buffer,
+            );
             if evidence.is_some() {
                 service_index += 1;
             }
@@ -811,6 +816,7 @@ fn service_runtime_services(source: &str) -> Vec<ServiceRuntimeEvidence> {
 fn service_runtime_from_impl(
     item_impl: &syn::ItemImpl,
     source_line: Option<&usize>,
+    default_buffer: usize,
 ) -> Option<ServiceRuntimeEvidence> {
     let attr = item_impl.attrs.iter().find(|attr| is_service_attr(attr))?;
     let name = service_name_from_self_ty(&item_impl.self_ty)?;
@@ -820,7 +826,7 @@ fn service_runtime_from_impl(
     }
     Some(ServiceRuntimeEvidence {
         name,
-        buffer: service_buffer_size(attr),
+        buffer: service_buffer_size(attr).unwrap_or(default_buffer),
         source_line: source_line.copied().unwrap_or(0),
         methods,
     })
@@ -856,15 +862,14 @@ fn service_name_from_self_ty(self_ty: &syn::Type) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn service_buffer_size(attr: &syn::Attribute) -> usize {
+fn service_buffer_size(attr: &syn::Attribute) -> Option<usize> {
     let syn::Meta::List(list) = &attr.meta else {
-        return 64;
+        return None;
     };
     let compact = list.tokens.to_string().replace(' ', "");
-    let Some(rest) = compact.strip_prefix("buffer=") else {
-        return 64;
-    };
-    rest.parse::<usize>().unwrap_or(64)
+    compact
+        .strip_prefix("buffer=")
+        .and_then(|rest| rest.parse::<usize>().ok())
 }
 
 fn service_runtime_methods(item_impl: &syn::ItemImpl) -> Vec<ServiceRuntimeMethodEvidence> {
@@ -934,7 +939,8 @@ fn handler_lifecycle_handler_json(handler: HandlerLifecycleEvidence) -> serde_js
 }
 
 fn handler_lifecycle_handlers(source: &str) -> Vec<HandlerLifecycleEvidence> {
-    let Ok(file) = syn::parse_file(source) else {
+    let parse_source = evidence_parse_source(source);
+    let Ok(file) = syn::parse_file(&parse_source) else {
         return Vec::new();
     };
     let handler_lines = handler_attr_lines(source);
@@ -955,6 +961,10 @@ fn handler_lifecycle_handlers(source: &str) -> Vec<HandlerLifecycleEvidence> {
             evidence
         })
         .collect()
+}
+
+fn evidence_parse_source(source: &str) -> String {
+    source.replace("spawn local", "__kobo_spawn_local_block!")
 }
 
 fn handler_lifecycle_from_function(

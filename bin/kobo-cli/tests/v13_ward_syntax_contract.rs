@@ -220,3 +220,31 @@ fn ward_clean_rust_output_preserves_zero_kobo_dependency_exit_ramp() {
         "clean Rust exit ramp should not depend on Kobo attributes",
     );
 }
+
+#[test]
+fn ward_keyword_inside_comments_and_strings_is_not_desugared() {
+    let project = TestProject::new("v13-ward-comment-string-bait");
+    let file = project.main_file(
+        r#"
+fn bait_case() {
+    let _text = "ward Fake { obligation Token must close }";
+    // ward CommentOnly { scenario nope {} }
+}
+"#,
+    );
+    let output = run_kobo(
+        &[s("inspect"), s("--scenario-metadata"), path_arg(&file)],
+        &project.root,
+    );
+    assert_success(&output, "ward scanner should ignore comments and strings");
+    assert_not_contains(
+        &output.combined(),
+        "ward Fake",
+        "string contents must not create ward facts",
+    );
+    assert_not_contains(
+        &output.combined(),
+        "CommentOnly",
+        "comments must not create ward facts",
+    );
+}

@@ -71,6 +71,7 @@ fn ward_invariant_appears_in_witness_output_with_source_span() {
     let invariant = &witness["invariant_checks"][0];
     assert_eq!(invariant["name"], "task_event_visible");
     assert_eq!(invariant["status"], "passed");
+    assert_eq!(invariant["source"], "ward_model");
     assert_eq!(invariant["source_span"]["mapped"], Value::Bool(true));
     assert_contains(
         invariant["source_span"]["snippet"]

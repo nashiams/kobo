@@ -9,6 +9,7 @@ use crate::ErrorFormat;
 
 use super::formal_core;
 use super::sim_model;
+use super::test_cmd;
 use super::witness_evidence;
 use super::{declarations, summary_validation};
 
@@ -158,6 +159,10 @@ fn replay_v1(
         &scenario_program,
         &run,
     );
+    let trace_checks = test_cmd::trace_checks_json(source_display, &verified_source.source, &run);
+    let model_vs_implementation =
+        test_cmd::model_vs_implementation_json(source_display, &verified_source.source, seed, &run);
+    let flagship_demo = test_cmd::flagship_demo_json(&run);
     let runtime_profile = runtime_profile_json(&session.config, sim_profile, seed, &run);
     let runtime_profile_hash =
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
@@ -176,6 +181,10 @@ fn replay_v1(
         "formal_core": formal_core,
         "proof_seed": proof_seed,
         "strict_liveness": strict_liveness,
+        "invariant_checks": trace_checks["invariant_checks"].clone(),
+        "temporal_checks": trace_checks["temporal_checks"].clone(),
+        "model_vs_implementation": model_vs_implementation,
+        "flagship_demo": flagship_demo,
         "replay_grade": witness_evidence::replay_grade_json(&run, fuzz_enabled),
         "boundary_ledger": witness_evidence::boundary_ledger_json(&scenario_program, &run),
         "ecosystem_boundaries": ecosystem_boundaries_json(&verified_source.path, &session.config, &run),
@@ -206,6 +215,10 @@ fn replay_v1(
         "formal_core": witness["formal_core"].clone(),
         "proof_seed": witness["proof_seed"].clone(),
         "strict_liveness": witness["strict_liveness"].clone(),
+        "invariant_checks": witness["invariant_checks"].clone(),
+        "temporal_checks": witness["temporal_checks"].clone(),
+        "model_vs_implementation": witness["model_vs_implementation"].clone(),
+        "flagship_demo": witness["flagship_demo"].clone(),
         "replay_grade": witness["replay_grade"].clone(),
         "boundary_ledger": witness["boundary_ledger"].clone(),
         "ecosystem_boundaries": witness["ecosystem_boundaries"].clone(),
@@ -1390,6 +1403,13 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["operation_coverage", "modeled"][..]);
             required.push(&["function_summaries"][..]);
             required.push(&["call_graph_obligation_summaries"][..]);
+            required.push(&["formal_core"][..]);
+            required.push(&["proof_seed"][..]);
+            required.push(&["strict_liveness"][..]);
+            required.push(&["invariant_checks"][..]);
+            required.push(&["temporal_checks"][..]);
+            required.push(&["model_vs_implementation"][..]);
+            required.push(&["flagship_demo"][..]);
             required.push(&["replay_grade"][..]);
             required.push(&["boundary_ledger"][..]);
             required.push(&["ecosystem_boundaries"][..]);

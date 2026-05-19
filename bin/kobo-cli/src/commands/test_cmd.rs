@@ -615,7 +615,7 @@ fn write_run_witness(
     let trace_checks = trace_checks_json(&source_path, &document.source, run);
     let model_vs_implementation =
         model_vs_implementation_json(&source_path, &document.source, seed, run);
-    let flagship_demo = flagship_demo_json(&document.source, run);
+    let flagship_demo = flagship_demo_json(run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -1947,6 +1947,7 @@ struct TraceCheck {
     kind: TraceCheckKind,
     event: String,
     span: (usize, usize),
+    source: &'static str,
 }
 
 struct EvaluatedTraceCheck {
@@ -1984,7 +1985,11 @@ fn apply_trace_checks(source_path: &str, source: &str, run: &mut FullDepthRun) {
     });
 }
 
-fn trace_checks_json(source_path: &str, source: &str, run: &FullDepthRun) -> serde_json::Value {
+pub(super) fn trace_checks_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+) -> serde_json::Value {
     let mut invariants = Vec::new();
     let mut temporals = Vec::new();
     for result in evaluate_trace_checks(source_path, source, run) {
@@ -1992,6 +1997,7 @@ fn trace_checks_json(source_path: &str, source: &str, run: &FullDepthRun) -> ser
             "name": result.check.name,
             "kind": result.check.kind.as_str(),
             "event": result.check.event,
+            "source": result.check.source,
             "status": result.status,
             "message": result.message,
             "source_span": span_json(source_path, source, result.check.span),
@@ -2090,17 +2096,46 @@ fn evaluate_trace_check(
 }
 
 fn parse_trace_checks(source: &str) -> Vec<TraceCheck> {
+    let mut checks = parse_ward_trace_checks(source);
+    checks.extend(parse_legacy_trace_check_directives(source));
+    checks
+}
+
+fn parse_ward_trace_checks(source: &str) -> Vec<TraceCheck> {
+    let mut checks = Vec::new();
+    for block in ward_blocks(source) {
+        let mut offset = block.body_start;
+        for raw_line in block.body.split_inclusive('\n') {
+            let line = raw_line.trim_end_matches(['\r', '\n']);
+            let trimmed = line.trim();
+            let leading = line.find(trimmed).unwrap_or(0);
+            let span = (offset + leading, offset + line.len());
+            if let Some(check) = parse_invariant_line(trimmed, span, "ward_model") {
+                checks.push(check);
+            } else if let Some(check) = parse_temporal_line(trimmed, span, "ward_model") {
+                checks.push(check);
+            }
+            offset += raw_line.len();
+        }
+    }
+    checks
+}
+
+fn parse_legacy_trace_check_directives(source: &str) -> Vec<TraceCheck> {
     let mut checks = Vec::new();
     let mut offset = 0;
     for raw_line in source.split_inclusive('\n') {
         let line = raw_line.trim_end_matches(['\r', '\n']);
         let trimmed = line.trim();
-        let check_line = trace_check_directive(trimmed).unwrap_or(trimmed);
+        let Some(check_line) = legacy_trace_check_directive(trimmed) else {
+            offset += raw_line.len();
+            continue;
+        };
         let leading = line.find(trimmed).unwrap_or(0);
         let span = (offset + leading, offset + line.len());
-        if let Some(check) = parse_invariant_line(check_line, span) {
+        if let Some(check) = parse_invariant_line(check_line, span, "legacy_directive") {
             checks.push(check);
-        } else if let Some(check) = parse_temporal_line(check_line, span) {
+        } else if let Some(check) = parse_temporal_line(check_line, span, "legacy_directive") {
             checks.push(check);
         }
         offset += raw_line.len();
@@ -2108,11 +2143,15 @@ fn parse_trace_checks(source: &str) -> Vec<TraceCheck> {
     checks
 }
 
-fn trace_check_directive(line: &str) -> Option<&str> {
+fn legacy_trace_check_directive(line: &str) -> Option<&str> {
     line.strip_prefix("// kobo:").map(str::trim)
 }
 
-fn parse_invariant_line(line: &str, span: (usize, usize)) -> Option<TraceCheck> {
+fn parse_invariant_line(
+    line: &str,
+    span: (usize, usize),
+    source: &'static str,
+) -> Option<TraceCheck> {
     let rest = line.strip_prefix("invariant ")?;
     let name = rest
         .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
@@ -2127,10 +2166,15 @@ fn parse_invariant_line(line: &str, span: (usize, usize)) -> Option<TraceCheck> 
         kind,
         event,
         span,
+        source,
     })
 }
 
-fn parse_temporal_line(line: &str, span: (usize, usize)) -> Option<TraceCheck> {
+fn parse_temporal_line(
+    line: &str,
+    span: (usize, usize),
+    source: &'static str,
+) -> Option<TraceCheck> {
     let rest = line.strip_prefix("temporal ")?;
     let (kind, event) = parse_trace_check_expression(rest.trim())?;
     Some(TraceCheck {
@@ -2139,6 +2183,7 @@ fn parse_temporal_line(line: &str, span: (usize, usize)) -> Option<TraceCheck> {
         kind,
         event,
         span,
+        source,
     })
 }
 
@@ -2151,6 +2196,132 @@ fn parse_trace_check_expression(expression: &str) -> Option<(TraceCheckKind, Str
     } else {
         Some((kind, event))
     }
+}
+
+struct WardBlock<'a> {
+    body: &'a str,
+    body_start: usize,
+}
+
+fn ward_blocks(source: &str) -> Vec<WardBlock<'_>> {
+    let cleaned = scrub_comments_and_strings(source);
+    let mut blocks = Vec::new();
+    let mut cursor = 0;
+    while let Some(start) = find_word(&cleaned, cursor, "ward") {
+        let Some(open) = find_byte(&cleaned, start, b'{') else {
+            break;
+        };
+        let Some(close) = matching_brace(&cleaned, open) else {
+            break;
+        };
+        blocks.push(WardBlock {
+            body: &source[open + 1..close],
+            body_start: open + 1,
+        });
+        cursor = close + 1;
+    }
+    blocks
+}
+
+fn scrub_comments_and_strings(source: &str) -> Vec<u8> {
+    let bytes = source.as_bytes();
+    let mut cleaned = bytes.to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                let start = index;
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                let start = index;
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            b'"' => {
+                let start = index;
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index = (index + 2).min(bytes.len());
+                    } else if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            _ => index += 1,
+        }
+    }
+    cleaned
+}
+
+fn blank_non_newlines(bytes: &mut [u8], start: usize, end: usize) {
+    let bounded_end = end.min(bytes.len());
+    for byte in &mut bytes[start..bounded_end] {
+        if *byte != b'\n' {
+            *byte = b' ';
+        }
+    }
+}
+
+fn find_word(bytes: &[u8], from: usize, word: &str) -> Option<usize> {
+    let needle = word.as_bytes();
+    let mut cursor = from;
+    while cursor + needle.len() <= bytes.len() {
+        if &bytes[cursor..cursor + needle.len()] == needle {
+            let end = cursor + needle.len();
+            let before = bytes.get(cursor.saturating_sub(1));
+            let after = bytes.get(end);
+            if !before.is_some_and(is_ident_byte)
+                && after.is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                return Some(cursor);
+            }
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn find_byte(bytes: &[u8], from: usize, needle: u8) -> Option<usize> {
+    bytes[from..]
+        .iter()
+        .position(|byte| *byte == needle)
+        .map(|relative| from + relative)
+}
+
+fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (index, byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_ident_byte(byte: &u8) -> bool {
+    byte.is_ascii_alphanumeric() || *byte == b'_'
 }
 
 fn trace_event_json(index: usize, event: &ScenarioEvent) -> serde_json::Value {
@@ -2197,6 +2368,13 @@ struct ModelObligationExpectation {
 struct ModelComparisonSpec {
     events: Vec<ModelEventExpectation>,
     obligations: Vec<ModelObligationExpectation>,
+    source: &'static str,
+}
+
+struct WardModelRun {
+    source: &'static str,
+    events: Vec<String>,
+    obligations: Vec<(String, String)>,
 }
 
 struct ModelComparisonFailure {
@@ -2227,7 +2405,7 @@ fn apply_model_vs_implementation(source_path: &str, source: &str, run: &mut Full
     });
 }
 
-fn model_vs_implementation_json(
+pub(super) fn model_vs_implementation_json(
     source_path: &str,
     source: &str,
     seed: u64,
@@ -2239,6 +2417,7 @@ fn model_vs_implementation_json(
         return serde_json::json!({
             "status": "not_requested",
             "scheduler_seed": model_scheduler_seed_json(seed),
+            "model_run": model_run_json(&execute_ward_model(&spec)),
             "trace": {
                 "status": "not_requested",
                 "model_events": [],
@@ -2253,8 +2432,9 @@ fn model_vs_implementation_json(
         });
     }
 
-    let trace = model_trace_comparison_json(source_path, source, run, &spec);
-    let obligations = model_obligation_comparison_json(source_path, source, run, &spec);
+    let model_run = execute_ward_model(&spec);
+    let trace = model_trace_comparison_json(source_path, source, run, &spec, &model_run);
+    let obligations = model_obligation_comparison_json(source_path, source, run, &spec, &model_run);
     let status = if boundary["status"] == "downgraded" {
         "partial"
     } else if trace["status"] == "diverged" || obligations["status"] == "diverged" {
@@ -2267,9 +2447,10 @@ fn model_vs_implementation_json(
         "status": status,
         "selection": {
             "requested": true,
-            "source": "ward_model_directives",
+            "source": spec.source,
         },
         "scheduler_seed": model_scheduler_seed_json(seed),
+        "model_run": model_run_json(&model_run),
         "trace": trace,
         "obligations": obligations,
         "boundary_policy": boundary,
@@ -2285,7 +2466,8 @@ fn model_comparison_failure(
     if !spec.requested() || model_boundary_downgrade(run) {
         return None;
     }
-    if let Some(diff) = first_model_trace_difference(run, &spec) {
+    let model_run = execute_ward_model(&spec);
+    if let Some(diff) = first_model_trace_difference(run, &model_run, &spec) {
         let model = diff.model.as_deref().unwrap_or("<missing model event>");
         let implementation = diff
             .implementation
@@ -2301,7 +2483,7 @@ fn model_comparison_failure(
             span: diff.span,
         });
     }
-    if let Some(diff) = first_model_obligation_difference(run, &spec) {
+    if let Some(diff) = first_model_obligation_difference(run, &model_run, &spec) {
         let model = diff.model.as_deref().unwrap_or("<missing model state>");
         let implementation = diff
             .implementation
@@ -2326,14 +2508,11 @@ fn model_trace_comparison_json(
     source: &str,
     run: &FullDepthRun,
     spec: &ModelComparisonSpec,
+    model_run: &WardModelRun,
 ) -> serde_json::Value {
-    let model_events = spec
-        .events
-        .iter()
-        .map(|expectation| expectation.event.clone())
-        .collect::<Vec<_>>();
+    let model_events = model_run.events.clone();
     let implementation_events = implementation_event_kinds(run);
-    let first_difference = first_model_trace_difference(run, spec);
+    let first_difference = first_model_trace_difference(run, model_run, spec);
     let status = if first_difference.is_some() {
         "diverged"
     } else {
@@ -2363,20 +2542,26 @@ fn model_obligation_comparison_json(
     source: &str,
     run: &FullDepthRun,
     spec: &ModelComparisonSpec,
+    model_run: &WardModelRun,
 ) -> serde_json::Value {
-    let model_states = spec
+    let model_states = model_run
         .obligations
         .iter()
-        .map(|expectation| {
+        .map(|(binding, state)| {
             serde_json::json!({
-                "binding": expectation.binding,
-                "state": expectation.state,
-                "source_span": span_json(source_path, source, expectation.span),
+                "binding": binding,
+                "state": state,
+                "source_span": spec
+                    .obligations
+                    .iter()
+                    .find(|expectation| expectation.binding == *binding)
+                    .map(|expectation| span_json(source_path, source, expectation.span))
+                    .unwrap_or_else(|| span_json(source_path, source, (0, 0))),
             })
         })
         .collect::<Vec<_>>();
     let implementation_states = implementation_obligation_states(run);
-    let first_difference = first_model_obligation_difference(run, spec);
+    let first_difference = first_model_obligation_difference(run, model_run, spec);
     let status = if first_difference.is_some() {
         "diverged"
     } else {
@@ -2435,18 +2620,16 @@ impl ModelObligationDifference {
 
 fn first_model_trace_difference(
     run: &FullDepthRun,
+    model_run: &WardModelRun,
     spec: &ModelComparisonSpec,
 ) -> Option<ModelTraceDifference> {
-    if spec.events.is_empty() {
+    if model_run.events.is_empty() {
         return None;
     }
     let implementation_events = implementation_event_kinds(run);
-    let max_len = spec.events.len().max(implementation_events.len());
+    let max_len = model_run.events.len().max(implementation_events.len());
     for index in 0..max_len {
-        let model = spec
-            .events
-            .get(index)
-            .map(|expectation| expectation.event.clone());
+        let model = model_run.events.get(index).cloned();
         let implementation = implementation_events.get(index).cloned();
         if model != implementation {
             let span = spec
@@ -2468,13 +2651,14 @@ fn first_model_trace_difference(
 
 fn first_model_obligation_difference(
     run: &FullDepthRun,
+    model_run: &WardModelRun,
     spec: &ModelComparisonSpec,
 ) -> Option<ModelObligationDifference> {
-    for expectation in &spec.obligations {
+    for (binding, state) in &model_run.obligations {
         let implementation = run
             .obligations
             .iter()
-            .find(|obligation| obligation.binding == expectation.binding)
+            .find(|obligation| obligation.binding == *binding)
             .map(|obligation| {
                 if obligation.is_discharged {
                     "discharged".to_owned()
@@ -2482,12 +2666,18 @@ fn first_model_obligation_difference(
                     "leaked".to_owned()
                 }
             });
-        if implementation.as_deref() != Some(expectation.state.as_str()) {
+        if implementation.as_deref() != Some(state.as_str()) {
+            let span = spec
+                .obligations
+                .iter()
+                .find(|expectation| expectation.binding == *binding)
+                .map(|expectation| expectation.span)
+                .unwrap_or((0, 0));
             return Some(ModelObligationDifference {
-                binding: expectation.binding.clone(),
-                model: Some(expectation.state.clone()),
+                binding: binding.clone(),
+                model: Some(state.clone()),
                 implementation,
-                span: expectation.span,
+                span,
             });
         }
     }
@@ -2563,7 +2753,31 @@ fn parse_model_comparison_spec(source: &str) -> ModelComparisonSpec {
     let mut spec = ModelComparisonSpec {
         events: Vec::new(),
         obligations: Vec::new(),
+        source: "not_requested",
     };
+    parse_ward_model_specs(source, &mut spec);
+    parse_legacy_model_directives(source, &mut spec);
+    spec
+}
+
+fn parse_ward_model_specs(source: &str, spec: &mut ModelComparisonSpec) {
+    for block in ward_blocks(source) {
+        let mut offset = block.body_start;
+        for raw_line in block.body.split_inclusive('\n') {
+            let line = raw_line.trim_end_matches(['\r', '\n']);
+            let trimmed = line.trim();
+            let leading = line.find(trimmed).unwrap_or(0);
+            let span = (offset + leading, offset + line.len());
+            if let Some(rest) = trimmed.strip_prefix("model ") {
+                spec.source = "ward_model";
+                parse_model_directive(rest, span, spec);
+            }
+            offset += raw_line.len();
+        }
+    }
+}
+
+fn parse_legacy_model_directives(source: &str, spec: &mut ModelComparisonSpec) {
     let mut offset = 0;
     for raw_line in source.split_inclusive('\n') {
         let line = raw_line.trim_end_matches(['\r', '\n']);
@@ -2571,16 +2785,17 @@ fn parse_model_comparison_spec(source: &str) -> ModelComparisonSpec {
         let leading = line.find(trimmed).unwrap_or(0);
         let span = (offset + leading, offset + line.len());
         if let Some(rest) = model_directive(trimmed) {
-            parse_model_directive(rest, span, &mut spec);
+            if spec.source == "not_requested" {
+                spec.source = "legacy_directive";
+            }
+            parse_model_directive(rest, span, spec);
         }
         offset += raw_line.len();
     }
-    spec
 }
 
 fn model_directive(line: &str) -> Option<&str> {
-    line.strip_prefix("model ")
-        .or_else(|| line.strip_prefix("// kobo:model "))
+    line.strip_prefix("// kobo:model ")
 }
 
 fn parse_model_directive(rest: &str, span: (usize, usize), spec: &mut ModelComparisonSpec) {
@@ -2616,46 +2831,127 @@ impl ModelComparisonSpec {
     }
 }
 
-fn flagship_demo_json(source: &str, run: &FullDepthRun) -> serde_json::Value {
-    if source.contains("DurableQueue") {
+fn execute_ward_model(spec: &ModelComparisonSpec) -> WardModelRun {
+    WardModelRun {
+        source: spec.source,
+        events: spec
+            .events
+            .iter()
+            .map(|expectation| expectation.event.clone())
+            .collect(),
+        obligations: spec
+            .obligations
+            .iter()
+            .map(|expectation| (expectation.binding.clone(), expectation.state.clone()))
+            .collect(),
+    }
+}
+
+fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
+    serde_json::json!({
+        "source": model_run.source,
+        "events": model_run.events,
+        "obligations": model_run
+            .obligations
+            .iter()
+            .map(|(binding, state)| {
+                serde_json::json!({
+                    "binding": binding,
+                    "state": state,
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+pub(super) fn flagship_demo_json(run: &FullDepthRun) -> serde_json::Value {
+    if is_durable_queue_demo(run) {
         return serde_json::json!({
             "name": "durable_queue",
-            "history": if source.contains("crash_after_ack") || has_event_containing(run, "crash") {
+            "history": if has_event_containing(run, "crash") {
                 "crash_after_ack"
             } else {
                 "happy_path"
             },
             "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
             "capabilities": {
-                "crash_histories": source.contains("crash") || has_event_containing(run, "crash"),
-                "storage_facade": source.contains("ward.storage") || source.contains("StorageFacade"),
-                "ack_nack_requeue_lifecycle": has_lifecycle_actions(run, &["ack", "nack", "requeue"])
-                    || source_contains_all(source, &["ack", "nack", "requeue"]),
-                "clean_rust_output": true,
-                "ports_recordings_debt": source_contains_all(source, &["port ", "recording ", "debt "]),
-                "trace_check": !parse_trace_checks(source).is_empty(),
+                "crash_histories": has_event_containing(run, "crash"),
+                "storage_facade": has_event_containing(run, "storage-"),
+                "ack_nack_requeue_lifecycle": has_lifecycle_actions(run, &["ack", "nack", "requeue"]),
+                "clean_rust_output": harness_built_cleanly(run),
+                "ports_recordings_debt": has_boundary_or_debt_evidence(run),
+                "trace_check": run.failure.as_ref().is_some_and(|failure| failure.code == KErrorCode::K0108),
             },
+            "evidence_inputs": flagship_evidence_inputs(run),
         });
     }
-    if source.contains("AsyncGateway") {
+    if is_async_gateway_demo(run) {
         return serde_json::json!({
             "name": "async_gateway",
             "scheduler_preset": run.profile.clone(),
             "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
             "capabilities": {
-                "cancellation_histories": source.contains("cancel")
-                    || has_event_containing(run, "failure-injection-cancel"),
-                "preemption_histories": source.contains("preempt")
-                    || has_event_containing(run, "failure-injection-preempt"),
-                "reply_reject_cancel_lifecycle": has_lifecycle_actions(run, &["reply", "reject", "cancel"])
-                    || source_contains_all(source, &["reply", "reject", "cancel"]),
-                "no_orphan_tasks": source.contains("no_orphan_tasks"),
-                "request_token_diagnostics": source.contains("RequestToken"),
-                "clean_rust_output": true,
+                "cancellation_histories": has_event_containing(run, "failure-injection-cancel"),
+                "preemption_histories": has_event_containing(run, "failure-injection-preempt"),
+                "reply_reject_cancel_lifecycle": has_lifecycle_actions(run, &["reply", "reject", "cancel"]),
+                "no_orphan_tasks": run.failure.as_ref().is_some_and(|failure| {
+                    failure.message.contains("no_orphan_tasks")
+                        || failure.events.iter().any(|event| event.label.as_deref() == Some("no_orphan_tasks"))
+                }),
+                "request_token_diagnostics": run.failure.as_ref().is_some_and(|failure| {
+                    failure.message.contains("reply")
+                        || failure.message.contains("reject")
+                        || failure.message.contains("cancel")
+                }),
+                "clean_rust_output": harness_built_cleanly(run),
             },
+            "evidence_inputs": flagship_evidence_inputs(run),
         });
     }
     serde_json::Value::Null
+}
+
+fn is_durable_queue_demo(run: &FullDepthRun) -> bool {
+    has_lifecycle_actions(run, &["ack", "nack", "requeue"])
+        && (run.target.contains("queue")
+            || run.target.contains("ack")
+            || has_event_containing(run, "storage-"))
+}
+
+fn is_async_gateway_demo(run: &FullDepthRun) -> bool {
+    has_lifecycle_actions(run, &["reply", "reject", "cancel"])
+        && (run.profile == "async"
+            || run.target.contains("gateway")
+            || has_event_containing(run, "scheduler-")
+            || has_event_containing(run, "failure-injection-"))
+}
+
+fn harness_built_cleanly(run: &FullDepthRun) -> bool {
+    run.harness_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.exit_code == 0 && !manifest.harness_rs_path.is_empty())
+}
+
+fn has_boundary_or_debt_evidence(run: &FullDepthRun) -> bool {
+    !run.boundary_decisions.is_empty() || !run.opaque_boundaries.is_empty()
+}
+
+fn flagship_evidence_inputs(run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "target": run.target,
+        "profile": run.profile,
+        "event_count": run.events.len(),
+        "obligation_count": run.obligations.len(),
+        "boundary_decision_count": run.boundary_decisions.len(),
+        "harness_manifest": run.harness_manifest.as_ref().map(|manifest| {
+            serde_json::json!({
+                "execution_scope": manifest.execution_scope,
+                "harness_rs_path": manifest.harness_rs_path,
+                "exit_code": manifest.exit_code,
+                "event_count": manifest.event_count,
+            })
+        }),
+    })
 }
 
 fn has_event_containing(run: &FullDepthRun, needle: &str) -> bool {
@@ -2674,10 +2970,6 @@ fn has_lifecycle_actions(run: &FullDepthRun, expected: &[&str]) -> bool {
             .iter()
             .all(|action| obligation.actions.iter().any(|item| item == action))
     })
-}
-
-fn source_contains_all(source: &str, needles: &[&str]) -> bool {
-    needles.iter().all(|needle| source.contains(needle))
 }
 
 fn expanded_policy_json(profile: &str) -> serde_json::Value {

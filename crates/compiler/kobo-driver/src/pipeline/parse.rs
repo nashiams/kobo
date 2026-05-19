@@ -231,7 +231,8 @@ fn mask_field_capability_views(source: &str) -> String {
 }
 
 fn preprocess_ward_syntax_mapped(source: &str, file_id: FileId) -> PreprocessedSource<()> {
-    if !source.contains("ward ") {
+    let cleaned = scrub_comments_and_strings(source);
+    if find_ward_keyword(&cleaned, 0).is_none() {
         return PreprocessedSource {
             rewritten: source.to_owned(),
             source_map: PreprocessSourceMap::identity_for(source, file_id),
@@ -242,8 +243,8 @@ fn preprocess_ward_syntax_mapped(source: &str, file_id: FileId) -> PreprocessedS
     let mut rewritten = String::with_capacity(source.len() + 256);
     let mut source_map = PreprocessSourceMap::default();
     let mut cursor = 0;
-    while let Some(ward_start) = find_ward_keyword(source, cursor) {
-        let Some(ward) = parse_ward_block(source, ward_start) else {
+    while let Some(ward_start) = find_ward_keyword(&cleaned, cursor) {
+        let Some(ward) = parse_ward_block(source, &cleaned, ward_start) else {
             break;
         };
         push_rewrite_segment(
@@ -310,14 +311,19 @@ struct WardFacts {
     metadata_comments: Vec<String>,
 }
 
-fn find_ward_keyword(source: &str, from: usize) -> Option<usize> {
+fn find_ward_keyword(source: &[u8], from: usize) -> Option<usize> {
     let mut cursor = from;
-    while let Some(relative) = source[cursor..].find("ward") {
+    while cursor + "ward".len() <= source.len() {
+        let Some(relative) = find_bytes(&source[cursor..], b"ward") else {
+            return None;
+        };
         let start = cursor + relative;
         let end = start + "ward".len();
-        let before = source.as_bytes().get(start.saturating_sub(1));
-        let after = source.as_bytes().get(end);
-        if !before.is_some_and(is_ident_byte) && !after.is_some_and(is_ident_byte) {
+        let before = source.get(start.saturating_sub(1));
+        let after = source.get(end);
+        if !before.is_some_and(is_ident_byte)
+            && after.is_some_and(|byte| byte.is_ascii_whitespace())
+        {
             return Some(start);
         }
         cursor = end;
@@ -325,22 +331,21 @@ fn find_ward_keyword(source: &str, from: usize) -> Option<usize> {
     None
 }
 
-fn parse_ward_block(source: &str, start: usize) -> Option<WardBlock> {
+fn parse_ward_block(source: &str, cleaned: &[u8], start: usize) -> Option<WardBlock> {
     let mut name_start = start + "ward".len();
-    while source
-        .as_bytes()
+    while cleaned
         .get(name_start)
         .is_some_and(|byte| byte.is_ascii_whitespace())
     {
         name_start += 1;
     }
     let mut name_end = name_start;
-    while source.as_bytes().get(name_end).is_some_and(is_ident_byte) {
+    while cleaned.get(name_end).is_some_and(is_ident_byte) {
         name_end += 1;
     }
     let name = source[name_start..name_end].to_owned();
-    let brace_start = source[name_end..].find('{')? + name_end;
-    let brace_end = matching_brace_in_source(source, brace_start)?;
+    let brace_start = find_bytes(&cleaned[name_end..], b"{")? + name_end;
+    let brace_end = matching_brace_in_bytes(cleaned, brace_start)?;
     Some(WardBlock {
         name,
         start,
@@ -408,14 +413,13 @@ fn parse_ward_facts(body: &str) -> WardFacts {
                 ));
             }
         } else if let Some(rest) = trimmed.strip_prefix("invariant ") {
-            let name = rest
-                .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
-                .next()
-                .unwrap_or(rest)
-                .trim();
             facts
                 .metadata_comments
-                .push(format!("// kobo: invariant {name}"));
+                .push(format!("// kobo: invariant {}", rest.trim()));
+        } else if let Some(rest) = trimmed.strip_prefix("temporal ") {
+            facts
+                .metadata_comments
+                .push(format!("// kobo: temporal {}", rest.trim()));
         } else if let Some(rest) = trimmed.strip_prefix("port ") {
             facts
                 .metadata_comments
@@ -460,7 +464,10 @@ fn parse_ward_facts(body: &str) -> WardFacts {
 }
 
 fn matching_brace_in_source(source: &str, open: usize) -> Option<usize> {
-    let bytes = source.as_bytes();
+    matching_brace_in_bytes(source.as_bytes(), open)
+}
+
+fn matching_brace_in_bytes(bytes: &[u8], open: usize) -> Option<usize> {
     let mut depth = 0_usize;
     for (index, byte) in bytes.iter().enumerate().skip(open) {
         match byte {
@@ -475,6 +482,68 @@ fn matching_brace_in_source(source: &str, open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+fn scrub_comments_and_strings(source: &str) -> Vec<u8> {
+    let bytes = source.as_bytes();
+    let mut cleaned = bytes.to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                let start = index;
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                let start = index;
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            b'"' => {
+                let start = index;
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index = (index + 2).min(bytes.len());
+                    } else if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            _ => index += 1,
+        }
+    }
+    cleaned
+}
+
+fn blank_non_newlines(bytes: &mut [u8], start: usize, end: usize) {
+    let bounded_end = end.min(bytes.len());
+    for byte in &mut bytes[start..bounded_end] {
+        if *byte != b'\n' {
+            *byte = b' ';
+        }
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len())
+        .find(|start| &haystack[*start..*start + needle.len()] == needle)
 }
 
 fn is_ident_byte(byte: &u8) -> bool {

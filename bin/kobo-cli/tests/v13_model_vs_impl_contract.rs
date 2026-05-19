@@ -61,7 +61,7 @@ ward DualWard {{
     )
 }
 
-fn delivery_source(model_lines: &str, scenario_body: &str) -> String {
+fn ward_delivery_source(model_lines: &str, scenario_body: &str) -> String {
     format!(
         r#"
 #[kobo::must_call(ack | nack | requeue)]
@@ -73,11 +73,12 @@ impl Delivery {{
     fn requeue(self) {{}}
 }}
 
+ward DeliveryModel {{
 {model_lines}
 
-#[kobo::scenario(profile = "sync")]
-fn dual_obligation_case() {{
+    scenario dual_obligation_case {{
 {scenario_body}
+    }}
 }}
 "#
     )
@@ -92,6 +93,8 @@ fn dual_run_matches_equivalent_model_and_implementation() {
     assert_success(&output, "matching model and implementation should pass");
     let comparison = &witness["model_vs_implementation"];
     assert_eq!(comparison["status"], "matched");
+    assert_eq!(comparison["selection"]["source"], "ward_model");
+    assert_eq!(comparison["model_run"]["source"], "ward_model");
     assert_eq!(comparison["trace"]["status"], "matched");
     assert_contains(
         &comparison["trace"]["implementation_events"].to_string(),
@@ -128,8 +131,8 @@ fn dual_run_reports_trace_divergence_with_source_spans() {
 #[test]
 fn dual_run_reports_obligation_state_divergence() {
     let project = TestProject::new("v13-dual-obligation-divergence");
-    let source = delivery_source(
-        "// kobo:model obligation delivery leaked",
+    let source = ward_delivery_source(
+        "    model obligation delivery leaked",
         "    let delivery = Delivery {};\n    delivery.ack();",
     );
 

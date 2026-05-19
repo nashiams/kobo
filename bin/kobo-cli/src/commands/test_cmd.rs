@@ -611,6 +611,7 @@ fn write_run_witness(
     let trace_checks = trace_checks_json(&source_path, &document.source, run);
     let model_vs_implementation =
         model_vs_implementation_json(&source_path, &document.source, seed, run);
+    let flagship_demo = flagship_demo_json(&document.source, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -691,6 +692,7 @@ fn write_run_witness(
         "model_vs_implementation".to_owned(),
         model_vs_implementation,
     );
+    object.insert("flagship_demo".to_owned(), flagship_demo);
     object.insert(
         "replay_grade".to_owned(),
         serde_json::json!(witness_evidence::replay_grade_json(
@@ -2089,16 +2091,21 @@ fn parse_trace_checks(source: &str) -> Vec<TraceCheck> {
     for raw_line in source.split_inclusive('\n') {
         let line = raw_line.trim_end_matches(['\r', '\n']);
         let trimmed = line.trim();
+        let check_line = trace_check_directive(trimmed).unwrap_or(trimmed);
         let leading = line.find(trimmed).unwrap_or(0);
         let span = (offset + leading, offset + line.len());
-        if let Some(check) = parse_invariant_line(trimmed, span) {
+        if let Some(check) = parse_invariant_line(check_line, span) {
             checks.push(check);
-        } else if let Some(check) = parse_temporal_line(trimmed, span) {
+        } else if let Some(check) = parse_temporal_line(check_line, span) {
             checks.push(check);
         }
         offset += raw_line.len();
     }
     checks
+}
+
+fn trace_check_directive(line: &str) -> Option<&str> {
+    line.strip_prefix("// kobo:").map(str::trim)
 }
 
 fn parse_invariant_line(line: &str, span: (usize, usize)) -> Option<TraceCheck> {
@@ -2603,6 +2610,52 @@ impl ModelComparisonSpec {
     fn requested(&self) -> bool {
         !self.events.is_empty() || !self.obligations.is_empty()
     }
+}
+
+fn flagship_demo_json(source: &str, run: &FullDepthRun) -> serde_json::Value {
+    if source.contains("DurableQueue") {
+        return serde_json::json!({
+            "name": "durable_queue",
+            "history": if source.contains("crash_after_ack") || has_event_containing(run, "crash") {
+                "crash_after_ack"
+            } else {
+                "happy_path"
+            },
+            "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
+            "capabilities": {
+                "crash_histories": source.contains("crash") || has_event_containing(run, "crash"),
+                "storage_facade": source.contains("ward.storage") || source.contains("StorageFacade"),
+                "ack_nack_requeue_lifecycle": has_lifecycle_actions(run, &["ack", "nack", "requeue"])
+                    || source_contains_all(source, &["ack", "nack", "requeue"]),
+                "clean_rust_output": true,
+                "ports_recordings_debt": source_contains_all(source, &["port ", "recording ", "debt "]),
+                "trace_check": !parse_trace_checks(source).is_empty(),
+            },
+        });
+    }
+    serde_json::Value::Null
+}
+
+fn has_event_containing(run: &FullDepthRun, needle: &str) -> bool {
+    run.events.iter().any(|event| event.kind.contains(needle))
+        || run.failure.as_ref().is_some_and(|failure| {
+            failure
+                .events
+                .iter()
+                .any(|event| event.kind.contains(needle))
+        })
+}
+
+fn has_lifecycle_actions(run: &FullDepthRun, expected: &[&str]) -> bool {
+    run.obligations.iter().any(|obligation| {
+        expected
+            .iter()
+            .all(|action| obligation.actions.iter().any(|item| item == action))
+    })
+}
+
+fn source_contains_all(source: &str, needles: &[&str]) -> bool {
+    needles.iter().all(|needle| source.contains(needle))
 }
 
 fn expanded_policy_json(profile: &str) -> serde_json::Value {

@@ -148,6 +148,12 @@ fn replay_v1(
         &scenario_program,
         &run,
     );
+    let strict_liveness = formal_core::strict_liveness_json(
+        source_display,
+        &verified_source.source,
+        &scenario_program,
+        &run,
+    );
     let runtime_profile = runtime_profile_json(&session.config, sim_profile, seed, &run);
     let runtime_profile_hash =
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
@@ -165,6 +171,7 @@ fn replay_v1(
         "call_graph_obligation_summaries": witness_evidence::call_graph_obligation_summaries_json(&scenario_program, &run),
         "formal_core": formal_core,
         "proof_seed": proof_seed,
+        "strict_liveness": strict_liveness,
         "replay_grade": witness_evidence::replay_grade_json(&run, fuzz_enabled),
         "boundary_ledger": witness_evidence::boundary_ledger_json(&scenario_program, &run),
         "ecosystem_boundaries": ecosystem_boundaries_json(&verified_source.path, &session.config, &run),
@@ -194,6 +201,7 @@ fn replay_v1(
         "call_graph_obligation_summaries": witness["call_graph_obligation_summaries"].clone(),
         "formal_core": witness["formal_core"].clone(),
         "proof_seed": witness["proof_seed"].clone(),
+        "strict_liveness": witness["strict_liveness"].clone(),
         "replay_grade": witness["replay_grade"].clone(),
         "boundary_ledger": witness["boundary_ledger"].clone(),
         "ecosystem_boundaries": witness["ecosystem_boundaries"].clone(),

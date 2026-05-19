@@ -74,7 +74,7 @@ pub(super) fn cmd_test(
     } else {
         None
     };
-    let run = match fuzz_plan.as_ref() {
+    let mut run = match fuzz_plan.as_ref() {
         Some(plan) => run_fuzz_portfolio(
             &scenario_program,
             &artifacts.rs_source,
@@ -89,6 +89,13 @@ pub(super) fn cmd_test(
             engine,
         )?,
     };
+    let strict_source_path = sim_model::cli_relative_path(file)?;
+    formal_core::apply_strict_liveness(
+        &strict_source_path,
+        &document.source,
+        &scenario_program,
+        &mut run,
+    );
     validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
@@ -597,6 +604,8 @@ fn write_run_witness(
         formal_core::formal_core_json(&source_path, &document.source, scenario_program);
     let proof_seed =
         formal_core::proof_seed_json(&source_path, &document.source, scenario_program, run);
+    let strict_liveness =
+        formal_core::strict_liveness_json(&source_path, &document.source, scenario_program, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -664,6 +673,7 @@ fn write_run_witness(
     );
     object.insert("formal_core".to_owned(), formal_core);
     object.insert("proof_seed".to_owned(), proof_seed);
+    object.insert("strict_liveness".to_owned(), strict_liveness);
     object.insert(
         "replay_grade".to_owned(),
         serde_json::json!(witness_evidence::replay_grade_json(

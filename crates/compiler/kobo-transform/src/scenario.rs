@@ -12,7 +12,7 @@ use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{
     Block, Expr, ExprAsync, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath,
-    ExprStruct, File, Item, ItemFn, ItemUse, Lit, Local, Macro, MetaNameValue, Pat, PatIdent,
+    ExprStruct, File, Item, ItemFn, ItemUse, Lit, Local, Macro, Meta, MetaNameValue, Pat, PatIdent,
     PatType, Path, Stmt, UseTree,
 };
 
@@ -583,11 +583,12 @@ impl<'a> ScenarioLowerer<'a> {
                 self.operations.push(ScenarioOp {
                     span,
                     kind: ScenarioOpKind::CreateObligation {
-                        binding,
+                        binding: binding.clone(),
                         type_name,
                         actions,
                     },
                 });
+                self.record_reasoned_suppression(local, &binding);
                 return;
             }
         }
@@ -600,17 +601,21 @@ impl<'a> ScenarioLowerer<'a> {
             self.operations.push(ScenarioOp {
                 span: creation.span,
                 kind: ScenarioOpKind::CreateObligation {
-                    binding: creation.binding,
+                    binding: creation.binding.clone(),
                     type_name: creation.type_name,
                     actions: creation.actions,
                 },
             });
+            self.record_reasoned_suppression(local, &creation.binding);
             self.execute_expr(init.expr.as_ref(), env);
             return;
         }
         if let Some(binding) =
             expr_path_ident(init.expr.as_ref()).and_then(|name| env.resolve(&name))
         {
+            if let Some(local_binding) = pat_ident(&local.pat) {
+                env.bind(local_binding, binding.clone());
+            }
             self.operations.push(ScenarioOp {
                 span: self.span(init.expr.as_ref()),
                 kind: ScenarioOpKind::MoveBinding { binding },
@@ -723,6 +728,22 @@ impl<'a> ScenarioLowerer<'a> {
             Expr::Macro(expr_macro) => {
                 if !self.record_spawn_macro(&expr_macro.mac) {
                     self.unsupported_macro(&expr_macro.mac);
+                }
+            }
+            Expr::Return(expr_return) => {
+                if let Some(binding) = expr_return
+                    .expr
+                    .as_deref()
+                    .and_then(expr_path_ident)
+                    .and_then(|name| env.resolve(&name))
+                {
+                    self.operations.push(ScenarioOp {
+                        span: self.span(expr_return),
+                        kind: ScenarioOpKind::Discharge {
+                            binding,
+                            action: "return".to_owned(),
+                        },
+                    });
                 }
             }
             _ => {}
@@ -902,6 +923,7 @@ impl<'a> ScenarioLowerer<'a> {
                 Some(return_type.clone()),
                 ScenarioExternalCallShape::AssociatedFunction,
             );
+            self.record_boundary_argument_escapes(&call.args, env, &crate_name);
             return Some(ExternalBoundaryValue {
                 crate_name,
                 type_path: return_type,
@@ -930,6 +952,7 @@ impl<'a> ScenarioLowerer<'a> {
                 Some(return_type.clone()),
                 call_shape,
             );
+            self.record_boundary_argument_escapes(&call.args, env, &crate_name);
             return Some(ExternalBoundaryValue {
                 crate_name,
                 type_path: return_type,
@@ -959,10 +982,47 @@ impl<'a> ScenarioLowerer<'a> {
             Some(return_type.clone()),
             ScenarioExternalCallShape::Method,
         );
+        self.record_boundary_argument_escapes(&call.args, env, &receiver.crate_name);
         Some(ExternalBoundaryValue {
             crate_name: receiver.crate_name,
             type_path: return_type,
         })
+    }
+
+    fn record_boundary_argument_escapes(
+        &mut self,
+        args: &'a Punctuated<Expr, syn::token::Comma>,
+        env: &BindingEnv,
+        crate_name: &str,
+    ) {
+        let policy = self.boundary_policy_for(crate_name);
+        if matches!(policy.policy, ScenarioBoundaryPolicy::Unselected) {
+            return;
+        }
+        for argument in args {
+            if let Some(binding) = expr_path_ident(argument).and_then(|name| env.resolve(&name)) {
+                self.operations.push(ScenarioOp {
+                    span: self.span(argument),
+                    kind: ScenarioOpKind::Discharge {
+                        binding,
+                        action: format!("escape:{crate_name}"),
+                    },
+                });
+            }
+        }
+    }
+
+    fn record_reasoned_suppression(&mut self, local: &'a Local, binding: &str) {
+        let Some(reason) = local_suppression_reason(local) else {
+            return;
+        };
+        self.operations.push(ScenarioOp {
+            span: self.span(local),
+            kind: ScenarioOpKind::Discharge {
+                binding: binding.to_owned(),
+                action: format!("suppressed:{reason}"),
+            },
+        });
     }
 
     fn record_external_boundary_operation(
@@ -1434,6 +1494,28 @@ fn boundary_call_arguments(
             source: argument.to_token_stream().to_string(),
         })
         .collect()
+}
+
+fn local_suppression_reason(local: &Local) -> Option<String> {
+    local.attrs.iter().find_map(|attr| {
+        if !attr.path().segments.iter().any(|segment| {
+            segment.ident == "suppress_liveness" || segment.ident == "allow_liveness_escape"
+        }) {
+            return None;
+        }
+        let rendered = match &attr.meta {
+            Meta::List(list) => list.tokens.to_string(),
+            other => other.to_token_stream().to_string(),
+        };
+        extract_quoted_value(&rendered, "reason").or_else(|| Some("reasoned suppression".to_owned()))
+    })
+}
+
+fn extract_quoted_value(rendered: &str, key: &str) -> Option<String> {
+    let marker = format!("{key} = \"");
+    let start = rendered.find(&marker)? + marker.len();
+    let end = rendered[start..].find('"')? + start;
+    Some(rendered[start..end].to_owned())
 }
 
 fn associated_return_type_path(call_path: &str) -> Option<String> {

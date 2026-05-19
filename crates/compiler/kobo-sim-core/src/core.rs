@@ -552,10 +552,13 @@ impl<'a> Runtime<'a> {
             .rev()
             .find(|obligation| obligation.binding == binding && !obligation.is_discharged)
         {
-            if obligation
-                .actions
-                .iter()
-                .any(|candidate| candidate == action)
+            if action == "return"
+                || action.starts_with("escape:")
+                || action.starts_with("suppressed:")
+                || obligation
+                    .actions
+                    .iter()
+                    .any(|candidate| candidate == action)
             {
                 obligation.is_discharged = true;
             }

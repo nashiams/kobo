@@ -16,10 +16,11 @@ fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, V12_TIMEOUT)
 }
 
-fn write_activity_declaration(project: &TestProject) {
+fn write_activity_declaration_with_policy(project: &TestProject, retry: &str, idempotency: &str) {
     project.write(
         "mailer.kobo.d.toml",
-        r#"schema_version = 0
+        &format!(
+            r#"schema_version = 0
 
 [crate]
 name = "mailer"
@@ -28,16 +29,17 @@ source = "bindgen"
 
 [[activity]]
 path = "mailer::send_email"
-retry = "retry-with-backoff"
-idempotency = "message-id"
+retry = "{retry}"
+idempotency = "{idempotency}"
 result = "record"
 compensation = "cancel-email"
 "#,
+        ),
     );
 }
 
 fn integration_project(label: &str) -> (TestProject, PathBuf) {
-    integration_project_with_config(label, "region-a")
+    integration_project_with_activity_policy(label, "region-a", "retry-with-backoff", "message-id")
 }
 
 fn record_replay_integration_project(label: &str, config_key: &str) -> (TestProject, PathBuf) {
@@ -105,9 +107,14 @@ async fn record_only_replay_path() {
     (project, file)
 }
 
-fn integration_project_with_config(label: &str, config_key: &str) -> (TestProject, PathBuf) {
+fn integration_project_with_activity_policy(
+    label: &str,
+    config_key: &str,
+    retry: &str,
+    idempotency: &str,
+) -> (TestProject, PathBuf) {
     let project = TestProject::new(label);
-    write_activity_declaration(&project);
+    write_activity_declaration_with_policy(&project, retry, idempotency);
     project.write(
         "Kobo.toml",
         r#"[runtime.profile]
@@ -493,6 +500,94 @@ fn integrated_activity_side_effect_is_not_rerun_by_deterministic_replay() {
 }
 
 #[test]
+fn integrated_activity_policy_mutation_changes_witness_metadata() {
+    let (base_project, base_file) = integration_project("v12-integrated-activity-policy-base");
+    let base_output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--target"),
+            s("product_loop"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&base_file),
+        ],
+        &base_project.root,
+    );
+    assert_success(
+        &base_output,
+        "base integrated activity policy should produce a witness",
+    );
+    let base_witness = first_witness(&base_project);
+
+    let (mutated_project, mutated_file) = integration_project_with_activity_policy(
+        "v12-integrated-activity-policy-mutated",
+        "region-a",
+        "retry-with-jitter",
+        "dedupe-key",
+    );
+    let mutated_output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--target"),
+            s("product_loop"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&mutated_file),
+        ],
+        &mutated_project.root,
+    );
+    assert_success(
+        &mutated_output,
+        "mutated integrated activity policy should produce a witness",
+    );
+    let mutated_witness = first_witness(&mutated_project);
+
+    assert_eq!(
+        base_witness["replay_guarantee"], "partial",
+        "base activity witness must remain partial",
+    );
+    assert_eq!(
+        mutated_witness["replay_guarantee"], "partial",
+        "mutated activity witness must remain partial",
+    );
+    let base_activity = activity_metadata(&base_witness);
+    let mutated_activity = activity_metadata(&mutated_witness);
+    assert_eq!(
+        base_activity["retry"].as_str(),
+        Some("retry-with-backoff"),
+        "base activity retry policy should be visible in witness metadata",
+    );
+    assert_eq!(
+        base_activity["idempotency"].as_str(),
+        Some("message-id"),
+        "base activity idempotency policy should be visible in witness metadata",
+    );
+    assert_eq!(
+        mutated_activity["retry"].as_str(),
+        Some("retry-with-jitter"),
+        "mutated activity retry policy should reach witness metadata",
+    );
+    assert_eq!(
+        mutated_activity["idempotency"].as_str(),
+        Some("dedupe-key"),
+        "mutated activity idempotency policy should reach witness metadata",
+    );
+    assert_ne!(
+        base_activity["declaration_hash"], mutated_activity["declaration_hash"],
+        "mutating activity policy should change the declaration hash evidence",
+    );
+    assert_contains(
+        &mutated_witness["ecosystem_boundaries"].to_string(),
+        r#""external_internals_replayed":false"#,
+        "mutated activity policy must still keep external internals outside deterministic replay",
+    );
+}
+
+#[test]
 fn integrated_negative_parallel_and_standalone_debt_are_gated() {
     let (project, _) = integration_project("v12-integrated-negative-and-debt");
     let unsafe_file = project.write(
@@ -548,4 +643,16 @@ fn crunch(values: Vec<u64>) {
             .any(|finding| finding["category"] == "external-boundary-candidate"),
         "integrated Cargo debt should report an advisory external boundary candidate: {debt_json}"
     );
+}
+
+fn activity_metadata(witness: &Value) -> &Value {
+    witness["ecosystem_boundaries"]
+        .as_array()
+        .expect("ecosystem boundaries should be an array")
+        .iter()
+        .find_map(|boundary| {
+            (boundary["policy"].as_str() == Some("activity"))
+                .then_some(&boundary["activity_metadata"])
+        })
+        .expect("integrated witness should contain activity metadata")
 }

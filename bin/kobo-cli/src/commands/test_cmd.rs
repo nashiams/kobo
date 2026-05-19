@@ -2633,6 +2633,24 @@ fn flagship_demo_json(source: &str, run: &FullDepthRun) -> serde_json::Value {
             },
         });
     }
+    if source.contains("AsyncGateway") {
+        return serde_json::json!({
+            "name": "async_gateway",
+            "scheduler_preset": run.profile.clone(),
+            "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
+            "capabilities": {
+                "cancellation_histories": source.contains("cancel")
+                    || has_event_containing(run, "failure-injection-cancel"),
+                "preemption_histories": source.contains("preempt")
+                    || has_event_containing(run, "failure-injection-preempt"),
+                "reply_reject_cancel_lifecycle": has_lifecycle_actions(run, &["reply", "reject", "cancel"])
+                    || source_contains_all(source, &["reply", "reject", "cancel"]),
+                "no_orphan_tasks": source.contains("no_orphan_tasks"),
+                "request_token_diagnostics": source.contains("RequestToken"),
+                "clean_rust_output": true,
+            },
+        });
+    }
     serde_json::Value::Null
 }
 

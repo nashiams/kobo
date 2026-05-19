@@ -96,6 +96,7 @@ pub(super) fn cmd_test(
         &scenario_program,
         &mut run,
     );
+    apply_trace_checks(&strict_source_path, &document.source, &mut run);
     validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
@@ -606,6 +607,7 @@ fn write_run_witness(
         formal_core::proof_seed_json(&source_path, &document.source, scenario_program, run);
     let strict_liveness =
         formal_core::strict_liveness_json(&source_path, &document.source, scenario_program, run);
+    let trace_checks = trace_checks_json(&source_path, &document.source, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -674,6 +676,14 @@ fn write_run_witness(
     object.insert("formal_core".to_owned(), formal_core);
     object.insert("proof_seed".to_owned(), proof_seed);
     object.insert("strict_liveness".to_owned(), strict_liveness);
+    object.insert(
+        "invariant_checks".to_owned(),
+        trace_checks["invariant_checks"].clone(),
+    );
+    object.insert(
+        "temporal_checks".to_owned(),
+        trace_checks["temporal_checks"].clone(),
+    );
     object.insert(
         "replay_grade".to_owned(),
         serde_json::json!(witness_evidence::replay_grade_json(
@@ -1389,6 +1399,12 @@ fn scenario_failure_finding(failure: &ScenarioFailure, witness_path: Option<&Pat
             let boundary = scenario_failure_label(failure).unwrap_or("external code");
             format!("This replay path crosses `{boundary}` without a boundary policy.")
         }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "invariant-failure") => {
+            "An invariant check failed against the recorded scenario trace.".to_owned()
+        }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
+            "A temporal trace check failed against the recorded scenario trace.".to_owned()
+        }
         KErrorCode::K0116 => {
             "This scenario uses syntax Kobo has not modeled for exact replay yet.".to_owned()
         }
@@ -1424,6 +1440,12 @@ fn scenario_failure_explanation(failure: &ScenarioFailure) -> String {
         KErrorCode::K0107 => {
             "External code can perform IO, scheduling, time, randomness, or other effects that Kobo cannot infer from the source alone. The boundary policy says what replay may assume.".to_owned()
         }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "invariant-failure") => {
+            "Invariant checks are evaluated over the same event stream written into the witness, so the failure is a counterexample trace, not a replay mismatch.".to_owned()
+        }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
+            "Temporal checks are evaluated over ordered witness events with stable event names. Missing or forbidden events are reported separately from replay mismatch diagnostics.".to_owned()
+        }
         KErrorCode::K0116 => {
             "Exact replay is only sound for modeled syntax. Kobo found a construct outside the current modeled island coverage.".to_owned()
         }
@@ -1458,6 +1480,12 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
         KErrorCode::K0107 => {
             "Choose a typed/model policy, record it, wrap it as an activity, or keep this path partial with outside, opaque, or debt before claiming exact replay.".to_owned()
         }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "invariant-failure") => {
+            "Inspect the witness invariant_checks trace excerpt, then update the model or scenario so the invariant holds.".to_owned()
+        }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
+            "Inspect the witness temporal_checks trace excerpt, then update the model, expected event name, or scenario ordering.".to_owned()
+        }
         KErrorCode::K0116 => {
             "Use a modeled construct, split the scenario, or keep the witness partial until coverage is implemented.".to_owned()
         }
@@ -1476,6 +1504,10 @@ fn scenario_failure_label(failure: &ScenarioFailure) -> Option<&str> {
         .events
         .iter()
         .find_map(|event| event.label.as_deref())
+}
+
+fn scenario_failure_has_event(failure: &ScenarioFailure, kind: &str) -> bool {
+    failure.events.iter().any(|event| event.kind == kind)
 }
 
 fn scenario_failure_actions(message: &str) -> Option<String> {
@@ -1860,6 +1892,255 @@ fn obligation_events_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
     events
 }
 
+#[derive(Clone, Copy)]
+enum TraceCheckDomain {
+    Invariant,
+    Temporal,
+}
+
+#[derive(Clone, Copy)]
+enum TraceCheckKind {
+    Always,
+    Eventually,
+    Never,
+}
+
+#[derive(Clone)]
+struct TraceCheck {
+    domain: TraceCheckDomain,
+    name: String,
+    kind: TraceCheckKind,
+    event: String,
+    span: (usize, usize),
+}
+
+struct EvaluatedTraceCheck {
+    check: TraceCheck,
+    status: &'static str,
+    message: String,
+    trace_excerpt: Vec<serde_json::Value>,
+}
+
+fn apply_trace_checks(source_path: &str, source: &str, run: &mut FullDepthRun) {
+    if run.failure.is_some() {
+        return;
+    }
+    let Some(result) = evaluate_trace_checks(source_path, source, run)
+        .into_iter()
+        .find(|result| result.status == "failed")
+    else {
+        return;
+    };
+    let failure_kind = match result.check.domain {
+        TraceCheckDomain::Invariant => "invariant-failure",
+        TraceCheckDomain::Temporal => "temporal-failure",
+    };
+    run.failure = Some(ScenarioFailure {
+        code: KErrorCode::K0108,
+        message: result.message,
+        primary_start: result.check.span.0,
+        primary_end: result.check.span.1,
+        events: vec![ScenarioEvent {
+            kind: failure_kind.to_owned(),
+            label: Some(result.check.name),
+            value: None,
+            io: None,
+        }],
+    });
+}
+
+fn trace_checks_json(source_path: &str, source: &str, run: &FullDepthRun) -> serde_json::Value {
+    let mut invariants = Vec::new();
+    let mut temporals = Vec::new();
+    for result in evaluate_trace_checks(source_path, source, run) {
+        let value = serde_json::json!({
+            "name": result.check.name,
+            "kind": result.check.kind.as_str(),
+            "event": result.check.event,
+            "status": result.status,
+            "message": result.message,
+            "source_span": span_json(source_path, source, result.check.span),
+            "trace_excerpt": result.trace_excerpt,
+        });
+        match result.check.domain {
+            TraceCheckDomain::Invariant => invariants.push(value),
+            TraceCheckDomain::Temporal => temporals.push(value),
+        }
+    }
+    serde_json::json!({
+        "invariant_checks": invariants,
+        "temporal_checks": temporals,
+    })
+}
+
+fn evaluate_trace_checks(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+) -> Vec<EvaluatedTraceCheck> {
+    parse_trace_checks(source)
+        .into_iter()
+        .map(|check| evaluate_trace_check(source_path, source, run, check))
+        .collect()
+}
+
+fn evaluate_trace_check(
+    _source_path: &str,
+    _source: &str,
+    run: &FullDepthRun,
+    check: TraceCheck,
+) -> EvaluatedTraceCheck {
+    let matched_events = run
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.kind == check.event)
+        .map(|(index, event)| trace_event_json(index, event))
+        .collect::<Vec<_>>();
+    let violating_events = run
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.kind != check.event)
+        .map(|(index, event)| trace_event_json(index, event))
+        .collect::<Vec<_>>();
+
+    match check.kind {
+        TraceCheckKind::Always if violating_events.is_empty() => EvaluatedTraceCheck {
+            check,
+            status: "passed",
+            message: "all observed events satisfied the always check".to_owned(),
+            trace_excerpt: matched_events,
+        },
+        TraceCheckKind::Always => EvaluatedTraceCheck {
+            message: format!(
+                "trace check `{}` expected only `{}` events but observed a different event",
+                check.name, check.event
+            ),
+            check,
+            status: "failed",
+            trace_excerpt: violating_events.into_iter().take(5).collect(),
+        },
+        TraceCheckKind::Eventually if matched_events.is_empty() => EvaluatedTraceCheck {
+            message: format!(
+                "trace check `{}` expected event `{}` but it never occurred",
+                check.name, check.event
+            ),
+            check,
+            status: "failed",
+            trace_excerpt: events_json(&run.events).into_iter().take(5).collect(),
+        },
+        TraceCheckKind::Eventually => EvaluatedTraceCheck {
+            check,
+            status: "passed",
+            message: "required event occurred in the trace".to_owned(),
+            trace_excerpt: matched_events.into_iter().take(5).collect(),
+        },
+        TraceCheckKind::Never if matched_events.is_empty() => EvaluatedTraceCheck {
+            check,
+            status: "passed",
+            message: "forbidden event did not occur in the trace".to_owned(),
+            trace_excerpt: Vec::new(),
+        },
+        TraceCheckKind::Never => EvaluatedTraceCheck {
+            message: format!(
+                "trace check `{}` forbids event `{}` but the event occurred",
+                check.name, check.event
+            ),
+            check,
+            status: "failed",
+            trace_excerpt: matched_events.into_iter().take(5).collect(),
+        },
+    }
+}
+
+fn parse_trace_checks(source: &str) -> Vec<TraceCheck> {
+    let mut checks = Vec::new();
+    let mut offset = 0;
+    for raw_line in source.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
+        let leading = line.find(trimmed).unwrap_or(0);
+        let span = (offset + leading, offset + line.len());
+        if let Some(check) = parse_invariant_line(trimmed, span) {
+            checks.push(check);
+        } else if let Some(check) = parse_temporal_line(trimmed, span) {
+            checks.push(check);
+        }
+        offset += raw_line.len();
+    }
+    checks
+}
+
+fn parse_invariant_line(line: &str, span: (usize, usize)) -> Option<TraceCheck> {
+    let rest = line.strip_prefix("invariant ")?;
+    let name = rest
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+        .next()
+        .filter(|value| !value.is_empty())?;
+    let body_start = rest.find('{')? + 1;
+    let body_end = rest.rfind('}')?;
+    let (kind, event) = parse_trace_check_expression(rest[body_start..body_end].trim())?;
+    Some(TraceCheck {
+        domain: TraceCheckDomain::Invariant,
+        name: name.to_owned(),
+        kind,
+        event,
+        span,
+    })
+}
+
+fn parse_temporal_line(line: &str, span: (usize, usize)) -> Option<TraceCheck> {
+    let rest = line.strip_prefix("temporal ")?;
+    let (kind, event) = parse_trace_check_expression(rest.trim())?;
+    Some(TraceCheck {
+        domain: TraceCheckDomain::Temporal,
+        name: format!("temporal_{}_{}", kind.as_str(), sanitize_name(&event)),
+        kind,
+        event,
+        span,
+    })
+}
+
+fn parse_trace_check_expression(expression: &str) -> Option<(TraceCheckKind, String)> {
+    let mut parts = expression.split_whitespace();
+    let kind = TraceCheckKind::parse(parts.next()?)?;
+    let event = parts.next()?.trim_matches([';', '}']).to_owned();
+    if event.is_empty() {
+        None
+    } else {
+        Some((kind, event))
+    }
+}
+
+fn trace_event_json(index: usize, event: &ScenarioEvent) -> serde_json::Value {
+    serde_json::json!({
+        "id": index,
+        "kind": event.kind.clone(),
+        "label": event.label.clone(),
+        "value": event.value,
+    })
+}
+
+impl TraceCheckKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "always" => Some(Self::Always),
+            "eventually" => Some(Self::Eventually),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Eventually => "eventually",
+            Self::Never => "never",
+        }
+    }
+}
+
 fn expanded_policy_json(profile: &str) -> serde_json::Value {
     let (ownership, liveness, replay, boundaries, errors) = match profile {
         "dev" => ("record", "record", "record", "record", "ergonomic"),
@@ -1961,6 +2242,20 @@ fn source_spans_json(
 }
 
 fn run_failure_mode(run: &FullDepthRun) -> &'static str {
+    if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "invariant-failure"))
+    {
+        return "invariant_failure";
+    }
+    if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "temporal-failure"))
+    {
+        return "temporal_failure";
+    }
     if run
         .events
         .iter()

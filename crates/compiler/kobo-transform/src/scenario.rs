@@ -25,6 +25,7 @@ type ImportMap = HashMap<String, Vec<String>>;
 type BoundaryPolicyMap = HashMap<String, BoundaryPolicyFact>;
 type FunctionMap<'a> = HashMap<String, &'a ItemFn>;
 type FunctionSccMap = HashMap<String, usize>;
+type MethodShapeMap = HashMap<String, HashMap<String, MethodShape>>;
 
 #[derive(Default)]
 struct BindingEnv {
@@ -33,6 +34,7 @@ struct BindingEnv {
     terminal_actions: ActionMap,
     external_values: ExternalBindingMap,
     imports: ImportMap,
+    local_types: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +69,19 @@ struct InferredLifecycleCreation {
     span: KoboSpan,
 }
 
+#[derive(Clone, Debug)]
+struct MethodShape {
+    return_type: Option<String>,
+    consumes_receiver: bool,
+}
+
+#[derive(Clone, Debug)]
+struct LifecycleTemplateShape {
+    template_id: &'static str,
+    type_name: &'static str,
+    actions: Vec<String>,
+}
+
 #[derive(Default)]
 struct TarjanState {
     next_index: usize,
@@ -89,6 +104,7 @@ struct ScenarioLowerer<'a> {
     call_graph: &'a ScenarioCallGraph,
     imports: &'a ImportMap,
     boundary_policies: &'a BoundaryPolicyMap,
+    method_shapes: &'a MethodShapeMap,
     operations: Vec<ScenarioOp>,
     coverage: ScenarioCoverageFacts,
     active_functions: Vec<String>,
@@ -105,6 +121,7 @@ pub fn build_scenario_programs(
     let call_graph = ScenarioCallGraph::build(&functions);
     let imports = collect_use_crate_aliases(file);
     let boundary_policies = collect_boundary_policies(file);
+    let method_shapes = collect_method_shapes(file);
     let must_call_types = must_call_type_map(file, must_call_obligations);
 
     functions
@@ -116,6 +133,7 @@ pub fn build_scenario_programs(
                 &call_graph,
                 &imports,
                 &boundary_policies,
+                &method_shapes,
                 &must_call_types,
                 function,
             )
@@ -129,6 +147,7 @@ fn lower_function(
     call_graph: &ScenarioCallGraph,
     imports: &ImportMap,
     boundary_policies: &BoundaryPolicyMap,
+    method_shapes: &MethodShapeMap,
     must_call_types: &HashMap<String, Vec<String>>,
     function: &ItemFn,
 ) -> ScenarioProgram {
@@ -139,6 +158,7 @@ fn lower_function(
         call_graph,
         imports,
         boundary_policies,
+        method_shapes,
         operations: Vec::new(),
         coverage: ScenarioCoverageFacts {
             call_graph_sccs: call_graph.coverage_facts(),
@@ -174,6 +194,58 @@ fn collect_functions(file: &File) -> HashMap<String, &ItemFn> {
             _ => None,
         })
         .collect()
+}
+
+fn collect_method_shapes(file: &File) -> MethodShapeMap {
+    let mut methods_by_type = MethodShapeMap::new();
+    for item in &file.items {
+        let Item::Impl(item_impl) = item else {
+            continue;
+        };
+        let Some(owner_type) = impl_owner_type(item_impl.self_ty.as_ref()) else {
+            continue;
+        };
+        let method_shapes = methods_by_type.entry(owner_type).or_default();
+        for impl_item in &item_impl.items {
+            let syn::ImplItem::Fn(method) = impl_item else {
+                continue;
+            };
+            method_shapes.insert(
+                method.sig.ident.to_string(),
+                MethodShape {
+                    return_type: return_type_name(&method.sig.output),
+                    consumes_receiver: method_consumes_receiver(&method.sig.inputs),
+                },
+            );
+        }
+    }
+    methods_by_type
+}
+
+fn impl_owner_type(self_ty: &syn::Type) -> Option<String> {
+    match self_ty {
+        syn::Type::Path(path) => path_last_ident(&path.path),
+        _ => None,
+    }
+}
+
+fn return_type_name(output: &syn::ReturnType) -> Option<String> {
+    match output {
+        syn::ReturnType::Default => None,
+        syn::ReturnType::Type(_, ty) => match ty.as_ref() {
+            syn::Type::Path(path) => path_last_ident(&path.path),
+            _ => None,
+        },
+    }
+}
+
+fn method_consumes_receiver(inputs: &Punctuated<syn::FnArg, syn::token::Comma>) -> bool {
+    inputs.first().is_some_and(|input| {
+        matches!(
+            input,
+            syn::FnArg::Receiver(receiver) if receiver.reference.is_none()
+        )
+    })
 }
 
 fn must_call_type_map(
@@ -483,6 +555,10 @@ impl BindingEnv {
         self.external_values.insert(local, value);
     }
 
+    fn bind_type(&mut self, local: String, type_name: String) {
+        self.local_types.insert(local, type_name);
+    }
+
     fn resolve(&self, local: &str) -> Option<String> {
         self.bindings.get(local).cloned()
     }
@@ -497,6 +573,10 @@ impl BindingEnv {
 
     fn resolve_external(&self, local: &str) -> Option<&ExternalBoundaryValue> {
         self.external_values.get(local)
+    }
+
+    fn resolve_type(&self, local: &str) -> Option<&str> {
+        self.local_types.get(local).map(String::as_str)
     }
 
     fn bind_imports_from_use(&mut self, item_use: &ItemUse) {
@@ -603,7 +683,7 @@ impl<'a> ScenarioLowerer<'a> {
                 return;
             }
         }
-        if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref()) {
+        if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref(), env) {
             env.bind_obligation(
                 creation.binding.clone(),
                 creation.binding.clone(),
@@ -619,6 +699,10 @@ impl<'a> ScenarioLowerer<'a> {
                 },
             });
             self.record_reasoned_suppression(local, &creation.binding);
+            return;
+        }
+        if let Some((binding, type_name)) = local_static_type(local, init.expr.as_ref()) {
+            env.bind_type(binding, type_name);
             return;
         }
         if let Some(binding) =
@@ -667,6 +751,7 @@ impl<'a> ScenarioLowerer<'a> {
         &self,
         local: &'a Local,
         expr: &'a Expr,
+        env: &BindingEnv,
     ) -> Option<InferredLifecycleCreation> {
         let binding = pat_ident(&local.pat)?;
         if tokio_spawn_call(expr).is_some() {
@@ -680,37 +765,24 @@ impl<'a> ScenarioLowerer<'a> {
         }
 
         let call = lifecycle_method_call(expr)?;
-        match call.method.to_string().as_str() {
-            "recv" => Some(InferredLifecycleCreation {
+        let receiver_type = expr_static_type(call.receiver.as_ref(), env, self.method_shapes)?;
+        let method_name = call.method.to_string();
+        let method_shape = self
+            .method_shapes
+            .get(&receiver_type)
+            .and_then(|methods| methods.get(&method_name))?;
+        lifecycle_template_from_shape(&method_name, method_shape, self.method_shapes).map(
+            |template| InferredLifecycleCreation {
                 binding,
-                type_name: "Delivery".to_owned(),
-                actions: queue_delivery_actions(),
-                template: ScenarioLifecycleTemplate::inferred("queue_delivery", "queue_delivery"),
+                type_name: template.type_name.to_owned(),
+                actions: template.actions,
+                template: ScenarioLifecycleTemplate::inferred(
+                    template.template_id,
+                    template.template_id,
+                ),
                 span: self.span(call),
-            }),
-            "begin" => Some(InferredLifecycleCreation {
-                binding,
-                type_name: "Transaction".to_owned(),
-                actions: transaction_actions(),
-                template: ScenarioLifecycleTemplate::inferred("transaction", "transaction"),
-                span: self.span(call),
-            }),
-            "acquire" | "lock" | "try_acquire" => Some(InferredLifecycleCreation {
-                binding,
-                type_name: "LockPermit".to_owned(),
-                actions: lock_permit_actions(),
-                template: ScenarioLifecycleTemplate::inferred("lock_permit", "lock_permit"),
-                span: self.span(call),
-            }),
-            "open" | "connect" | "accept" => Some(InferredLifecycleCreation {
-                binding,
-                type_name: "FileSocket".to_owned(),
-                actions: file_socket_actions(),
-                template: ScenarioLifecycleTemplate::inferred("file_socket", "file_socket"),
-                span: self.span(call),
-            }),
-            _ => None,
-        }
+            },
+        )
     }
 
     fn execute_expr(&mut self, expr: &'a Expr, env: &mut BindingEnv) {
@@ -1289,14 +1361,17 @@ impl<'a> ScenarioLowerer<'a> {
         if let Some(binding) =
             receiver_ident(call.receiver.as_ref()).and_then(|name| env.resolve(&name))
         {
-            self.operations.push(ScenarioOp {
-                span: self.span(call),
-                kind: ScenarioOpKind::Discharge {
-                    binding,
-                    action: terminal_action_name(&call.method.to_string()),
-                },
-            });
-            return;
+            let action = terminal_action_name(&call.method.to_string());
+            if env
+                .terminal_actions(&binding)
+                .is_some_and(|actions| actions.iter().any(|candidate| candidate == &action))
+            {
+                self.operations.push(ScenarioOp {
+                    span: self.span(call),
+                    kind: ScenarioOpKind::Discharge { binding, action },
+                });
+                return;
+            }
         }
         if self.record_storage_or_network_event(call) {
             return;
@@ -1669,12 +1744,116 @@ fn tokio_spawn_call(expr: &Expr) -> Option<&ExprCall> {
     }
 }
 
+fn local_static_type(local: &Local, expr: &Expr) -> Option<(String, String)> {
+    let binding = pat_ident(&local.pat)?;
+    expr_static_type_from_initializer(expr).map(|type_name| (binding, type_name))
+}
+
+fn expr_static_type_from_initializer(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Struct(struct_expr) => path_last_ident(&struct_expr.path),
+        Expr::Paren(paren) => expr_static_type_from_initializer(paren.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn expr_static_type(
+    expr: &Expr,
+    env: &BindingEnv,
+    method_shapes: &MethodShapeMap,
+) -> Option<String> {
+    match expr {
+        Expr::Path(path) => path_last_ident(&path.path)
+            .and_then(|local| env.resolve_type(&local).map(str::to_owned)),
+        Expr::Struct(struct_expr) => path_last_ident(&struct_expr.path),
+        Expr::MethodCall(call) => {
+            let receiver_type = expr_static_type(call.receiver.as_ref(), env, method_shapes)?;
+            let method_name = call.method.to_string();
+            method_shapes
+                .get(&receiver_type)
+                .and_then(|methods| methods.get(&method_name))
+                .and_then(|shape| shape.return_type.clone())
+        }
+        Expr::Await(await_expr) => expr_static_type(await_expr.base.as_ref(), env, method_shapes),
+        Expr::Paren(paren) => expr_static_type(paren.expr.as_ref(), env, method_shapes),
+        _ => None,
+    }
+}
+
 fn lifecycle_method_call(expr: &Expr) -> Option<&ExprMethodCall> {
     match expr {
         Expr::MethodCall(call) => Some(call),
         Expr::Await(await_expr) => lifecycle_method_call(await_expr.base.as_ref()),
         Expr::Paren(paren) => lifecycle_method_call(paren.expr.as_ref()),
         _ => None,
+    }
+}
+
+fn lifecycle_template_from_shape(
+    method_name: &str,
+    method_shape: &MethodShape,
+    method_shapes: &MethodShapeMap,
+) -> Option<LifecycleTemplateShape> {
+    let return_type = method_shape.return_type.as_deref()?;
+    match method_name {
+        "recv"
+            if type_has_terminal_action(return_type, &queue_delivery_actions(), method_shapes) =>
+        {
+            Some(LifecycleTemplateShape {
+                template_id: "queue_delivery",
+                type_name: "Delivery",
+                actions: queue_delivery_actions(),
+            })
+        }
+        "begin" if type_has_terminal_action(return_type, &transaction_actions(), method_shapes) => {
+            Some(LifecycleTemplateShape {
+                template_id: "transaction",
+                type_name: "Transaction",
+                actions: transaction_actions(),
+            })
+        }
+        "acquire" | "lock" | "try_acquire"
+            if type_has_terminal_action(return_type, &lock_permit_actions(), method_shapes) =>
+        {
+            Some(LifecycleTemplateShape {
+                template_id: "lock_permit",
+                type_name: "LockPermit",
+                actions: lock_permit_actions(),
+            })
+        }
+        "open" | "connect" | "accept"
+            if type_has_terminal_action(return_type, &file_socket_actions(), method_shapes) =>
+        {
+            Some(LifecycleTemplateShape {
+                template_id: "file_socket",
+                type_name: "FileSocket",
+                actions: file_socket_actions(),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn type_has_terminal_action(
+    type_name: &str,
+    actions: &[String],
+    method_shapes: &MethodShapeMap,
+) -> bool {
+    let Some(methods) = method_shapes.get(type_name) else {
+        return false;
+    };
+    actions.iter().any(|action| {
+        rust_method_name(action)
+            .and_then(|method| methods.get(method))
+            .is_some_and(|shape| shape.consumes_receiver)
+    })
+}
+
+fn rust_method_name(action: &str) -> Option<&str> {
+    match action {
+        "drop-at-safe-boundary" | "opaque-boundary" => None,
+        "detach-with-policy" => Some("detach_with_policy"),
+        other => Some(other),
     }
 }
 

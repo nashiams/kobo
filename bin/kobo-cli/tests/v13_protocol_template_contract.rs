@@ -349,6 +349,12 @@ impl Queue {
     async fn recv(&self) -> Parcel { Parcel {} }
 }
 
+impl Parcel {
+    fn ack(self) {}
+    fn nack(self) {}
+    fn requeue(self) {}
+}
+
 fn helper_before_scenario(input: Parcel) {
     external_boundary(input);
 }
@@ -372,6 +378,63 @@ async fn helper_transfer_case() {
         &witness["operation_coverage"].to_string(),
         "obligation-transfer",
         "helper call should be represented as a transfer/debt fact",
+    );
+}
+
+#[test]
+fn method_name_alone_does_not_infer_lifecycle_template() {
+    let project = TestProject::new("v13-template-no-method-name-only");
+    let source = r#"
+struct Inbox {}
+struct PlainMessage {}
+
+impl Inbox {
+    async fn recv(&self) -> PlainMessage { PlainMessage {} }
+}
+
+impl PlainMessage {
+    fn store(self) {}
+}
+
+#[kobo::scenario(profile = "async")]
+async fn unrelated_recv_case() {
+    let inbox = Inbox {};
+    let message = inbox.recv().await;
+    message.store();
+}
+"#;
+
+    let witness = run_witness(&project, source, "unrelated_recv_case");
+    assert!(
+        inferred_obligations(&witness).is_empty(),
+        "method name alone must not infer queue_delivery: {}",
+        witness["inferred_obligations"]
+    );
+}
+
+#[test]
+fn unrelated_method_name_does_not_discharge_obligation_token() {
+    let project = TestProject::new("v13-template-terminal-action-shape");
+    let source = r#"
+#[kobo::must_call(commit | rollback)]
+struct Transaction {}
+
+impl Transaction {
+    fn ack(&self) {}
+}
+
+#[kobo::scenario(profile = "sync")]
+fn unrelated_ack_case() {
+    let tx = Transaction {};
+    tx.ack();
+}
+"#;
+
+    let witness = run_failing_witness(&project, source, "unrelated_ack_case");
+    let obligation = obligation_by_template(&witness, "declared_must_call:Transaction");
+    assert_ne!(
+        obligation["state"], "discharged",
+        "only declared terminal actions may discharge the obligation: {obligation}"
     );
 }
 

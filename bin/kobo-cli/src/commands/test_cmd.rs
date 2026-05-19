@@ -2373,8 +2373,10 @@ struct ModelComparisonSpec {
 
 struct WardModelRun {
     source: &'static str,
+    engine: &'static str,
     events: Vec<String>,
     obligations: Vec<(String, String)>,
+    steps_executed: usize,
 }
 
 struct ModelComparisonFailure {
@@ -2762,6 +2764,7 @@ fn parse_model_comparison_spec(source: &str) -> ModelComparisonSpec {
 
 fn parse_ward_model_specs(source: &str, spec: &mut ModelComparisonSpec) {
     for block in ward_blocks(source) {
+        parse_structured_model_blocks(&block, spec);
         let mut offset = block.body_start;
         for raw_line in block.body.split_inclusive('\n') {
             let line = raw_line.trim_end_matches(['\r', '\n']);
@@ -2774,6 +2777,43 @@ fn parse_ward_model_specs(source: &str, spec: &mut ModelComparisonSpec) {
             }
             offset += raw_line.len();
         }
+    }
+}
+
+fn parse_structured_model_blocks(block: &WardBlock<'_>, spec: &mut ModelComparisonSpec) {
+    let cleaned = scrub_comments_and_strings(block.body);
+    let mut cursor = 0;
+    while let Some(model_start) = find_word(&cleaned, cursor, "model") {
+        let Some(open) = find_byte(&cleaned, model_start, b'{') else {
+            break;
+        };
+        let Some(close) = matching_brace(&cleaned, open) else {
+            break;
+        };
+        spec.source = "ward_model";
+        let model_body = &block.body[open + 1..close];
+        parse_structured_model_statements(model_body, block.body_start + open + 1, spec);
+        cursor = close + 1;
+    }
+}
+
+fn parse_structured_model_statements(
+    model_body: &str,
+    body_start: usize,
+    spec: &mut ModelComparisonSpec,
+) {
+    let mut statement_start = 0usize;
+    for statement in model_body.split_terminator(';') {
+        let leading = statement
+            .find(|ch: char| !ch.is_ascii_whitespace())
+            .unwrap_or(0);
+        let trimmed = statement.trim();
+        let span = (
+            body_start + statement_start + leading,
+            body_start + statement_start + statement.len(),
+        );
+        parse_model_directive(trimmed, span, spec);
+        statement_start += statement.len() + 1;
     }
 }
 
@@ -2832,8 +2872,14 @@ impl ModelComparisonSpec {
 }
 
 fn execute_ward_model(spec: &ModelComparisonSpec) -> WardModelRun {
+    let steps_executed = spec.events.len() + spec.obligations.len();
     WardModelRun {
         source: spec.source,
+        engine: if spec.source == "ward_model" {
+            "ward-model-interpreter"
+        } else {
+            "legacy-directive-interpreter"
+        },
         events: spec
             .events
             .iter()
@@ -2844,12 +2890,14 @@ fn execute_ward_model(spec: &ModelComparisonSpec) -> WardModelRun {
             .iter()
             .map(|expectation| (expectation.binding.clone(), expectation.state.clone()))
             .collect(),
+        steps_executed,
     }
 }
 
 fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
     serde_json::json!({
         "source": model_run.source,
+        "engine": model_run.engine,
         "events": model_run.events,
         "obligations": model_run
             .obligations
@@ -2861,6 +2909,7 @@ fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
                 })
             })
             .collect::<Vec<_>>(),
+        "steps_executed": model_run.steps_executed,
     })
 }
 

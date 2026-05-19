@@ -104,6 +104,27 @@ fn dual_run_matches_equivalent_model_and_implementation() {
 }
 
 #[test]
+fn dual_run_executes_structured_ward_model_block() {
+    let project = TestProject::new("v13-dual-structured-model");
+    let source = dual_source(
+        "    model {\n        event deterministic-task;\n    }",
+        "        ward.task();",
+    );
+
+    let (output, witness) = run_dual_witness(&project, &source, "dual_case");
+    assert_success(&output, "structured model block should execute and match");
+    assert_eq!(witness["model_vs_implementation"]["status"], "matched");
+    assert_eq!(
+        witness["model_vs_implementation"]["model_run"]["engine"],
+        "ward-model-interpreter"
+    );
+    assert_eq!(
+        witness["model_vs_implementation"]["model_run"]["steps_executed"],
+        Value::from(1)
+    );
+}
+
+#[test]
 fn dual_run_reports_trace_divergence_with_source_spans() {
     let project = TestProject::new("v13-dual-trace-divergence");
     let source = dual_source(

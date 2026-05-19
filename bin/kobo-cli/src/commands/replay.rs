@@ -162,7 +162,7 @@ fn replay_v1(
     let trace_checks = test_cmd::trace_checks_json(source_display, &verified_source.source, &run);
     let model_vs_implementation =
         test_cmd::model_vs_implementation_json(source_display, &verified_source.source, seed, &run);
-    let flagship_demo = test_cmd::flagship_demo_json(&run);
+    let flagship_demo = test_cmd::flagship_demo_json(&scenario_program, &run);
     let runtime_profile = runtime_profile_json(&session.config, sim_profile, seed, &run);
     let runtime_profile_hash =
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);

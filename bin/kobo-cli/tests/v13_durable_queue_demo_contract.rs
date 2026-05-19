@@ -156,6 +156,15 @@ fn durable_queue_finds_or_proves_crash_after_ack() {
         "storage-crash-after-write",
         "witness should carry the crash history event",
     );
+    assert_eq!(
+        witness["flagship_demo"]["evidence_inputs"]["source"], "compiler-scenario-program",
+        "demo evidence should be derived from compiler scenario facts"
+    );
+    assert_contains(
+        &witness["flagship_demo"]["evidence_inputs"]["storage_actions"].to_string(),
+        "crash_after_write",
+        "demo evidence should expose concrete storage actions",
+    );
 }
 
 #[test]

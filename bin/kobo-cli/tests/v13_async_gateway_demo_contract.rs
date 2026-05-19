@@ -250,6 +250,15 @@ fn async_gateway_emits_replayable_kwit_witness() {
         witness["flagship_demo"]["scheduler_preset"].as_str(),
         Some("async")
     );
+    assert_eq!(
+        witness["flagship_demo"]["evidence_inputs"]["source"], "compiler-scenario-program",
+        "async gateway demo evidence should be derived from compiler scenario facts"
+    );
+    assert_contains(
+        &witness["flagship_demo"]["evidence_inputs"]["modeled_boundaries"].to_string(),
+        "ward.task",
+        "async gateway demo evidence should expose concrete modeled boundaries",
+    );
 
     let replay = run_kobo(
         &[

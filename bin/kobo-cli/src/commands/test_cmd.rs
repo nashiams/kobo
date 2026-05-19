@@ -615,7 +615,7 @@ fn write_run_witness(
     let trace_checks = trace_checks_json(&source_path, &document.source, run);
     let model_vs_implementation =
         model_vs_implementation_json(&source_path, &document.source, seed, run);
-    let flagship_demo = flagship_demo_json(run);
+    let flagship_demo = flagship_demo_json(scenario_program, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -3110,35 +3110,40 @@ fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
     })
 }
 
-pub(super) fn flagship_demo_json(run: &FullDepthRun) -> serde_json::Value {
-    if is_durable_queue_demo(run) {
+pub(super) fn flagship_demo_json(
+    program: &ScenarioProgram,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let facts = FlagshipDemoFacts::from_program(program);
+    if is_durable_queue_demo(&facts, run) {
         return serde_json::json!({
             "name": "durable_queue",
-            "history": if has_event_containing(run, "crash") {
+            "history": if facts.has_crash_storage_action() || has_event_kind(run, "lost-message") {
                 "crash_after_ack"
             } else {
                 "happy_path"
             },
             "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
             "capabilities": {
-                "crash_histories": has_event_containing(run, "crash"),
-                "storage_facade": has_event_containing(run, "storage-"),
+                "crash_histories": facts.has_crash_storage_action() || has_event_kind(run, "lost-message"),
+                "storage_facade": facts.has_storage_facade(),
                 "ack_nack_requeue_lifecycle": has_lifecycle_actions(run, &["ack", "nack", "requeue"]),
                 "clean_rust_output": harness_built_cleanly(run),
                 "ports_recordings_debt": has_boundary_or_debt_evidence(run),
                 "trace_check": run.failure.as_ref().is_some_and(|failure| failure.code == KErrorCode::K0108),
             },
-            "evidence_inputs": flagship_evidence_inputs(run),
+            "evidence_inputs": flagship_evidence_inputs(&facts, run),
         });
     }
-    if is_async_gateway_demo(run) {
+    if is_async_gateway_demo(&facts, run) {
         return serde_json::json!({
             "name": "async_gateway",
             "scheduler_preset": run.profile.clone(),
             "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
             "capabilities": {
-                "cancellation_histories": has_event_containing(run, "failure-injection-cancel"),
-                "preemption_histories": has_event_containing(run, "failure-injection-preempt"),
+                "cancellation_histories": has_event_kind(run, "failure-injection-cancel")
+                    || has_event_kind(run, "scheduler-cancel-path"),
+                "preemption_histories": has_event_kind(run, "failure-injection-preempt"),
                 "reply_reject_cancel_lifecycle": has_lifecycle_actions(run, &["reply", "reject", "cancel"]),
                 "no_orphan_tasks": run.failure.as_ref().is_some_and(|failure| {
                     failure.message.contains("no_orphan_tasks")
@@ -3151,25 +3156,83 @@ pub(super) fn flagship_demo_json(run: &FullDepthRun) -> serde_json::Value {
                 }),
                 "clean_rust_output": harness_built_cleanly(run),
             },
-            "evidence_inputs": flagship_evidence_inputs(run),
+            "evidence_inputs": flagship_evidence_inputs(&facts, run),
         });
     }
     serde_json::Value::Null
 }
 
-fn is_durable_queue_demo(run: &FullDepthRun) -> bool {
-    has_lifecycle_actions(run, &["ack", "nack", "requeue"])
-        && (run.target.contains("queue")
-            || run.target.contains("ack")
-            || has_event_containing(run, "storage-"))
+#[derive(Clone, Debug, Default)]
+struct FlagshipDemoFacts {
+    template_ids: Vec<String>,
+    storage_actions: Vec<String>,
+    modeled_boundaries: Vec<String>,
 }
 
-fn is_async_gateway_demo(run: &FullDepthRun) -> bool {
+impl FlagshipDemoFacts {
+    fn from_program(program: &ScenarioProgram) -> Self {
+        let mut facts = Self::default();
+        for operation in &program.operations {
+            match &operation.kind {
+                ScenarioOpKind::CreateObligation {
+                    template: Some(template),
+                    ..
+                } => push_unique(&mut facts.template_ids, template.id.clone()),
+                ScenarioOpKind::StorageEvent { action } => {
+                    push_unique(&mut facts.storage_actions, action.clone());
+                }
+                ScenarioOpKind::ModeledEffect { boundary } => {
+                    push_unique(&mut facts.modeled_boundaries, boundary.as_str().to_owned());
+                }
+                _ => {}
+            }
+        }
+        facts
+    }
+
+    fn has_storage_facade(&self) -> bool {
+        !self.storage_actions.is_empty()
+            || self
+                .modeled_boundaries
+                .iter()
+                .any(|boundary| boundary == "ward.storage")
+    }
+
+    fn has_crash_storage_action(&self) -> bool {
+        self.storage_actions.iter().any(|action| {
+            matches!(
+                normalize_demo_action(action).as_str(),
+                "crash" | "crash_after_write" | "crash_after_commit"
+            )
+        })
+    }
+
+    fn has_template(&self, template_id: &str) -> bool {
+        self.template_ids
+            .iter()
+            .any(|candidate| candidate == template_id)
+    }
+
+    fn has_modeled_boundary(&self, boundary: &str) -> bool {
+        self.modeled_boundaries
+            .iter()
+            .any(|candidate| candidate == boundary)
+    }
+}
+
+fn is_durable_queue_demo(facts: &FlagshipDemoFacts, run: &FullDepthRun) -> bool {
+    has_lifecycle_actions(run, &["ack", "nack", "requeue"])
+        && (facts.has_template("queue_delivery") || facts.has_storage_facade())
+}
+
+fn is_async_gateway_demo(facts: &FlagshipDemoFacts, run: &FullDepthRun) -> bool {
     has_lifecycle_actions(run, &["reply", "reject", "cancel"])
         && (run.profile == "async"
-            || run.target.contains("gateway")
-            || has_event_containing(run, "scheduler-")
-            || has_event_containing(run, "failure-injection-"))
+            || facts.has_template("handler_reply")
+            || facts.has_modeled_boundary("ward.task")
+            || has_event_kind(run, "scheduler-cancel-path")
+            || has_event_kind(run, "failure-injection-cancel")
+            || has_event_kind(run, "failure-injection-preempt"))
 }
 
 fn harness_built_cleanly(run: &FullDepthRun) -> bool {
@@ -3182,10 +3245,14 @@ fn has_boundary_or_debt_evidence(run: &FullDepthRun) -> bool {
     !run.boundary_decisions.is_empty() || !run.opaque_boundaries.is_empty()
 }
 
-fn flagship_evidence_inputs(run: &FullDepthRun) -> serde_json::Value {
+fn flagship_evidence_inputs(facts: &FlagshipDemoFacts, run: &FullDepthRun) -> serde_json::Value {
     serde_json::json!({
+        "source": "compiler-scenario-program",
         "target": run.target,
         "profile": run.profile,
+        "template_ids": facts.template_ids,
+        "storage_actions": facts.storage_actions,
+        "modeled_boundaries": facts.modeled_boundaries,
         "event_count": run.events.len(),
         "obligation_count": run.obligations.len(),
         "boundary_decision_count": run.boundary_decisions.len(),
@@ -3200,14 +3267,22 @@ fn flagship_evidence_inputs(run: &FullDepthRun) -> serde_json::Value {
     })
 }
 
-fn has_event_containing(run: &FullDepthRun, needle: &str) -> bool {
-    run.events.iter().any(|event| event.kind.contains(needle))
-        || run.failure.as_ref().is_some_and(|failure| {
-            failure
-                .events
-                .iter()
-                .any(|event| event.kind.contains(needle))
-        })
+fn has_event_kind(run: &FullDepthRun, kind: &str) -> bool {
+    run.events.iter().any(|event| event.kind == kind)
+        || run
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.events.iter().any(|event| event.kind == kind))
+}
+
+fn normalize_demo_action(action: &str) -> String {
+    action.trim().replace('-', "_")
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|candidate| candidate == &value) {
+        values.push(value);
+    }
 }
 
 fn has_lifecycle_actions(run: &FullDepthRun, expected: &[&str]) -> bool {

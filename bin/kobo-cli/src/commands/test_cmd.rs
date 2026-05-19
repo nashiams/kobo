@@ -103,6 +103,7 @@ pub(super) fn cmd_test(
             fuzz_plan.as_ref(),
             witness_dir,
             &session.config,
+            &artifacts.runtime_evidence,
             &run,
         )?);
     }
@@ -157,28 +158,6 @@ struct FuzzCase {
 struct StatefulInputOperation {
     source: StatefulInputSource,
     value: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct HandlerLifecycleEvidence {
-    name: String,
-    source_line: usize,
-    cleanup_hook: Option<String>,
-    terminal_actions: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ServiceRuntimeEvidence {
-    name: String,
-    buffer: usize,
-    source_line: usize,
-    methods: Vec<ServiceRuntimeMethodEvidence>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ServiceRuntimeMethodEvidence {
-    name: String,
-    variant: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -589,6 +568,7 @@ fn write_run_witness(
     fuzz_plan: Option<&FuzzPlan>,
     witness_dir: Option<&Path>,
     config: &kobo_driver::KoboConfig,
+    runtime_evidence: &kobo_codegen::RuntimeEvidence,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -706,11 +686,11 @@ fn write_run_witness(
     );
     object.insert(
         "service_runtime".to_owned(),
-        service_runtime_json(&document.source, config),
+        service_runtime_json(runtime_evidence),
     );
     object.insert(
         "handler_lifecycle".to_owned(),
-        handler_lifecycle_json(&document.source, run),
+        handler_lifecycle_json(runtime_evidence, run),
     );
     object.insert(
         "available_boundary_ledger_statuses".to_owned(),
@@ -728,10 +708,11 @@ fn write_run_witness(
     Ok(witness_path)
 }
 
-fn service_runtime_json(source: &str, config: &kobo_driver::KoboConfig) -> serde_json::Value {
+fn service_runtime_json(evidence: &kobo_codegen::RuntimeEvidence) -> serde_json::Value {
     serde_json::json!({
-        "services": service_runtime_services(source, config.runtime_profile.service_buffer)
-            .into_iter()
+        "evidence_source": "codegen-lowering",
+        "services": evidence.services
+            .iter()
             .map(service_runtime_service_json)
             .collect::<Vec<_>>(),
     })
@@ -768,261 +749,66 @@ fn runtime_profile_json(
     })
 }
 
-fn service_runtime_service_json(service: ServiceRuntimeEvidence) -> serde_json::Value {
+fn service_runtime_service_json(
+    service: &kobo_codegen::ServiceRuntimeEvidence,
+) -> serde_json::Value {
     serde_json::json!({
-        "name": service.name,
+        "name": &service.name,
         "buffer": service.buffer,
         "source_line": service.source_line,
+        "backpressure": &service.backpressure,
+        "dispatch_loop": service.dispatch_loop,
+        "client_api": service.client_api,
+        "scenario_hooks": service.scenario_hooks,
         "methods": service.methods
-            .into_iter()
+            .iter()
             .map(service_runtime_method_json)
             .collect::<Vec<_>>(),
     })
 }
 
-fn service_runtime_method_json(method: ServiceRuntimeMethodEvidence) -> serde_json::Value {
+fn service_runtime_method_json(
+    method: &kobo_codegen::ServiceRuntimeMethodEvidence,
+) -> serde_json::Value {
     serde_json::json!({
-        "name": method.name,
-        "variant": method.variant,
+        "name": &method.name,
+        "variant": &method.variant,
     })
 }
 
-fn service_runtime_services(source: &str, default_buffer: usize) -> Vec<ServiceRuntimeEvidence> {
-    let parse_source = evidence_parse_source(source);
-    let Ok(file) = syn::parse_file(&parse_source) else {
-        return Vec::new();
-    };
-    let service_lines = service_attr_lines(source);
-    let mut service_index = 0usize;
-    file.items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Impl(item_impl) = item else {
-                return None;
-            };
-            let evidence = service_runtime_from_impl(
-                item_impl,
-                service_lines.get(service_index),
-                default_buffer,
-            );
-            if evidence.is_some() {
-                service_index += 1;
-            }
-            evidence
-        })
-        .collect()
-}
-
-fn service_runtime_from_impl(
-    item_impl: &syn::ItemImpl,
-    source_line: Option<&usize>,
-    default_buffer: usize,
-) -> Option<ServiceRuntimeEvidence> {
-    let attr = item_impl.attrs.iter().find(|attr| is_service_attr(attr))?;
-    let name = service_name_from_self_ty(&item_impl.self_ty)?;
-    let methods = service_runtime_methods(item_impl);
-    if methods.is_empty() {
-        return None;
-    }
-    Some(ServiceRuntimeEvidence {
-        name,
-        buffer: service_buffer_size(attr).unwrap_or(default_buffer),
-        source_line: source_line.copied().unwrap_or(0),
-        methods,
-    })
-}
-
-fn service_attr_lines(source: &str) -> Vec<usize> {
-    source
-        .lines()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            if line.contains("#[kobo::service") {
-                Some(index + 1)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn is_service_attr(attr: &syn::Attribute) -> bool {
-    let segments = attr.path().segments.iter().collect::<Vec<_>>();
-    segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "service"
-}
-
-fn service_name_from_self_ty(self_ty: &syn::Type) -> Option<String> {
-    let syn::Type::Path(type_path) = self_ty else {
-        return None;
-    };
-    type_path
-        .path
-        .segments
-        .last()
-        .map(|segment| segment.ident.to_string())
-}
-
-fn service_buffer_size(attr: &syn::Attribute) -> Option<usize> {
-    let syn::Meta::List(list) = &attr.meta else {
-        return None;
-    };
-    let compact = list.tokens.to_string().replace(' ', "");
-    compact
-        .strip_prefix("buffer=")
-        .and_then(|rest| rest.parse::<usize>().ok())
-}
-
-fn service_runtime_methods(item_impl: &syn::ItemImpl) -> Vec<ServiceRuntimeMethodEvidence> {
-    item_impl
-        .items
-        .iter()
-        .filter_map(|item| {
-            let syn::ImplItem::Fn(method) = item else {
-                return None;
-            };
-            if method.sig.asyncness.is_none() {
-                return None;
-            }
-            let name = method.sig.ident.to_string();
-            Some(ServiceRuntimeMethodEvidence {
-                variant: upper_camel_case(&name),
-                name,
-            })
-        })
-        .collect()
-}
-
-fn upper_camel_case(value: &str) -> String {
-    let mut result = String::new();
-    let mut capitalize_next = true;
-    for ch in value.chars() {
-        if ch == '_' {
-            capitalize_next = true;
-            continue;
-        }
-        if capitalize_next {
-            result.extend(ch.to_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
-fn handler_lifecycle_json(source: &str, run: &FullDepthRun) -> serde_json::Value {
+fn handler_lifecycle_json(
+    evidence: &kobo_codegen::RuntimeEvidence,
+    run: &FullDepthRun,
+) -> serde_json::Value {
     serde_json::json!({
-        "handlers": handler_lifecycle_handlers(source)
-            .into_iter()
+        "evidence_source": "codegen-lowering",
+        "handlers": evidence.handlers
+            .iter()
             .map(handler_lifecycle_handler_json)
             .collect::<Vec<_>>(),
         "scenario_cases": handler_scenario_cases(run),
     })
 }
 
-fn handler_lifecycle_handler_json(handler: HandlerLifecycleEvidence) -> serde_json::Value {
+fn handler_lifecycle_handler_json(
+    handler: &kobo_codegen::HandlerLifecycleEvidence,
+) -> serde_json::Value {
     serde_json::json!({
-        "name": handler.name,
+        "name": &handler.name,
         "source_line": handler.source_line,
-        "cleanup_hook": handler.cleanup_hook,
+        "cleanup_hook": &handler.cleanup_hook,
         "must_call": {
             "kind": "handler_token",
-            "terminal_actions": handler.terminal_actions,
+            "terminal_actions": &handler.terminal_actions,
             "required": true,
         },
         "boundaries": {
-            "tracing": "drop-closes-span",
-            "metrics": "handler-entry-exit",
-            "cleanup": "success-error-cancel",
+            "tracing": &handler.tracing_boundary,
+            "metrics": &handler.metrics_boundary,
+            "cleanup": &handler.cleanup_boundary,
+            "cancel_cleanup": &handler.cancel_cleanup,
         },
     })
-}
-
-fn handler_lifecycle_handlers(source: &str) -> Vec<HandlerLifecycleEvidence> {
-    let parse_source = evidence_parse_source(source);
-    let Ok(file) = syn::parse_file(&parse_source) else {
-        return Vec::new();
-    };
-    let handler_lines = handler_attr_lines(source);
-    let mut handler_index = 0usize;
-    file.items
-        .iter()
-        .filter_map(|item| {
-            let syn::Item::Fn(function) = item else {
-                return None;
-            };
-            let evidence = handler_lifecycle_from_function(
-                function,
-                handler_lines.get(handler_index).copied().unwrap_or(0),
-            );
-            if evidence.is_some() {
-                handler_index += 1;
-            }
-            evidence
-        })
-        .collect()
-}
-
-fn evidence_parse_source(source: &str) -> String {
-    source.replace("spawn local", "__kobo_spawn_local_block!")
-}
-
-fn handler_lifecycle_from_function(
-    function: &syn::ItemFn,
-    source_line: usize,
-) -> Option<HandlerLifecycleEvidence> {
-    if !function.attrs.iter().any(is_handler_attr) {
-        return None;
-    }
-    Some(HandlerLifecycleEvidence {
-        name: function.sig.ident.to_string(),
-        source_line,
-        cleanup_hook: function.attrs.iter().find_map(cleanup_hook_name),
-        terminal_actions: handler_terminal_actions(),
-    })
-}
-
-fn handler_attr_lines(source: &str) -> Vec<usize> {
-    source
-        .lines()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            if line.contains("#[kobo::handler]") {
-                Some(index + 1)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn is_handler_attr(attr: &syn::Attribute) -> bool {
-    let segments = attr.path().segments.iter().collect::<Vec<_>>();
-    segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
-}
-
-fn cleanup_hook_name(attr: &syn::Attribute) -> Option<String> {
-    let segments = attr.path().segments.iter().collect::<Vec<_>>();
-    if !(segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "cleanup") {
-        return None;
-    }
-    let syn::Meta::List(list) = &attr.meta else {
-        return None;
-    };
-    syn::parse2::<syn::Path>(list.tokens.clone())
-        .ok()
-        .and_then(|path| {
-            path.segments
-                .last()
-                .map(|segment| segment.ident.to_string())
-        })
-}
-
-fn handler_terminal_actions() -> Vec<String> {
-    ["reply", "reject", "cancel"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
 }
 
 fn handler_scenario_cases(run: &FullDepthRun) -> Vec<serde_json::Value> {
@@ -1030,12 +816,12 @@ fn handler_scenario_cases(run: &FullDepthRun) -> Vec<serde_json::Value> {
     if run
         .events
         .iter()
-        .any(|event| event.kind == "network-dropped")
+        .any(|event| event.kind == "network-dropped" || event.kind == "network-drop-message")
     {
         cases.push(serde_json::json!({
             "kind": "disconnect",
             "source": "network-model",
-            "event": "network-dropped",
+            "event": "network-drop-message",
         }));
     }
     if run

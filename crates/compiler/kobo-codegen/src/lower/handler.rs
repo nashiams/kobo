@@ -1,11 +1,14 @@
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
+
+use crate::HandlerLifecycleEvidence;
 
 #[derive(Clone)]
 struct HandlerSpec {
     name: String,
     source_line: usize,
     cleanup_hook: Option<syn::Path>,
+    terminal_actions: Vec<String>,
 }
 
 impl HandlerSpec {
@@ -17,18 +20,34 @@ impl HandlerSpec {
     }
 }
 
-pub(crate) fn handler_support_items(file: &syn::File) -> Vec<syn::Item> {
-    if !has_handler(file) {
-        return Vec::new();
+pub(crate) struct HandlerSupport {
+    pub(crate) items: Vec<syn::Item>,
+    pub(crate) evidence: Vec<HandlerLifecycleEvidence>,
+}
+
+pub(crate) fn handler_support(ast: &kobo_parser::KoboFile, file: &syn::File) -> HandlerSupport {
+    let specs = handler_specs(ast, file);
+    if specs.is_empty() {
+        return HandlerSupport {
+            items: Vec::new(),
+            evidence: Vec::new(),
+        };
     }
 
-    vec![
-        handler_outcome_item(),
-        handler_guard_struct_item(),
-        handler_outcome_impl_item(),
-        handler_guard_impl_item(),
-        handler_guard_drop_impl_item(),
-    ]
+    HandlerSupport {
+        items: vec![
+            handler_cleanup_future_item(),
+            handler_cleanup_runtime_item(),
+            handler_cleanup_runtime_impl_item(),
+            handler_outcome_item(),
+            handler_metrics_struct_item(),
+            handler_guard_struct_item(),
+            handler_outcome_impl_item(),
+            handler_guard_impl_item(),
+            handler_guard_drop_impl_item(),
+        ],
+        evidence: specs.iter().map(handler_evidence).collect(),
+    }
 }
 
 pub(crate) fn append_handler_support_items(file: &mut syn::File, items: Vec<syn::Item>) {
@@ -46,19 +65,19 @@ pub(crate) fn lower_item_function(ast: &kobo_parser::KoboFile, function: &mut sy
     true
 }
 
-fn has_handler(file: &syn::File) -> bool {
-    file.items.iter().any(item_has_handler)
-}
-
-fn item_has_handler(item: &syn::Item) -> bool {
-    match item {
-        syn::Item::Fn(function) => attrs_have_handler(&function.attrs),
-        syn::Item::Impl(item_impl) => item_impl.items.iter().any(|item| match item {
-            syn::ImplItem::Fn(method) => attrs_have_handler(&method.attrs),
-            _ => false,
-        }),
-        _ => false,
-    }
+fn handler_specs(ast: &kobo_parser::KoboFile, file: &syn::File) -> Vec<HandlerSpec> {
+    file.items
+        .iter()
+        .filter_map(|item| {
+            let syn::Item::Fn(function) = item else {
+                return None;
+            };
+            handler_spec(ast, &function.attrs, &function.sig).map(|mut spec| {
+                spec.terminal_actions = terminal_actions_from_block(&function.block);
+                spec
+            })
+        })
+        .collect()
 }
 
 fn handler_spec(
@@ -71,11 +90,8 @@ fn handler_spec(
         name: signature.ident.to_string(),
         source_line: source_line(ast, handler_attr),
         cleanup_hook: attrs.iter().find_map(cleanup_hook_path),
+        terminal_actions: Vec::new(),
     })
-}
-
-fn attrs_have_handler(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| is_kobo_attr(attr, "handler"))
 }
 
 fn is_kobo_attr(attr: &syn::Attribute, name: &str) -> bool {
@@ -152,10 +168,7 @@ fn returns_result(signature: &syn::Signature) -> bool {
 fn result_handler_body(original_stmts: Vec<syn::Stmt>, spec: &HandlerSpec) -> Vec<syn::Stmt> {
     let handler_name = spec.name.as_str();
     let source_line = spec.source_line;
-    let cleanup_name = spec.cleanup_name();
-    let cleanup_registration = cleanup_registration_stmt(cleanup_name.as_deref());
-    let success_cleanup = cleanup_call_stmt(spec.cleanup_hook.as_ref());
-    let error_cleanup = cleanup_call_stmt(spec.cleanup_hook.as_ref());
+    let cleanup_registration = cleanup_registration_stmt(spec);
     syn::parse_quote! {
         let mut __kobo_handler_guard = KoboHandlerLifecycleGuard::enter(#handler_name, #source_line);
         #cleanup_registration
@@ -164,7 +177,7 @@ fn result_handler_body(original_stmts: Vec<syn::Stmt>, spec: &HandlerSpec) -> Ve
         }.await;
         match __kobo_handler_result {
             Ok(__kobo_handler_reply) => {
-                #success_cleanup
+                __kobo_handler_guard.run_registered_cleanup("success").await;
                 __kobo_handler_guard.record_reply();
                 __kobo_handler_guard.metrics_boundary(#handler_name);
                 let __kobo_handler_outcome: KoboHandlerOutcome<_, _> =
@@ -176,7 +189,7 @@ fn result_handler_body(original_stmts: Vec<syn::Stmt>, spec: &HandlerSpec) -> Ve
                 }
             }
             Err(__kobo_handler_error) => {
-                #error_cleanup
+                __kobo_handler_guard.run_registered_cleanup("error").await;
                 __kobo_handler_guard.record_reject();
                 __kobo_handler_guard.metrics_boundary(#handler_name);
                 let __kobo_handler_outcome: KoboHandlerOutcome<_, _> =
@@ -194,46 +207,62 @@ fn result_handler_body(original_stmts: Vec<syn::Stmt>, spec: &HandlerSpec) -> Ve
 fn value_handler_body(original_stmts: Vec<syn::Stmt>, spec: &HandlerSpec) -> Vec<syn::Stmt> {
     let handler_name = spec.name.as_str();
     let source_line = spec.source_line;
-    let cleanup_name = spec.cleanup_name();
-    let cleanup_registration = cleanup_registration_stmt(cleanup_name.as_deref());
-    let success_cleanup = cleanup_call_stmt(spec.cleanup_hook.as_ref());
+    let cleanup_registration = cleanup_registration_stmt(spec);
     syn::parse_quote! {
         let mut __kobo_handler_guard = KoboHandlerLifecycleGuard::enter(#handler_name, #source_line);
         #cleanup_registration
         let __kobo_handler_value = async move {
             #(#original_stmts)*
         }.await;
-        #success_cleanup
+        __kobo_handler_guard.run_registered_cleanup("success").await;
         __kobo_handler_guard.record_reply();
         __kobo_handler_guard.metrics_boundary(#handler_name);
         __kobo_handler_value
     }
 }
 
-fn cleanup_registration_stmt(cleanup_name: Option<&str>) -> syn::Stmt {
-    match cleanup_name {
-        Some(name) => syn::parse_quote! {
-            __kobo_handler_guard.register_cleanup(#name);
+fn cleanup_registration_stmt(spec: &HandlerSpec) -> syn::Stmt {
+    match (spec.cleanup_name(), spec.cleanup_hook.as_ref()) {
+        (Some(name), Some(path)) => syn::parse_quote! {
+            __kobo_handler_guard.register_cleanup(#name, || -> KoboHandlerCleanupFuture {
+                Box::pin(#path())
+            });
         },
-        None => syn::parse_quote! {
-            __kobo_handler_guard.register_cleanup("");
-        },
-    }
-}
-
-fn cleanup_call_stmt(cleanup_hook: Option<&syn::Path>) -> syn::Stmt {
-    match cleanup_hook {
-        Some(path) => syn::parse_quote! {
-            #path().await;
-        },
-        None => syn::parse_quote! {
-            __kobo_handler_guard.note_no_cleanup_hook();
+        _ => syn::parse_quote! {
+            __kobo_handler_guard.register_no_cleanup();
         },
     }
 }
 
 fn handler_source_doc(handler_name: &str, source_line: usize) -> String {
     format!("kobo: handler {handler_name} source_line={source_line}")
+}
+
+fn handler_cleanup_future_item() -> syn::Item {
+    syn::parse_quote! {
+        type KoboHandlerCleanupFuture =
+            std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+    }
+}
+
+fn handler_cleanup_runtime_item() -> syn::Item {
+    syn::parse_quote! {
+        struct KoboHandlerCleanupRuntime;
+    }
+}
+
+fn handler_cleanup_runtime_impl_item() -> syn::Item {
+    syn::parse_quote! {
+        impl KoboHandlerCleanupRuntime {
+            fn run(cleanup: fn() -> KoboHandlerCleanupFuture) {
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(cleanup());
+                } else {
+                    let _ = cleanup;
+                }
+            }
+        }
+    }
 }
 
 fn handler_outcome_item() -> syn::Item {
@@ -248,11 +277,29 @@ fn handler_outcome_item() -> syn::Item {
 
 fn handler_guard_struct_item() -> syn::Item {
     syn::parse_quote! {
+        #[derive(Default)]
+        struct KoboHandlerLifecycleMetrics {
+            entries: u64,
+            exits: u64,
+            replies: u64,
+            rejects: u64,
+            cancels: u64,
+            cleanup_runs: u64,
+        }
+    }
+}
+
+fn handler_metrics_struct_item() -> syn::Item {
+    syn::parse_quote! {
         struct KoboHandlerLifecycleGuard {
             handler: &'static str,
             source_line: usize,
             cleanup_hook: Option<&'static str>,
+            cleanup: Option<fn() -> KoboHandlerCleanupFuture>,
             state: &'static str,
+            metrics: KoboHandlerLifecycleMetrics,
+            cleanup_status: &'static str,
+            tracing_span_closed: bool,
         }
     }
 }
@@ -283,46 +330,125 @@ fn handler_guard_impl_item() -> syn::Item {
                     handler,
                     source_line,
                     cleanup_hook: None,
+                    cleanup: None,
                     state: "entered",
+                    metrics: KoboHandlerLifecycleMetrics {
+                        entries: 1,
+                        ..KoboHandlerLifecycleMetrics::default()
+                    },
+                    cleanup_status: "pending",
+                    tracing_span_closed: false,
                 }
             }
 
-            fn register_cleanup(&mut self, cleanup_hook: &'static str) {
-                self.cleanup_hook = if cleanup_hook.is_empty() {
-                    None
-                } else {
-                    Some(cleanup_hook)
-                };
+            fn register_cleanup(
+                &mut self,
+                cleanup_hook: &'static str,
+                cleanup: fn() -> KoboHandlerCleanupFuture,
+            ) {
+                self.cleanup_hook = Some(cleanup_hook);
+                self.cleanup = Some(cleanup);
+            }
+
+            fn register_no_cleanup(&mut self) {
+                self.cleanup_hook = None;
+                self.cleanup = None;
+                self.cleanup_status = "not-registered";
             }
 
             fn note_no_cleanup_hook(&mut self) {
-                self.cleanup_hook = self.cleanup_hook;
+                self.cleanup_status = "not-registered";
+            }
+
+            async fn run_registered_cleanup(&mut self, reason: &'static str) {
+                if let Some(cleanup) = self.cleanup.take() {
+                    self.record_cleanup_run(reason);
+                    cleanup().await;
+                } else {
+                    self.note_no_cleanup_hook();
+                }
+            }
+
+            fn record_cleanup_run(&mut self, reason: &'static str) {
+                self.cleanup_status = reason;
+                self.metrics.cleanup_runs += 1;
             }
 
             fn record_reply(&mut self) {
                 self.state = "reply";
+                self.metrics.replies += 1;
             }
 
             fn record_reject(&mut self) {
                 self.state = "reject";
+                self.metrics.rejects += 1;
             }
 
             fn record_cancel(&mut self) {
                 self.state = "cancel";
+                self.metrics.cancels += 1;
             }
 
-            fn metrics_boundary(&self, _handler: &'static str) {}
+            fn metrics_boundary(&mut self, handler: &'static str) {
+                self.metrics.exits += 1;
+                let _ = (
+                    "handler-metrics-boundary",
+                    handler,
+                    self.metrics.entries,
+                    self.metrics.exits,
+                    self.metrics.replies,
+                    self.metrics.rejects,
+                    self.metrics.cancels,
+                    self.metrics.cleanup_runs,
+                );
+            }
 
-            fn close_tracing_span(&self) {
-                let _ = (self.handler, self.source_line, self.state);
+            fn close_tracing_span(&mut self) {
+                self.tracing_span_closed = true;
+                let _ = (
+                    "handler-tracing-close",
+                    self.handler,
+                    self.source_line,
+                    self.state,
+                    self.cleanup_status,
+                    self.tracing_span_closed,
+                );
             }
 
             fn run_cancel_cleanup_on_drop(&mut self) {
                 if self.state == "entered" {
+                    if let Some(cleanup) = self.cleanup.take() {
+                        self.record_cleanup_run("cancel-drop");
+                        KoboHandlerCleanupRuntime::run(cleanup);
+                    }
                     self.record_cancel();
                 }
             }
         }
+    }
+}
+
+fn terminal_actions_from_block(block: &syn::Block) -> Vec<String> {
+    let rendered = block.to_token_stream().to_string();
+    ["reply", "reject", "cancel"]
+        .into_iter()
+        .filter(|action| {
+            rendered.contains(&format!(". {action} (")) || rendered.contains(&format!(".{action}("))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+fn handler_evidence(spec: &HandlerSpec) -> HandlerLifecycleEvidence {
+    HandlerLifecycleEvidence {
+        name: spec.name.clone(),
+        source_line: spec.source_line,
+        cleanup_hook: spec.cleanup_name(),
+        terminal_actions: spec.terminal_actions.clone(),
+        tracing_boundary: "drop-closes-span".to_owned(),
+        metrics_boundary: "handler-entry-exit-counters".to_owned(),
+        cleanup_boundary: "registered-success-error-cancel".to_owned(),
+        cancel_cleanup: "drop-spawns-registered-cleanup".to_owned(),
     }
 }
 

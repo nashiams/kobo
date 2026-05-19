@@ -103,6 +103,7 @@ fn handler_closes_tracing_span_on_drop_path() {
     let generated = inspect_handler();
 
     for expected in [
+        "struct KoboHandlerLifecycleMetrics",
         "struct KoboHandlerLifecycleGuard",
         "impl Drop for KoboHandlerLifecycleGuard",
         "close_tracing_span",
@@ -122,9 +123,14 @@ fn handler_runs_cleanup_hook_on_success_error_and_cancel() {
     let generated = inspect_handler();
 
     for expected in [
-        "cleanup_request().await",
-        "register_cleanup(\"cleanup_request\")",
+        "type KoboHandlerCleanupFuture",
+        "register_cleanup",
+        "|| -> KoboHandlerCleanupFuture",
+        "run_registered_cleanup(\"success\").await",
+        "run_registered_cleanup(\"error\").await",
         "run_cancel_cleanup_on_drop",
+        "KoboHandlerCleanupRuntime::run(cleanup);",
+        "record_cleanup_run",
     ] {
         assert_contains(
             &generated,
@@ -235,10 +241,19 @@ fn handler_tokens_emit_must_call_metadata() {
         witness["handler_lifecycle"]["handlers"][0]["name"], "handle",
         "witness should identify the handler lifecycle surface"
     );
+    assert_eq!(
+        witness["handler_lifecycle"]["evidence_source"], "codegen-lowering",
+        "handler evidence should come from compiler lowering metadata, not source reparsing"
+    );
     assert_contains(
         &witness["handler_lifecycle"].to_string(),
         "reply",
         "handler witness should include reply/reject/cancel must_call metadata",
+    );
+    assert_contains(
+        &witness["handler_lifecycle"].to_string(),
+        "reject",
+        "handler witness should preserve the terminal actions actually present in lowered code",
     );
 }
 
@@ -284,6 +299,16 @@ fn handler_metrics_boundary_is_visible_in_inspect() {
         &generated,
         "metrics_boundary(\"handle\")",
         "handler inspect output should expose the metrics boundary",
+    );
+    assert_contains(
+        &generated,
+        "self.metrics.exits += 1",
+        "handler metrics boundary should update lifecycle metrics instead of being a no-op",
+    );
+    assert_not_contains(
+        &generated,
+        "fn metrics_boundary(&self, _handler: &'static str) {}",
+        "handler metrics boundary must not lower to an empty placeholder",
     );
     assert_not_contains(
         &generated,

@@ -1,7 +1,7 @@
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 
-use crate::RuntimeProfileOptions;
+use crate::{RuntimeProfileOptions, ServiceRuntimeEvidence, ServiceRuntimeMethodEvidence};
 
 #[derive(Clone)]
 struct ServiceSpec {
@@ -16,6 +16,7 @@ struct ServiceSpec {
 
 #[derive(Clone)]
 struct ServiceMethod {
+    method_ident: syn::Ident,
     variant_ident: syn::Ident,
     fields: Vec<ServiceField>,
     reply_ty: syn::Type,
@@ -27,22 +28,32 @@ struct ServiceField {
     ty: syn::Type,
 }
 
-pub(crate) fn service_support_items(
+pub(crate) struct ServiceSupport {
+    pub(crate) items: Vec<syn::Item>,
+    pub(crate) evidence: Vec<ServiceRuntimeEvidence>,
+}
+
+pub(crate) fn service_support(
     ast: &kobo_parser::KoboFile,
     file: &syn::File,
     runtime_profile: &RuntimeProfileOptions,
-) -> Vec<syn::Item> {
+) -> ServiceSupport {
     let specs = service_specs(ast, file, runtime_profile);
     if specs.is_empty() {
-        return Vec::new();
+        return ServiceSupport {
+            items: Vec::new(),
+            evidence: Vec::new(),
+        };
     }
 
     let mut items = Vec::new();
-    items.extend(cancellation_token_items());
+    items.extend(shared_service_runtime_items());
+    let mut evidence = Vec::new();
     for spec in specs {
+        evidence.push(service_runtime_evidence(&spec));
         items.extend(items_for_service(&spec));
     }
-    items
+    ServiceSupport { items, evidence }
 }
 
 pub(crate) fn append_service_support_items(file: &mut syn::File, items: Vec<syn::Item>) {
@@ -145,6 +156,7 @@ fn service_method(method: &syn::ImplItemFn) -> Option<ServiceMethod> {
     }
 
     Some(ServiceMethod {
+        method_ident: method.sig.ident.clone(),
         variant_ident: format_ident!("{}", upper_camel_case(&method.sig.ident.to_string())),
         fields: service_fields(method),
         reply_ty: reply_type(&method.sig.output),
@@ -196,7 +208,7 @@ fn upper_camel_case(value: &str) -> String {
     result
 }
 
-fn cancellation_token_items() -> Vec<syn::Item> {
+fn shared_service_runtime_items() -> Vec<syn::Item> {
     let mut items = Vec::new();
     if let Some(item) = syn::parse2(quote! {
         #[derive(Clone, Default)]
@@ -227,6 +239,32 @@ fn cancellation_token_items() -> Vec<syn::Item> {
     {
         items.push(item);
     }
+    if let Some(item) = syn::parse2(quote! {
+        struct KoboServiceScenarioHook;
+    })
+    .ok()
+    {
+        items.push(item);
+    }
+    if let Some(item) = syn::parse2(quote! {
+        impl KoboServiceScenarioHook {
+            fn before(service: &'static str, method: &'static str) {
+                let _ = ("service-hook-before", service, method);
+            }
+
+            fn after(service: &'static str, method: &'static str) {
+                let _ = ("service-hook-after", service, method);
+            }
+
+            fn shutdown(service: &'static str) {
+                let _ = ("service-hook-shutdown", service);
+            }
+        }
+    })
+    .ok()
+    {
+        items.push(item);
+    }
     items
 }
 
@@ -236,6 +274,9 @@ fn items_for_service(spec: &ServiceSpec) -> Vec<syn::Item> {
         items.push(item);
     }
     if let Some(item) = service_handle_struct_item(spec) {
+        items.push(item);
+    }
+    if let Some(item) = service_error_item(spec) {
         items.push(item);
     }
     if let Some(item) = service_handle_impl_item(spec) {
@@ -306,6 +347,15 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
         proc_macro2::Span::call_site(),
     );
     let service_ident = &spec.service_ident;
+    let error_ident = service_error_ident(spec);
+    let dispatch_arms = spec
+        .methods
+        .iter()
+        .map(|method| dispatch_arm_tokens(spec, method));
+    let client_methods = spec
+        .methods
+        .iter()
+        .map(|method| client_method_tokens(spec, method));
     let send_method = if spec.runtime_profile.service_backpressure == "try-send" {
         quote! {
             async fn send(
@@ -328,9 +378,16 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
     syn::parse2(quote! {
         impl #handle_ident {
             fn new(sender: tokio::sync::mpsc::Sender<#message_ident>) -> Self {
+                Self::new_with_cancellation(sender, KoboServiceCancellationToken::new())
+            }
+
+            fn new_with_cancellation(
+                sender: tokio::sync::mpsc::Sender<#message_ident>,
+                cancellation: KoboServiceCancellationToken,
+            ) -> Self {
                 Self {
                     sender,
-                    cancellation: KoboServiceCancellationToken::new(),
+                    cancellation,
                 }
             }
 
@@ -341,13 +398,51 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
                 tokio::sync::mpsc::channel::<#message_ident>(#buffer_size)
             }
 
+            fn start(service: #service_ident) -> (Self, tokio::task::JoinHandle<()>) {
+                let (sender, receiver) = Self::channel();
+                let cancellation = KoboServiceCancellationToken::new();
+                let handle = Self::new_with_cancellation(sender, cancellation.clone());
+                let worker = tokio::spawn(Self::serve(service, receiver, cancellation));
+                (handle, worker)
+            }
+
+            async fn serve(
+                service: #service_ident,
+                mut receiver: tokio::sync::mpsc::Receiver<#message_ident>,
+                cancellation: KoboServiceCancellationToken,
+            ) {
+                while let Some(message) = receiver.recv().await {
+                    if cancellation.is_cancelled() {
+                        break;
+                    }
+                    match message {
+                        #(#dispatch_arms)*
+                        #message_ident::Shutdown => {
+                            cancellation.cancel();
+                            KoboServiceScenarioHook::shutdown(stringify!(#service_ident));
+                            break;
+                        }
+                    }
+                }
+            }
+
             #send_method
+
+            #(#client_methods)*
 
             async fn shutdown(
                 &self,
             ) -> Result<(), tokio::sync::mpsc::error::SendError<#message_ident>> {
                 self.cancellation.cancel();
                 self.sender.send(#message_ident::Shutdown).await
+            }
+
+            async fn shutdown_and_wait(
+                self,
+                worker: tokio::task::JoinHandle<()>,
+            ) -> Result<(), #error_ident> {
+                self.shutdown().await.map_err(|_| #error_ident::SendClosed)?;
+                worker.await.map_err(|_| #error_ident::JoinFailed)
             }
 
             fn is_shutdown_requested(&self) -> bool {
@@ -360,4 +455,92 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
         }
     })
     .ok()
+}
+
+fn service_error_item(spec: &ServiceSpec) -> Option<syn::Item> {
+    let error_ident = service_error_ident(spec);
+    syn::parse2(quote! {
+        #[derive(Debug)]
+        enum #error_ident {
+            SendClosed,
+            ResponseDropped,
+            JoinFailed,
+        }
+    })
+    .ok()
+}
+
+fn service_error_ident(spec: &ServiceSpec) -> syn::Ident {
+    format_ident!("{}ServiceError", spec.service_ident)
+}
+
+fn dispatch_arm_tokens(spec: &ServiceSpec, method: &ServiceMethod) -> proc_macro2::TokenStream {
+    let message_ident = &spec.message_ident;
+    let service_ident = &spec.service_ident;
+    let variant_ident = &method.variant_ident;
+    let method_ident = &method.method_ident;
+    let method_name = method_ident.to_string();
+    let field_idents = method
+        .fields
+        .iter()
+        .map(|field| &field.ident)
+        .collect::<Vec<_>>();
+    quote! {
+        #message_ident::#variant_ident { #(#field_idents,)* __reply } => {
+            KoboServiceScenarioHook::before(stringify!(#service_ident), #method_name);
+            let __kobo_reply = service.#method_ident(#(#field_idents),*).await;
+            let _ = __reply.send(__kobo_reply);
+            KoboServiceScenarioHook::after(stringify!(#service_ident), #method_name);
+        }
+    }
+}
+
+fn client_method_tokens(spec: &ServiceSpec, method: &ServiceMethod) -> proc_macro2::TokenStream {
+    let message_ident = &spec.message_ident;
+    let error_ident = service_error_ident(spec);
+    let method_ident = &method.method_ident;
+    let variant_ident = &method.variant_ident;
+    let args = method.fields.iter().map(|field| {
+        let ident = &field.ident;
+        let ty = &field.ty;
+        quote!(#ident: #ty)
+    });
+    let field_idents = method
+        .fields
+        .iter()
+        .map(|field| &field.ident)
+        .collect::<Vec<_>>();
+    let reply_ty = &method.reply_ty;
+    quote! {
+        async fn #method_ident(&self #(, #args)*) -> Result<#reply_ty, #error_ident> {
+            let (__reply_tx, __reply_rx) = tokio::sync::oneshot::channel();
+            self.send(#message_ident::#variant_ident {
+                #(#field_idents,)*
+                __reply: __reply_tx,
+            })
+            .await
+            .map_err(|_| #error_ident::SendClosed)?;
+            __reply_rx.await.map_err(|_| #error_ident::ResponseDropped)
+        }
+    }
+}
+
+fn service_runtime_evidence(spec: &ServiceSpec) -> ServiceRuntimeEvidence {
+    ServiceRuntimeEvidence {
+        name: spec.service_ident.to_string(),
+        buffer: spec.buffer_size,
+        source_line: spec.source_line,
+        backpressure: spec.runtime_profile.service_backpressure.clone(),
+        dispatch_loop: true,
+        client_api: true,
+        scenario_hooks: true,
+        methods: spec
+            .methods
+            .iter()
+            .map(|method| ServiceRuntimeMethodEvidence {
+                name: method.method_ident.to_string(),
+                variant: method.variant_ident.to_string(),
+            })
+            .collect(),
+    }
 }

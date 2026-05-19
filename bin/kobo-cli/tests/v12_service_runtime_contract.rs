@@ -135,6 +135,33 @@ fn service_shutdown_path_is_source_mapped_and_inspect_visible() {
 }
 
 #[test]
+fn service_generates_dispatch_loop_and_client_methods() {
+    let generated = inspect_service(64);
+
+    for expected in [
+        "async fn serve(",
+        "while let Some(message) = receiver.recv().await",
+        "match message",
+        "GatewayMessage::Submit",
+        "service.submit(request, attempt).await",
+        "GatewayMessage::Refresh",
+        "service.refresh(key).await",
+        "async fn submit(",
+        "async fn refresh(",
+        "tokio::sync::oneshot::channel",
+        "__reply_rx.await",
+        "KoboServiceScenarioHook::before",
+        "KoboServiceScenarioHook::after",
+    ] {
+        assert_contains(
+            &generated,
+            expected,
+            "service lowering should generate an executable dispatch loop and typed client API",
+        );
+    }
+}
+
+#[test]
 fn service_cancellation_token_is_wired_into_shutdown() {
     let generated = inspect_service(64);
 
@@ -183,6 +210,10 @@ fn service_sim_quick_runs_one_critical_path_without_manual_runtime_plumbing() {
     assert_eq!(
         witness["service_runtime"]["services"][0]["name"], "Gateway",
         "witness should identify the service that participates in the scenario"
+    );
+    assert_eq!(
+        witness["service_runtime"]["evidence_source"], "codegen-lowering",
+        "service evidence should come from compiler lowering metadata, not source reparsing"
     );
     assert_eq!(
         witness["service_runtime"]["services"][0]["buffer"], 64,

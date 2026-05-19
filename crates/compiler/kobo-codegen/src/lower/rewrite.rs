@@ -11,6 +11,7 @@ mod util;
 
 use kobo_parser::KoboFile;
 use syn::parse_quote;
+use syn::spanned::Spanned;
 
 use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
@@ -22,7 +23,7 @@ use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
 use crate::error_policy::ErrorPolicyMarker;
 use crate::executor::executor_attribute;
-use crate::CodegenOptions;
+use crate::{CodegenOptions, ParallelLoopEvidence, TaskLocalEvidence};
 
 pub(crate) struct Lowerer<'a> {
     pub(super) ast: &'a KoboFile,
@@ -38,6 +39,8 @@ pub(crate) struct Lowerer<'a> {
     pub(super) anchors: Vec<LoweringAnchor>,
     pub(super) error_policy_markers: Vec<ErrorPolicyMarker>,
     pub(super) needs_rayon: bool,
+    pub(super) parallel_evidence: Vec<ParallelLoopEvidence>,
+    pub(super) task_local_evidence: Vec<TaskLocalEvidence>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -67,6 +70,8 @@ impl<'a> Lowerer<'a> {
             anchors: Vec::new(),
             error_policy_markers: Vec::new(),
             needs_rayon: false,
+            parallel_evidence: Vec::new(),
+            task_local_evidence: Vec::new(),
         }
     }
 
@@ -90,6 +95,8 @@ impl<'a> Lowerer<'a> {
         Vec<ErrorPolicyMarker>,
         ConcurrentSupportNeeds,
         bool,
+        Vec<ParallelLoopEvidence>,
+        Vec<TaskLocalEvidence>,
     ) {
         (
             self.annotation_notes,
@@ -97,6 +104,8 @@ impl<'a> Lowerer<'a> {
             self.error_policy_markers,
             self.concurrent_support,
             self.needs_rayon,
+            self.parallel_evidence,
+            self.task_local_evidence,
         )
     }
 
@@ -537,15 +546,34 @@ impl<'a> Lowerer<'a> {
                 if let syn::Expr::ForLoop(for_loop) = expr {
                     let policy = parallel::policy_value(&for_loop.attrs)
                         .unwrap_or_else(|| "outside".to_owned());
+                    let source_line = self.source_line_for_expr_for_loop(for_loop);
                     match parallel::lower_for_loop(for_loop) {
                         parallel::ParallelLowering::Parallel => {
                             self.needs_rayon = true;
+                            self.parallel_evidence.push(ParallelLoopEvidence {
+                                source_line,
+                                lowering: "rayon-par-iter".to_owned(),
+                                policy: policy.clone(),
+                                proof: "ast-iterator-lowering-send-sync-gate".to_owned(),
+                            });
                         }
                         parallel::ParallelLowering::SerialPolicy => {
                             parallel::mark_serial_policy(for_loop);
+                            self.parallel_evidence.push(ParallelLoopEvidence {
+                                source_line,
+                                lowering: "serial".to_owned(),
+                                policy: "serial-order".to_owned(),
+                                proof: "explicit-order-policy".to_owned(),
+                            });
                         }
                         parallel::ParallelLowering::BoundaryPolicy => {
                             parallel::mark_boundary_policy(for_loop, &policy);
+                            self.parallel_evidence.push(ParallelLoopEvidence {
+                                source_line,
+                                lowering: "boundary-policy".to_owned(),
+                                policy: policy.clone(),
+                                proof: "explicit-boundary-policy".to_owned(),
+                            });
                         }
                         parallel::ParallelLowering::None => {}
                     }
@@ -568,6 +596,15 @@ impl<'a> Lowerer<'a> {
                     || self.any_captured_non_send(&captured);
                 if use_spawn_local {
                     self.needs_local_set = true;
+                    self.task_local_evidence.push(TaskLocalEvidence {
+                        source_line: self.source_line_for_macro(&stmt_macro.mac),
+                        strategy: "tokio-spawn-local-localset".to_owned(),
+                        proof: if spawn::is_spawn_local_block_macro(&stmt_macro.mac) {
+                            "explicit-spawn-local-zone".to_owned()
+                        } else {
+                            "non-send-capture-tier".to_owned()
+                        },
+                    });
                 }
                 if let Some(spawn_expr) =
                     spawn::lower_spawn_macro_with_strategy(&stmt_macro.mac, use_spawn_local)
@@ -695,6 +732,18 @@ impl<'a> Lowerer<'a> {
             return;
         };
         self.record_binding_anchor(binding, kind);
+    }
+
+    fn source_line_for_expr_for_loop(&self, for_loop: &syn::ExprForLoop) -> usize {
+        let span = self.ast.span_from_syn(for_loop.for_token.span);
+        let (line, _) = self.ast.line_col(span);
+        line
+    }
+
+    fn source_line_for_macro(&self, mac: &syn::Macro) -> usize {
+        let span = self.ast.span_from_syn(mac.path.span());
+        let (line, _) = self.ast.line_col(span);
+        line
     }
 }
 

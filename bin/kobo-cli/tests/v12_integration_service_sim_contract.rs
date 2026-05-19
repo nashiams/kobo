@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 use v09_common::{
-    assert_contains, assert_not_contains, assert_success, path_arg, run_kobo_with_timeout, s,
-    CliOutput, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg,
+    run_kobo_with_timeout, s, CliOutput, TestProject,
 };
 
 const V12_TIMEOUT: Duration = Duration::from_secs(60);
@@ -82,6 +82,11 @@ impl Gateway {
     async fn submit(&self, request: Request) -> Response {
         Response { status: 202 }
     }
+
+    async fn refresh(&self, key: String, force: bool) -> Response {
+        let _seen = (key, force);
+        Response { status: 204 }
+    }
 }
 
 #[kobo::handler]
@@ -111,6 +116,26 @@ async fn product_loop() {
     ward.task();
     let request = Request { id: 1 };
     handle(request).await;
+    ward.network.drop_message("client");
+}
+"#,
+    );
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "integrated_service_sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = "0.12"
+"#,
+    );
+    project.write(
+        "src/main.rs",
+        r#"
+fn main() {
+    let _request = reqwest::get("https://example.test/integration");
 }
 "#,
     );
@@ -136,7 +161,10 @@ fn integrated_service_handler_record_activity_spawn_local_and_parallel_are_visib
     let generated = output.combined();
     for expected in [
         "enum GatewayMessage",
+        "async fn serve(",
+        "service.refresh(key, force).await",
         "KoboHandlerOutcome",
+        "run_registered_cleanup",
         "record_reply",
         "tokio::task::spawn_local",
         "values.par_iter()",
@@ -182,6 +210,7 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
         r#""service_runtime""#,
         r#""handler_lifecycle""#,
         "Gateway",
+        "refresh",
         "handle",
         "boundary-record",
         "recorded-boundary-io",
@@ -190,6 +219,7 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
         "ward.task.local",
         "runtime_profile",
         "runtime_profile_hash",
+        "network-drop-message",
     ] {
         assert_contains(
             &text,
@@ -208,5 +238,63 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
     assert_eq!(
         witness["full_ecosystem_exploration"], false,
         "integrated fixture must not claim arbitrary ecosystem exploration"
+    );
+}
+
+#[test]
+fn integrated_negative_parallel_and_standalone_debt_are_gated() {
+    let (project, _) = integration_project("v12-integrated-negative-and-debt");
+    let unsafe_file = project.write(
+        "src/unsafe_parallel.kobo",
+        r#"
+use std::rc::Rc;
+
+fn crunch(values: Vec<u64>) {
+    let state = Rc::new(1_u64);
+    #[kobo::parallel]
+    for value in values.iter() {
+        let _seen = *value + *state;
+    }
+}
+"#,
+    );
+
+    let unsafe_output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&unsafe_file)],
+        &project.root,
+    );
+    assert_failure(
+        &unsafe_output,
+        "integrated negative fixture should reject unsafe parallel capture",
+    );
+    assert_contains(
+        &unsafe_output.combined(),
+        "non-Send",
+        "unsafe parallel rejection should explain the Send/Sync blocker",
+    );
+
+    let debt_output = run_kobo(
+        &[
+            s("debt"),
+            s("--cargo"),
+            path_arg(&project.root),
+            s("--json"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &debt_output,
+        "integrated fixture should run standalone Rust debt over the surrounding Cargo project",
+    );
+    let debt_json: Value =
+        serde_json::from_str(&debt_output.stdout).expect("debt output should parse");
+    assert_eq!(debt_json["mode"], "rust-cargo-standalone");
+    assert!(
+        debt_json["findings"]
+            .as_array()
+            .expect("debt findings should be an array")
+            .iter()
+            .any(|finding| finding["category"] == "external-boundary-candidate"),
+        "integrated Cargo debt should report an advisory external boundary candidate: {debt_json}"
     );
 }

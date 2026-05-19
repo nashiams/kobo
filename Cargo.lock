@@ -332,6 +332,7 @@ dependencies = [
  "kobo-errors",
  "kobo-ir",
  "proc-macro2",
+ "quote",
  "syn",
 ]
 

@@ -106,18 +106,22 @@ fn attr_value(attr: &syn::Attribute, key: &str) -> Option<String> {
 }
 
 fn lower_iterator_expr_to_rayon(expr: &mut Box<syn::Expr>) -> bool {
-    let rendered = expr.to_token_stream().to_string();
-    if !(rendered.contains(". iter (") || rendered.contains(".iter(")) {
-        return false;
+    lower_iterator_expr(expr.as_mut())
+}
+
+fn lower_iterator_expr(expr: &mut syn::Expr) -> bool {
+    match expr {
+        syn::Expr::MethodCall(method_call) => {
+            if method_call.method == "iter" && method_call.args.is_empty() {
+                method_call.method = syn::Ident::new("par_iter", method_call.method.span());
+                return true;
+            }
+            lower_iterator_expr(method_call.receiver.as_mut())
+        }
+        syn::Expr::Paren(paren) => lower_iterator_expr(paren.expr.as_mut()),
+        syn::Expr::Group(group) => lower_iterator_expr(group.expr.as_mut()),
+        _ => false,
     }
-    let lowered = rendered
-        .replace(". iter (", ". par_iter (")
-        .replace(".iter(", ".par_iter(");
-    let Ok(parsed) = syn::parse_str::<syn::Expr>(&lowered) else {
-        return false;
-    };
-    *expr = Box::new(parsed);
-    true
 }
 
 fn is_rayon_prelude_use(item: &syn::Item) -> bool {

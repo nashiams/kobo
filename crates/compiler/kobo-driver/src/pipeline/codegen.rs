@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
+use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, RuntimeEvidence};
 use kobo_ir::{FileId, MustCallObligation, ScenarioOpKind, ScenarioProgram};
 use kobo_migrate::SolveOutcome;
 use kobo_parser::KoboFile;
@@ -28,6 +28,7 @@ pub struct CodegenArtifacts {
     pub must_call_obligations: Vec<MustCallObligation>,
     pub error_policy_sites: Vec<ErrorPolicySite>,
     pub scenario_programs: Vec<ScenarioProgram>,
+    pub runtime_evidence: RuntimeEvidence,
 }
 
 pub fn run_codegen_pipeline(
@@ -66,6 +67,7 @@ pub fn run_codegen_pipeline(
         rs_source,
         source_map,
         error_policy_sites,
+        runtime_evidence,
     } = codegen_file(
         &kir,
         &kobo_file,
@@ -135,6 +137,7 @@ pub fn run_codegen_pipeline(
             kir.scenario_programs(),
             &session.config.ecosystem_policy,
         ),
+        runtime_evidence,
     })
 }
 

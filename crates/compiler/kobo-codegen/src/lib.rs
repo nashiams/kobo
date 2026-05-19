@@ -33,6 +33,60 @@ pub struct CodegenOutput {
     pub rs_source: String,
     pub source_map: KoboSourceMap,
     pub error_policy_sites: Vec<ErrorPolicySite>,
+    pub runtime_evidence: RuntimeEvidence,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeEvidence {
+    pub services: Vec<ServiceRuntimeEvidence>,
+    pub handlers: Vec<HandlerLifecycleEvidence>,
+    pub parallel_loops: Vec<ParallelLoopEvidence>,
+    pub task_local_zones: Vec<TaskLocalEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceRuntimeEvidence {
+    pub name: String,
+    pub buffer: usize,
+    pub source_line: usize,
+    pub backpressure: String,
+    pub dispatch_loop: bool,
+    pub client_api: bool,
+    pub scenario_hooks: bool,
+    pub methods: Vec<ServiceRuntimeMethodEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceRuntimeMethodEvidence {
+    pub name: String,
+    pub variant: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HandlerLifecycleEvidence {
+    pub name: String,
+    pub source_line: usize,
+    pub cleanup_hook: Option<String>,
+    pub terminal_actions: Vec<String>,
+    pub tracing_boundary: String,
+    pub metrics_boundary: String,
+    pub cleanup_boundary: String,
+    pub cancel_cleanup: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParallelLoopEvidence {
+    pub source_line: usize,
+    pub lowering: String,
+    pub policy: String,
+    pub proof: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskLocalEvidence {
+    pub source_line: usize,
+    pub strategy: String,
+    pub proof: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,5 +182,6 @@ pub fn codegen_file(
         rs_source,
         source_map,
         error_policy_sites,
+        runtime_evidence: lowered.runtime_evidence,
     }
 }

@@ -1,3 +1,6 @@
+use quote::ToTokens;
+use syn::visit::Visit;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParallelWarning {
     pub kind: ParallelWarningKind,
@@ -30,6 +33,16 @@ struct LineInfo<'a> {
 }
 
 pub fn scan_source_parallel_warnings(source: &str) -> Vec<ParallelWarning> {
+    if let Ok(file) = syn::parse_file(source) {
+        let mut scanner = ParallelAstScanner {
+            source,
+            bindings: Vec::new(),
+            warnings: Vec::new(),
+        };
+        scanner.visit_file(&file);
+        return scanner.warnings;
+    }
+
     let lines = line_infos(source);
     let mut warnings = Vec::new();
     let mut bindings = Vec::new();
@@ -53,6 +66,206 @@ pub fn scan_source_parallel_warnings(source: &str) -> Vec<ParallelWarning> {
     }
 
     warnings
+}
+
+struct ParallelAstScanner<'a> {
+    source: &'a str,
+    bindings: Vec<BindingFact>,
+    warnings: Vec<ParallelWarning>,
+}
+
+impl<'ast> Visit<'ast> for ParallelAstScanner<'_> {
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let Some(binding) = binding_from_local(local) {
+            self.bindings.push(binding);
+        }
+        syn::visit::visit_local(self, local);
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        let Some(attr) = node.attrs.iter().find(|attr| is_parallel_attr(attr)) else {
+            syn::visit::visit_expr_for_loop(self, node);
+            return;
+        };
+        if attr_has_key(attr, "order") {
+            syn::visit::visit_expr_for_loop(self, node);
+            return;
+        }
+
+        let has_policy = attr_has_key(attr, "policy");
+        let body_source = node.body.to_token_stream().to_string();
+        if !has_policy && body_source.contains("ward") {
+            self.warnings.push(ParallelWarning {
+                kind: ParallelWarningKind::MissingBoundaryPolicy,
+                source_offset: token_offset(self.source, "ward").unwrap_or(0),
+            });
+        }
+
+        for binding in &self.bindings {
+            if binding
+                .type_name
+                .as_deref()
+                .is_some_and(|type_name| type_name == "Rc")
+                && contains_ident(&body_source, &binding.name)
+            {
+                self.warnings.push(ParallelWarning {
+                    kind: ParallelWarningKind::NonSendCapture {
+                        binding_name: binding.name.clone(),
+                        type_name: "Rc".to_owned(),
+                    },
+                    source_offset: token_offset(self.source, &binding.name).unwrap_or(0),
+                });
+            }
+            if binding.is_mutable && block_mutates_binding(&node.body, &binding.name) {
+                self.warnings.push(ParallelWarning {
+                    kind: ParallelWarningKind::SharedMutation {
+                        binding_name: binding.name.clone(),
+                    },
+                    source_offset: mutation_offset(self.source, &binding.name)
+                        .or_else(|| token_offset(self.source, &binding.name))
+                        .unwrap_or(0),
+                });
+            }
+        }
+
+        syn::visit::visit_expr_for_loop(self, node);
+    }
+}
+
+struct BodyMutationVisitor<'a> {
+    binding: &'a str,
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for BodyMutationVisitor<'_> {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if receiver_matches_binding(node.receiver.as_ref(), self.binding)
+            && mutating_method(&node.method)
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_expr_assign(&mut self, node: &'ast syn::ExprAssign) {
+        if receiver_matches_binding(node.left.as_ref(), self.binding) {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_assign(self, node);
+    }
+}
+
+fn block_mutates_binding(block: &syn::Block, binding: &str) -> bool {
+    let mut visitor = BodyMutationVisitor {
+        binding,
+        found: false,
+    };
+    visitor.visit_block(block);
+    visitor.found
+}
+
+fn receiver_matches_binding(expr: &syn::Expr, binding: &str) -> bool {
+    match expr {
+        syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() == 1 => path
+            .path
+            .segments
+            .first()
+            .is_some_and(|segment| segment.ident == binding),
+        syn::Expr::Field(field) => receiver_matches_binding(field.base.as_ref(), binding),
+        syn::Expr::Index(index) => receiver_matches_binding(index.expr.as_ref(), binding),
+        syn::Expr::Paren(paren) => receiver_matches_binding(paren.expr.as_ref(), binding),
+        syn::Expr::Group(group) => receiver_matches_binding(group.expr.as_ref(), binding),
+        _ => false,
+    }
+}
+
+fn mutating_method(method: &syn::Ident) -> bool {
+    matches!(
+        method.to_string().as_str(),
+        "push" | "insert" | "extend" | "remove" | "pop" | "clear" | "retain" | "truncate"
+    )
+}
+
+fn is_parallel_attr(attr: &syn::Attribute) -> bool {
+    let segments = attr.path().segments.iter().collect::<Vec<_>>();
+    segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "parallel"
+}
+
+fn attr_has_key(attr: &syn::Attribute, key: &str) -> bool {
+    attr_value(attr, key).is_some()
+}
+
+fn attr_value(attr: &syn::Attribute, key: &str) -> Option<String> {
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let entries = list
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+        )
+        .ok()?;
+    for entry in entries {
+        if entry.path.get_ident().is_none_or(|ident| ident != key) {
+            continue;
+        }
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(value),
+            ..
+        }) = entry.value
+        else {
+            continue;
+        };
+        return Some(value.value());
+    }
+    None
+}
+
+fn binding_from_local(local: &syn::Local) -> Option<BindingFact> {
+    let (name, is_mutable, type_hint) = binding_name_from_pat(&local.pat)?;
+    let init_tokens = local
+        .init
+        .as_ref()
+        .map(|init| init.expr.to_token_stream().to_string())
+        .unwrap_or_default();
+    let type_tokens = type_hint.unwrap_or_default();
+    let type_name = if type_tokens.contains("Rc")
+        || init_tokens.contains("Rc :: new")
+        || init_tokens.contains("std :: rc :: Rc")
+    {
+        Some("Rc".to_owned())
+    } else if type_tokens.contains("Arc") || init_tokens.contains("Arc :: new") {
+        Some("Arc".to_owned())
+    } else {
+        None
+    };
+    Some(BindingFact {
+        name,
+        type_name,
+        is_mutable,
+    })
+}
+
+fn binding_name_from_pat(pat: &syn::Pat) -> Option<(String, bool, Option<String>)> {
+    match pat {
+        syn::Pat::Ident(ident) => Some((ident.ident.to_string(), ident.mutability.is_some(), None)),
+        syn::Pat::Type(pat_type) => {
+            let syn::Pat::Ident(ident) = pat_type.pat.as_ref() else {
+                return None;
+            };
+            Some((
+                ident.ident.to_string(),
+                ident.mutability.is_some(),
+                Some(pat_type.ty.to_token_stream().to_string()),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn token_offset(source: &str, token: &str) -> Option<usize> {
+    ident_offset(source, token)
 }
 
 fn loop_warnings(
@@ -171,8 +384,25 @@ fn loop_extent(lines: &[LineInfo<'_>], start_index: usize) -> Option<(usize, usi
 fn mutation_offset(source: &str, binding: &str) -> Option<usize> {
     [".push(", ".insert(", ".extend(", ".remove("]
         .iter()
-        .filter_map(|method| source.find(&format!("{binding}{method}")))
+        .filter_map(|method| {
+            source
+                .find(&format!("{binding}{method}"))
+                .or_else(|| source.find(&format!("{binding}{}", spaced_method(method))))
+        })
         .min()
+}
+
+fn spaced_method(method: &str) -> String {
+    method
+        .chars()
+        .flat_map(|ch| {
+            if ch == '.' || ch == '(' {
+                vec![' ', ch, ' ']
+            } else {
+                vec![ch]
+            }
+        })
+        .collect::<String>()
 }
 
 fn contains_ident(source: &str, ident: &str) -> bool {

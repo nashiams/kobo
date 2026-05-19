@@ -689,6 +689,14 @@ fn write_run_witness(
         service_runtime_json(runtime_evidence),
     );
     object.insert(
+        "parallel_lowering".to_owned(),
+        parallel_lowering_json(runtime_evidence),
+    );
+    object.insert(
+        "task_local_zones".to_owned(),
+        task_local_zones_json(runtime_evidence),
+    );
+    object.insert(
         "handler_lifecycle".to_owned(),
         handler_lifecycle_json(runtime_evidence, run),
     );
@@ -760,6 +768,7 @@ fn service_runtime_service_json(
         "dispatch_loop": service.dispatch_loop,
         "client_api": service.client_api,
         "scenario_hooks": service.scenario_hooks,
+        "hook_events": &service.hook_events,
         "methods": service.methods
             .iter()
             .map(service_runtime_method_json)
@@ -808,6 +817,49 @@ fn handler_lifecycle_handler_json(
             "cleanup": &handler.cleanup_boundary,
             "cancel_cleanup": &handler.cancel_cleanup,
         },
+        "terminal_evidence_source": &handler.terminal_evidence_source,
+    })
+}
+
+fn parallel_lowering_json(evidence: &kobo_codegen::RuntimeEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "evidence_source": "codegen-lowering",
+        "loops": evidence.parallel_loops
+            .iter()
+            .map(parallel_loop_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn parallel_loop_json(loop_evidence: &kobo_codegen::ParallelLoopEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "source_line": loop_evidence.source_line,
+        "lowering": &loop_evidence.lowering,
+        "policy": &loop_evidence.policy,
+        "proof": &loop_evidence.proof,
+        "iterator": &loop_evidence.iterator,
+        "captured_bindings": &loop_evidence.captured_bindings,
+        "safety_checks": &loop_evidence.safety_checks,
+    })
+}
+
+fn task_local_zones_json(evidence: &kobo_codegen::RuntimeEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "evidence_source": "codegen-lowering",
+        "zones": evidence.task_local_zones
+            .iter()
+            .map(task_local_zone_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn task_local_zone_json(zone: &kobo_codegen::TaskLocalEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "source_line": zone.source_line,
+        "strategy": &zone.strategy,
+        "proof": &zone.proof,
+        "captured_bindings": &zone.captured_bindings,
+        "safety_checks": &zone.safety_checks,
     })
 }
 

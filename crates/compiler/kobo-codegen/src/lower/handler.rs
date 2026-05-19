@@ -73,7 +73,8 @@ fn handler_specs(ast: &kobo_parser::KoboFile, file: &syn::File) -> Vec<HandlerSp
                 return None;
             };
             handler_spec(ast, &function.attrs, &function.sig).map(|mut spec| {
-                spec.terminal_actions = terminal_actions_from_block(&function.block);
+                spec.terminal_actions =
+                    terminal_actions_from_lowered_guard(&function.sig, &function.block);
                 spec
             })
         })
@@ -258,7 +259,32 @@ fn handler_cleanup_runtime_impl_item() -> syn::Item {
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     handle.spawn(cleanup());
                 } else {
-                    let _ = cleanup;
+                    Self::block_on(cleanup());
+                }
+            }
+
+            fn block_on<F: std::future::Future>(future: F) -> F::Output {
+                fn clone(_: *const ()) -> std::task::RawWaker {
+                    raw_waker()
+                }
+                fn wake(_: *const ()) {}
+                fn wake_by_ref(_: *const ()) {}
+                fn drop(_: *const ()) {}
+                fn raw_waker() -> std::task::RawWaker {
+                    std::task::RawWaker::new(
+                        std::ptr::null(),
+                        &std::task::RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+                    )
+                }
+
+                let waker = unsafe { std::task::Waker::from_raw(raw_waker()) };
+                let mut context = std::task::Context::from_waker(&waker);
+                let mut future = std::pin::pin!(future);
+                loop {
+                    match future.as_mut().poll(&mut context) {
+                        std::task::Poll::Ready(output) => return output,
+                        std::task::Poll::Pending => std::thread::yield_now(),
+                    }
                 }
             }
         }
@@ -428,15 +454,24 @@ fn handler_guard_impl_item() -> syn::Item {
     }
 }
 
-fn terminal_actions_from_block(block: &syn::Block) -> Vec<String> {
+fn terminal_actions_from_lowered_guard(
+    signature: &syn::Signature,
+    block: &syn::Block,
+) -> Vec<String> {
+    let mut actions = Vec::new();
+    actions.push("reply".to_owned());
+    if returns_result(signature) {
+        actions.push("reject".to_owned());
+    }
+    if original_body_mentions_cancel(block) {
+        actions.push("cancel".to_owned());
+    }
+    actions
+}
+
+fn original_body_mentions_cancel(block: &syn::Block) -> bool {
     let rendered = block.to_token_stream().to_string();
-    ["reply", "reject", "cancel"]
-        .into_iter()
-        .filter(|action| {
-            rendered.contains(&format!(". {action} (")) || rendered.contains(&format!(".{action}("))
-        })
-        .map(str::to_owned)
-        .collect()
+    rendered.contains(". cancel (") || rendered.contains(".cancel(")
 }
 
 fn handler_evidence(spec: &HandlerSpec) -> HandlerLifecycleEvidence {
@@ -448,7 +483,8 @@ fn handler_evidence(spec: &HandlerSpec) -> HandlerLifecycleEvidence {
         tracing_boundary: "drop-closes-span".to_owned(),
         metrics_boundary: "handler-entry-exit-counters".to_owned(),
         cleanup_boundary: "registered-success-error-cancel".to_owned(),
-        cancel_cleanup: "drop-spawns-registered-cleanup".to_owned(),
+        cancel_cleanup: "drop-runs-registered-cleanup".to_owned(),
+        terminal_evidence_source: "lowered-guard-calls".to_owned(),
     }
 }
 

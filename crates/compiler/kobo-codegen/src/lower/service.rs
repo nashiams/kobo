@@ -240,6 +240,27 @@ fn shared_service_runtime_items() -> Vec<syn::Item> {
         items.push(item);
     }
     if let Some(item) = syn::parse2(quote! {
+        #[derive(Clone, Debug)]
+        struct KoboServiceScenarioHookEvent {
+            phase: &'static str,
+            service: &'static str,
+            method: &'static str,
+        }
+    })
+    .ok()
+    {
+        items.push(item);
+    }
+    if let Some(item) = syn::parse2(quote! {
+        static KOBO_SERVICE_SCENARIO_HOOKS: std::sync::OnceLock<
+            std::sync::Mutex<Vec<KoboServiceScenarioHookEvent>>,
+        > = std::sync::OnceLock::new();
+    })
+    .ok()
+    {
+        items.push(item);
+    }
+    if let Some(item) = syn::parse2(quote! {
         struct KoboServiceScenarioHook;
     })
     .ok()
@@ -248,16 +269,44 @@ fn shared_service_runtime_items() -> Vec<syn::Item> {
     }
     if let Some(item) = syn::parse2(quote! {
         impl KoboServiceScenarioHook {
+            fn store() -> &'static std::sync::Mutex<Vec<KoboServiceScenarioHookEvent>> {
+                KOBO_SERVICE_SCENARIO_HOOKS
+                    .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+            }
+
+            fn record(phase: &'static str, service: &'static str, method: &'static str) {
+                if let Ok(mut events) = Self::store().lock() {
+                    events.push(KoboServiceScenarioHookEvent {
+                        phase,
+                        service,
+                        method,
+                    });
+                }
+            }
+
             fn before(service: &'static str, method: &'static str) {
-                let _ = ("service-hook-before", service, method);
+                Self::record("before", service, method);
             }
 
             fn after(service: &'static str, method: &'static str) {
-                let _ = ("service-hook-after", service, method);
+                Self::record("after", service, method);
             }
 
             fn shutdown(service: &'static str) {
-                let _ = ("service-hook-shutdown", service);
+                Self::record("shutdown", service, "shutdown");
+            }
+
+            fn events() -> Vec<KoboServiceScenarioHookEvent> {
+                Self::store()
+                    .lock()
+                    .map(|events| events.clone())
+                    .unwrap_or_default()
+            }
+
+            fn clear() {
+                if let Ok(mut events) = Self::store().lock() {
+                    events.clear();
+                }
             }
         }
     })
@@ -534,6 +583,10 @@ fn service_runtime_evidence(spec: &ServiceSpec) -> ServiceRuntimeEvidence {
         dispatch_loop: true,
         client_api: true,
         scenario_hooks: true,
+        hook_events: ["before", "after", "shutdown"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
         methods: spec
             .methods
             .iter()

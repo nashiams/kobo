@@ -53,6 +53,7 @@ pub struct ServiceRuntimeEvidence {
     pub dispatch_loop: bool,
     pub client_api: bool,
     pub scenario_hooks: bool,
+    pub hook_events: Vec<String>,
     pub methods: Vec<ServiceRuntimeMethodEvidence>,
 }
 
@@ -72,6 +73,7 @@ pub struct HandlerLifecycleEvidence {
     pub metrics_boundary: String,
     pub cleanup_boundary: String,
     pub cancel_cleanup: String,
+    pub terminal_evidence_source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -80,6 +82,9 @@ pub struct ParallelLoopEvidence {
     pub lowering: String,
     pub policy: String,
     pub proof: String,
+    pub iterator: String,
+    pub captured_bindings: Vec<String>,
+    pub safety_checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -87,6 +92,8 @@ pub struct TaskLocalEvidence {
     pub source_line: usize,
     pub strategy: String,
     pub proof: String,
+    pub captured_bindings: Vec<String>,
+    pub safety_checks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

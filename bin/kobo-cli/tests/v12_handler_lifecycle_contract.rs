@@ -255,6 +255,11 @@ fn handler_tokens_emit_must_call_metadata() {
         "reject",
         "handler witness should preserve the terminal actions actually present in lowered code",
     );
+    assert_contains(
+        &witness["handler_lifecycle"].to_string(),
+        "lowered-guard-calls",
+        "handler witness should cite lowered lifecycle guard calls instead of raw source token shape",
+    );
 }
 
 #[test]

@@ -10,6 +10,7 @@ pub(crate) mod tick;
 mod util;
 
 use kobo_parser::KoboFile;
+use quote::ToTokens;
 use syn::parse_quote;
 use syn::spanned::Spanned;
 
@@ -550,30 +551,33 @@ impl<'a> Lowerer<'a> {
                     match parallel::lower_for_loop(for_loop) {
                         parallel::ParallelLowering::Parallel => {
                             self.needs_rayon = true;
-                            self.parallel_evidence.push(ParallelLoopEvidence {
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
                                 source_line,
-                                lowering: "rayon-par-iter".to_owned(),
-                                policy: policy.clone(),
-                                proof: "ast-iterator-lowering-send-sync-gate".to_owned(),
-                            });
+                                "rayon-par-iter",
+                                &policy,
+                            ));
                         }
                         parallel::ParallelLowering::SerialPolicy => {
                             parallel::mark_serial_policy(for_loop);
-                            self.parallel_evidence.push(ParallelLoopEvidence {
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
                                 source_line,
-                                lowering: "serial".to_owned(),
-                                policy: "serial-order".to_owned(),
-                                proof: "explicit-order-policy".to_owned(),
-                            });
+                                "serial",
+                                "serial-order",
+                            ));
                         }
                         parallel::ParallelLowering::BoundaryPolicy => {
                             parallel::mark_boundary_policy(for_loop, &policy);
-                            self.parallel_evidence.push(ParallelLoopEvidence {
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
                                 source_line,
-                                lowering: "boundary-policy".to_owned(),
-                                policy: policy.clone(),
-                                proof: "explicit-boundary-policy".to_owned(),
-                            });
+                                "boundary-policy",
+                                &policy,
+                            ));
                         }
                         parallel::ParallelLowering::None => {}
                     }
@@ -596,6 +600,10 @@ impl<'a> Lowerer<'a> {
                     || self.any_captured_non_send(&captured);
                 if use_spawn_local {
                     self.needs_local_set = true;
+                    let captured_bindings = captured
+                        .iter()
+                        .map(|binding| format!("{}:{:?}", binding.name, binding.tier))
+                        .collect::<Vec<_>>();
                     self.task_local_evidence.push(TaskLocalEvidence {
                         source_line: self.source_line_for_macro(&stmt_macro.mac),
                         strategy: "tokio-spawn-local-localset".to_owned(),
@@ -604,6 +612,12 @@ impl<'a> Lowerer<'a> {
                         } else {
                             "non-send-capture-tier".to_owned()
                         },
+                        captured_bindings,
+                        safety_checks: vec![
+                            "localset-scope".to_owned(),
+                            "no-local-handle-escape".to_owned(),
+                            "non-send-capture-contained".to_owned(),
+                        ],
                     });
                 }
                 if let Some(spawn_expr) =
@@ -745,6 +759,48 @@ impl<'a> Lowerer<'a> {
         let (line, _) = self.ast.line_col(span);
         line
     }
+
+    fn parallel_loop_evidence(
+        &self,
+        for_loop: &syn::ExprForLoop,
+        scopes: &ScopeStack,
+        source_line: usize,
+        lowering: &str,
+        policy: &str,
+    ) -> ParallelLoopEvidence {
+        let iterator = for_loop.expr.to_token_stream().to_string();
+        let captured_bindings = collect_block_captures(&for_loop.body, scopes)
+            .into_iter()
+            .map(|binding| format!("{}:{:?}", binding.name, binding.tier))
+            .collect::<Vec<_>>();
+        let safety_checks = match lowering {
+            "rayon-par-iter" => vec![
+                "send-sync".to_owned(),
+                "shared-mutation-rejected".to_owned(),
+                "ward-boundary-policy-checked".to_owned(),
+                "ast-method-call-lowered".to_owned(),
+            ],
+            "serial" => vec!["explicit-serial-order".to_owned()],
+            "boundary-policy" => vec!["explicit-boundary-policy".to_owned()],
+            _ => Vec::new(),
+        };
+        let proof = format!(
+            "{} iterator={} captures=[{}] checks=[{}]",
+            lowering,
+            iterator,
+            captured_bindings.join(","),
+            safety_checks.join(",")
+        );
+        ParallelLoopEvidence {
+            source_line,
+            lowering: lowering.to_owned(),
+            policy: policy.to_owned(),
+            proof,
+            iterator,
+            captured_bindings,
+            safety_checks,
+        }
+    }
 }
 
 fn executor_main_attr(
@@ -798,6 +854,29 @@ fn collect_spawn_captures(
         }
     }
     captures
+}
+
+fn collect_block_captures(
+    block: &syn::Block,
+    scopes: &ScopeStack,
+) -> Vec<clone_inject::CapturedBinding> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    collect_idents_from_tokens(&block.to_token_stream(), &mut seen);
+    seen.into_iter()
+        .filter_map(|name| {
+            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+            let tier = scopes.lookup(&ident)?;
+            let is_copy = matches!(tier, kobo_ir::OwnershipTier::PlainOwned);
+            Some(clone_inject::CapturedBinding {
+                name,
+                tier,
+                is_copy,
+                used_after_spawn: true,
+            })
+        })
+        .collect()
 }
 
 fn captured_bindings_need_spawn_local(captured: &[clone_inject::CapturedBinding]) -> bool {

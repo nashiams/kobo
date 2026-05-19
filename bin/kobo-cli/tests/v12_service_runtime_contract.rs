@@ -152,6 +152,9 @@ fn service_generates_dispatch_loop_and_client_methods() {
         "__reply_rx.await",
         "KoboServiceScenarioHook::before",
         "KoboServiceScenarioHook::after",
+        "struct KoboServiceScenarioHookEvent",
+        "KOBO_SERVICE_SCENARIO_HOOKS",
+        "fn events() -> Vec<KoboServiceScenarioHookEvent>",
     ] {
         assert_contains(
             &generated,
@@ -185,7 +188,7 @@ fn service_sim_quick_runs_one_critical_path_without_manual_runtime_plumbing() {
     project.write(
         "src/main.kobo",
         &format!(
-            "{}\n\n#[kobo::scenario(profile = \"async\")]\nfn submit_path() {{\n    ward.task();\n}}\n",
+            "{}\n\n#[kobo::scenario(profile = \"async\")]\nasync fn submit_path() {{\n    let (client, worker) = GatewayService::start(Gateway {{}});\n    let _response = client.submit(Request {{ id: 7, body: \"payload\".to_owned() }}, 1).await.expect(\"submit reply\");\n    client.refresh(\"cache\".to_owned()).await.expect(\"refresh reply\");\n    client.shutdown_and_wait(worker).await.expect(\"shutdown\");\n    ward.task();\n}}\n",
             project.read("src/main.kobo")
         ),
     );
@@ -223,6 +226,16 @@ fn service_sim_quick_runs_one_critical_path_without_manual_runtime_plumbing() {
         &witness["service_runtime"]["services"][0]["methods"].to_string(),
         "submit",
         "service witness should include method-level scenario hooks",
+    );
+    assert_contains(
+        &witness["service_runtime"]["services"][0]["hook_events"].to_string(),
+        "before",
+        "service witness should expose generated hook events used by the client/dispatch path",
+    );
+    assert_contains(
+        &witness["service_runtime"]["services"][0]["hook_events"].to_string(),
+        "shutdown",
+        "service witness should expose shutdown hook evidence",
     );
     assert_contains(
         &witness["events"].to_string(),

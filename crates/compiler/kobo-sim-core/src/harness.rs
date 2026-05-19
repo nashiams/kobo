@@ -1300,15 +1300,215 @@ fn __kobo_emit_record_boundary_event(
 }
 
 fn tokio_support_source(_program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
-    let events = modeled_boundary_events(&ScenarioModeledBoundary::WardTask, options);
     let local_events = modeled_boundary_events(&ScenarioModeledBoundary::WardTaskLocal, options);
     let mut source = String::from(
-        "mod tokio {\n    pub mod sync {\n        pub mod mpsc {\n            pub struct Sender<T> { marker: std::marker::PhantomData<T> }\n            pub struct Receiver<T> { marker: std::marker::PhantomData<T> }\n            pub mod error {\n                pub struct SendError<T>(pub T);\n                pub enum TrySendError<T> { Full(T), Closed(T) }\n            }\n            pub fn channel<T>(_capacity: usize) -> (Sender<T>, Receiver<T>) {\n                (Sender { marker: std::marker::PhantomData }, Receiver { marker: std::marker::PhantomData })\n            }\n            impl<T> Sender<T> {\n                pub async fn send(&self, value: T) -> Result<(), error::SendError<T>> {\n                    let _ = value;\n                    Ok(())\n                }\n                pub fn try_send(&self, value: T) -> Result<(), error::TrySendError<T>> {\n                    let _ = value;\n                    Ok(())\n                }\n            }\n            impl<T> Receiver<T> {\n                pub async fn recv(&mut self) -> Option<T> { None }\n            }\n        }\n        pub mod oneshot {\n            pub struct Sender<T> { marker: std::marker::PhantomData<T> }\n            pub struct Receiver<T> { marker: std::marker::PhantomData<T> }\n            pub fn channel<T>() -> (Sender<T>, Receiver<T>) {\n                (Sender { marker: std::marker::PhantomData }, Receiver { marker: std::marker::PhantomData })\n            }\n            impl<T> Sender<T> {\n                pub fn send(self, value: T) -> Result<(), T> { let _ = value; Ok(()) }\n            }\n            impl<T> std::future::Future for Receiver<T> {\n                type Output = Result<T, ()>;\n                fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {\n                    std::task::Poll::Pending\n                }\n            }\n        }\n    }\n    pub struct JoinError;\n    pub struct JoinHandle<T = ()> { marker: std::marker::PhantomData<T> }\n    impl<T> JoinHandle<T> {\n        pub fn abort(self) {}\n        pub fn detach_with_policy(self) {}\n    }\n    impl<T> std::future::Future for JoinHandle<T> {\n        type Output = Result<T, JoinError>;\n        fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {\n            std::task::Poll::Pending\n        }\n    }\n    pub mod runtime {\n        pub struct Handle;\n        impl Handle {\n            pub fn current() -> Self { Self }\n            pub fn try_current() -> Result<Self, ()> { Ok(Self) }\n            pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {\n                crate::__kobo_block_on(future)\n            }\n            pub fn spawn<F: std::future::Future>(&self, _future: F) -> super::JoinHandle<()> {\n                super::JoinHandle { marker: std::marker::PhantomData }\n            }\n        }\n    }\n    pub mod task {\n        pub type JoinHandle<T = ()> = super::JoinHandle<T>;\n        pub struct LocalSet;\n        impl LocalSet {\n            pub fn new() -> Self { Self }\n            pub async fn run_until<F: std::future::Future>(&self, future: F) -> F::Output {\n                future.await\n            }\n        }\n        pub fn spawn_local<F>(_future: F) -> JoinHandle<()> {\n            ",
+        r#"
+mod tokio {
+    pub mod sync {
+        pub mod mpsc {
+            use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+
+            pub struct Sender<T> {
+                inner: std_mpsc::SyncSender<T>,
+            }
+
+            pub struct Receiver<T> {
+                inner: Arc<Mutex<std_mpsc::Receiver<T>>>,
+            }
+
+            pub mod error {
+                pub struct SendError<T>(pub T);
+                pub enum TrySendError<T> { Full(T), Closed(T) }
+            }
+
+            pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+                let (tx, rx) = std_mpsc::sync_channel(capacity);
+                (
+                    Sender { inner: tx },
+                    Receiver { inner: Arc::new(Mutex::new(rx)) },
+                )
+            }
+
+            impl<T> Clone for Sender<T> {
+                fn clone(&self) -> Self {
+                    Self { inner: self.inner.clone() }
+                }
+            }
+
+            impl<T> Sender<T> {
+                pub async fn send(&self, value: T) -> Result<(), error::SendError<T>> {
+                    self.inner.send(value).map_err(|error| error::SendError(error.0))
+                }
+
+                pub fn try_send(&self, value: T) -> Result<(), error::TrySendError<T>> {
+                    self.inner.try_send(value).map_err(|error| match error {
+                        std_mpsc::TrySendError::Full(value) => error::TrySendError::Full(value),
+                        std_mpsc::TrySendError::Disconnected(value) => error::TrySendError::Closed(value),
+                    })
+                }
+            }
+
+            impl<T> Receiver<T> {
+                pub async fn recv(&mut self) -> Option<T> {
+                    self.inner.lock().ok()?.recv().ok()
+                }
+            }
+        }
+
+        pub mod oneshot {
+            use std::sync::mpsc as std_mpsc;
+
+            pub struct Sender<T> {
+                inner: Option<std_mpsc::Sender<T>>,
+            }
+
+            pub struct Receiver<T> {
+                inner: std_mpsc::Receiver<T>,
+            }
+
+            pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+                let (tx, rx) = std_mpsc::channel();
+                (Sender { inner: Some(tx) }, Receiver { inner: rx })
+            }
+
+            impl<T> Sender<T> {
+                pub fn send(mut self, value: T) -> Result<(), T> {
+                    match self.inner.take() {
+                        Some(sender) => sender.send(value).map_err(|error| error.0),
+                        None => Err(value),
+                    }
+                }
+            }
+
+            impl<T> Unpin for Receiver<T> {}
+
+            impl<T> std::future::Future for Receiver<T> {
+                type Output = Result<T, ()>;
+
+                fn poll(
+                    self: std::pin::Pin<&mut Self>,
+                    cx: &mut std::task::Context<'_>,
+                ) -> std::task::Poll<Self::Output> {
+                    match self.get_mut().inner.try_recv() {
+                        Ok(value) => std::task::Poll::Ready(Ok(value)),
+                        Err(std_mpsc::TryRecvError::Disconnected) => std::task::Poll::Ready(Err(())),
+                        Err(std_mpsc::TryRecvError::Empty) => {
+                            cx.waker().wake_by_ref();
+                            std::task::Poll::Pending
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct JoinError;
+
+    enum JoinState<T> {
+        Thread(std::thread::JoinHandle<T>),
+        Value(T),
+    }
+
+    pub struct JoinHandle<T = ()> {
+        state: Option<JoinState<T>>,
+    }
+
+    impl<T> JoinHandle<T> {
+        fn from_thread(handle: std::thread::JoinHandle<T>) -> Self {
+            Self { state: Some(JoinState::Thread(handle)) }
+        }
+
+        fn from_value(value: T) -> Self {
+            Self { state: Some(JoinState::Value(value)) }
+        }
+
+        pub fn abort(self) {}
+        pub fn detach_with_policy(self) {}
+    }
+
+    impl<T> Unpin for JoinHandle<T> {}
+
+    impl<T> std::future::Future for JoinHandle<T> {
+        type Output = Result<T, JoinError>;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            let this = self.get_mut();
+            if matches!(this.state.as_ref(), Some(JoinState::Thread(handle)) if !handle.is_finished()) {
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            match this.state.take().expect("join handle polled after completion") {
+                JoinState::Thread(handle) => std::task::Poll::Ready(handle.join().map_err(|_| JoinError)),
+                JoinState::Value(value) => std::task::Poll::Ready(Ok(value)),
+            }
+        }
+    }
+
+    pub mod runtime {
+        pub struct Handle;
+
+        impl Handle {
+            pub fn current() -> Self { Self }
+            pub fn try_current() -> Result<Self, ()> { Ok(Self) }
+
+            pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+                crate::__kobo_block_on(future)
+            }
+
+            pub fn spawn<F>(&self, future: F) -> super::JoinHandle<F::Output>
+            where
+                F: std::future::Future + Send + 'static,
+                F::Output: Send + 'static,
+            {
+                super::spawn(future)
+            }
+        }
+    }
+
+    pub mod task {
+        pub type JoinHandle<T = ()> = super::JoinHandle<T>;
+
+        pub struct LocalSet;
+
+        impl LocalSet {
+            pub fn new() -> Self { Self }
+
+            pub async fn run_until<F: std::future::Future>(&self, future: F) -> F::Output {
+                future.await
+            }
+        }
+
+        pub fn spawn_local<F>(_future: F) -> JoinHandle<()>
+        where
+            F: std::future::Future<Output = ()> + 'static,
+        {
+"#,
     );
     source.push_str(&event_print_statements(&local_events)?);
-    source.push_str("\n            super::JoinHandle { marker: std::marker::PhantomData }\n        }\n    }\n    pub fn spawn<F>(_future: F) -> JoinHandle<()> {\n        ");
-    source.push_str(&event_print_statements(&events)?);
-    source.push_str("\n        JoinHandle { marker: std::marker::PhantomData }\n    }\n}\n");
+    source.push_str(
+        r#"
+            super::JoinHandle::from_value(())
+        }
+    }
+
+    pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+"#,
+    );
+    source.push_str(
+        r#"
+        JoinHandle::from_thread(std::thread::spawn(move || crate::__kobo_block_on(future)))
+    }
+}
+"#,
+    );
     Ok(source)
 }
 

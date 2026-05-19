@@ -58,6 +58,7 @@ use config_source::config_value;
 
 #[kobo::boundary(crate = "mailer", policy = "activity", reason = "email side effect runs outside replay")]
 use mailer::send_email;
+use std::rc::Rc;
 
 struct Gateway {}
 
@@ -110,7 +111,13 @@ fn crunch(values: Vec<u64>) {
 async fn product_loop() {
     let _config = config_value("region-a");
     let _sent = send_email("receipt-123");
+    let (client, worker) = GatewayService::start(Gateway {});
+    let _submitted = client.submit(Request { id: 10 }).await.expect("submit");
+    let _refreshed = client.refresh("cache".to_owned(), true).await.expect("refresh");
+    client.shutdown_and_wait(worker).await.expect("shutdown");
+    let local_state = Rc::new(5_u64);
     spawn local {
+        let _local_value = *local_state;
         ward.task();
     };
     ward.task();
@@ -163,6 +170,7 @@ fn integrated_service_handler_record_activity_spawn_local_and_parallel_are_visib
         "enum GatewayMessage",
         "async fn serve(",
         "service.refresh(key, force).await",
+        "KoboServiceScenarioHookEvent",
         "KoboHandlerOutcome",
         "run_registered_cleanup",
         "record_reply",
@@ -211,7 +219,11 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
         r#""handler_lifecycle""#,
         "Gateway",
         "refresh",
+        "hook_events",
         "handle",
+        "parallel_lowering",
+        "task_local_zones",
+        "local_state",
         "boundary-record",
         "recorded-boundary-io",
         "boundary-activity",
@@ -230,6 +242,16 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
     assert_eq!(
         witness["service_runtime"]["services"][0]["buffer"], 17,
         "runtime profile service buffer should reach witness service evidence"
+    );
+    assert_contains(
+        &witness["parallel_lowering"].to_string(),
+        "send-sync",
+        "parallel witness evidence should cite structured proof checks",
+    );
+    assert_contains(
+        &witness["task_local_zones"].to_string(),
+        "local_state",
+        "integrated task-local witness should include the non-Send captured binding",
     );
     assert_eq!(
         witness["replay_guarantee"], "partial",

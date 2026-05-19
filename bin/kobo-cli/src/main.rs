@@ -331,8 +331,8 @@ pub(crate) enum KoboCommand {
         /// Show must_call liveness debt
         #[arg(long)]
         liveness: bool,
-        /// [v0.5] Watch mode — re-run on file changes.
-        #[arg(long, hide = true)]
+        /// Watch mode - emit a scoped debt rerun plan with precursor warning changes.
+        #[arg(long)]
         watch: bool,
     },
     /// Migrate ownership tiers in a .kobo file.

@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -13,20 +14,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if args.iter().any(|arg| arg == "--stdio") {
-        println!(
-            "{}",
-            serde_json::json!({
-                "server": "kobo-lsp",
-                "schema_version": 1,
-                "transport": "stdio",
-                "capabilities": {
-                    "textDocumentSync": 1,
-                    "publishDiagnostics": true,
-                    "codeDescription": true
-                }
-            })
-        );
-        return Ok(());
+        return run_stdio();
     }
 
     let Some(file) = diagnostics_file_arg(&args) else {
@@ -35,6 +23,43 @@ fn main() -> anyhow::Result<()> {
     };
 
     publish_diagnostics(&file)
+}
+
+fn run_stdio() -> anyhow::Result<()> {
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input)?;
+    if input.trim().is_empty() {
+        println!("{}", kobo_lsp::initialize_response(serde_json::Value::Null));
+        return Ok(());
+    }
+    for value in parse_json_rpc_inputs(&input) {
+        if value["method"].as_str() == Some("initialize") {
+            let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            println!("{}", kobo_lsp::initialize_response(id));
+        }
+    }
+    Ok(())
+}
+
+fn parse_json_rpc_inputs(input: &str) -> Vec<serde_json::Value> {
+    let mut values = Vec::new();
+    for line in input
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('{'))
+    {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            values.push(value);
+        }
+    }
+    if values.is_empty() {
+        if let Some(start) = input.find('{') {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&input[start..]) {
+                values.push(value);
+            }
+        }
+    }
+    values
 }
 
 fn diagnostics_file_arg(args: &[String]) -> Option<PathBuf> {

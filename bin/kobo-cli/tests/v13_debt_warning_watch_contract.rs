@@ -74,6 +74,7 @@ fn debt_watch_mode_reports_precursor_warning_changes() {
     for expected in [
         "debt watch",
         "scoped-persist-reload",
+        "actual scan observations=1",
         "precursor",
         "K0080-P1",
         "rerun target: kobo debt",
@@ -84,6 +85,20 @@ fn debt_watch_mode_reports_precursor_warning_changes() {
             "debt watch should report precursor changes",
         );
     }
+
+    let json = run_kobo(
+        &[s("debt"), path_arg(&file), s("--watch"), s("--json")],
+        root.as_path(),
+    );
+    assert_success(&json, "debt --watch --json should report scan observations");
+    let value: Value = serde_json::from_str(&json.stdout).expect("watch JSON should parse");
+    assert_eq!(value["watch"]["actual_scan"], Value::Bool(true));
+    assert_eq!(value["observations"][0]["kind"], "initial_scan");
+    assert_contains(
+        &value["observations"][0].to_string(),
+        "K0080-P1",
+        "watch JSON should carry actual precursor observation data",
+    );
 }
 
 #[test]

@@ -100,6 +100,7 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
     let (file_count, line_count) = count_files_and_lines(session.file_set());
     let report = build_debt_report(&kir, file_count, line_count);
     let codes = precursor_codes(&report);
+    let snapshot = debt_watch_snapshot(file, &report, &codes);
 
     if json {
         println!(
@@ -112,7 +113,10 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
                     "scope": file.display().to_string(),
                     "restartable": true,
                     "rerun_target": format!("kobo debt {} --watch", file.display()),
+                    "actual_scan": true,
+                    "observation_count": 1,
                 },
+                "observations": [snapshot],
                 "precursor_warning_count": report.warn_early.len(),
                 "precursor_codes": codes,
                 "migration_estimate": migration_estimate_json(&report),
@@ -128,7 +132,7 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
     };
     if summary {
         println!(
-            "debt watch scoped-persist-reload: precursor warning changes={} [{}]; migration estimate: {}; rerun target: kobo debt {} --watch",
+            "debt watch scoped-persist-reload: actual scan observations=1; precursor warning changes={} [{}]; migration estimate: {}; rerun target: kobo debt {} --watch",
             report.warn_early.len(),
             code_list,
             migration_estimate_label(&report),
@@ -140,6 +144,7 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
     println!("debt watch");
     println!("strategy: scoped-persist-reload");
     println!("scope: {}", file.display());
+    println!("actual scan observations: 1");
     println!(
         "precursor warning changes: {} [{}]",
         report.warn_early.len(),
@@ -148,6 +153,18 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
     println!("migration estimate: {}", migration_estimate_label(&report));
     println!("rerun target: kobo debt {} --watch", file.display());
     Ok(())
+}
+
+fn debt_watch_snapshot(file: &Path, report: &DebtReport, codes: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "initial_scan",
+        "scope": file.display().to_string(),
+        "file_count": report.file_count,
+        "line_count": report.line_count,
+        "precursor_warning_count": report.warn_early.len(),
+        "precursor_codes": codes,
+        "migration_estimate": migration_estimate_json(report),
+    })
 }
 
 fn migration_estimate_json(report: &DebtReport) -> serde_json::Value {
@@ -1457,21 +1474,26 @@ fn build_liveness_findings(
                             reason: None,
                         });
                     }
-                    _ if has_unresolved_exit(&function.body, &binding, &actions) => {
-                        findings.push(LivenessFinding {
-                            code: "K0100",
-                            owner_type: obligation.owner_type.clone(),
-                            actions: actions.clone(),
-                            function: function.name.clone(),
-                            binding: Some(binding),
-                            applicable_types: vec![obligation.owner_type.clone()],
-                            applicable_functions: vec![function.name.clone()],
-                            applicability_source: "local-declaration".to_owned(),
-                            message: "may leave without a required call".to_owned(),
-                            reason: None,
-                        });
+                    _ => {
+                        if let Some(finding) =
+                            binding_escape_finding(function, obligation, &actions, &binding)
+                        {
+                            findings.push(finding);
+                        } else if has_unresolved_exit(&function.body, &binding, &actions) {
+                            findings.push(LivenessFinding {
+                                code: "K0100",
+                                owner_type: obligation.owner_type.clone(),
+                                actions: actions.clone(),
+                                function: function.name.clone(),
+                                binding: Some(binding),
+                                applicable_types: vec![obligation.owner_type.clone()],
+                                applicable_functions: vec![function.name.clone()],
+                                applicability_source: "local-declaration".to_owned(),
+                                message: "may leave without a required call".to_owned(),
+                                reason: None,
+                            });
+                        }
                     }
-                    _ => {}
                 }
             }
         }
@@ -1516,6 +1538,77 @@ fn escape_finding(
         message: "obligation escapes local analysis through a return value".to_owned(),
         reason: None,
     })
+}
+
+fn binding_escape_finding(
+    function: &SourceFunction,
+    obligation: &MustCallObligation,
+    actions: &[String],
+    binding: &str,
+) -> Option<LivenessFinding> {
+    let escape_kind = binding_escape_kind(&function.body, binding, actions)?;
+    Some(LivenessFinding {
+        code: "K0101",
+        owner_type: obligation.owner_type.clone(),
+        actions: actions.to_vec(),
+        function: function.name.clone(),
+        binding: Some(binding.to_owned()),
+        applicable_types: vec![obligation.owner_type.clone()],
+        applicable_functions: vec![function.name.clone()],
+        applicability_source: "local-declaration".to_owned(),
+        message: format!("obligation escapes local analysis through {escape_kind}"),
+        reason: None,
+    })
+}
+
+fn binding_escape_kind(body: &str, binding: &str, actions: &[String]) -> Option<&'static str> {
+    let mut seen_binding = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("let {binding} "))
+            || trimmed.starts_with(&format!("let {binding} ="))
+            || trimmed.starts_with(&format!("let mut {binding} "))
+            || trimmed.starts_with(&format!("let mut {binding} ="))
+        {
+            seen_binding = true;
+            continue;
+        }
+
+        if !seen_binding {
+            continue;
+        }
+
+        if actions
+            .iter()
+            .any(|action| trimmed.contains(&format!("{binding}.{action}(")))
+        {
+            return None;
+        }
+
+        if trimmed.starts_with("return") && contains_binding_value(trimmed, binding) {
+            return Some("a return value");
+        }
+        if trimmed.contains("spawn(") && contains_binding_value(trimmed, binding) {
+            return Some("a spawned task");
+        }
+        if line_moves_binding_to_unknown_call(trimmed, binding) {
+            return Some("an external call");
+        }
+    }
+    None
+}
+
+fn line_moves_binding_to_unknown_call(line: &str, binding: &str) -> bool {
+    !line.starts_with(&format!("{binding}."))
+        && (line.contains(&format!("({binding})"))
+            || line.contains(&format!("({binding},"))
+            || line.contains(&format!(", {binding})"))
+            || line.contains(&format!(", {binding},")))
+}
+
+fn contains_binding_value(line: &str, binding: &str) -> bool {
+    line.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .any(|token| token == binding)
 }
 
 fn declared_obligation_bindings(

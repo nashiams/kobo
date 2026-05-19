@@ -165,6 +165,39 @@ fn lsp_reports_diagnostics_hovers_runnables_and_witness_links() {
             "LSP capabilities should expose runnable workflow commands",
         );
     }
+
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+ward Demo {
+    obligation Token must close
+    scenario run {
+        let token = Token {};
+    }
+}
+"#,
+        Some(".kobo/witnesses/run-1.kwit"),
+    );
+    assert_contains(
+        &snapshot["diagnostics"].to_string(),
+        "K0100",
+        "protocol snapshot should publish diagnostics for a real document",
+    );
+    assert_contains(
+        &snapshot["hover"].to_string(),
+        "ward model",
+        "protocol snapshot should expose hover text",
+    );
+    assert_contains(
+        &snapshot["documentLinks"].to_string(),
+        ".kobo/witnesses/run-1.kwit",
+        "protocol snapshot should expose witness links",
+    );
+    assert_contains(
+        &snapshot["codeActions"].to_string(),
+        "kobo replay .kobo/witnesses/run-1.kwit",
+        "protocol snapshot should expose replay actions",
+    );
 }
 
 #[test]
@@ -220,7 +253,7 @@ fn formatting_delegates_rust_shaped_code_to_rustfmt() {
 
     let ward_project = TestProject::new("v13-fmt-ward-syntax");
     let ward_file =
-        ward_project.main_file("ward Demo{state log: Vec<String>\nscenario run{ward.task();}}\n");
+        ward_project.main_file("ward Demo{state log: Vec<String>\nscenario run{let text = \"brace { stays }\"; ward.task();}}\n");
     let ward_fmt = run_kobo(&[s("fmt"), path_arg(&ward_file)], &ward_project.root);
     assert_success(&ward_fmt, "Kobo-only ward formatting should succeed");
     let formatted_ward =
@@ -234,6 +267,11 @@ fn formatting_delegates_rust_shaped_code_to_rustfmt() {
         &formatted_ward,
         "scenario run {",
         "Kobo-only formatter should preserve scenario syntax",
+    );
+    assert_contains(
+        &formatted_ward,
+        "\"brace { stays }\"",
+        "Kobo-only formatter should not split braces inside strings",
     );
 }
 

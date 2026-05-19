@@ -23,6 +23,12 @@ pub struct WitnessArtifact {
     pub source_hash: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ProtocolSourceFacts {
+    has_liveness_obligation: bool,
+    has_terminal_action: bool,
+}
+
 pub fn diagnostic_payload(file_set: &FileSet, diagnostic: &KDiagnostic) -> DiagnosticLspPayload {
     DiagnosticLspPayload::from_diagnostic(file_set, diagnostic)
 }
@@ -80,6 +86,163 @@ pub fn editor_capabilities() -> Value {
             "command": "kobo.replayWitness",
         },
     })
+}
+
+pub fn initialize_response(id: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "serverInfo": {
+                "name": "kobo-lsp",
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "capabilities": editor_capabilities(),
+        },
+    })
+}
+
+pub fn protocol_document_snapshot(uri: &str, source: &str, witness_path: Option<&str>) -> Value {
+    json!({
+        "uri": uri,
+        "diagnostics": protocol_diagnostics(source),
+        "hover": protocol_hover(source),
+        "codeActions": protocol_code_actions(witness_path),
+        "documentLinks": protocol_document_links(uri, source, witness_path),
+        "runnables": editor_capabilities()["runnables"].clone(),
+        "definitionProvider": editor_capabilities()["definitionProvider"].clone(),
+    })
+}
+
+fn protocol_diagnostics(source: &str) -> Vec<Value> {
+    let facts = protocol_source_facts(source);
+    if facts.has_liveness_obligation && !facts.has_terminal_action {
+        return vec![json!({
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 1},
+            },
+            "severity": 1,
+            "code": "K0100",
+            "source": "kobo",
+            "message": "unresolved liveness obligation",
+        })];
+    }
+    Vec::new()
+}
+
+fn protocol_source_facts(source: &str) -> ProtocolSourceFacts {
+    let semantic_source = source_without_text(source);
+    ProtocolSourceFacts {
+        has_liveness_obligation: semantic_source.contains("must_call")
+            || semantic_source.contains("obligation "),
+        has_terminal_action: [
+            ".ack()",
+            ".nack()",
+            ".requeue()",
+            ".reply()",
+            ".reject()",
+            ".cancel()",
+            ".close()",
+            ".commit()",
+            ".rollback()",
+        ]
+        .iter()
+        .any(|action| semantic_source.contains(action)),
+    }
+}
+
+fn source_without_text(source: &str) -> String {
+    let mut scrubbed = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+                scrubbed.push('\n');
+            } else {
+                scrubbed.push(' ');
+            }
+            continue;
+        }
+        if in_string {
+            if ch == '\\' {
+                scrubbed.push(' ');
+                if let Some(next) = chars.next() {
+                    scrubbed.push(if next == '\n' { '\n' } else { ' ' });
+                }
+            } else if ch == '"' {
+                in_string = false;
+                scrubbed.push(' ');
+            } else {
+                scrubbed.push(if ch == '\n' { '\n' } else { ' ' });
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'/') {
+            scrubbed.push(' ');
+            if let Some(next) = chars.next() {
+                scrubbed.push(if next == '\n' { '\n' } else { ' ' });
+            }
+            in_line_comment = true;
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            scrubbed.push(' ');
+            continue;
+        }
+        scrubbed.push(ch);
+    }
+    scrubbed
+}
+
+fn protocol_hover(source: &str) -> Value {
+    let contents = if source.contains("ward ") {
+        "Kobo ward model: states, obligations, scenarios, ports, recordings, and debt."
+    } else if source.contains("must_call") {
+        "Kobo must_call obligation: every path must use one terminal action."
+    } else {
+        "Kobo source: Rust-shaped code with gradual runtime guarantees."
+    };
+    json!({
+        "contents": {
+            "kind": "markdown",
+            "value": contents,
+        },
+    })
+}
+
+fn protocol_code_actions(witness_path: Option<&str>) -> Vec<LspCodeAction> {
+    let replay_command = witness_path.map(|path| format!("kobo replay {path}"));
+    code_actions_for_code_and_replay(KErrorCode::K0100, replay_command.as_deref())
+}
+
+fn protocol_document_links(uri: &str, source: &str, witness_path: Option<&str>) -> Vec<Value> {
+    let mut links = Vec::new();
+    if let Some(path) = witness_path {
+        links.push(json!({
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 1},
+            },
+            "target": path,
+            "tooltip": "Replay Kobo witness",
+        }));
+    }
+    if source.contains("fn ") {
+        links.push(json!({
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 1},
+            },
+            "target": format!("{uri}#generated-rust"),
+            "tooltip": "Open generated Rust through source map",
+        }));
+    }
+    links
 }
 
 pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {

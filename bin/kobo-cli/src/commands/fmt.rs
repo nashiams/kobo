@@ -73,16 +73,13 @@ fn rewrite_lossless_kobo_source(
 }
 
 fn is_kobo_only_syntax(source: &str) -> bool {
-    source.contains("ward ")
+    contains_word_outside_text(source, "ward")
         || source.contains("// kobo:invariant")
         || source.contains("// kobo:temporal")
 }
 
 fn format_kobo_only_source(source: &str) -> String {
-    let expanded = source
-        .replace('{', " {\n")
-        .replace('}', "\n}\n")
-        .replace(';', ";\n");
+    let expanded = expand_kobo_format_tokens(source);
     let mut formatted = String::new();
     let mut indent = 0usize;
     for raw_line in expanded.lines() {
@@ -101,6 +98,111 @@ fn format_kobo_only_source(source: &str) -> String {
         }
     }
     formatted
+}
+
+fn expand_kobo_format_tokens(source: &str) -> String {
+    let mut expanded = String::with_capacity(source.len() + 64);
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    while let Some(ch) = chars.next() {
+        if in_line_comment {
+            expanded.push(ch);
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+            continue;
+        }
+        if in_string {
+            expanded.push(ch);
+            if ch == '\\' {
+                if let Some(next) = chars.next() {
+                    expanded.push(next);
+                }
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'/') {
+            expanded.push(ch);
+            if let Some(next) = chars.next() {
+                expanded.push(next);
+            }
+            in_line_comment = true;
+            continue;
+        }
+        if ch == '"' {
+            expanded.push(ch);
+            in_string = true;
+            continue;
+        }
+        match ch {
+            '{' => expanded.push_str(" {\n"),
+            '}' => expanded.push_str("\n}\n"),
+            ';' => expanded.push_str(";\n"),
+            _ => expanded.push(ch),
+        }
+    }
+    expanded
+}
+
+fn contains_word_outside_text(source: &str, word: &str) -> bool {
+    let bytes = source.as_bytes();
+    let needle = word.as_bytes();
+    let mut index = 0;
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    while index < bytes.len() {
+        if in_line_comment {
+            if bytes[index] == b'\n' {
+                in_line_comment = false;
+            }
+            index += 1;
+            continue;
+        }
+        if in_string {
+            if bytes[index] == b'\\' {
+                index = (index + 2).min(bytes.len());
+            } else {
+                if bytes[index] == b'"' {
+                    in_string = false;
+                }
+                index += 1;
+            }
+            continue;
+        }
+        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            in_line_comment = true;
+            index += 2;
+            continue;
+        }
+        if bytes[index] == b'"' {
+            in_string = true;
+            index += 1;
+            continue;
+        }
+        if index + needle.len() <= bytes.len() && &bytes[index..index + needle.len()] == needle {
+            let end = index + needle.len();
+            let before = if index == 0 {
+                None
+            } else {
+                bytes.get(index - 1)
+            };
+            let after = bytes.get(end);
+            if !before.is_some_and(is_ident_byte)
+                && after.is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+fn is_ident_byte(byte: &u8) -> bool {
+    byte.is_ascii_alphanumeric() || *byte == b'_'
 }
 
 fn rustfmt_original_kobo_source(file: &Path) -> anyhow::Result<String> {

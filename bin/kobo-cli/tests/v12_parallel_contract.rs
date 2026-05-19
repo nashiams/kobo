@@ -86,6 +86,40 @@ fn crunch(values: Vec<u64>) {
 }
 
 #[test]
+fn default_inspect_does_not_emit_rayon_for_warning_only_unsafe_loop() {
+    let generated = inspect_source(
+        "parallel-unsafe-default-serial",
+        r#"
+use std::rc::Rc;
+
+fn crunch(values: Vec<u64>) {
+    let state = Rc::new(1_u64);
+    #[kobo::parallel]
+    for value in values.iter() {
+        let _seen = *value + *state;
+    }
+}
+"#,
+    );
+
+    assert_not_contains(
+        &generated,
+        "use rayon::prelude::*;",
+        "default inspect must not import Rayon when the loop has warning-only safety blockers",
+    );
+    assert_not_contains(
+        &generated,
+        "values.par_iter()",
+        "default inspect must not emit par_iter for non-Send captures",
+    );
+    assert_contains(
+        &generated,
+        "parallel-blocked=non-send-capture:state",
+        "default inspect should explain why the parallel lowering stayed serial",
+    );
+}
+
+#[test]
 fn parallel_rejects_shared_mutation_with_source_span() {
     let project = TestProject::new("parallel-shared-mutation");
     let source = r#"

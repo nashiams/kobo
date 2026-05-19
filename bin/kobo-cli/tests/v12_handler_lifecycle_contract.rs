@@ -257,8 +257,13 @@ fn handler_tokens_emit_must_call_metadata() {
     );
     assert_contains(
         &witness["handler_lifecycle"].to_string(),
-        "lowered-function-guard-scan",
-        "handler witness should cite the lowered function guard scan instead of raw source token shape",
+        "cancel",
+        "handler witness should include the cancel terminal action from lowered guard support",
+    );
+    assert_contains(
+        &witness["handler_lifecycle"].to_string(),
+        "lowered-function-and-support-guard-scan",
+        "handler witness should cite lowered function and support guard scans instead of raw source token shape",
     );
 }
 

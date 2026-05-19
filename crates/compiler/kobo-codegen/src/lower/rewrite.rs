@@ -26,6 +26,14 @@ use crate::error_policy::ErrorPolicyMarker;
 use crate::executor::executor_attribute;
 use crate::{CodegenOptions, ParallelLoopEvidence, TaskLocalEvidence};
 
+#[derive(Clone, Debug)]
+struct ParallelSafetyGate {
+    accepted: bool,
+    analysis_gate: String,
+    checks: Vec<String>,
+    blockers: Vec<String>,
+}
+
 pub(crate) struct Lowerer<'a> {
     pub(super) ast: &'a KoboFile,
     pub(super) plan: &'a LoweringPlan,
@@ -541,8 +549,11 @@ impl<'a> Lowerer<'a> {
                 if let syn::Expr::ForLoop(for_loop) = expr {
                     let policy = parallel::policy_value(&for_loop.attrs)
                         .unwrap_or_else(|| "outside".to_owned());
+                    let has_explicit_policy = parallel::policy_value(&for_loop.attrs).is_some();
                     let source_line = self.source_line_for_expr_for_loop(for_loop);
-                    match parallel::lower_for_loop(for_loop) {
+                    let safety_gate =
+                        self.parallel_safety_gate(for_loop, scopes, has_explicit_policy);
+                    match parallel::lower_for_loop(for_loop, safety_gate.accepted) {
                         parallel::ParallelLowering::Parallel => {
                             self.needs_rayon = true;
                             self.parallel_evidence.push(self.parallel_loop_evidence(
@@ -551,6 +562,7 @@ impl<'a> Lowerer<'a> {
                                 source_line,
                                 "rayon-par-iter",
                                 &policy,
+                                safety_gate,
                             ));
                         }
                         parallel::ParallelLowering::SerialPolicy => {
@@ -561,6 +573,7 @@ impl<'a> Lowerer<'a> {
                                 source_line,
                                 "serial",
                                 "serial-order",
+                                ParallelSafetyGate::policy("policy-gate:serial-order"),
                             ));
                         }
                         parallel::ParallelLowering::BoundaryPolicy => {
@@ -571,6 +584,18 @@ impl<'a> Lowerer<'a> {
                                 source_line,
                                 "boundary-policy",
                                 &policy,
+                                ParallelSafetyGate::policy("policy-gate:ward-boundary"),
+                            ));
+                        }
+                        parallel::ParallelLowering::SafetyBlocked => {
+                            parallel::mark_safety_blocked(for_loop, &safety_gate.blockers);
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
+                                source_line,
+                                "blocked-safety",
+                                "safety-gate",
+                                safety_gate,
                             ));
                         }
                         parallel::ParallelLowering::None => {}
@@ -760,49 +785,126 @@ impl<'a> Lowerer<'a> {
         source_line: usize,
         lowering: &str,
         policy: &str,
+        safety_gate: ParallelSafetyGate,
     ) -> ParallelLoopEvidence {
         let iterator = for_loop.expr.to_token_stream().to_string();
         let captured_bindings = collect_block_captures(&for_loop.body, scopes)
             .into_iter()
             .map(|binding| format!("{}:{:?}", binding.name, binding.tier))
             .collect::<Vec<_>>();
-        let safety_checks = match lowering {
-            "rayon-par-iter" => vec![
-                "accepted-lowering-gate".to_owned(),
-                "analysis-diagnostics-clean".to_owned(),
-                "no-K0061-blockers".to_owned(),
-                "send-sync".to_owned(),
-                "shared-mutation-rejected".to_owned(),
-                "ward-boundary-policy-checked".to_owned(),
-                "ast-method-call-lowered".to_owned(),
-            ],
-            "serial" => vec!["explicit-serial-order".to_owned()],
-            "boundary-policy" => vec!["explicit-boundary-policy".to_owned()],
-            _ => Vec::new(),
-        };
-        let analysis_gate = match lowering {
-            "rayon-par-iter" => "accepted-lowering-gate:no-K0061-blockers",
-            "serial" => "policy-gate:serial-order",
-            "boundary-policy" => "policy-gate:ward-boundary",
-            _ => "not-applicable",
-        };
         let proof = format!(
             "{} gate={} iterator={} captures=[{}] checks=[{}]",
             lowering,
-            analysis_gate,
+            safety_gate.analysis_gate,
             iterator,
             captured_bindings.join(","),
-            safety_checks.join(",")
+            safety_gate.checks.join(",")
         );
         ParallelLoopEvidence {
             source_line,
             lowering: lowering.to_owned(),
             policy: policy.to_owned(),
-            analysis_gate: analysis_gate.to_owned(),
+            analysis_gate: safety_gate.analysis_gate,
             proof,
             iterator,
             captured_bindings,
-            safety_checks,
+            safety_checks: safety_gate.checks,
+        }
+    }
+
+    fn parallel_safety_gate(
+        &self,
+        for_loop: &syn::ExprForLoop,
+        scopes: &ScopeStack,
+        has_explicit_policy: bool,
+    ) -> ParallelSafetyGate {
+        let captured = collect_block_captures(&for_loop.body, scopes);
+        let captured_names = captured
+            .iter()
+            .map(|binding| binding.name.as_str())
+            .collect::<Vec<_>>();
+        let mut blockers = Vec::new();
+
+        for binding in &captured {
+            if matches!(
+                binding.tier,
+                kobo_ir::OwnershipTier::RcShared | kobo_ir::OwnershipTier::RcMutShared
+            ) {
+                blockers.push(format!("non-send-capture:{}", binding.name));
+            }
+            if block_mutates_binding_name(&for_loop.body, &binding.name) {
+                blockers.push(format!("shared-mutation:{}", binding.name));
+            }
+        }
+
+        for warning in kobo_analysis::scan_source_parallel_warnings(self.ast.source()) {
+            match warning.kind {
+                kobo_analysis::ParallelWarningKind::NonSendCapture { binding_name, .. }
+                    if captured_names
+                        .iter()
+                        .any(|name| *name == binding_name.as_str()) =>
+                {
+                    blockers.push(format!("non-send-capture:{binding_name}"));
+                }
+                kobo_analysis::ParallelWarningKind::SharedMutation { binding_name }
+                    if captured_names
+                        .iter()
+                        .any(|name| *name == binding_name.as_str()) =>
+                {
+                    blockers.push(format!("shared-mutation:{binding_name}"));
+                }
+                kobo_analysis::ParallelWarningKind::MissingBoundaryPolicy
+                    if !has_explicit_policy && block_mentions_ward_boundary(&for_loop.body) =>
+                {
+                    blockers.push("missing-boundary-policy".to_owned());
+                }
+                _ => {}
+            }
+        }
+
+        if !has_explicit_policy && block_mentions_ward_boundary(&for_loop.body) {
+            blockers.push("missing-boundary-policy".to_owned());
+        }
+
+        blockers.sort();
+        blockers.dedup();
+
+        if blockers.is_empty() {
+            ParallelSafetyGate {
+                accepted: true,
+                analysis_gate: "accepted-lowering-gate:no-K0061-blockers".to_owned(),
+                checks: vec![
+                    "accepted-lowering-gate".to_owned(),
+                    "analysis-diagnostics-clean".to_owned(),
+                    "no-K0061-blockers".to_owned(),
+                    "send-sync".to_owned(),
+                    "shared-mutation-rejected".to_owned(),
+                    "ward-boundary-policy-checked".to_owned(),
+                    "ast-method-call-lowered".to_owned(),
+                ],
+                blockers,
+            }
+        } else {
+            ParallelSafetyGate {
+                accepted: false,
+                analysis_gate: format!("blocked-lowering-gate:{}", blockers.join("|")),
+                checks: blockers
+                    .iter()
+                    .map(|blocker| format!("blocked:{blocker}"))
+                    .collect(),
+                blockers,
+            }
+        }
+    }
+}
+
+impl ParallelSafetyGate {
+    fn policy(analysis_gate: &str) -> Self {
+        Self {
+            accepted: false,
+            analysis_gate: analysis_gate.to_owned(),
+            checks: vec![analysis_gate.to_owned()],
+            blockers: Vec::new(),
         }
     }
 }
@@ -991,12 +1093,20 @@ fn iterator_source_ident(expr: &syn::Expr) -> Option<syn::Ident> {
 }
 
 fn block_mutates_binding(block: &syn::Block, source_ident: &syn::Ident) -> bool {
+    block_mutates_binding_name(block, &source_ident.to_string())
+}
+
+fn block_mutates_binding_name(block: &syn::Block, source: &str) -> bool {
     let mut visitor = MutationVisitor {
-        source: source_ident.to_string(),
+        source: source.to_owned(),
         found: false,
     };
     syn::visit::Visit::visit_block(&mut visitor, block);
     visitor.found
+}
+
+fn block_mentions_ward_boundary(block: &syn::Block) -> bool {
+    block.to_token_stream().to_string().contains("ward")
 }
 
 struct MutationVisitor {

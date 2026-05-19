@@ -50,7 +50,6 @@ pub(crate) fn lower(
     let plan = LoweringPlan::from_kir(ast, kir, solution, kobo_path, options);
     let mut lowerer = Lowerer::new(ast, &plan, kir, options);
     lowerer.lower_items(&mut file.items);
-    let handler_evidence = handler::handler_evidence_from_lowered_file(&file);
     plan.insert_support_items(&mut file);
     let (
         mut lowerer_notes,
@@ -67,6 +66,7 @@ pub(crate) fn lower(
     support::insert_concurrent_support_items(&mut file, concurrent_support);
     service::append_service_support_items(&mut file, service_support.items);
     handler::append_handler_support_items(&mut file, handler_support.items);
+    let handler_evidence = handler::handler_evidence_from_lowered_file(&file);
     let mut notes = plan.annotation_notes().to_vec();
     notes.append(&mut lowerer_notes);
     let anchors = LoweringAnchorMap::new(lowerer_anchors, plan.support_item_count());

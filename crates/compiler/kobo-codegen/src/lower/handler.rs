@@ -88,20 +88,27 @@ fn handler_spec(
 pub(crate) fn handler_evidence_from_lowered_file(
     file: &syn::File,
 ) -> Vec<HandlerLifecycleEvidence> {
+    let cancel_supported = lowered_handler_cancel_supported(file);
     file.items
         .iter()
         .filter_map(|item| {
             let syn::Item::Fn(function) = item else {
                 return None;
             };
-            lowered_handler_evidence(function)
+            lowered_handler_evidence(function, cancel_supported)
         })
         .collect()
 }
 
-fn lowered_handler_evidence(function: &syn::ItemFn) -> Option<HandlerLifecycleEvidence> {
+fn lowered_handler_evidence(
+    function: &syn::ItemFn,
+    cancel_supported: bool,
+) -> Option<HandlerLifecycleEvidence> {
     let (name, source_line) = lowered_handler_source(&function.attrs)?;
-    let lowered_scan = LoweredHandlerGuardScan::scan(&function.block);
+    let mut lowered_scan = LoweredHandlerGuardScan::scan(&function.block);
+    if cancel_supported {
+        lowered_scan.push_terminal_action("cancel");
+    }
     Some(HandlerLifecycleEvidence {
         name,
         source_line,
@@ -111,7 +118,7 @@ fn lowered_handler_evidence(function: &syn::ItemFn) -> Option<HandlerLifecycleEv
         metrics_boundary: "handler-entry-exit-counters".to_owned(),
         cleanup_boundary: "registered-success-error-cancel".to_owned(),
         cancel_cleanup: "drop-runs-registered-cleanup".to_owned(),
-        terminal_evidence_source: "lowered-function-guard-scan".to_owned(),
+        terminal_evidence_source: "lowered-function-and-support-guard-scan".to_owned(),
     })
 }
 
@@ -155,6 +162,12 @@ impl LoweredHandlerGuardScan {
         Self {
             cleanup_hook: visitor.cleanup_hook,
             terminal_actions: visitor.terminal_actions,
+        }
+    }
+
+    fn push_terminal_action(&mut self, action: &str) {
+        if !self.terminal_actions.iter().any(|seen| seen == action) {
+            self.terminal_actions.push(action.to_owned());
         }
     }
 }
@@ -211,6 +224,29 @@ fn first_lit_str_arg(
         };
         Some(lit.value())
     })
+}
+
+fn lowered_handler_cancel_supported(file: &syn::File) -> bool {
+    let mut visitor = HandlerCancelSupportVisitor::default();
+    visitor.visit_file(file);
+    visitor.drop_calls_cancel_cleanup && visitor.cancel_cleanup_records_cancel
+}
+
+#[derive(Default)]
+struct HandlerCancelSupportVisitor {
+    drop_calls_cancel_cleanup: bool,
+    cancel_cleanup_records_cancel: bool,
+}
+
+impl<'ast> Visit<'ast> for HandlerCancelSupportVisitor {
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        match node.method.to_string().as_str() {
+            "run_cancel_cleanup_on_drop" => self.drop_calls_cancel_cleanup = true,
+            "record_cancel" => self.cancel_cleanup_records_cancel = true,
+            _ => {}
+        }
+        visit::visit_expr_method_call(self, node);
+    }
 }
 
 fn is_kobo_attr(attr: &syn::Attribute, name: &str) -> bool {

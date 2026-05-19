@@ -6,9 +6,13 @@ pub(crate) enum ParallelLowering {
     SerialPolicy,
     Parallel,
     BoundaryPolicy,
+    SafetyBlocked,
 }
 
-pub(crate) fn lower_for_loop(for_loop: &mut syn::ExprForLoop) -> ParallelLowering {
+pub(crate) fn lower_for_loop(
+    for_loop: &mut syn::ExprForLoop,
+    safety_gate_accepted: bool,
+) -> ParallelLowering {
     let Some(attr) = parallel_attr(&for_loop.attrs).cloned() else {
         return ParallelLowering::None;
     };
@@ -21,6 +25,9 @@ pub(crate) fn lower_for_loop(for_loop: &mut syn::ExprForLoop) -> ParallelLowerin
     }
     if attr_has_key(&attr, "policy") {
         return ParallelLowering::BoundaryPolicy;
+    }
+    if !safety_gate_accepted {
+        return ParallelLowering::SafetyBlocked;
     }
     if lower_iterator_expr_to_rayon(&mut for_loop.expr) {
         ParallelLowering::Parallel
@@ -38,6 +45,18 @@ pub(crate) fn mark_serial_policy(for_loop: &mut syn::ExprForLoop) {
 
 pub(crate) fn mark_boundary_policy(for_loop: &mut syn::ExprForLoop, policy: &str) {
     let marker = format!("parallel-policy={policy}");
+    for_loop
+        .body
+        .stmts
+        .insert(0, syn::parse_quote!(let _ = #marker;));
+}
+
+pub(crate) fn mark_safety_blocked(for_loop: &mut syn::ExprForLoop, blockers: &[String]) {
+    let marker = if blockers.is_empty() {
+        "parallel-blocked=safety-gate".to_owned()
+    } else {
+        format!("parallel-blocked={}", blockers.join("|"))
+    };
     for_loop
         .body
         .stmts

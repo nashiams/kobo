@@ -232,12 +232,14 @@ fn terminators_from_operation(
             }]
         }
         ScenarioOpKind::Select { branch_count } => {
-            let mut edges = (0..*branch_count)
-                .map(|branch| format!("branch:{branch}"))
-                .collect::<Vec<_>>();
-            if let Some(next) = next {
-                edges.push(format!("goto:{next}"));
-            }
+            let edges = next
+                .map(|next| {
+                    let count = (*branch_count).max(1);
+                    (0..count)
+                        .map(|_| format!("goto:{next}"))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             vec![CoreTerminator {
                 id: format!("term-{index}"),
                 kind: CoreTerminatorKind::Branch,

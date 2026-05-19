@@ -2,12 +2,13 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
+use kobo_ir::{GuaranteePolicy, GuaranteeProfile, ScenarioProgram};
 use serde_json::Value;
 
 use crate::ErrorFormat;
 
 use super::sim_model;
+use super::formal_core;
 use super::witness_evidence;
 use super::{declarations, summary_validation};
 
@@ -138,7 +139,15 @@ fn replay_v1(
     let inferred_obligations =
         witness_evidence::inferred_obligations_json(source_display, &verified_source.source, &run);
     let fuzz_enabled = witness["fuzz"]["enabled"].as_bool().unwrap_or(false);
-    let summaries = summary_usage_json(&session.config)?;
+    let summaries = summary_usage_json(&session.config, &scenario_program)?;
+    let formal_core =
+        formal_core::formal_core_json(source_display, &verified_source.source, &scenario_program);
+    let proof_seed = formal_core::proof_seed_json(
+        source_display,
+        &verified_source.source,
+        &scenario_program,
+        &run,
+    );
     let runtime_profile = runtime_profile_json(&session.config, sim_profile, seed, &run);
     let runtime_profile_hash =
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
@@ -154,6 +163,8 @@ fn replay_v1(
         "operation_coverage": witness_evidence::operation_coverage_json(&scenario_program, &run),
         "function_summaries": witness_evidence::function_summaries_json(&scenario_program, &run),
         "call_graph_obligation_summaries": witness_evidence::call_graph_obligation_summaries_json(&scenario_program, &run),
+        "formal_core": formal_core,
+        "proof_seed": proof_seed,
         "replay_grade": witness_evidence::replay_grade_json(&run, fuzz_enabled),
         "boundary_ledger": witness_evidence::boundary_ledger_json(&scenario_program, &run),
         "ecosystem_boundaries": ecosystem_boundaries_json(&verified_source.path, &session.config, &run),
@@ -163,7 +174,7 @@ fn replay_v1(
         "lifecycle_inference": {
             "mode": "observe",
             "source": "scenario_program",
-            "template_version": "v0.10.1",
+            "template_version": "v0.13.0",
             "obligations": inferred_obligations,
         },
         "failure": failure_json(source_display, &verified_source.source, &run),
@@ -181,6 +192,8 @@ fn replay_v1(
         "operation_coverage": witness["operation_coverage"].clone(),
         "function_summaries": witness["function_summaries"].clone(),
         "call_graph_obligation_summaries": witness["call_graph_obligation_summaries"].clone(),
+        "formal_core": witness["formal_core"].clone(),
+        "proof_seed": witness["proof_seed"].clone(),
         "replay_grade": witness["replay_grade"].clone(),
         "boundary_ledger": witness["boundary_ledger"].clone(),
         "ecosystem_boundaries": witness["ecosystem_boundaries"].clone(),
@@ -210,6 +223,7 @@ fn replay_v1(
 
 fn validate_shrink_metadata(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
     if witness["exactness"].as_str() != Some("exact") {
+        formal_core::validate_formal_core_witness(witness)?;
         return Ok(());
     }
     if witness["shrink"].is_null() {
@@ -861,8 +875,12 @@ fn declarations_json(
     )
 }
 
-fn summary_usage_json(config: &kobo_driver::KoboConfig) -> anyhow::Result<Value> {
+fn summary_usage_json(
+    config: &kobo_driver::KoboConfig,
+    program: &ScenarioProgram,
+) -> anyhow::Result<Value> {
     let mut summaries = Vec::new();
+    summaries.push(formal_core::summary_json(program));
     for summary in &config.ecosystem_policy.summaries {
         let valid = summary_validation::load_valid_summary(summary)?;
         let parsed = valid.value;
@@ -996,6 +1014,8 @@ fn related_spans_json(
                     "line": one_based_line_for_offset(source, obligation.declaration_span.0),
                     "start": obligation.declaration_span.0,
                     "end": obligation.declaration_span.1.max(obligation.declaration_span.0 + 1),
+                    "mapped": obligation.declaration_span.1 > obligation.declaration_span.0,
+                    "snippet": line_snippet(source, obligation.declaration_span.0),
                 },
             })
         })
@@ -1216,6 +1236,19 @@ fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
         + 1
 }
 
+fn line_snippet(source: &str, offset: usize) -> String {
+    let bounded = offset.min(source.len());
+    let line_start = source[..bounded]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = source[bounded..]
+        .find('\n')
+        .map(|index| bounded + index)
+        .unwrap_or(source.len());
+    source[line_start..line_end].trim().to_owned()
+}
+
 fn replay_divergence(
     expected: Value,
     observed: Value,
@@ -1357,6 +1390,7 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
                 return witness_error(&format!("missing {}", path.join(".")));
             }
         }
+        formal_core::validate_formal_core_witness(witness)?;
         return Ok(());
     }
     if version != 0 {

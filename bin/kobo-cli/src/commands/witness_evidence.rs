@@ -500,6 +500,8 @@ fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_jso
         "line": one_based_line_for_offset(source, span.0),
         "start": span.0,
         "end": span.1.max(span.0 + 1),
+        "mapped": span.1 > span.0,
+        "snippet": line_snippet(source, span.0),
     })
 }
 
@@ -509,6 +511,19 @@ fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
         .filter(|byte| *byte == b'\n')
         .count()
         + 1
+}
+
+fn line_snippet(source: &str, offset: usize) -> String {
+    let bounded = offset.min(source.len());
+    let line_start = source[..bounded]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = source[bounded..]
+        .find('\n')
+        .map(|index| bounded + index)
+        .unwrap_or(source.len());
+    source[line_start..line_end].trim().to_owned()
 }
 
 fn function_summary_json(summary: FunctionSummary) -> serde_json::Value {

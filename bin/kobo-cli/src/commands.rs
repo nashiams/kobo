@@ -9,6 +9,7 @@ mod doctor;
 mod ecosystem;
 mod explain;
 mod fix;
+mod formal_core;
 mod fmt;
 mod init;
 mod lsp_diagnostics;

@@ -18,6 +18,7 @@ use proptest::test_runner::{
 use crate::ErrorFormat;
 
 use super::sim_model::{self, ScenarioDocument};
+use super::formal_core;
 use super::witness_evidence;
 use super::{declarations, summary_validation};
 
@@ -592,6 +593,10 @@ fn write_run_witness(
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
     let inferred_obligations =
         witness_evidence::inferred_obligations_json(&source_path, &document.source, run);
+    let formal_core =
+        formal_core::formal_core_json(&source_path, &document.source, scenario_program);
+    let proof_seed =
+        formal_core::proof_seed_json(&source_path, &document.source, scenario_program, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -657,6 +662,8 @@ fn write_run_witness(
         "call_graph_obligation_summaries".to_owned(),
         witness_evidence::call_graph_obligation_summaries_json(scenario_program, run),
     );
+    object.insert("formal_core".to_owned(), formal_core);
+    object.insert("proof_seed".to_owned(), proof_seed);
     object.insert(
         "replay_grade".to_owned(),
         serde_json::json!(witness_evidence::replay_grade_json(
@@ -678,7 +685,7 @@ fn write_run_witness(
     );
     object.insert(
         "summaries".to_owned(),
-        serde_json::Value::Array(summary_usage_json(config)?),
+        serde_json::Value::Array(summary_usage_json(config, scenario_program)?),
     );
     object.insert(
         "lifecycle_inference".to_owned(),
@@ -1648,8 +1655,12 @@ fn declaration_metadata_json(facts: &declarations::DeclarationFacts) -> serde_js
     value
 }
 
-fn summary_usage_json(config: &kobo_driver::KoboConfig) -> anyhow::Result<Vec<serde_json::Value>> {
+fn summary_usage_json(
+    config: &kobo_driver::KoboConfig,
+    program: &ScenarioProgram,
+) -> anyhow::Result<Vec<serde_json::Value>> {
     let mut summaries = Vec::new();
+    summaries.push(formal_core::summary_json(program));
     for summary in &config.ecosystem_policy.summaries {
         let valid = summary_validation::load_valid_summary(summary)?;
         let parsed = valid.value;
@@ -2004,6 +2015,8 @@ fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_jso
         "line": one_based_line_for_offset(source, span.0),
         "start": span.0,
         "end": span.1.max(span.0 + 1),
+        "mapped": span.1 > span.0,
+        "snippet": line_snippet(source, span.0),
     })
 }
 
@@ -2103,4 +2116,17 @@ fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
         .filter(|byte| *byte == b'\n')
         .count()
         + 1
+}
+
+fn line_snippet(source: &str, offset: usize) -> String {
+    let bounded = offset.min(source.len());
+    let line_start = source[..bounded]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = source[bounded..]
+        .find('\n')
+        .map(|index| bounded + index)
+        .unwrap_or(source.len());
+    source[line_start..line_end].trim().to_owned()
 }

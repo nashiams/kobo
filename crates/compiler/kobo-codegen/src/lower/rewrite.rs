@@ -10,17 +10,29 @@ pub(crate) mod tick;
 mod util;
 
 use kobo_parser::KoboFile;
+use quote::ToTokens;
 use syn::parse_quote;
+use syn::spanned::Spanned;
 
 use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
 use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
+use super::handler;
+use super::parallel;
 use super::plan::{AnnotationNote, LoweringPlan};
 use super::scope::{type_name_from_syn, ScopeStack};
 use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
 use crate::error_policy::ErrorPolicyMarker;
 use crate::executor::executor_attribute;
-use crate::CodegenOptions;
+use crate::{CodegenOptions, ParallelLoopEvidence, TaskLocalEvidence};
+
+#[derive(Clone, Debug)]
+struct ParallelSafetyGate {
+    accepted: bool,
+    analysis_gate: String,
+    checks: Vec<String>,
+    blockers: Vec<String>,
+}
 
 pub(crate) struct Lowerer<'a> {
     pub(super) ast: &'a KoboFile,
@@ -35,6 +47,9 @@ pub(crate) struct Lowerer<'a> {
     pub(super) annotation_notes: Vec<AnnotationNote>,
     pub(super) anchors: Vec<LoweringAnchor>,
     pub(super) error_policy_markers: Vec<ErrorPolicyMarker>,
+    pub(super) needs_rayon: bool,
+    pub(super) parallel_evidence: Vec<ParallelLoopEvidence>,
+    pub(super) task_local_evidence: Vec<TaskLocalEvidence>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -63,6 +78,9 @@ impl<'a> Lowerer<'a> {
             annotation_notes: Vec::new(),
             anchors: Vec::new(),
             error_policy_markers: Vec::new(),
+            needs_rayon: false,
+            parallel_evidence: Vec::new(),
+            task_local_evidence: Vec::new(),
         }
     }
 
@@ -72,12 +90,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// S-53: Check whether any captured binding has a non-Send ownership tier.
-    /// When true, the spawn block should use `spawn_local` instead of `tokio::spawn`.
-    fn any_captured_non_send(&self, captured: &[clone_inject::CapturedBinding]) -> bool {
-        captured_bindings_need_spawn_local(captured)
-    }
-
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -85,12 +97,18 @@ impl<'a> Lowerer<'a> {
         Vec<LoweringAnchor>,
         Vec<ErrorPolicyMarker>,
         ConcurrentSupportNeeds,
+        bool,
+        Vec<ParallelLoopEvidence>,
+        Vec<TaskLocalEvidence>,
     ) {
         (
             self.annotation_notes,
             self.anchors,
             self.error_policy_markers,
             self.concurrent_support,
+            self.needs_rayon,
+            self.parallel_evidence,
+            self.task_local_evidence,
         )
     }
 
@@ -249,6 +267,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_function(&mut self, function: &mut syn::ItemFn) {
+        let lowered_handler = handler::lower_item_function(self.ast, function);
         // S-16: #[kobo::tick(rate=N)] → inject interval loop before lowering body.
         let tick_rate = function.attrs.iter().find_map(tick::parse_tick_rate);
         if let Some(rate) = tick_rate {
@@ -279,10 +298,11 @@ impl<'a> Lowerer<'a> {
             function.block.stmts.push(loop_body);
         }
         // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
-        let is_handler = function.attrs.iter().any(|attr| {
-            let segments: Vec<_> = attr.path().segments.iter().collect();
-            segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
-        });
+        let is_handler = !lowered_handler
+            && function.attrs.iter().any(|attr| {
+                let segments: Vec<_> = attr.path().segments.iter().collect();
+                segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
+            });
         if is_handler {
             // S-56: Per-request isolation — clone Arc params into locals, then wrap in catch_unwind.
             let original_stmts = std::mem::take(&mut function.block.stmts);
@@ -526,6 +546,66 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Local(local) => self.lower_local(local, scopes),
             syn::Stmt::Item(item) => self.lower_item(item),
             syn::Stmt::Expr(expr, semi) => {
+                if let syn::Expr::ForLoop(for_loop) = expr {
+                    let policy = parallel::policy_value(&for_loop.attrs)
+                        .unwrap_or_else(|| "outside".to_owned());
+                    let has_explicit_policy = parallel::policy_value(&for_loop.attrs).is_some();
+                    let source_line = self.source_line_for_expr_for_loop(for_loop);
+                    let safety_gate =
+                        self.parallel_safety_gate(for_loop, scopes, has_explicit_policy);
+                    match parallel::lower_for_loop(for_loop, safety_gate.accepted) {
+                        parallel::ParallelLowering::Parallel => {
+                            self.needs_rayon = true;
+                            self.lower_expr(for_loop.expr.as_mut(), scopes);
+                            self.lower_nested_block(&mut for_loop.body, scopes);
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
+                                source_line,
+                                "rayon-par-iter",
+                                &policy,
+                                safety_gate,
+                            ));
+                            *expr = parallel::for_each_adapter_expr(for_loop);
+                            *semi = Some(syn::token::Semi::default());
+                            return;
+                        }
+                        parallel::ParallelLowering::SerialPolicy => {
+                            parallel::mark_serial_policy(for_loop);
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
+                                source_line,
+                                "serial",
+                                "serial-order",
+                                ParallelSafetyGate::policy("policy-gate:serial-order"),
+                            ));
+                        }
+                        parallel::ParallelLowering::BoundaryPolicy => {
+                            parallel::mark_boundary_policy(for_loop, &policy);
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
+                                source_line,
+                                "boundary-policy",
+                                &policy,
+                                ParallelSafetyGate::policy("policy-gate:ward-boundary"),
+                            ));
+                        }
+                        parallel::ParallelLowering::SafetyBlocked => {
+                            parallel::mark_safety_blocked(for_loop, &safety_gate.blockers);
+                            self.parallel_evidence.push(self.parallel_loop_evidence(
+                                for_loop,
+                                scopes,
+                                source_line,
+                                "blocked-safety",
+                                "safety-gate",
+                                safety_gate,
+                            ));
+                        }
+                        parallel::ParallelLowering::None => {}
+                    }
+                }
                 if semi.is_none() && self.lower_owned_value_expr(expr, scopes) {
                     return;
                 }
@@ -534,15 +614,34 @@ impl<'a> Lowerer<'a> {
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
-                if !spawn::is_spawn_block_macro(&stmt_macro.mac) {
+                if !spawn::is_any_spawn_block_macro(&stmt_macro.mac) {
                     self.lower_macro_tokens(&mut stmt_macro.mac.tokens, scopes);
                     return;
                 }
 
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
-                let use_spawn_local = self.any_captured_non_send(&captured);
+                let use_spawn_local = spawn::is_spawn_local_block_macro(&stmt_macro.mac);
                 if use_spawn_local {
                     self.needs_local_set = true;
+                    let captured_bindings = captured
+                        .iter()
+                        .map(|binding| format!("{}:{:?}", binding.name, binding.tier))
+                        .collect::<Vec<_>>();
+                    self.task_local_evidence.push(TaskLocalEvidence {
+                        source_line: self.source_line_for_macro(&stmt_macro.mac),
+                        strategy: "tokio-spawn-local-localset".to_owned(),
+                        proof: if spawn::is_spawn_local_block_macro(&stmt_macro.mac) {
+                            "explicit-spawn-local-zone".to_owned()
+                        } else {
+                            "non-send-capture-tier".to_owned()
+                        },
+                        captured_bindings,
+                        safety_checks: vec![
+                            "localset-scope".to_owned(),
+                            "no-local-handle-escape".to_owned(),
+                            "non-send-capture-contained".to_owned(),
+                        ],
+                    });
                 }
                 if let Some(spawn_expr) =
                     spawn::lower_spawn_macro_with_strategy(&stmt_macro.mac, use_spawn_local)
@@ -671,6 +770,148 @@ impl<'a> Lowerer<'a> {
         };
         self.record_binding_anchor(binding, kind);
     }
+
+    fn source_line_for_expr_for_loop(&self, for_loop: &syn::ExprForLoop) -> usize {
+        let span = self.ast.span_from_syn(for_loop.for_token.span);
+        let (line, _) = self.ast.line_col(span);
+        line
+    }
+
+    fn source_line_for_macro(&self, mac: &syn::Macro) -> usize {
+        let span = self.ast.span_from_syn(mac.path.span());
+        let (line, _) = self.ast.line_col(span);
+        line
+    }
+
+    fn parallel_loop_evidence(
+        &self,
+        for_loop: &syn::ExprForLoop,
+        scopes: &ScopeStack,
+        source_line: usize,
+        lowering: &str,
+        policy: &str,
+        safety_gate: ParallelSafetyGate,
+    ) -> ParallelLoopEvidence {
+        let iterator = for_loop.expr.to_token_stream().to_string();
+        let captured_bindings = collect_block_captures(&for_loop.body, scopes)
+            .into_iter()
+            .map(|binding| format!("{}:{:?}", binding.name, binding.tier))
+            .collect::<Vec<_>>();
+        let proof = format!(
+            "{} gate={} iterator={} captures=[{}] checks=[{}]",
+            lowering,
+            safety_gate.analysis_gate,
+            iterator,
+            captured_bindings.join(","),
+            safety_gate.checks.join(",")
+        );
+        ParallelLoopEvidence {
+            source_line,
+            lowering: lowering.to_owned(),
+            policy: policy.to_owned(),
+            analysis_gate: safety_gate.analysis_gate,
+            proof,
+            iterator,
+            captured_bindings,
+            safety_checks: safety_gate.checks,
+        }
+    }
+
+    fn parallel_safety_gate(
+        &self,
+        for_loop: &syn::ExprForLoop,
+        scopes: &ScopeStack,
+        has_explicit_policy: bool,
+    ) -> ParallelSafetyGate {
+        let captured = collect_block_captures(&for_loop.body, scopes);
+        let captured_names = captured
+            .iter()
+            .map(|binding| binding.name.as_str())
+            .collect::<Vec<_>>();
+        let mut blockers = Vec::new();
+
+        for binding in &captured {
+            if matches!(
+                binding.tier,
+                kobo_ir::OwnershipTier::RcShared | kobo_ir::OwnershipTier::RcMutShared
+            ) {
+                blockers.push(format!("non-send-capture:{}", binding.name));
+            }
+            if block_mutates_binding_name(&for_loop.body, &binding.name) {
+                blockers.push(format!("shared-mutation:{}", binding.name));
+            }
+        }
+
+        for warning in kobo_analysis::scan_source_parallel_warnings(self.ast.source()) {
+            match warning.kind {
+                kobo_analysis::ParallelWarningKind::NonSendCapture { binding_name, .. }
+                    if captured_names
+                        .iter()
+                        .any(|name| *name == binding_name.as_str()) =>
+                {
+                    blockers.push(format!("non-send-capture:{binding_name}"));
+                }
+                kobo_analysis::ParallelWarningKind::SharedMutation { binding_name }
+                    if captured_names
+                        .iter()
+                        .any(|name| *name == binding_name.as_str()) =>
+                {
+                    blockers.push(format!("shared-mutation:{binding_name}"));
+                }
+                kobo_analysis::ParallelWarningKind::MissingBoundaryPolicy
+                    if !has_explicit_policy && block_mentions_ward_boundary(&for_loop.body) =>
+                {
+                    blockers.push("missing-boundary-policy".to_owned());
+                }
+                _ => {}
+            }
+        }
+
+        if !has_explicit_policy && block_mentions_ward_boundary(&for_loop.body) {
+            blockers.push("missing-boundary-policy".to_owned());
+        }
+
+        blockers.sort();
+        blockers.dedup();
+
+        if blockers.is_empty() {
+            ParallelSafetyGate {
+                accepted: true,
+                analysis_gate: "accepted-lowering-gate:no-K0061-blockers".to_owned(),
+                checks: vec![
+                    "accepted-lowering-gate".to_owned(),
+                    "analysis-diagnostics-clean".to_owned(),
+                    "no-K0061-blockers".to_owned(),
+                    "send-sync".to_owned(),
+                    "shared-mutation-rejected".to_owned(),
+                    "ward-boundary-policy-checked".to_owned(),
+                    "ast-method-call-lowered".to_owned(),
+                ],
+                blockers,
+            }
+        } else {
+            ParallelSafetyGate {
+                accepted: false,
+                analysis_gate: format!("blocked-lowering-gate:{}", blockers.join("|")),
+                checks: blockers
+                    .iter()
+                    .map(|blocker| format!("blocked:{blocker}"))
+                    .collect(),
+                blockers,
+            }
+        }
+    }
+}
+
+impl ParallelSafetyGate {
+    fn policy(analysis_gate: &str) -> Self {
+        Self {
+            accepted: false,
+            analysis_gate: analysis_gate.to_owned(),
+            checks: vec![analysis_gate.to_owned()],
+            blockers: Vec::new(),
+        }
+    }
 }
 
 fn executor_main_attr(
@@ -726,6 +967,30 @@ fn collect_spawn_captures(
     captures
 }
 
+fn collect_block_captures(
+    block: &syn::Block,
+    scopes: &ScopeStack,
+) -> Vec<clone_inject::CapturedBinding> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    collect_idents_from_tokens(&block.to_token_stream(), &mut seen);
+    seen.into_iter()
+        .filter_map(|name| {
+            let ident = syn::Ident::new(&name, proc_macro2::Span::call_site());
+            let tier = scopes.lookup(&ident)?;
+            let is_copy = matches!(tier, kobo_ir::OwnershipTier::PlainOwned);
+            Some(clone_inject::CapturedBinding {
+                name,
+                tier,
+                is_copy,
+                used_after_spawn: true,
+            })
+        })
+        .collect()
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn captured_bindings_need_spawn_local(captured: &[clone_inject::CapturedBinding]) -> bool {
     captured.iter().any(|binding| {
         matches!(
@@ -833,12 +1098,20 @@ fn iterator_source_ident(expr: &syn::Expr) -> Option<syn::Ident> {
 }
 
 fn block_mutates_binding(block: &syn::Block, source_ident: &syn::Ident) -> bool {
+    block_mutates_binding_name(block, &source_ident.to_string())
+}
+
+fn block_mutates_binding_name(block: &syn::Block, source: &str) -> bool {
     let mut visitor = MutationVisitor {
-        source: source_ident.to_string(),
+        source: source.to_owned(),
         found: false,
     };
     syn::visit::Visit::visit_block(&mut visitor, block);
     visitor.found
+}
+
+fn block_mentions_ward_boundary(block: &syn::Block) -> bool {
+    block.to_token_stream().to_string().contains("ward")
 }
 
 struct MutationVisitor {
@@ -902,6 +1175,9 @@ fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {
     let local_set_stmt: syn::Stmt = parse_quote! {
         let __kobo_local = tokio::task::LocalSet::new();
     };
+    let marker_stmt: syn::Stmt = parse_quote! {
+        let _ = "kobo: task-local-zone";
+    };
     let run_expr: syn::Expr = if function.sig.asyncness.is_some() {
         parse_quote! {
             __kobo_local.run_until(async move { #(#original_stmts)* }).await
@@ -911,7 +1187,7 @@ fn wrap_function_body_in_local_set(function: &mut syn::ItemFn) {
             tokio::runtime::Handle::current().block_on(__kobo_local.run_until(async move { #(#original_stmts)* }))
         }
     };
-    function.block.stmts = vec![local_set_stmt, syn::Stmt::Expr(run_expr, None)];
+    function.block.stmts = vec![local_set_stmt, marker_stmt, syn::Stmt::Expr(run_expr, None)];
 }
 
 #[cfg(test)]

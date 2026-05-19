@@ -10,8 +10,9 @@ use kobo_driver::{
 use kobo_ir::{GuaranteePolicy, MustCallObligation};
 
 use super::{
-    ownership_analysis, policy,
+    boundary_projection, ownership_analysis, policy,
     session::{build_session, line_number_for_offset, render_diagnostics},
+    summary_validation,
 };
 use crate::{ErrorFormat, GuaranteeProfileArg};
 
@@ -88,6 +89,8 @@ pub(super) fn cmd_inspect(
     audit: Option<&str>,
 ) -> anyhow::Result<()> {
     let mut session = build_session(file, cli_policy.clone())?;
+    let summary_usages = validate_configured_summaries(&session)?;
+    let boundary_policies = boundary_projection::projections_for_file(file, &session.config)?;
 
     if audit == Some("json") {
         let source = std::fs::read_to_string(file)
@@ -104,6 +107,7 @@ pub(super) fn cmd_inspect(
             "// effective guarantee profile: {}",
             session.guarantee_profile().as_str()
         );
+        emit_boundary_policy_comments(&boundary_policies);
         print!("{output}");
         return Ok(());
     }
@@ -122,6 +126,7 @@ pub(super) fn cmd_inspect(
             "// effective guarantee profile: {}",
             session.guarantee_profile().as_str()
         );
+        emit_boundary_policy_comments(&boundary_policies);
         print!("{main_output}");
         return Ok(());
     }
@@ -168,8 +173,44 @@ pub(super) fn cmd_inspect(
         "// effective guarantee profile: {}",
         session.guarantee_profile().as_str()
     );
+    for usage in &summary_usages {
+        println!(
+            "// kobo-summary: crate={} hash={} version={}",
+            usage.crate_name, usage.hash, usage.schema_version
+        );
+    }
+    emit_boundary_policy_comments(&boundary_policies);
     print!("{output}");
     Ok(())
+}
+
+fn emit_boundary_policy_comments(
+    boundary_policies: &[boundary_projection::BoundaryPolicyProjection],
+) {
+    for boundary in boundary_policies {
+        println!("{}", boundary.inspect_comment());
+    }
+}
+
+struct SummaryUsage {
+    crate_name: String,
+    hash: String,
+    schema_version: u64,
+}
+
+fn validate_configured_summaries(
+    session: &kobo_driver::CompileSession,
+) -> anyhow::Result<Vec<SummaryUsage>> {
+    let mut usages = Vec::new();
+    for summary in &session.config.ecosystem_policy.summaries {
+        let valid = summary_validation::load_valid_summary(summary)?;
+        usages.push(SummaryUsage {
+            crate_name: summary.crate_name.clone(),
+            hash: valid.hash,
+            schema_version: valid.schema_version,
+        });
+    }
+    Ok(usages)
 }
 
 fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
@@ -599,6 +640,15 @@ fn build_single_file_inspect_cargo_output(
 fn cargo_project_config_from_root(
     project_root: &Path,
 ) -> anyhow::Result<kobo_codegen::cargo_gen::KoboProjectConfig> {
+    let cargo_toml_path = project_root.join("Cargo.toml");
+    if cargo_toml_path.exists() {
+        let cargo_toml = fs::read_to_string(&cargo_toml_path)
+            .with_context(|| format!("failed to read {}", cargo_toml_path.display()))?;
+        let rewritten = cargo_toml_with_absolute_dependency_paths(project_root, &cargo_toml)?;
+        return kobo_codegen::cargo_gen::KoboProjectConfig::from_toml(&rewritten)
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
+
     let kobo_toml_path = project_root.join("Kobo.toml");
     if !kobo_toml_path.exists() {
         return Ok(kobo_codegen::cargo_gen::KoboProjectConfig::default());
@@ -608,6 +658,65 @@ fn cargo_project_config_from_root(
         .with_context(|| format!("failed to read {}", kobo_toml_path.display()))?;
     kobo_codegen::cargo_gen::KoboProjectConfig::from_toml(&toml_str)
         .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+fn cargo_toml_with_absolute_dependency_paths(
+    project_root: &Path,
+    source: &str,
+) -> anyhow::Result<String> {
+    let mut parsed = source
+        .parse::<toml::Value>()
+        .context("failed to parse Cargo.toml")?;
+    rewrite_dependency_paths(project_root, &mut parsed);
+    toml::to_string(&parsed).context("failed to serialize Cargo.toml")
+}
+
+fn rewrite_dependency_paths(project_root: &Path, manifest: &mut toml::Value) {
+    rewrite_dependency_section_paths(project_root, manifest, "dependencies");
+    rewrite_dependency_section_paths(project_root, manifest, "dev-dependencies");
+    rewrite_dependency_section_paths(project_root, manifest, "build-dependencies");
+    if let Some(targets) = manifest
+        .get_mut("target")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for (_, target) in targets {
+            rewrite_dependency_section_paths(project_root, target, "dependencies");
+            rewrite_dependency_section_paths(project_root, target, "dev-dependencies");
+            rewrite_dependency_section_paths(project_root, target, "build-dependencies");
+        }
+    }
+}
+
+fn rewrite_dependency_section_paths(project_root: &Path, value: &mut toml::Value, section: &str) {
+    let Some(dependencies) = value.get_mut(section).and_then(toml::Value::as_table_mut) else {
+        return;
+    };
+    for (_, value) in dependencies {
+        let Some(table) = value.as_table_mut() else {
+            continue;
+        };
+        let Some(path_value) = table
+            .get("path")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        if Path::new(&path_value).is_absolute() {
+            continue;
+        }
+        table.insert(
+            "path".to_owned(),
+            toml::Value::String(normalize_manifest_path(project_root.join(path_value))),
+        );
+    }
+}
+
+fn normalize_manifest_path(path: PathBuf) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn cargo_project_config_from_optional_adjacent_toml(
@@ -664,7 +773,7 @@ fn cli_relative_path(file: &Path) -> anyhow::Result<String> {
 fn find_nearest_kobo_project_root(file: &Path) -> Option<PathBuf> {
     let search_root = file.parent().unwrap_or(file);
     for ancestor in search_root.ancestors() {
-        if ancestor.join("Kobo.toml").is_file() {
+        if ancestor.join("Kobo.toml").is_file() || ancestor.join("Cargo.toml").is_file() {
             return Some(ancestor.to_path_buf());
         }
     }

@@ -1,5 +1,6 @@
 mod commands;
 
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -177,6 +178,56 @@ pub(crate) enum KoboCommand {
         #[arg(long, help = "Emit JSON")]
         json: bool,
     },
+    /// Generate a draft Kobo declaration file from a Rust crate.
+    Bindgen {
+        #[arg(long = "crate", value_name = "CRATE")]
+        crate_option: Option<String>,
+        #[arg(long, value_name = "LIST")]
+        features: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+    },
+    /// Add a Cargo dependency without requiring Kobo metadata packages.
+    Add {
+        #[arg(value_name = "CRATE")]
+        crate_name: String,
+        #[arg(long, value_name = "LIST")]
+        features: Option<String>,
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        path: Option<PathBuf>,
+        #[arg(long, value_name = "URL")]
+        git: Option<String>,
+        #[arg(long = "no-default-features")]
+        no_default_features: bool,
+        #[arg(long, help = "Add to [dev-dependencies]")]
+        dev: bool,
+        #[arg(long, help = "Add to [build-dependencies]")]
+        build: bool,
+        #[arg(
+            long,
+            value_name = "TARGET",
+            help = "Add to target-specific dependencies"
+        )]
+        target: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        manifest_path: Option<PathBuf>,
+        #[arg(long, value_name = "MEMBER")]
+        member: Option<String>,
+    },
+    /// Record an optional kobo-types package for a dependency.
+    AddTypes {
+        #[arg(value_name = "CRATE")]
+        crate_name: String,
+    },
+    /// Record an optional Kobo adapter package for a dependency.
+    AddAdapter {
+        #[arg(value_name = "CRATE")]
+        crate_name: String,
+    },
+    /// Seed Kobo ecosystem metadata from Cargo dependencies.
+    MigrateCargoDeps,
     /// Run the pipeline through the KIR phase only and print KIR nodes.
     Dump {
         #[arg(value_name = "FILE")]
@@ -258,7 +309,10 @@ pub(crate) enum KoboCommand {
     /// Show ownership debt report for a .kobo file.
     Debt {
         #[arg(value_name = "FILE")]
-        file: PathBuf,
+        file: Option<PathBuf>,
+        /// Scan a standalone Rust Cargo project without requiring Kobo sources.
+        #[arg(long, value_name = "DIR")]
+        cargo: Option<PathBuf>,
         /// Output JSON (schema_version=1, stable from v0.4)
         #[arg(long)]
         json: bool,
@@ -316,8 +370,11 @@ pub(crate) enum KoboCommand {
     /// Create a new Kobo project skeleton.
     Init {
         /// Name (and directory) for the new project.
-        #[arg(value_name = "NAME")]
-        name: String,
+        #[arg(value_name = "NAME", required_unless_present = "from_cargo")]
+        name: Option<String>,
+        /// Create Kobo metadata for an existing Cargo project.
+        #[arg(long)]
+        from_cargo: bool,
     },
     /// Build all .kobo files in a Kobo project.
     Build {
@@ -361,13 +418,19 @@ pub(crate) enum KoboCommand {
     /// File-watcher re-run on save.
     Watch {
         #[arg(value_name = "FILE")]
-        file: PathBuf,
+        file: Option<PathBuf>,
         /// Simple mode: save → compile → run (no state persistence)
         #[arg(long)]
         simple: bool,
         /// Build mode: save → codegen → cargo build (full rebuild cycle)
         #[arg(long)]
         build: bool,
+        /// Print a bounded watch plan without entering the watch loop.
+        #[arg(long)]
+        plan: bool,
+        /// File to treat as changed when rendering a watch plan.
+        #[arg(long, value_name = "FILE")]
+        changed: Option<PathBuf>,
     },
     /// Explain a Kobo diagnostic code.
     Explain {
@@ -399,6 +462,8 @@ pub(crate) enum SimCommand {
         why: bool,
         #[arg(long)]
         backend_recommendations: bool,
+        #[arg(long)]
+        fix_plan: bool,
     },
     /// List deterministic-testing backend metadata.
     Backends {
@@ -479,7 +544,27 @@ pub(crate) fn resolve_guarantee_profile(
 }
 
 fn main() -> std::process::ExitCode {
-    let args = Args::parse();
+    match std::thread::Builder::new()
+        .name("kobo-main".to_owned())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(run_main)
+    {
+        Ok(handle) => match handle.join() {
+            Ok(code) => code,
+            Err(_) => {
+                eprintln!("Error: kobo command thread panicked");
+                std::process::ExitCode::FAILURE
+            }
+        },
+        Err(error) => {
+            eprintln!("Error: failed to start kobo command thread: {error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_main() -> std::process::ExitCode {
+    let args = Args::parse_from(normalized_args());
     match commands::dispatch(args.command) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) if commands::is_diagnostic_exit(&error) => std::process::ExitCode::FAILURE,
@@ -488,4 +573,18 @@ fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+fn normalized_args() -> Vec<OsString> {
+    let mut args = std::env::args_os().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|arg| arg == OsStr::new("bindgen"))
+        && args.get(2).is_some_and(|arg| !starts_with_dash(arg))
+    {
+        args.insert(2, OsString::from("--crate"));
+    }
+    args
+}
+
+fn starts_with_dash(value: &OsStr) -> bool {
+    value.to_str().is_some_and(|value| value.starts_with('-'))
 }

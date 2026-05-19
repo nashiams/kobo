@@ -332,6 +332,7 @@ dependencies = [
  "kobo-errors",
  "kobo-ir",
  "proc-macro2",
+ "quote",
  "syn",
 ]
 
@@ -352,9 +353,11 @@ dependencies = [
  "kobo-sim-core",
  "proc-macro2",
  "proptest",
+ "quote",
  "serde_json",
  "syn",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
@@ -404,6 +407,7 @@ dependencies = [
  "kobo-migrate",
  "kobo-parser",
  "kobo-transform",
+ "quote",
  "serde",
  "serde_json",
  "syn",

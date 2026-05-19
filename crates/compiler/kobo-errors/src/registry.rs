@@ -249,6 +249,7 @@ fn registry_entries() -> Vec<DiagnosticRegistryEntry> {
     entries.extend(migration_entries());
     entries.extend(v085_entries());
     entries.extend(parser_recovery_entries());
+    entries.extend(v011_entries());
     append_reserved_entries(&mut entries);
     entries
 }
@@ -1093,6 +1094,148 @@ fn parser_recovery_entries() -> Vec<DiagnosticRegistryEntry> {
             Always(Error),
             ParserRecovery,
             ReviewOnly,
+            RefuseByDefault,
+        ),
+    ]
+}
+
+fn v011_entries() -> Vec<DiagnosticRegistryEntry> {
+    use DiagnosticCategory::BoundaryPolicy;
+    use MachineEditPolicy::RefuseByDefault;
+    use ModeBehavior::ReplayBoundaryPrompt;
+    use Severity::{Error, Warning};
+    use SeverityPolicy::Always;
+    use SuggestionPolicy::BoundaryPolicy as BoundarySuggestion;
+
+    vec![
+        entry(
+            KErrorCode::K0120,
+            "ecosystem-policy-parse-error",
+            "ecosystem policy parse error",
+            "Kobo could not parse ecosystem policy metadata from Kobo.toml.",
+            "Fix the [ecosystem] table before relying on project-wide boundary policy decisions.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0121,
+            "declaration-file-invalid",
+            "declaration file invalid",
+            "A Kobo declaration file is missing required schema, crate, version, effect, or obligation metadata.",
+            "Fix the declaration file key named by the diagnostic before using typed boundary policy.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0122,
+            "typed-boundary-missing-declaration",
+            "missing declaration for typed boundary",
+            "A boundary marked typed does not have matching Kobo declaration metadata.",
+            "Add crate.kobo.d.toml, kobo.d.toml, or an optional kobo-types package, or choose a different boundary policy.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0123,
+            "adapter-package-incompatible",
+            "adapter package missing or incompatible",
+            "A configured ecosystem adapter could not be found or does not match the package boundary.",
+            "Install or update the adapter package, or downgrade the boundary to record, activity, opaque, or debt.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0124,
+            "record-boundary-missing-evidence",
+            "record boundary missing recorded evidence",
+            "A record boundary was selected but no recorded event/result evidence was present.",
+            "Regenerate the witness with recording enabled or choose a policy that matches available evidence.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0125,
+            "activity-boundary-missing-retry",
+            "activity boundary missing retry metadata",
+            "An activity boundary lacks retry or idempotency metadata needed for replay review.",
+            "Add retry/idempotency metadata to the declaration or project policy before claiming activity evidence.",
+            BoundaryPolicy,
+            Warning,
+            Always(Warning),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0126,
+            "summary-hash-version-mismatch",
+            ".kobo-summary hash or version mismatch",
+            "A configured .kobo-summary is stale, corrupt, or written for an unsupported schema version.",
+            "Rebuild the upstream Kobo package and update the summary hash before using downstream evidence.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0127,
+            "bindgen-review-required",
+            "bindgen declaration needs review",
+            "Generated declaration metadata includes review questions that cannot be trusted as proof yet.",
+            "Review and complete the declaration before using typed or exact replay policy.",
+            BoundaryPolicy,
+            Warning,
+            Always(Warning),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0128,
+            "cargo-compatibility-regression",
+            "Cargo compatibility regression",
+            "Kobo changed Cargo package, feature, build-script, or dependency metadata in a way that can change normal Rust builds.",
+            "Preserve Cargo metadata exactly or report the incompatibility as a build error instead of hiding it.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
+            RefuseByDefault,
+        ),
+        entry(
+            KErrorCode::K0129,
+            "ecosystem-replay-overclaim-blocked",
+            "ecosystem replay overclaim blocked",
+            "Exact replay evidence changed or would imply coverage of external crate internals Kobo did not inspect.",
+            "Keep the witness partial or regenerate exact evidence with matching ecosystem boundary metadata.",
+            BoundaryPolicy,
+            Error,
+            Always(Error),
+            ReplayBoundaryPrompt,
+            BoundarySuggestion,
             RefuseByDefault,
         ),
     ]

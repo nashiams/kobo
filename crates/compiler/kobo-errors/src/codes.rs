@@ -157,6 +157,17 @@ define_error_codes! {
     K0116 => "K0116",
     K0117 => "K0117",
     K0118 => "K0118",
+    K0119 => "K0119",
+    K0120 => "K0120",
+    K0121 => "K0121",
+    K0122 => "K0122",
+    K0123 => "K0123",
+    K0124 => "K0124",
+    K0125 => "K0125",
+    K0126 => "K0126",
+    K0127 => "K0127",
+    K0128 => "K0128",
+    K0129 => "K0129",
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -238,6 +249,16 @@ impl KErrorCode {
             Self::K0116 => "scenario coverage incomplete",
             Self::K0117 => "semantic trace and harness trace diverged",
             Self::K0118 => "stale or mismatched evidence artifact",
+            Self::K0120 => "ecosystem policy parse error",
+            Self::K0121 => "declaration file parse or validation error",
+            Self::K0122 => "missing declaration for typed boundary",
+            Self::K0123 => "adapter package missing or incompatible",
+            Self::K0124 => "record boundary missing recorded evidence",
+            Self::K0125 => "activity boundary missing retry metadata",
+            Self::K0126 => ".kobo-summary hash or version mismatch",
+            Self::K0127 => "bindgen produced review-required declaration",
+            Self::K0128 => "Cargo compatibility regression",
+            Self::K0129 => "ecosystem replay overclaim blocked",
             _ => "reserved Kobo diagnostic slot",
         }
     }

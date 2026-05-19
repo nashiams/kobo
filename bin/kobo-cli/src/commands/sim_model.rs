@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_errors::KErrorCode;
+use kobo_ir::ScenarioExternalCallShape;
 
 use kobo_sim_core as sim_core;
 
@@ -90,6 +91,7 @@ pub(super) enum ModeledBoundary {
     WardTime,
     WardRandom,
     WardTask,
+    WardTaskLocal,
     WardStorage,
     WardNetwork,
 }
@@ -107,14 +109,22 @@ pub(super) struct RuntimeObligationSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BoundaryDecision {
     pub crate_name: String,
+    pub call_path: Option<String>,
+    pub call_arguments: Vec<kobo_ir::ScenarioBoundaryCallArgument>,
+    pub return_type: Option<String>,
+    pub call_shape: ScenarioExternalCallShape,
     pub policy: BoundaryPolicyChoice,
     pub reason: Option<String>,
+    pub span_start: usize,
+    pub span_end: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum BoundaryPolicyChoice {
+    Typed,
     Model,
     Record,
+    Activity,
     Stub,
     Outside,
     Opaque,
@@ -161,6 +171,7 @@ impl ModeledBoundary {
             Self::WardTime => "ward.time",
             Self::WardRandom => "ward.random",
             Self::WardTask => "ward.task",
+            Self::WardTaskLocal => "ward.task.local",
             Self::WardStorage => "ward.storage",
             Self::WardNetwork => "ward.network",
         }
@@ -170,8 +181,10 @@ impl ModeledBoundary {
 impl BoundaryPolicyChoice {
     pub(super) const fn as_str(&self) -> &'static str {
         match self {
+            Self::Typed => "typed",
             Self::Model => "model",
             Self::Record => "record",
+            Self::Activity => "activity",
             Self::Stub => "stub",
             Self::Outside => "outside",
             Self::Opaque => "opaque",
@@ -181,10 +194,12 @@ impl BoundaryPolicyChoice {
     }
 }
 
-pub(super) fn boundary_policy_choices() -> [BoundaryPolicyChoice; 6] {
+pub(super) fn boundary_policy_choices() -> [BoundaryPolicyChoice; 8] {
     [
+        BoundaryPolicyChoice::Typed,
         BoundaryPolicyChoice::Model,
         BoundaryPolicyChoice::Record,
+        BoundaryPolicyChoice::Activity,
         BoundaryPolicyChoice::Stub,
         BoundaryPolicyChoice::Outside,
         BoundaryPolicyChoice::Opaque,
@@ -253,6 +268,10 @@ pub(super) enum ScenarioOperation {
     },
     ExternalBoundary {
         crate_name: String,
+        call_path: Option<String>,
+        call_arguments: Vec<kobo_ir::ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
+        call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span_start: usize,
@@ -734,12 +753,20 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
         },
         sim_core::ScenarioOperation::ExternalBoundary {
             crate_name,
+            call_path,
+            call_arguments,
+            return_type,
+            call_shape,
             policy,
             reason,
             span_start,
             span_end,
         } => ScenarioOperation::ExternalBoundary {
             crate_name,
+            call_path,
+            call_arguments,
+            return_type,
+            call_shape,
             policy: convert_core_policy(policy),
             reason,
             span_start,
@@ -760,6 +787,7 @@ fn convert_core_boundary(boundary: sim_core::ModeledBoundary) -> ModeledBoundary
         sim_core::ModeledBoundary::WardTime => ModeledBoundary::WardTime,
         sim_core::ModeledBoundary::WardRandom => ModeledBoundary::WardRandom,
         sim_core::ModeledBoundary::WardTask => ModeledBoundary::WardTask,
+        sim_core::ModeledBoundary::WardTaskLocal => ModeledBoundary::WardTaskLocal,
         sim_core::ModeledBoundary::WardStorage => ModeledBoundary::WardStorage,
         sim_core::ModeledBoundary::WardNetwork => ModeledBoundary::WardNetwork,
     }
@@ -767,8 +795,10 @@ fn convert_core_boundary(boundary: sim_core::ModeledBoundary) -> ModeledBoundary
 
 fn convert_core_policy(policy: sim_core::BoundaryPolicyChoice) -> BoundaryPolicyChoice {
     match policy {
+        sim_core::BoundaryPolicyChoice::Typed => BoundaryPolicyChoice::Typed,
         sim_core::BoundaryPolicyChoice::Model => BoundaryPolicyChoice::Model,
         sim_core::BoundaryPolicyChoice::Record => BoundaryPolicyChoice::Record,
+        sim_core::BoundaryPolicyChoice::Activity => BoundaryPolicyChoice::Activity,
         sim_core::BoundaryPolicyChoice::Stub => BoundaryPolicyChoice::Stub,
         sim_core::BoundaryPolicyChoice::Outside => BoundaryPolicyChoice::Outside,
         sim_core::BoundaryPolicyChoice::Opaque => BoundaryPolicyChoice::Opaque,
@@ -905,6 +935,7 @@ impl ScenarioOperation {
             }
             Self::ExternalBoundary {
                 crate_name,
+                call_shape,
                 policy,
                 span_start,
                 span_end,
@@ -912,6 +943,8 @@ impl ScenarioOperation {
             } => {
                 output.push_str("boundary:");
                 output.push_str(crate_name);
+                output.push(':');
+                output.push_str(call_shape.as_str());
                 output.push(':');
                 output.push_str(policy.as_str());
                 output.push(':');
@@ -1029,12 +1062,20 @@ impl<'a> SimulationRuntime<'a> {
                 } => self.record_uncontrolled_failure(operation, (*span_start, *span_end)),
                 ScenarioOperation::ExternalBoundary {
                     crate_name,
+                    call_path,
+                    call_arguments,
+                    return_type,
+                    call_shape,
                     policy,
                     reason,
                     span_start,
                     span_end,
                 } => self.record_external_boundary(
                     crate_name.clone(),
+                    call_path.clone(),
+                    call_arguments.clone(),
+                    return_type.clone(),
+                    call_shape.clone(),
                     policy.clone(),
                     reason.clone(),
                     (*span_start, *span_end),
@@ -1304,9 +1345,16 @@ fn modeled_effect_event(boundary: ModeledBoundary, seed: u64, has_time_jump: boo
             label: None,
             value: Some(seed.rotate_left(13) ^ 0x9e37_79b9_7f4a_7c15_u64),
         },
-        ModeledBoundary::WardTask => SimEvent {
+        ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal => SimEvent {
             kind: "deterministic-task".to_owned(),
-            label: Some("ward.task".to_owned()),
+            label: Some(
+                match boundary {
+                    ModeledBoundary::WardTask => "ward.task",
+                    ModeledBoundary::WardTaskLocal => "ward.task.local",
+                    _ => unreachable!(),
+                }
+                .to_owned(),
+            ),
             value: Some(seed),
         },
         ModeledBoundary::WardStorage => SimEvent {
@@ -1327,6 +1375,10 @@ fn is_replay_owned_boundary(policy: &BoundaryPolicyChoice) -> bool {
         policy,
         BoundaryPolicyChoice::Model | BoundaryPolicyChoice::Record | BoundaryPolicyChoice::Stub
     )
+}
+
+fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
+    format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
 }
 
 impl<'a> SimulationRuntime<'a> {
@@ -1371,6 +1423,10 @@ impl<'a> SimulationRuntime<'a> {
     fn record_external_boundary(
         &mut self,
         crate_name: String,
+        call_path: Option<String>,
+        call_arguments: Vec<kobo_ir::ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
+        call_shape: ScenarioExternalCallShape,
         policy: BoundaryPolicyChoice,
         reason: Option<String>,
         span: (usize, usize),
@@ -1378,27 +1434,38 @@ impl<'a> SimulationRuntime<'a> {
         if !is_replay_owned_boundary(&policy) && !self.opaque_boundaries.contains(&crate_name) {
             self.opaque_boundaries.push(crate_name.clone());
         }
-        if !self
-            .boundary_decisions
-            .iter()
-            .any(|decision| decision.crate_name == crate_name)
-        {
+        if !self.boundary_decisions.iter().any(|decision| {
+            decision.crate_name == crate_name
+                && decision.call_path == call_path
+                && decision.call_arguments == call_arguments
+                && decision.return_type == return_type
+                && decision.call_shape == call_shape
+                && decision.span_start == span.0
+                && decision.span_end == span.1
+        }) {
             self.boundary_decisions.push(BoundaryDecision {
                 crate_name: crate_name.clone(),
+                call_path: call_path.clone(),
+                call_arguments,
+                return_type,
+                call_shape,
                 policy: policy.clone(),
                 reason,
+                span_start: span.0,
+                span_end: span.1,
             });
         }
+        let event_label = boundary_event_label(&crate_name, call_path.as_deref(), span);
         if is_replay_owned_boundary(&policy) {
             self.events.push(SimEvent {
                 kind: format!("boundary-{}", policy.as_str()),
-                label: Some(crate_name),
+                label: Some(event_label),
                 value: Some(self.seed),
             });
             return;
         }
         if self.boundary_failure.is_none() {
-            let choices = "model, record, stub, outside, opaque, debt";
+            let choices = "typed, model, record, activity, stub, outside, opaque, debt";
             self.boundary_failure = Some(ScenarioFailure {
                 code: KErrorCode::K0107,
                 message: format!(
@@ -1408,7 +1475,7 @@ impl<'a> SimulationRuntime<'a> {
                 primary_end: span.1,
                 events: vec![SimEvent {
                     kind: "boundary-policy-required".to_owned(),
-                    label: Some(crate_name),
+                    label: Some(event_label),
                     value: None,
                 }],
             });

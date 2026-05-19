@@ -220,6 +220,7 @@ fn explain_prose(code: crate::KErrorCode) -> Option<ExplainProse> {
         .or_else(|| design_explain_prose(code))
         .or_else(|| migration_explain_prose(code))
         .or_else(|| scenario_explain_prose(code))
+        .or_else(|| ecosystem_explain_prose(code))
         .or_else(|| parser_explain_prose(code))
 }
 
@@ -626,6 +627,84 @@ fn scenario_explain_prose(code: crate::KErrorCode) -> Option<ExplainProse> {
                   Option 3: Rerun the command that produced the artifact before using editor actions.",
             example: "Problem:\nAn LSP replay action points at a witness from an older source hash.\n\n\
                       Fix:\nRerun kobo test --sim quick --engine both and use the new witness path.",
+        },
+        _ => return None,
+    };
+
+    Some(prose)
+}
+
+fn ecosystem_explain_prose(code: crate::KErrorCode) -> Option<ExplainProse> {
+    let prose = match code {
+        crate::KErrorCode::K0120 => ExplainProse {
+            fix: "Option 1: Fix the malformed [ecosystem] or boundary policy entry in Kobo.toml.\n\
+                  Option 2: Replace the invalid policy with typed, model, record, activity, outside, opaque, or debt.\n\
+                  Option 3: Rerun `kobo doctor --deps --json` before trusting project-wide policy.",
+            example: "Problem:\n[ecosystem.policy]\nserde_json = \"exact\"\n\n\
+                      Fix:\nUse a supported policy such as typed, record, activity, opaque, or debt, then rerun doctor.",
+        },
+        crate::KErrorCode::K0121 => ExplainProse {
+            fix: "Option 1: Add the missing schema, crate, version, effect, or obligation field.\n\
+                  Option 2: Regenerate the declaration from source and review the generated questions.\n\
+                  Option 3: Remove the declaration from Kobo.toml until it validates.",
+            example: "Problem:\nA kobo.d.toml file names a crate but omits effect metadata for a typed boundary.\n\n\
+                      Fix:\nFill in the declaration fields or regenerate the declaration before enabling typed policy.",
+        },
+        crate::KErrorCode::K0122 => ExplainProse {
+            fix: "Option 1: Add a matching crate.kobo.d.toml, kobo.d.toml, or validated kobo-types package.\n\
+                  Option 2: Change the boundary to record, activity, opaque, or debt when typed metadata is not available.\n\
+                  Option 3: Point Kobo.toml at the declaration package that matches the crate version.",
+            example: "Problem:\n#[kobo::boundary(policy = \"typed\")]\nreqwest::get(url).await?;\n\n\
+                      Fix:\nInstall or configure a validated reqwest declaration, or choose a non-typed boundary policy.",
+        },
+        crate::KErrorCode::K0123 => ExplainProse {
+            fix: "Option 1: Install the adapter package named by Kobo.toml.\n\
+                  Option 2: Update the adapter so its crate, version, and trust metadata match the dependency.\n\
+                  Option 3: Downgrade the boundary to record, activity, opaque, or debt until the adapter validates.",
+            example: "Problem:\nKobo.toml selects kobo-adapter-sqlx, but the adapter is missing or declares a different sqlx version.\n\n\
+                      Fix:\nInstall a compatible adapter package or choose a policy that does not require that adapter.",
+        },
+        crate::KErrorCode::K0124 => ExplainProse {
+            fix: "Option 1: Regenerate the witness with recording enabled for this boundary.\n\
+                  Option 2: Attach the recorded event/result evidence to the replay artifact.\n\
+                  Option 3: Change the boundary policy when the effect should not be recorded.",
+            example: "Problem:\nA record boundary calls a payment API, but the witness has no recorded request or result entry.\n\n\
+                      Fix:\nRerun the scenario with recording or use a policy that matches the available evidence.",
+        },
+        crate::KErrorCode::K0125 => ExplainProse {
+            fix: "Option 1: Add retry and idempotency metadata to the activity declaration.\n\
+                  Option 2: Mark the result and compensation behavior so replay review can reason about retries.\n\
+                  Option 3: Use record, opaque, or debt until the activity contract is complete.",
+            example: "Problem:\nAn activity boundary sends an email but does not say whether retrying is idempotent.\n\n\
+                      Fix:\nDeclare retry, idempotency, result, and compensation metadata before claiming activity evidence.",
+        },
+        crate::KErrorCode::K0126 => ExplainProse {
+            fix: "Option 1: Rebuild the upstream Kobo package that produced the .kobo-summary.\n\
+                  Option 2: Update Kobo.toml with the new summary hash after reviewing the producer artifact.\n\
+                  Option 3: Remove stale summaries before running downstream exact replay checks.",
+            example: "Problem:\nKobo.toml pins a .kobo-summary hash, but the file body hashes to a different value.\n\n\
+                      Fix:\nRegenerate the summary and update the pinned hash only after the producer package is rebuilt.",
+        },
+        crate::KErrorCode::K0127 => ExplainProse {
+            fix: "Option 1: Review every generated bindgen question and complete missing effect metadata.\n\
+                  Option 2: Rerun bindgen with `--path` for source-backed extraction when a registry seed was used.\n\
+                  Option 3: Keep the declaration out of typed policy until review-required fields are resolved.",
+            example: "Problem:\nkobo bindgen sqlx creates a declaration with review_required = true.\n\n\
+                      Fix:\nReview the generated API effects or rerun bindgen against a source path before trusting typed replay.",
+        },
+        crate::KErrorCode::K0128 => ExplainProse {
+            fix: "Option 1: Preserve Cargo dependency, feature, target, dev, and build metadata exactly.\n\
+                  Option 2: Report an explicit compatibility error when Kobo cannot migrate that Cargo shape.\n\
+                  Option 3: Rerun Cargo after migration and compare package metadata before accepting the change.",
+            example: "Problem:\nA target-specific Cargo dependency is migrated as an unconditional Kobo dependency.\n\n\
+                      Fix:\nKeep the target condition or stop with a compatibility diagnostic instead of changing build behavior.",
+        },
+        crate::KErrorCode::K0129 => ExplainProse {
+            fix: "Option 1: Keep the witness partial when external crate internals were not inspected.\n\
+                  Option 2: Add matching declaration, adapter, summary, and trace evidence before claiming exact replay.\n\
+                  Option 3: Regenerate exact evidence only after semantic and harness traces agree.",
+            example: "Problem:\nA replay run claims exact coverage for a reqwest call without declaration or adapter evidence.\n\n\
+                      Fix:\nDowngrade to partial replay or add the missing boundary metadata and matching trace evidence.",
         },
         _ => return None,
     };

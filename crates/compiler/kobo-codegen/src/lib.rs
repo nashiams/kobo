@@ -33,6 +33,108 @@ pub struct CodegenOutput {
     pub rs_source: String,
     pub source_map: KoboSourceMap,
     pub error_policy_sites: Vec<ErrorPolicySite>,
+    pub runtime_evidence: RuntimeEvidence,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeEvidence {
+    pub services: Vec<ServiceRuntimeEvidence>,
+    pub handlers: Vec<HandlerLifecycleEvidence>,
+    pub parallel_loops: Vec<ParallelLoopEvidence>,
+    pub task_local_zones: Vec<TaskLocalEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceRuntimeEvidence {
+    pub name: String,
+    pub buffer: usize,
+    pub source_line: usize,
+    pub backpressure: String,
+    pub dispatch_loop: bool,
+    pub client_api: bool,
+    pub scenario_hooks: bool,
+    pub hook_events: Vec<String>,
+    pub methods: Vec<ServiceRuntimeMethodEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceRuntimeMethodEvidence {
+    pub name: String,
+    pub variant: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HandlerLifecycleEvidence {
+    pub name: String,
+    pub source_line: usize,
+    pub cleanup_hook: Option<String>,
+    pub terminal_actions: Vec<String>,
+    pub tracing_boundary: String,
+    pub metrics_boundary: String,
+    pub cleanup_boundary: String,
+    pub cancel_cleanup: String,
+    pub terminal_evidence_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParallelLoopEvidence {
+    pub source_line: usize,
+    pub lowering: String,
+    pub policy: String,
+    pub analysis_gate: String,
+    pub proof: String,
+    pub iterator: String,
+    pub captured_bindings: Vec<String>,
+    pub safety_checks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TaskLocalEvidence {
+    pub source_line: usize,
+    pub strategy: String,
+    pub proof: String,
+    pub captured_bindings: Vec<String>,
+    pub safety_checks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProfileOptions {
+    pub service_buffer: usize,
+    pub service_backpressure: String,
+    pub scheduler: String,
+    pub record: String,
+    pub activity: String,
+    pub cancellation: String,
+    pub scenario_event_budget: u64,
+}
+
+impl Default for RuntimeProfileOptions {
+    fn default() -> Self {
+        Self {
+            service_buffer: 64,
+            service_backpressure: "block-on-full".to_owned(),
+            scheduler: "small-random".to_owned(),
+            record: "recorded-boundary-io".to_owned(),
+            activity: "retry-idempotency".to_owned(),
+            cancellation: "scheduler-history".to_owned(),
+            scenario_event_budget: 64,
+        }
+    }
+}
+
+impl RuntimeProfileOptions {
+    pub fn inspect_comment(&self) -> String {
+        format!(
+            "kobo: runtime profile service_buffer={} service_backpressure={} scheduler={} record={} activity={} cancellation={} scenario_event_budget={}",
+            self.service_buffer,
+            self.service_backpressure,
+            self.scheduler,
+            self.record,
+            self.activity,
+            self.cancellation,
+            self.scenario_event_budget
+        )
+    }
 }
 
 /// Options that control code generation behaviour.
@@ -47,6 +149,8 @@ pub struct CodegenOptions {
     pub diag_mode: bool,
     /// Async executor selected from direct dependencies for `async fn main()`.
     pub executor_choice: executor::ExecutorChoice,
+    /// Unified service/scenario/runtime profile visible in generated artifacts.
+    pub runtime_profile: RuntimeProfileOptions,
 }
 
 impl Default for CodegenOptions {
@@ -54,6 +158,7 @@ impl Default for CodegenOptions {
         Self {
             diag_mode: false,
             executor_choice: executor::ExecutorChoice::None,
+            runtime_profile: RuntimeProfileOptions::default(),
         }
     }
 }
@@ -85,5 +190,6 @@ pub fn codegen_file(
         rs_source,
         source_map,
         error_policy_sites,
+        runtime_evidence: lowered.runtime_evidence,
     }
 }

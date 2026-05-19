@@ -4,7 +4,7 @@ use crate::core::{
     BoundaryPolicyChoice, LoweredScenario, ModeledBoundary, ScenarioCoverage, ScenarioOperation,
 };
 
-pub const MODEL_VERSION: &str = "v0.10-driver-kir-generated-user-rust-harness-1";
+pub const MODEL_VERSION: &str = "v0.11-driver-kir-generated-user-rust-harness-call-shape-1";
 
 pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> LoweredScenario {
     let operations = program
@@ -80,10 +80,18 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                 }
                 ScenarioOpKind::ExternalBoundary {
                     crate_name,
+                    call_path,
+                    call_arguments,
+                    return_type,
+                    call_shape,
                     policy,
                     reason,
                 } => Some(ScenarioOperation::ExternalBoundary {
                     crate_name: crate_name.clone(),
+                    call_path: call_path.clone(),
+                    call_arguments: call_arguments.clone(),
+                    return_type: return_type.clone(),
+                    call_shape: call_shape.clone(),
                     policy: boundary_policy(policy),
                     reason: reason.clone(),
                     span_start,
@@ -110,8 +118,10 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
 
 fn boundary_policy(policy: &ScenarioBoundaryPolicy) -> BoundaryPolicyChoice {
     match policy {
+        ScenarioBoundaryPolicy::Typed => BoundaryPolicyChoice::Typed,
         ScenarioBoundaryPolicy::Model => BoundaryPolicyChoice::Model,
         ScenarioBoundaryPolicy::Record => BoundaryPolicyChoice::Record,
+        ScenarioBoundaryPolicy::Activity => BoundaryPolicyChoice::Activity,
         ScenarioBoundaryPolicy::Stub => BoundaryPolicyChoice::Stub,
         ScenarioBoundaryPolicy::Outside => BoundaryPolicyChoice::Outside,
         ScenarioBoundaryPolicy::Opaque => BoundaryPolicyChoice::Opaque,
@@ -125,5 +135,6 @@ fn modeled_boundary(boundary: &ScenarioModeledBoundary) -> ModeledBoundary {
         ScenarioModeledBoundary::WardTime => ModeledBoundary::WardTime,
         ScenarioModeledBoundary::WardRandom => ModeledBoundary::WardRandom,
         ScenarioModeledBoundary::WardTask => ModeledBoundary::WardTask,
+        ScenarioModeledBoundary::WardTaskLocal => ModeledBoundary::WardTaskLocal,
     }
 }

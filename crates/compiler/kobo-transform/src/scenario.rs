@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
-    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
-    ScenarioCoverageFacts, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryCallArgument,
+    ScenarioBoundaryPolicy, ScenarioCallGraphScc, ScenarioCoverageFacts, ScenarioExternalCallShape,
+    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
+use quote::ToTokens;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -16,7 +18,8 @@ use syn::{
 
 type BindingMap = HashMap<String, String>;
 type BoolMap = HashMap<String, bool>;
-type ImportMap = HashMap<String, String>;
+type ExternalBindingMap = HashMap<String, ExternalBoundaryValue>;
+type ImportMap = HashMap<String, Vec<String>>;
 type BoundaryPolicyMap = HashMap<String, BoundaryPolicyFact>;
 type FunctionMap<'a> = HashMap<String, &'a ItemFn>;
 type FunctionSccMap = HashMap<String, usize>;
@@ -25,6 +28,14 @@ type FunctionSccMap = HashMap<String, usize>;
 struct BindingEnv {
     bindings: BindingMap,
     bools: BoolMap,
+    external_values: ExternalBindingMap,
+    imports: ImportMap,
+}
+
+#[derive(Clone, Debug)]
+struct ExternalBoundaryValue {
+    crate_name: String,
+    type_path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +54,13 @@ struct FunctionScc {
 struct ScenarioCallGraph {
     sccs: Vec<FunctionScc>,
     function_sccs: FunctionSccMap,
+}
+
+struct InferredLifecycleCreation {
+    binding: String,
+    type_name: String,
+    actions: Vec<String>,
+    span: KoboSpan,
 }
 
 #[derive(Default)]
@@ -124,7 +142,7 @@ fn lower_function(
         },
         active_functions: Vec::new(),
     };
-    let mut env = BindingEnv::default();
+    let mut env = BindingEnv::with_imports(imports.clone());
     lowerer.execute_function(&function.sig.ident.to_string(), function, &mut env);
     lowerer.operations.push(ScenarioOp {
         span: KoboSpan::generated(ast.file_id),
@@ -194,31 +212,31 @@ fn collect_use_crate_aliases(file: &File) -> ImportMap {
         let Item::Use(item_use) = item else {
             continue;
         };
-        collect_use_tree_aliases(&item_use.tree, None, &mut imports);
+        collect_use_tree_aliases(&item_use.tree, Vec::new(), &mut imports);
     }
     imports
 }
 
-fn collect_use_tree_aliases(tree: &UseTree, crate_name: Option<String>, imports: &mut ImportMap) {
+fn collect_use_tree_aliases(tree: &UseTree, prefix: Vec<String>, imports: &mut ImportMap) {
     match tree {
         UseTree::Path(path) => {
-            let root = crate_name.unwrap_or_else(|| path.ident.to_string());
-            collect_use_tree_aliases(&path.tree, Some(root), imports);
+            let mut next = prefix;
+            next.push(path.ident.to_string());
+            collect_use_tree_aliases(&path.tree, next, imports);
         }
         UseTree::Name(name) => {
-            if let Some(root) = crate_name {
-                imports.insert(name.ident.to_string(), root);
-            }
+            let mut full_path = prefix;
+            full_path.push(name.ident.to_string());
+            imports.insert(name.ident.to_string(), full_path);
         }
         UseTree::Rename(rename) => {
-            imports.insert(
-                rename.rename.to_string(),
-                crate_name.unwrap_or_else(|| rename.ident.to_string()),
-            );
+            let mut full_path = prefix;
+            full_path.push(rename.ident.to_string());
+            imports.insert(rename.rename.to_string(), full_path);
         }
         UseTree::Group(group) => {
             for tree in &group.items {
-                collect_use_tree_aliases(tree, crate_name.clone(), imports);
+                collect_use_tree_aliases(tree, prefix.clone(), imports);
             }
         }
         UseTree::Glob(_) => {}
@@ -420,6 +438,13 @@ fn collect_call_graph_edges(functions: &FunctionMap<'_>) -> HashMap<String, Vec<
 }
 
 impl BindingEnv {
+    fn with_imports(imports: ImportMap) -> Self {
+        Self {
+            imports,
+            ..Self::default()
+        }
+    }
+
     fn bind(&mut self, local: String, obligation_key: String) {
         self.bindings.insert(local, obligation_key);
     }
@@ -428,12 +453,24 @@ impl BindingEnv {
         self.bools.insert(local, value);
     }
 
+    fn bind_external(&mut self, local: String, value: ExternalBoundaryValue) {
+        self.external_values.insert(local, value);
+    }
+
     fn resolve(&self, local: &str) -> Option<String> {
         self.bindings.get(local).cloned()
     }
 
     fn resolve_bool(&self, local: &str) -> Option<bool> {
         self.bools.get(local).copied()
+    }
+
+    fn resolve_external(&self, local: &str) -> Option<&ExternalBoundaryValue> {
+        self.external_values.get(local)
+    }
+
+    fn bind_imports_from_use(&mut self, item_use: &ItemUse) {
+        collect_use_tree_aliases(&item_use.tree, Vec::new(), &mut self.imports);
     }
 }
 
@@ -445,14 +482,52 @@ impl<'a> ScenarioLowerer<'a> {
         env: &mut BindingEnv,
     ) {
         self.active_functions.push(function_name.to_owned());
+        self.seed_handler_obligations(function, env);
         self.execute_block(&function.block, env);
         let _ = self.active_functions.pop();
     }
 
+    fn seed_handler_obligations(&mut self, function: &'a ItemFn, env: &mut BindingEnv) {
+        if !function
+            .attrs
+            .iter()
+            .any(|attr| path_ends_with(attr.path(), &["kobo", "handler"]))
+        {
+            return;
+        }
+
+        for input in &function.sig.inputs {
+            let syn::FnArg::Typed(argument) = input else {
+                continue;
+            };
+            if !is_handler_obligation_argument(argument) {
+                continue;
+            }
+            let Some(binding) = pat_ident(argument.pat.as_ref()) else {
+                continue;
+            };
+            env.bind(binding.clone(), binding.clone());
+            self.operations.push(ScenarioOp {
+                span: self.span(argument),
+                kind: ScenarioOpKind::CreateObligation {
+                    binding,
+                    type_name: "HandlerReply".to_owned(),
+                    actions: handler_reply_actions(),
+                },
+            });
+        }
+    }
+
     fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) {
+        let saved_imports = env.imports.clone();
         for statement in &block.stmts {
+            if let Stmt::Item(Item::Use(item_use)) = statement {
+                env.bind_imports_from_use(item_use);
+                continue;
+            }
             self.execute_statement(statement, env);
         }
+        env.imports = saved_imports;
     }
 
     fn execute_statement(&mut self, statement: &'a Stmt, env: &mut BindingEnv) {
@@ -460,7 +535,11 @@ impl<'a> ScenarioLowerer<'a> {
             Stmt::Local(local) => self.execute_local(local, env),
             Stmt::Expr(expr, _) => self.execute_expr(expr, env),
             Stmt::Item(_) => {}
-            Stmt::Macro(statement_macro) => self.unsupported_macro(&statement_macro.mac),
+            Stmt::Macro(statement_macro) => {
+                if !self.record_spawn_macro(&statement_macro.mac) {
+                    self.unsupported_macro(&statement_macro.mac);
+                }
+            }
         }
     }
 
@@ -484,6 +563,19 @@ impl<'a> ScenarioLowerer<'a> {
                 return;
             }
         }
+        if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref()) {
+            env.bind(creation.binding.clone(), creation.binding.clone());
+            self.operations.push(ScenarioOp {
+                span: creation.span,
+                kind: ScenarioOpKind::CreateObligation {
+                    binding: creation.binding,
+                    type_name: creation.type_name,
+                    actions: creation.actions,
+                },
+            });
+            self.execute_expr(init.expr.as_ref(), env);
+            return;
+        }
         if let Some(binding) =
             expr_path_ident(init.expr.as_ref()).and_then(|name| env.resolve(&name))
         {
@@ -498,6 +590,12 @@ impl<'a> ScenarioLowerer<'a> {
         {
             env.bind_bool(binding, value);
             return;
+        }
+        if let Some(binding) = pat_ident(&local.pat) {
+            if let Some(value) = self.record_external_boundary_expr(init.expr.as_ref(), env) {
+                env.bind_external(binding, value);
+                return;
+            }
         }
         self.execute_expr(init.expr.as_ref(), env);
     }
@@ -517,6 +615,39 @@ impl<'a> ScenarioLowerer<'a> {
             .then(|| (binding, type_name, self.span(expr)))
     }
 
+    fn local_lifecycle_creation(
+        &self,
+        local: &'a Local,
+        expr: &'a Expr,
+    ) -> Option<InferredLifecycleCreation> {
+        let binding = pat_ident(&local.pat)?;
+        if tokio_spawn_call(expr).is_some() {
+            return Some(InferredLifecycleCreation {
+                binding,
+                type_name: "SpawnedTask".to_owned(),
+                actions: spawned_task_actions(),
+                span: self.span(expr),
+            });
+        }
+
+        let call = lifecycle_method_call(expr)?;
+        match call.method.to_string().as_str() {
+            "recv" => Some(InferredLifecycleCreation {
+                binding,
+                type_name: "Delivery".to_owned(),
+                actions: queue_delivery_actions(),
+                span: self.span(call),
+            }),
+            "begin" => Some(InferredLifecycleCreation {
+                binding,
+                type_name: "Transaction".to_owned(),
+                actions: transaction_actions(),
+                span: self.span(call),
+            }),
+            _ => None,
+        }
+    }
+
     fn execute_expr(&mut self, expr: &'a Expr, env: &mut BindingEnv) {
         match expr {
             Expr::MethodCall(call) => self.execute_method_call(call, env),
@@ -524,14 +655,32 @@ impl<'a> ScenarioLowerer<'a> {
             Expr::If(expr_if) => self.execute_if(expr_if, env),
             Expr::Match(expr_match) => self.execute_match(expr_match, env),
             Expr::Async(expr_async) => self.execute_async(expr_async, env),
-            Expr::Await(await_expr) => self.execute_expr(await_expr.base.as_ref(), env),
+            Expr::Await(await_expr) => {
+                if let Some(binding) =
+                    expr_path_ident(await_expr.base.as_ref()).and_then(|name| env.resolve(&name))
+                {
+                    self.operations.push(ScenarioOp {
+                        span: self.span(expr),
+                        kind: ScenarioOpKind::Discharge {
+                            binding,
+                            action: "join".to_owned(),
+                        },
+                    });
+                    return;
+                }
+                self.execute_expr(await_expr.base.as_ref(), env);
+            }
             Expr::Block(block) => self.execute_block(&block.block, env),
             Expr::Loop(expr_loop) => self.operations.push(ScenarioOp {
                 span: self.span(expr_loop),
                 kind: ScenarioOpKind::Loop,
             }),
             Expr::Paren(paren) => self.execute_expr(paren.expr.as_ref(), env),
-            Expr::Macro(expr_macro) => self.unsupported_macro(&expr_macro.mac),
+            Expr::Macro(expr_macro) => {
+                if !self.record_spawn_macro(&expr_macro.mac) {
+                    self.unsupported_macro(&expr_macro.mac);
+                }
+            }
             _ => {}
         }
     }
@@ -609,65 +758,270 @@ impl<'a> ScenarioLowerer<'a> {
                 return true;
             }
         }
-        if path_ends_with(&path.path, &["SystemTime", "now"]) {
+        let resolved_path = self.resolved_path_segments(&path.path, env);
+        if path_ends_with_segments(&resolved_path, &["SystemTime", "now"]) {
             self.raw_nondeterminism("SystemTime::now", call);
             return true;
         }
-        if path_ends_with(&path.path, &["Instant", "now"]) {
+        if path_ends_with_segments(&resolved_path, &["Instant", "now"]) {
             self.raw_nondeterminism("Instant::now", call);
             return true;
         }
-        if path_ends_with(&path.path, &["thread_rng"]) {
+        if path_ends_with_segments(&resolved_path, &["thread_rng"]) {
             self.raw_nondeterminism("thread_rng", call);
             return true;
         }
-        if path_first_ident(&path.path).as_deref() == Some("rand") {
+        if resolved_path
+            .first()
+            .is_some_and(|segment| segment == "rand")
+        {
             self.raw_nondeterminism("rand::", call);
             return true;
         }
-        if path_first_ident(&path.path).as_deref() == Some("std")
-            && path_has_segment(&path.path, "fs")
-        {
+        if path_starts_with(&resolved_path, &["std", "env"]) {
+            self.raw_nondeterminism("std::env", call);
+            return true;
+        }
+        if path_starts_with(&resolved_path, &["std", "process"]) {
+            self.raw_nondeterminism("std::process", call);
+            return true;
+        }
+        if path_ends_with_segments(&resolved_path, &["std", "thread", "sleep"]) {
+            self.raw_nondeterminism("std::thread::sleep", call);
+            return true;
+        }
+        if path_starts_with(&resolved_path, &["std", "fs"]) {
             self.uncontrolled_effect("std::fs", call);
             return true;
         }
-        if path_first_ident(&path.path).as_deref() == Some("std")
-            && path_has_segment(&path.path, "net")
-        {
+        if path_starts_with(&resolved_path, &["std", "net"]) {
             self.uncontrolled_effect("std::net", call);
             return true;
         }
-        if path_ends_with(&path.path, &["Client", "new"]) {
-            let crate_name = self.external_crate_name(&path.path);
-            let policy = self.boundary_policy_for(&crate_name);
-            if !is_replay_owned_policy(&policy.policy) {
-                self.record_opaque_boundary(&crate_name);
-            }
-            self.operations.push(ScenarioOp {
-                span: self.operation_span(call, "Client::new"),
-                kind: ScenarioOpKind::ExternalBoundary {
-                    crate_name,
-                    policy: policy.policy,
-                    reason: policy.reason,
-                },
-            });
+        if self.record_external_path_call(path, call, env).is_some() {
             return true;
         }
         false
+    }
+
+    fn record_external_boundary_expr(
+        &mut self,
+        expr: &'a Expr,
+        env: &mut BindingEnv,
+    ) -> Option<ExternalBoundaryValue> {
+        match expr {
+            Expr::Call(call) => {
+                let Expr::Path(path) = call.func.as_ref() else {
+                    return None;
+                };
+                self.record_external_path_call(path, call, env)
+            }
+            Expr::MethodCall(call) => self.record_external_method_call(call, env),
+            Expr::Await(await_expr) => {
+                self.record_external_boundary_expr(await_expr.base.as_ref(), env)
+            }
+            Expr::Paren(paren) => self.record_external_boundary_expr(paren.expr.as_ref(), env),
+            _ => None,
+        }
+    }
+
+    fn record_external_path_call(
+        &mut self,
+        path: &'a ExprPath,
+        call: &'a ExprCall,
+        env: &BindingEnv,
+    ) -> Option<ExternalBoundaryValue> {
+        if path_ends_with(&path.path, &["Client", "new"]) {
+            let crate_name = self.external_crate_name(&path.path, env);
+            let call_path = self.external_call_path(&path.path, &crate_name, env);
+            let return_type = associated_return_type_path(&call_path)
+                .unwrap_or_else(|| format!("{crate_name}::__KoboBoundaryValue"));
+            self.record_external_boundary_operation(
+                call,
+                crate_name.clone(),
+                Some(call_path),
+                boundary_call_arguments(&call.args),
+                Some(return_type.clone()),
+                ScenarioExternalCallShape::AssociatedFunction,
+            );
+            return Some(ExternalBoundaryValue {
+                crate_name,
+                type_path: return_type,
+            });
+        }
+        if let Some(crate_name) = self.imported_external_crate(&path.path, env) {
+            let call_path = self.external_call_path(&path.path, &crate_name, env);
+            let call_shape = self.external_call_shape(&path.path, env);
+            let return_type = match call_shape {
+                ScenarioExternalCallShape::AssociatedFunction => {
+                    associated_return_type_path(&call_path)
+                        .unwrap_or_else(|| format!("{crate_name}::__KoboBoundaryValue"))
+                }
+                ScenarioExternalCallShape::FreeFunction => {
+                    format!("{crate_name}::__KoboBoundaryValue")
+                }
+                ScenarioExternalCallShape::Method => {
+                    format!("{crate_name}::__KoboBoundaryValue")
+                }
+            };
+            self.record_external_boundary_operation(
+                call,
+                crate_name.clone(),
+                Some(call_path),
+                boundary_call_arguments(&call.args),
+                Some(return_type.clone()),
+                call_shape,
+            );
+            return Some(ExternalBoundaryValue {
+                crate_name,
+                type_path: return_type,
+            });
+        }
+        None
+    }
+
+    fn record_external_method_call(
+        &mut self,
+        call: &'a ExprMethodCall,
+        env: &BindingEnv,
+    ) -> Option<ExternalBoundaryValue> {
+        let receiver_name = receiver_ident(call.receiver.as_ref())?;
+        let receiver = env.resolve_external(&receiver_name)?.clone();
+        let call_path = format!("{}::{}", receiver.type_path, call.method);
+        let return_type = external_method_return_type(
+            &receiver.crate_name,
+            &receiver.type_path,
+            &call.method.to_string(),
+        );
+        self.record_external_boundary_operation(
+            call,
+            receiver.crate_name.clone(),
+            Some(call_path),
+            boundary_call_arguments(&call.args),
+            Some(return_type.clone()),
+            ScenarioExternalCallShape::Method,
+        );
+        Some(ExternalBoundaryValue {
+            crate_name: receiver.crate_name,
+            type_path: return_type,
+        })
+    }
+
+    fn record_external_boundary_operation(
+        &mut self,
+        node: &impl Spanned,
+        crate_name: String,
+        call_path: Option<String>,
+        call_arguments: Vec<ScenarioBoundaryCallArgument>,
+        return_type: Option<String>,
+        call_shape: ScenarioExternalCallShape,
+    ) {
+        let policy = self.boundary_policy_for(&crate_name);
+        if !is_replay_owned_policy(&policy.policy) {
+            self.record_opaque_boundary(&crate_name);
+        }
+        self.operations.push(ScenarioOp {
+            span: self.span(node),
+            kind: ScenarioOpKind::ExternalBoundary {
+                call_path,
+                call_arguments,
+                return_type,
+                call_shape,
+                crate_name,
+                policy: policy.policy,
+                reason: policy.reason,
+            },
+        });
     }
 
     fn execute_async(&mut self, expr_async: &'a ExprAsync, env: &mut BindingEnv) {
         self.execute_block(&expr_async.block, env);
     }
 
-    fn external_crate_name(&self, path: &Path) -> String {
+    fn external_crate_name(&self, path: &Path, env: &BindingEnv) -> String {
         let Some(first_ident) = path_first_ident(path) else {
             return "external".to_owned();
         };
-        self.imports
-            .get(&first_ident)
-            .cloned()
+        self.lookup_import(env, &first_ident)
+            .and_then(|path| path.first().cloned())
             .unwrap_or(first_ident)
+    }
+
+    fn resolved_path_segments(&self, path: &Path, env: &BindingEnv) -> Vec<String> {
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        let Some(first) = segments.first().cloned() else {
+            return segments;
+        };
+        if let Some(imported_path) = self.lookup_import(env, &first) {
+            let mut resolved = imported_path.clone();
+            resolved.extend(segments.into_iter().skip(1));
+            return resolved;
+        }
+        segments
+    }
+
+    fn external_call_path(&self, path: &Path, crate_name: &str, env: &BindingEnv) -> String {
+        let mut segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        if let Some(first) = segments.first() {
+            if first == crate_name {
+                return segments.join("::");
+            }
+            if let Some(imported_path) = self.lookup_import(env, first) {
+                if imported_path.first().is_some_and(|root| root == crate_name) {
+                    let mut resolved = imported_path.clone();
+                    resolved.extend(segments.into_iter().skip(1));
+                    return resolved.join("::");
+                }
+            }
+        }
+        if let Some(first) = segments.first_mut() {
+            *first = crate_name.to_owned();
+        }
+        segments.join("::")
+    }
+
+    fn external_call_shape(&self, path: &Path, env: &BindingEnv) -> ScenarioExternalCallShape {
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        let Some(first) = segments.first() else {
+            return ScenarioExternalCallShape::FreeFunction;
+        };
+        if let Some(imported_path) = self.lookup_import(env, first) {
+            if segments.len() == 1 || imported_path_looks_like_module(imported_path) {
+                return ScenarioExternalCallShape::FreeFunction;
+            }
+            return ScenarioExternalCallShape::AssociatedFunction;
+        }
+        if segments.len() == 1 {
+            return ScenarioExternalCallShape::FreeFunction;
+        }
+        ScenarioExternalCallShape::AssociatedFunction
+    }
+
+    fn imported_external_crate(&self, path: &Path, env: &BindingEnv) -> Option<String> {
+        let first_ident = path_first_ident(path)?;
+        let import_path = self.lookup_import(env, &first_ident)?;
+        let crate_name = import_path.first()?;
+        (!matches!(
+            crate_name.as_str(),
+            "std" | "core" | "alloc" | "crate" | "self" | "super" | "kobo" | "ward"
+        ))
+        .then(|| crate_name.clone())
+    }
+
+    fn lookup_import<'b>(&'b self, env: &'b BindingEnv, local: &str) -> Option<&'b Vec<String>> {
+        env.imports.get(local).or_else(|| self.imports.get(local))
     }
 
     fn boundary_policy_for(&self, crate_name: &str) -> BoundaryPolicyFact {
@@ -680,14 +1034,14 @@ impl<'a> ScenarioLowerer<'a> {
             })
     }
 
-    fn record_opaque_boundary(&mut self, crate_name: &str) {
+    fn record_opaque_boundary(&mut self, boundary: &str) {
         if !self
             .coverage
             .opaque_boundaries
             .iter()
-            .any(|boundary| boundary == crate_name)
+            .any(|existing| existing == boundary)
         {
-            self.coverage.opaque_boundaries.push(crate_name.to_owned());
+            self.coverage.opaque_boundaries.push(boundary.to_owned());
         }
     }
 
@@ -712,7 +1066,7 @@ impl<'a> ScenarioLowerer<'a> {
             return true;
         }
 
-        let mut helper_env = BindingEnv::default();
+        let mut helper_env = BindingEnv::with_imports(self.imports.clone());
         for (input, argument) in function.sig.inputs.iter().zip(call.args.iter()) {
             let Some(parameter) = fn_arg_ident(input) else {
                 continue;
@@ -730,7 +1084,12 @@ impl<'a> ScenarioLowerer<'a> {
                 helper_env.bind(parameter.clone(), argument_binding);
             }
             if let Some(value) = self.eval_bool(argument, env) {
-                helper_env.bind_bool(parameter, value);
+                helper_env.bind_bool(parameter.clone(), value);
+            }
+            if let Some(external_value) =
+                expr_path_ident(argument).and_then(|name| env.resolve_external(&name).cloned())
+            {
+                helper_env.bind_external(parameter, external_value);
             }
         }
 
@@ -754,7 +1113,7 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(call),
                 kind: ScenarioOpKind::Discharge {
                     binding,
-                    action: call.method.to_string(),
+                    action: terminal_action_name(&call.method.to_string()),
                 },
             });
             return;
@@ -767,6 +1126,9 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(call),
                 kind: ScenarioOpKind::ModeledEffect { boundary },
             });
+            return;
+        }
+        if self.record_external_method_call(call, env).is_some() {
             return;
         }
         self.execute_expr(call.receiver.as_ref(), env);
@@ -844,6 +1206,22 @@ impl<'a> ScenarioLowerer<'a> {
         self.record_unsupported_construct(&label);
     }
 
+    fn record_spawn_macro(&mut self, mac: &Macro) -> bool {
+        let Some(name) = mac.path.get_ident().map(|ident| ident.to_string()) else {
+            return false;
+        };
+        let boundary = match name.as_str() {
+            "__kobo_spawn_block" => ScenarioModeledBoundary::WardTask,
+            "__kobo_spawn_local_block" => ScenarioModeledBoundary::WardTaskLocal,
+            _ => return false,
+        };
+        self.operations.push(ScenarioOp {
+            span: self.span(mac),
+            kind: ScenarioOpKind::ModeledEffect { boundary },
+        });
+        true
+    }
+
     fn record_unsupported_construct(&mut self, label: &str) {
         if !self
             .coverage
@@ -911,24 +1289,41 @@ fn nearest_occurrence(source: &str, needle: &str, anchor: usize) -> Option<usize
         .min_by_key(|index| index.abs_diff(anchor))
 }
 
+fn imported_path_looks_like_module(import_path: &[String]) -> bool {
+    import_path
+        .last()
+        .is_some_and(|segment| starts_with_module_identifier(segment))
+}
+
+fn starts_with_module_identifier(segment: &str) -> bool {
+    segment
+        .chars()
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_lowercase())
+}
+
 fn boundaries_from_operations(operations: &[ScenarioOp]) -> Vec<ScenarioBoundary> {
     let mut boundaries = Vec::new();
     for operation in operations {
         let ScenarioOpKind::ExternalBoundary {
-            crate_name, policy, ..
+            crate_name,
+            call_path,
+            policy,
+            ..
         } = &operation.kind
         else {
             continue;
         };
+        let boundary_name = call_path.as_ref().unwrap_or(crate_name);
         if boundaries
             .iter()
-            .any(|boundary: &ScenarioBoundary| boundary.name == *crate_name)
+            .any(|boundary: &ScenarioBoundary| boundary.name == *boundary_name)
         {
             continue;
         }
         boundaries.push(ScenarioBoundary {
             span: operation.span,
-            name: crate_name.clone(),
+            name: boundary_name.clone(),
             decision: policy.as_str().to_owned(),
         });
     }
@@ -966,6 +1361,45 @@ fn function_returns_bool_literal(function: &ItemFn) -> Option<bool> {
         })
 }
 
+fn boundary_call_arguments(
+    arguments: &Punctuated<Expr, syn::token::Comma>,
+) -> Vec<ScenarioBoundaryCallArgument> {
+    arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| ScenarioBoundaryCallArgument {
+            index,
+            source: argument.to_token_stream().to_string(),
+        })
+        .collect()
+}
+
+fn associated_return_type_path(call_path: &str) -> Option<String> {
+    let mut segments = call_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    (segments.len() >= 2).then(|| {
+        let _method = segments.pop();
+        segments.join("::")
+    })
+}
+
+fn external_method_return_type(crate_name: &str, receiver_type: &str, method: &str) -> String {
+    match (crate_name, receiver_type, method) {
+        ("reqwest", "reqwest::Client", "get" | "post" | "put" | "delete" | "patch" | "request") => {
+            "reqwest::RequestBuilder".to_owned()
+        }
+        ("reqwest", "reqwest::RequestBuilder", "send") => "reqwest::Response".to_owned(),
+        ("sqlx", "sqlx::Pool", "begin") => "sqlx::Transaction".to_owned(),
+        ("sqlx", "sqlx::Pool", "acquire") => "sqlx::PoolConnection".to_owned(),
+        ("sqlx", "sqlx::Transaction", "commit" | "rollback") => {
+            "sqlx::__KoboBoundaryValue".to_owned()
+        }
+        _ => format!("{crate_name}::__KoboBoundaryValue"),
+    }
+}
+
 fn modeled_boundary(call: &ExprMethodCall) -> Option<ScenarioModeledBoundary> {
     if receiver_has_ward_member(call.receiver.as_ref(), "time") {
         return Some(ScenarioModeledBoundary::WardTime);
@@ -988,11 +1422,67 @@ fn is_tokio_spawn(path: &Path) -> bool {
     path_ends_with(path, &["tokio", "spawn"])
 }
 
+fn tokio_spawn_call(expr: &Expr) -> Option<&ExprCall> {
+    match expr {
+        Expr::Call(call) => match call.func.as_ref() {
+            Expr::Path(path) if is_tokio_spawn(&path.path) => Some(call),
+            _ => None,
+        },
+        Expr::Paren(paren) => tokio_spawn_call(paren.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn lifecycle_method_call(expr: &Expr) -> Option<&ExprMethodCall> {
+    match expr {
+        Expr::MethodCall(call) => Some(call),
+        Expr::Await(await_expr) => lifecycle_method_call(await_expr.base.as_ref()),
+        Expr::Paren(paren) => lifecycle_method_call(paren.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn queue_delivery_actions() -> Vec<String> {
+    ["ack", "nack", "requeue"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn transaction_actions() -> Vec<String> {
+    ["commit", "rollback"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn handler_reply_actions() -> Vec<String> {
+    ["reply", "reject", "cancel"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn spawned_task_actions() -> Vec<String> {
+    ["join", "abort", "detach-with-policy"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn terminal_action_name(method: &str) -> String {
+    match method {
+        "detach_with_policy" => "detach-with-policy".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
 fn is_replay_owned_policy(policy: &ScenarioBoundaryPolicy) -> bool {
     matches!(
         policy,
         ScenarioBoundaryPolicy::Model
             | ScenarioBoundaryPolicy::Record
+            | ScenarioBoundaryPolicy::Activity
             | ScenarioBoundaryPolicy::Stub
     )
 }
@@ -1055,6 +1545,46 @@ fn fn_arg_ident(arg: &syn::FnArg) -> Option<String> {
     }
 }
 
+fn is_handler_obligation_argument(argument: &PatType) -> bool {
+    handler_argument_type_name(argument)
+        .as_deref()
+        .is_some_and(|type_name| !is_non_obligation_handler_type(type_name))
+}
+
+fn handler_argument_type_name(argument: &PatType) -> Option<String> {
+    let syn::Type::Path(type_path) = argument.ty.as_ref() else {
+        return None;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn is_non_obligation_handler_type(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "bool"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "String"
+            | "str"
+    )
+}
+
 fn expr_path_ident(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Path(path) => path_last_ident(&path.path),
@@ -1085,10 +1615,20 @@ fn path_last_ident(path: &Path) -> Option<String> {
         .map(|segment| segment.ident.to_string())
 }
 
-fn path_has_segment(path: &Path, segment: &str) -> bool {
-    path.segments
-        .iter()
-        .any(|path_segment| path_segment.ident == segment)
+fn path_starts_with(path: &[String], prefix: &[&str]) -> bool {
+    path.len() >= prefix.len()
+        && path
+            .iter()
+            .zip(prefix.iter())
+            .all(|(segment, expected)| segment == expected)
+}
+
+fn path_ends_with_segments(path: &[String], suffix: &[&str]) -> bool {
+    path.len() >= suffix.len()
+        && path[path.len() - suffix.len()..]
+            .iter()
+            .zip(suffix.iter())
+            .all(|(segment, expected)| segment == expected)
 }
 
 fn path_ends_with(path: &Path, suffix: &[&str]) -> bool {
@@ -1109,4 +1649,91 @@ fn path_ends_with(path: &Path, suffix: &[&str]) -> bool {
 fn select_branch_count(mac: &Macro) -> u32 {
     let branch_count = mac.tokens.to_string().matches("=>").count();
     branch_count.max(1) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kobo_ir::{FileId, NodeIdGen};
+    use kobo_parser::parse_file;
+
+    #[test]
+    fn infers_normal_lifecycle_templates_from_scenario_ast() {
+        let source = r#"
+struct Queue {}
+struct Delivery {}
+struct Db {}
+struct Tx {}
+struct Request {}
+
+#[kobo::handler]
+#[kobo::scenario(profile = "async")]
+async fn service(request: Request) {
+    let message = Queue {}.recv().await;
+    message.ack();
+
+    let tx = Db {}.begin();
+    tx.commit();
+
+    let task = tokio::spawn(async {});
+    task.abort();
+
+    request.reply();
+}
+"#;
+        let mut id_gen = NodeIdGen::new();
+        let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
+        let program = build_scenario_programs(&ast, &[], "async")
+            .into_iter()
+            .find(|program| program.target == "service")
+            .expect("service scenario should lower");
+
+        let creates = program
+            .operations
+            .iter()
+            .filter_map(|operation| match &operation.kind {
+                ScenarioOpKind::CreateObligation {
+                    binding,
+                    type_name,
+                    actions,
+                } => Some((binding.as_str(), type_name.as_str(), actions.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (binding, type_name, actions) in [
+            ("request", "HandlerReply", handler_reply_actions()),
+            ("message", "Delivery", queue_delivery_actions()),
+            ("tx", "Transaction", transaction_actions()),
+            ("task", "SpawnedTask", spawned_task_actions()),
+        ] {
+            assert!(
+                creates
+                    .iter()
+                    .any(|candidate| candidate == &(binding, type_name, actions.clone())),
+                "missing inferred obligation {binding}/{type_name}/{actions:?} in {creates:?}"
+            );
+        }
+
+        let discharges = program
+            .operations
+            .iter()
+            .filter_map(|operation| match &operation.kind {
+                ScenarioOpKind::Discharge { binding, action } => {
+                    Some((binding.as_str(), action.as_str()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for discharge in [
+            ("request", "reply"),
+            ("message", "ack"),
+            ("tx", "commit"),
+            ("task", "abort"),
+        ] {
+            assert!(
+                discharges.contains(&discharge),
+                "missing lifecycle discharge {discharge:?} in {discharges:?}"
+            );
+        }
+    }
 }

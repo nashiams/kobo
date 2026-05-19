@@ -127,6 +127,7 @@ pub fn run_codegen_for_source_with_policy(
         &CodegenOptions {
             diag_mode: false,
             executor_choice,
+            runtime_profile: config.runtime_profile.to_codegen_options(),
         },
     );
     let artifacts = CodegenArtifacts {
@@ -138,6 +139,7 @@ pub fn run_codegen_for_source_with_policy(
         source_map: output.source_map,
         must_call_obligations: result.kir.must_call_obligations().to_vec(),
         error_policy_sites: output.error_policy_sites,
+        runtime_evidence: output.runtime_evidence,
         scenario_programs: result.kir.scenario_programs().to_vec(),
     };
     Ok(apply_error_policy_sites(artifacts, policy_name))
@@ -291,6 +293,7 @@ fn codegen_to_string(kir: &Kir, ast: &KoboFile, config: &KoboConfig) -> String {
         &CodegenOptions {
             diag_mode: false,
             executor_choice,
+            runtime_profile: config.runtime_profile.to_codegen_options(),
         },
     );
     output.rs_source

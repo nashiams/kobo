@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use kobo_ir::{ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
-use kobo_sim_core::FullDepthRun;
+use kobo_sim_core::{BoundaryPolicyChoice, FullDepthRun, ReplayGuarantee};
 
 #[derive(Debug, Default)]
 struct FunctionSummary {
@@ -55,6 +55,189 @@ pub(super) fn function_summaries_json(
             .map(function_summary_json)
             .collect::<Vec<_>>(),
     )
+}
+
+pub(super) fn call_graph_obligation_summaries_json(
+    program: &ScenarioProgram,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let summaries = FunctionSummaryBuilder::from_program(program, run).finish();
+    let summary_values = summaries
+        .into_iter()
+        .map(function_summary_json)
+        .collect::<Vec<_>>();
+    let sccs = program
+        .coverage
+        .call_graph_sccs
+        .iter()
+        .map(|scc| {
+            serde_json::json!({
+                "functions": scc.functions.clone(),
+                "is_recursive": scc.is_recursive,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "source": "scenario_program.call_graph_sccs",
+        "target": program.target,
+        "sccs": sccs,
+        "summaries": summary_values,
+    })
+}
+
+pub(super) fn boundary_ledger_json(
+    program: &ScenarioProgram,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let mut entries = run
+        .boundary_decisions
+        .iter()
+        .map(|decision| {
+            serde_json::json!({
+                "boundary": decision.crate_name,
+                "call_path": decision.call_path,
+                "call_arguments": decision.call_arguments,
+                "return_type": decision.return_type,
+                "call_shape": decision.call_shape.as_str(),
+                "status": boundary_status(&decision.policy),
+                "policy": decision.policy.as_str(),
+                "reason": decision.reason,
+                "source_span": {
+                    "start": decision.span_start,
+                    "end": decision.span_end,
+                },
+                "io_capture": boundary_ledger_io_capture_json(decision),
+                "source": "scenario_program",
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for boundary in &run.modeled_boundaries {
+        entries.push(serde_json::json!({
+            "boundary": boundary.as_str(),
+            "status": "modeled",
+            "policy": "model",
+            "reason": "modeled v0.10 facade",
+            "source": "scenario_program",
+        }));
+    }
+
+    if entries.is_empty() && !program.boundaries.is_empty() {
+        entries.extend(program.boundaries.iter().map(|boundary| {
+            serde_json::json!({
+                "boundary": boundary.name.clone(),
+                "status": "debt",
+                "policy": boundary.decision.clone(),
+                "reason": null,
+                "source": "scenario_program",
+            })
+        }));
+    }
+
+    entries.sort_by(|left, right| {
+        let left_key = format!(
+            "{}:{}",
+            left["boundary"].as_str().unwrap_or_default(),
+            left["policy"].as_str().unwrap_or_default()
+        );
+        let right_key = format!(
+            "{}:{}",
+            right["boundary"].as_str().unwrap_or_default(),
+            right["policy"].as_str().unwrap_or_default()
+        );
+        left_key.cmp(&right_key)
+    });
+    serde_json::Value::Array(entries)
+}
+
+fn boundary_ledger_io_capture_json(
+    decision: &kobo_sim_core::BoundaryDecision,
+) -> Option<serde_json::Value> {
+    if decision.policy.as_str() != "record" {
+        return None;
+    }
+    decision.recorded_io.as_ref().map(boundary_io_capture_json)
+}
+
+fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> serde_json::Value {
+    serde_json::json!({
+        "mode": capture.mode.clone(),
+        "request_hash": capture.request_hash.clone(),
+        "response_hash": capture.response_hash.clone(),
+        "replay_key": capture.replay_key.clone(),
+        "request": boundary_io_payload_json(&capture.request),
+        "response": boundary_io_payload_json(&capture.response),
+    })
+}
+
+fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    for field in &payload.fields {
+        fields.insert(
+            field.key.clone(),
+            serde_json::Value::String(field.value.clone()),
+        );
+    }
+    serde_json::json!({
+        "kind": payload.kind.clone(),
+        "payload": fields,
+    })
+}
+
+pub(super) fn inferred_obligations_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        run.obligations
+            .iter()
+            .map(|obligation| {
+                let template = lifecycle_template(&obligation.actions);
+                let state = if obligation.is_discharged {
+                    "discharged"
+                } else {
+                    "leaked"
+                };
+                let coverage_loss = if obligation.is_discharged {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String("unresolved_terminal_action".to_owned())
+                };
+
+                serde_json::json!({
+                    "id": format!("{}:{}", template.id, obligation.binding),
+                    "kind": template.kind,
+                    "template_id": template.id,
+                    "template_version": "v0.10.1",
+                    "binding": obligation.binding,
+                    "state": state,
+                    "terminal_actions": obligation.actions.clone(),
+                    "source_span": span_json(source_path, source, obligation.declaration_span),
+                    "confidence": template.confidence,
+                    "coverage_loss": coverage_loss,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub(super) fn replay_grade_json(run: &FullDepthRun, fuzz_enabled: bool) -> &'static str {
+    if fuzz_enabled && run.failure.is_some() {
+        return "counterexample";
+    }
+    if run.failure.is_some() {
+        return "diagnostic_failure";
+    }
+    if fuzz_enabled {
+        return "probing_pass";
+    }
+    match run.replay_guarantee {
+        ReplayGuarantee::Exact => "exact",
+        ReplayGuarantee::Partial => "partial",
+        ReplayGuarantee::NotReplayable => "not_replayable",
+    }
 }
 
 impl FunctionSummaryBuilder {
@@ -221,7 +404,91 @@ fn modeled_boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
         ScenarioModeledBoundary::WardTime => "ward.time",
         ScenarioModeledBoundary::WardRandom => "ward.random",
         ScenarioModeledBoundary::WardTask => "ward.task",
+        ScenarioModeledBoundary::WardTaskLocal => "ward.task.local",
     }
+}
+
+struct LifecycleTemplate {
+    kind: &'static str,
+    id: &'static str,
+    confidence: &'static str,
+}
+
+fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "ack" | "nack" | "requeue"))
+    {
+        return LifecycleTemplate {
+            kind: "queue_delivery",
+            id: "queue_delivery",
+            confidence: "exact_template",
+        };
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "commit" | "rollback"))
+    {
+        return LifecycleTemplate {
+            kind: "transaction",
+            id: "transaction",
+            confidence: "exact_template",
+        };
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "reply" | "reject" | "cancel"))
+    {
+        return LifecycleTemplate {
+            kind: "handler_reply",
+            id: "handler_reply",
+            confidence: "exact_template",
+        };
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "join" | "abort" | "detach-with-policy"))
+    {
+        return LifecycleTemplate {
+            kind: "spawned_task",
+            id: "spawned_task",
+            confidence: "exact_template",
+        };
+    }
+    LifecycleTemplate {
+        kind: "lifecycle_obligation",
+        id: "custom_lifecycle_obligation",
+        confidence: "heuristic",
+    }
+}
+
+fn boundary_status(policy: &BoundaryPolicyChoice) -> &'static str {
+    match policy {
+        BoundaryPolicyChoice::Typed => "typed",
+        BoundaryPolicyChoice::Model | BoundaryPolicyChoice::Stub => "modeled",
+        BoundaryPolicyChoice::Record => "recordable",
+        BoundaryPolicyChoice::Activity => "activity",
+        BoundaryPolicyChoice::Outside => "outside",
+        BoundaryPolicyChoice::Opaque => "opaque",
+        BoundaryPolicyChoice::Debt | BoundaryPolicyChoice::Unselected => "debt",
+    }
+}
+
+fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_json::Value {
+    serde_json::json!({
+        "path": source_path,
+        "line": one_based_line_for_offset(source, span.0),
+        "start": span.0,
+        "end": span.1.max(span.0 + 1),
+    })
+}
+
+fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
+    source[..offset.min(source.len())]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
 }
 
 fn function_summary_json(summary: FunctionSummary) -> serde_json::Value {

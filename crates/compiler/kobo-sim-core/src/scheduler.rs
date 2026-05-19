@@ -34,9 +34,12 @@ pub(crate) fn modeled_boundary_events(
     options: &ScenarioOptions,
 ) -> Vec<ScenarioEvent> {
     let mut events = vec![deterministic_boundary_event(boundary, options.seed)];
-    if matches!(boundary, ModeledBoundary::WardTask) {
+    if matches!(
+        boundary,
+        ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal
+    ) {
         let mut scheduler = SchedulerModel::new(options);
-        scheduler.record_task_boundary();
+        scheduler.record_task_boundary(boundary.as_str());
         events.extend(scheduler.into_events());
     }
     events
@@ -55,7 +58,10 @@ pub(crate) fn schedule_failure(
     span: (usize, usize),
 ) -> Option<ScenarioFailure> {
     if !matches!(options.sim_profile.as_str(), "deep" | "exhaustive")
-        || !matches!(boundary, ModeledBoundary::WardTask)
+        || !matches!(
+            boundary,
+            ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal
+        )
     {
         return None;
     }
@@ -71,6 +77,7 @@ pub(crate) fn schedule_failure(
             kind: "scheduler-interleaving-leak".to_owned(),
             label: Some(binding.to_owned()),
             value: Some(obligation_span.0 as u64),
+            io: None,
         }],
     })
 }
@@ -81,12 +88,14 @@ pub(crate) fn portfolio_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> 
         kind: "scheduler-portfolio".to_owned(),
         label: Some(options.sim_profile.clone()),
         value: Some(budget),
+        io: None,
     }];
     if options.sim_profile == "deep" {
         events.push(ScenarioEvent {
             kind: "scheduler-pct-seed".to_owned(),
             label: Some("deep".to_owned()),
             value: Some(options.seed.rotate_left(7)),
+            io: None,
         });
     }
     if options.sim_profile == "exhaustive" {
@@ -94,6 +103,7 @@ pub(crate) fn portfolio_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> 
             kind: "scheduler-exhaustive-cap".to_owned(),
             label: Some("tiny-ward".to_owned()),
             value: Some(budget),
+            io: None,
         });
     }
     events
@@ -122,8 +132,8 @@ impl<'a> SchedulerModel<'a> {
         }
     }
 
-    fn record_task_boundary(&mut self) {
-        let task_id = self.enqueue_task("ward.task");
+    fn record_task_boundary(&mut self, label: &str) {
+        let task_id = self.enqueue_task(label);
         self.wake_task(task_id);
         self.poll_task(task_id);
         if self.has_cancel_injection() {
@@ -142,6 +152,7 @@ impl<'a> SchedulerModel<'a> {
             kind: "scheduler-select-start".to_owned(),
             label: Some(self.options.sim_profile.clone()),
             value: Some(branch_count as u64),
+            io: None,
         });
         for branch_index in 0..branch_count {
             self.record_select_branch(branch_index, selected_branch);
@@ -208,12 +219,14 @@ impl<'a> SchedulerModel<'a> {
             kind: "scheduler-select-branch".to_owned(),
             label: Some(label.clone()),
             value: Some(branch_index as u64),
+            io: None,
         });
         if branch_index == selected_branch {
             self.events.push(ScenarioEvent {
                 kind: "scheduler-select-selected-branch".to_owned(),
                 label: Some(label),
                 value: Some(self.options.seed),
+                io: None,
             });
             return;
         }
@@ -221,11 +234,13 @@ impl<'a> SchedulerModel<'a> {
             kind: "scheduler-select-cancelled-branch".to_owned(),
             label: Some(label.clone()),
             value: Some(selected_branch as u64),
+            io: None,
         });
         self.events.push(ScenarioEvent {
             kind: "scheduler-future-dropped".to_owned(),
             label: Some(label),
             value: Some(branch_index as u64),
+            io: None,
         });
     }
 
@@ -234,6 +249,7 @@ impl<'a> SchedulerModel<'a> {
             kind: "scheduler-choice".to_owned(),
             label: Some("deep:pct-preempt".to_owned()),
             value: Some(self.options.seed.rotate_left(7)),
+            io: None,
         });
     }
 
@@ -242,6 +258,7 @@ impl<'a> SchedulerModel<'a> {
             kind: "scheduler-runnable-queue".to_owned(),
             label: Some("len".to_owned()),
             value: Some(self.runnable_queue.len() as u64),
+            io: None,
         });
     }
 
@@ -287,26 +304,31 @@ fn deterministic_boundary_event(boundary: &ModeledBoundary, seed: u64) -> Scenar
             kind: "deterministic-time".to_owned(),
             label: None,
             value: Some(seed.wrapping_mul(1_000).wrapping_add(17)),
+            io: None,
         },
         ModeledBoundary::WardRandom => ScenarioEvent {
             kind: "deterministic-random".to_owned(),
             label: None,
             value: Some(seed.rotate_left(13) ^ 0x9e37_79b9_7f4a_7c15_u64),
+            io: None,
         },
-        ModeledBoundary::WardTask => ScenarioEvent {
+        ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal => ScenarioEvent {
             kind: "deterministic-task".to_owned(),
-            label: Some("ward.task".to_owned()),
+            label: Some(boundary.as_str().to_owned()),
             value: Some(seed),
+            io: None,
         },
         ModeledBoundary::WardStorage => ScenarioEvent {
             kind: "storage-boundary".to_owned(),
             label: Some("ward.storage".to_owned()),
             value: Some(seed),
+            io: None,
         },
         ModeledBoundary::WardNetwork => ScenarioEvent {
             kind: "network-boundary".to_owned(),
             label: Some("ward.network".to_owned()),
             value: Some(seed),
+            io: None,
         },
     }
 }
@@ -316,5 +338,6 @@ fn task_event(kind: &str, label: &str, value: u64) -> ScenarioEvent {
         kind: kind.to_owned(),
         label: Some(label.to_owned()),
         value: Some(value),
+        io: None,
     }
 }

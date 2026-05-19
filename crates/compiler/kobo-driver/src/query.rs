@@ -407,6 +407,13 @@ fn codegen_config_hash(config: &KoboConfig) -> u64 {
             .as_ref()
             .map(|path| path.display().to_string()),
         config.dependencies.len(),
+        config.runtime_profile.service_buffer,
+        config.runtime_profile.service_backpressure.as_str(),
+        config.runtime_profile.scheduler.as_str(),
+        config.runtime_profile.record.as_str(),
+        config.runtime_profile.activity.as_str(),
+        config.runtime_profile.cancellation.as_str(),
+        config.runtime_profile.scenario_event_budget,
     ))
 }
 

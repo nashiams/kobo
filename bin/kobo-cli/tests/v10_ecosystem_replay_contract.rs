@@ -230,3 +230,68 @@ fn spawned_reply() {
     );
     replay_exact(&project.root, &witness_path);
 }
+
+#[test]
+fn cancellation_scheduler_history_is_visible_in_service_foundation_witness() {
+    let project = TestProject::new("v10-service-foundation-cancel-history");
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(reply | reject | cancel)]
+struct ReplyToken {}
+
+#[kobo::scenario(profile = "async")]
+fn cancellable_gateway() {
+    let reply = ReplyToken {};
+    ward.task();
+    let _lost = reply;
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("51"),
+            s("--inject"),
+            s("cancel"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert!(
+        !output.status.success(),
+        "cancel injection should preserve a failure witness for service shutdown review: {}",
+        output.combined()
+    );
+    let (_, witness) = read_first_witness(&project);
+    let scheduler = &witness["scheduler"];
+    assert_eq!(
+        scheduler["cancellation"]["mode"], "explicit-scheduler-history",
+        "service work needs cancellation to be a replayable scheduler history, not an unsourced status label:\n{}",
+        witness
+    );
+    assert_eq!(
+        scheduler["cancellation"]["token_source"], "kobo.scheduler.cancel",
+        "service shutdown should inherit a named cancellation token facade from v0.10:\n{}",
+        witness
+    );
+    let cancellation_events = scheduler["cancellation"]["events"].to_string();
+    for expected in [
+        "scheduler-cancel-path",
+        "scheduler-future-dropped",
+        "failure-injection-cancel",
+    ] {
+        assert_contains(
+            &cancellation_events,
+            expected,
+            "cancellation scheduler evidence should name every replay-critical event",
+        );
+    }
+}

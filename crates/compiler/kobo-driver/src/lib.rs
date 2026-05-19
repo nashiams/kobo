@@ -10,8 +10,9 @@ mod session;
 pub mod test_utils;
 
 pub use config::{
-    load_config, load_config_for, parse_kobo_config, ConfigError, ErrorPolicy, GuaranteeLevel,
-    GuaranteePolicy, GuaranteeProfile, KoboConfig, LegacyMode,
+    load_config, load_config_for, parse_kobo_config, ConfigError, EcosystemAdapterPolicy,
+    EcosystemCratePolicy, EcosystemPolicyConfig, EcosystemSummaryPolicy, EcosystemTypesPolicy,
+    ErrorPolicy, GuaranteeLevel, GuaranteePolicy, GuaranteeProfile, KoboConfig, LegacyMode,
 };
 pub use errors::DriverError;
 pub use filesystem::{

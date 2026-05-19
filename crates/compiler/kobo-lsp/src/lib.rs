@@ -113,13 +113,132 @@ fn code_actions_for_code_and_replay(
                     command: Some(command.to_owned()),
                 });
             }
-            for choice in ["model", "record", "stub", "outside", "opaque", "debt"] {
+            for choice in [
+                "typed", "model", "record", "activity", "stub", "outside", "opaque", "debt",
+            ] {
                 actions.push(LspCodeAction {
                     title: format!("Boundary policy: {choice}"),
                     group: "boundary-policy".to_owned(),
                     command: None,
                 });
             }
+        }
+        KErrorCode::K0120 => {
+            actions.push(LspCodeAction {
+                title: "Validate ecosystem policy".to_owned(),
+                group: "ecosystem-policy".to_owned(),
+                command: Some("kobo doctor --deps --json".to_owned()),
+            });
+        }
+        KErrorCode::K0121 => {
+            actions.push(LspCodeAction {
+                title: "Validate declaration file".to_owned(),
+                group: "declaration".to_owned(),
+                command: Some("kobo check --replay-critical --error-format=json".to_owned()),
+            });
+            actions.push(LspCodeAction {
+                title: "Regenerate declaration".to_owned(),
+                group: "declaration".to_owned(),
+                command: None,
+            });
+        }
+        KErrorCode::K0122 => {
+            actions.push(LspCodeAction {
+                title: "Create declaration file".to_owned(),
+                group: "declaration".to_owned(),
+                command: None,
+            });
+            actions.push(LspCodeAction {
+                title: "Use record boundary".to_owned(),
+                group: "boundary-policy".to_owned(),
+                command: None,
+            });
+            actions.push(LspCodeAction {
+                title: "Use opaque boundary".to_owned(),
+                group: "boundary-policy".to_owned(),
+                command: None,
+            });
+        }
+        KErrorCode::K0123 => {
+            actions.push(LspCodeAction {
+                title: "Install or update adapter".to_owned(),
+                group: "adapter".to_owned(),
+                command: None,
+            });
+            actions.push(LspCodeAction {
+                title: "Use record boundary".to_owned(),
+                group: "boundary-policy".to_owned(),
+                command: None,
+            });
+        }
+        KErrorCode::K0124 => {
+            actions.push(LspCodeAction {
+                title: "Regenerate recorded witness".to_owned(),
+                group: "replay".to_owned(),
+                command: Some("kobo test --sim quick --witness-dir .kobo/witnesses".to_owned()),
+            });
+            actions.push(LspCodeAction {
+                title: "Use activity boundary".to_owned(),
+                group: "boundary-policy".to_owned(),
+                command: None,
+            });
+        }
+        KErrorCode::K0125 => {
+            actions.push(LspCodeAction {
+                title: "Add activity retry metadata".to_owned(),
+                group: "declaration".to_owned(),
+                command: None,
+            });
+            actions.push(LspCodeAction {
+                title: "Run quick simulation".to_owned(),
+                group: "simulation".to_owned(),
+                command: Some("kobo test --sim quick".to_owned()),
+            });
+        }
+        KErrorCode::K0126 => {
+            actions.push(LspCodeAction {
+                title: "Rebuild upstream summary".to_owned(),
+                group: "summary".to_owned(),
+                command: Some("kobo build".to_owned()),
+            });
+        }
+        KErrorCode::K0127 => {
+            actions.push(LspCodeAction {
+                title: "Review generated declaration".to_owned(),
+                group: "bindgen".to_owned(),
+                command: None,
+            });
+            actions.push(LspCodeAction {
+                title: "Regenerate bindgen draft".to_owned(),
+                group: "bindgen".to_owned(),
+                command: Some("kobo bindgen --path <crate>".to_owned()),
+            });
+        }
+        KErrorCode::K0128 => {
+            actions.push(LspCodeAction {
+                title: "Run Cargo build".to_owned(),
+                group: "cargo".to_owned(),
+                command: Some("cargo build".to_owned()),
+            });
+            actions.push(LspCodeAction {
+                title: "Inspect dependencies".to_owned(),
+                group: "cargo".to_owned(),
+                command: Some("kobo doctor --deps --json".to_owned()),
+            });
+        }
+        KErrorCode::K0129 => {
+            actions.push(LspCodeAction {
+                title: "Replay witness".to_owned(),
+                group: "replay".to_owned(),
+                command: replay_command
+                    .map(str::to_owned)
+                    .or_else(|| Some("kobo replay <witness>".to_owned())),
+            });
+            actions.push(LspCodeAction {
+                title: "Keep replay partial".to_owned(),
+                group: "boundary-policy".to_owned(),
+                command: None,
+            });
         }
         _ => {}
     }
@@ -160,6 +279,40 @@ pub mod test_support {
         WitnessArtifact {
             path: path.to_owned(),
             source_hash: source_hash.to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::code_actions_for;
+    use kobo_errors::KErrorCode;
+
+    #[test]
+    fn active_k012x_codes_have_specific_lsp_actions() {
+        for code in [
+            KErrorCode::K0120,
+            KErrorCode::K0121,
+            KErrorCode::K0122,
+            KErrorCode::K0123,
+            KErrorCode::K0124,
+            KErrorCode::K0125,
+            KErrorCode::K0126,
+            KErrorCode::K0127,
+            KErrorCode::K0128,
+            KErrorCode::K0129,
+        ] {
+            let actions = code_actions_for(code);
+            assert!(
+                actions.len() > 1,
+                "{} should expose a code-specific action beyond Explain",
+                code.as_str()
+            );
+            assert!(
+                actions.iter().any(|action| action.group != "explain"),
+                "{} should not fall back to explain-only LSP coverage",
+                code.as_str()
+            );
         }
     }
 }

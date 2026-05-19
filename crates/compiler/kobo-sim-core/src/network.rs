@@ -63,6 +63,7 @@ impl NetworkModel {
                                 kind: "network-delivery-failed".to_owned(),
                                 label: Some("ward.network".to_owned()),
                                 value: None,
+                                io: None,
                             }],
                         }),
                     };
@@ -83,6 +84,7 @@ pub(crate) fn events_for_action(action: &str, seed: u64) -> Vec<ScenarioEvent> {
         kind: format!("network-{}", normalize_event_part(action)),
         label: Some("ward.network".to_owned()),
         value: Some(seed),
+        io: None,
     }]
 }
 
@@ -93,6 +95,7 @@ pub(crate) fn harness_events_for_action(action: &str, seed: u64) -> Vec<Scenario
         "delay" => events.push(state_event("network-delayed", "in-flight", seed)),
         "reorder" => events.push(state_event("network-reordered", "in-flight", seed)),
         "drop" => events.push(state_event("network-dropped", "dropped", seed)),
+        "receive" => events.push(state_event("network-delivered", "delivered", seed)),
         _ => {}
     }
     events
@@ -103,15 +106,20 @@ fn state_event(kind: &str, state: &str, seed: u64) -> ScenarioEvent {
         kind: kind.to_owned(),
         label: Some(format!("ward.network:{state}")),
         value: Some(seed),
+        io: None,
     }
 }
 
 fn normalize_action(action: &str) -> String {
-    action
+    let normalized = action
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
         .collect::<String>()
-        .to_ascii_lowercase()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        "drop_message" | "disconnect" | "client_disconnect" => "drop".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 fn normalize_event_part(value: &str) -> String {

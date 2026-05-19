@@ -1,8 +1,12 @@
 mod bench;
+mod bindgen;
+mod boundary_projection;
 mod build;
 mod check;
 mod debt;
+mod declarations;
 mod doctor;
+mod ecosystem;
 mod explain;
 mod fix;
 mod fmt;
@@ -17,6 +21,7 @@ mod run;
 mod session;
 mod sim;
 mod sim_model;
+mod summary_validation;
 mod test_cmd;
 mod watch;
 mod witness_evidence;
@@ -152,6 +157,43 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 output_format,
             })
         }
+        KoboCommand::Bindgen {
+            crate_option,
+            features,
+            path,
+        } => bindgen::cmd_bindgen(bindgen::BindgenOptions {
+            path: path.as_deref(),
+            crate_name: crate_option.as_deref(),
+            features: features.as_deref(),
+        }),
+        KoboCommand::Add {
+            crate_name,
+            features,
+            version,
+            path,
+            git,
+            no_default_features,
+            dev,
+            build,
+            target,
+            manifest_path,
+            member,
+        } => ecosystem::cmd_add(
+            &crate_name,
+            features.as_deref(),
+            version.as_deref(),
+            path.as_deref(),
+            git.as_deref(),
+            no_default_features,
+            dev,
+            build,
+            target.as_deref(),
+            manifest_path.as_deref(),
+            member.as_deref(),
+        ),
+        KoboCommand::AddTypes { crate_name } => ecosystem::cmd_add_types(&crate_name),
+        KoboCommand::AddAdapter { crate_name } => ecosystem::cmd_add_adapter(&crate_name),
+        KoboCommand::MigrateCargoDeps => ecosystem::cmd_migrate_cargo_deps(),
         KoboCommand::Dump { file } => run::cmd_dump(&file),
         KoboCommand::Perf {
             file,
@@ -179,7 +221,8 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 json,
                 why,
                 backend_recommendations,
-            } => sim::cmd_sim_scout(&file, json, why, backend_recommendations),
+                fix_plan,
+            } => sim::cmd_sim_scout(&file, json, why, backend_recommendations, fix_plan),
             SimCommand::Backends { json } => sim::cmd_sim_backends(json),
         },
         KoboCommand::Test {
@@ -222,6 +265,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         } => fix::cmd_fix(&file, dry_run, apply, json),
         KoboCommand::Debt {
             file,
+            cargo,
             json,
             summary,
             borrows,
@@ -234,21 +278,31 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 eprintln!("kobo debt --watch is planned for v0.5");
                 return Ok(());
             }
+            if let Some(cargo_root) = cargo {
+                anyhow::ensure!(
+                    !(borrows || patterns || errors || liveness),
+                    "kobo debt --cargo supports default, --summary, and --json output only"
+                );
+                return debt::cmd_debt_cargo(&cargo_root, json, summary);
+            }
+            let Some(file) = file else {
+                anyhow::bail!("kobo debt requires FILE or --cargo DIR");
+            };
             if borrows {
-                return debt::cmd_debt_borrows(&file, json);
+                return debt::cmd_debt_borrows(file.as_path(), json);
             }
             if patterns {
-                return debt::cmd_debt_patterns(&file, json);
+                return debt::cmd_debt_patterns(file.as_path(), json);
             }
             if errors {
-                return debt::cmd_debt_errors(&file, json);
+                return debt::cmd_debt_errors(file.as_path(), json);
             }
             if liveness {
-                return debt::cmd_debt_liveness(&file, json);
+                return debt::cmd_debt_liveness(file.as_path(), json);
             }
-            debt::cmd_debt(&file, json, summary)
+            debt::cmd_debt(file.as_path(), json, summary)
         }
-        KoboCommand::Init { name } => init::cmd_init(&name),
+        KoboCommand::Init { name, from_cargo } => init::cmd_init(name.as_deref(), from_cargo),
         KoboCommand::Build {
             checked,
             strict,
@@ -298,7 +352,9 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             file,
             simple,
             build,
-        } => watch::cmd_watch(&file, simple, build),
+            plan,
+            changed,
+        } => watch::cmd_watch(file.as_deref(), simple, build, plan, changed.as_deref()),
         KoboCommand::Explain { code, verbose } => explain::cmd_explain(&code, verbose),
     }
 }

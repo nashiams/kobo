@@ -9,6 +9,8 @@ pub struct BackendCapability {
     pub scenario_execution: &'static str,
     pub ecosystem_scope: &'static str,
     pub full_ecosystem_exploration: bool,
+    pub registered_boundary_exploration: bool,
+    pub coverage_contract: &'static str,
     pub role: &'static str,
 }
 
@@ -37,6 +39,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "compiler-owned-generated-rust",
             ecosystem_scope: "generated-user-rust",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "registered-boundaries-generated-rust",
             role: "semantic/harness agreement and replay token evidence",
         },
         BackendCapability {
@@ -47,6 +51,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "stateful-generated-inputs",
             ecosystem_scope: "generated-inputs",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: false,
+            coverage_contract: "generated-inputs-only",
             role: "stateful input generation for --fuzz",
         },
         BackendCapability {
@@ -57,6 +63,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "generated-user-rust-loom",
             ecosystem_scope: "real-loom-generated-user-rust",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "registered-boundaries-loom-generated-rust",
             role: "sync profile wraps generated user Rust in loom::model",
         },
         BackendCapability {
@@ -67,6 +75,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "generated-user-rust-shuttle-scheduler",
             ecosystem_scope: "generated-user-rust-adapter",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "full-registered-boundaries-shuttle-adapter",
             role: "async profile executes generated user Rust with Kobo scheduler evidence",
         },
         BackendCapability {
@@ -77,6 +87,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "generated-user-rust-loopback-network",
             ecosystem_scope: "generated-user-rust-adapter",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "full-registered-boundaries-turmoil-adapter",
             role: "network profile executes generated user Rust with loopback network evidence",
         },
         BackendCapability {
@@ -87,6 +99,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "generated-user-rust-distributed-scheduler",
             ecosystem_scope: "generated-user-rust-adapter",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "full-registered-boundaries-madsim-adapter",
             role: "distributed profile executes generated user Rust with deterministic scheduler evidence",
         },
         BackendCapability {
@@ -97,6 +111,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "generated-user-rust-filesystem",
             ecosystem_scope: "generated-user-rust-os-facade",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "registered-boundaries-storage-facade",
             role: "storage facade executes generated Rust filesystem operations",
         },
         BackendCapability {
@@ -107,6 +123,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "generated-user-rust-loopback-network",
             ecosystem_scope: "generated-user-rust-os-facade",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "registered-boundaries-network-facade",
             role: "network facade executes generated Rust loopback socket operations",
         },
         BackendCapability {
@@ -117,6 +135,8 @@ pub fn capabilities() -> &'static [BackendCapability] {
             scenario_execution: "compiler-owned-failure-hooks",
             ecosystem_scope: "generated-user-rust-adapter",
             full_ecosystem_exploration: false,
+            registered_boundary_exploration: true,
+            coverage_contract: "full-registered-boundaries-failpoint-adapter",
             role: "compiler-owned failure injection hooks",
         },
     ]

@@ -1,14 +1,18 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
 
 use kobo_errors::KErrorCode;
-use kobo_ir::{ScenarioBoundaryPolicy, ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
+use kobo_ir::{
+    ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioExternalCallShape,
+    ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram,
+};
 
 use crate::core::{
     EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure, ScenarioOptions,
 };
 use crate::error::{Result, SimCoreError};
-use crate::harness_manifest::HarnessManifest;
+use crate::harness_manifest::{HarnessManifest, ServiceHookEvent};
 use crate::network::NetworkModel;
 use crate::storage::StorageModel;
 
@@ -44,7 +48,17 @@ pub fn check_harness_agreement(
         return Ok(semantic);
     }
 
+    if !semantic.opaque_boundaries.is_empty() {
+        semantic.digest.agreement = agreement_label(TraceAgreement::BoundaryPartial);
+        semantic.replay_guarantee = ReplayGuarantee::Partial;
+        return Ok(semantic);
+    }
+
     let harness = run_generated_harness(program, generated_rust, options)?;
+    if events_match_with_harness_recording(&semantic.events, &harness.events) {
+        merge_harness_recordings(&mut semantic, &harness.events);
+        semantic.digest.semantic_trace_hash = crate::digest::events_hash(&semantic.events);
+    }
     let mut harness_hash = crate::digest::events_hash(&harness.events);
     let manifest_json = serde_json::to_string(&harness.manifest)
         .map_err(|source| SimCoreError::json("serialize harness manifest", source))?;
@@ -92,6 +106,55 @@ pub fn check_harness_agreement(
     Ok(semantic)
 }
 
+fn events_match_with_harness_recording(
+    semantic_events: &[ScenarioEvent],
+    harness_events: &[ScenarioEvent],
+) -> bool {
+    semantic_events.len() == harness_events.len()
+        && semantic_events
+            .iter()
+            .zip(harness_events)
+            .all(|(semantic, harness)| {
+                semantic.kind == harness.kind
+                    && semantic.label == harness.label
+                    && semantic.value == harness.value
+                    && (semantic.io == harness.io
+                        || (semantic.kind == "boundary-record"
+                            && semantic.io.is_none()
+                            && harness.io.is_some()))
+            })
+}
+
+fn merge_harness_recordings(run: &mut FullDepthRun, harness_events: &[ScenarioEvent]) {
+    for (semantic, harness) in run.events.iter_mut().zip(harness_events) {
+        if semantic.kind == "boundary-record" && semantic.io.is_none() {
+            semantic.io = harness.io.clone();
+        }
+    }
+    for decision in &mut run.boundary_decisions {
+        if decision.policy.as_str() != "record" {
+            continue;
+        }
+        let expected_label = format!(
+            "{}@{}..{}",
+            decision
+                .call_path
+                .as_deref()
+                .unwrap_or(decision.crate_name.as_str()),
+            decision.span_start,
+            decision.span_end
+        );
+        decision.recorded_io = run
+            .events
+            .iter()
+            .find(|event| {
+                event.kind == "boundary-record"
+                    && event.label.as_deref() == Some(expected_label.as_str())
+            })
+            .and_then(|event| event.io.clone());
+    }
+}
+
 struct HarnessRun {
     events: Vec<ScenarioEvent>,
     manifest: HarnessManifest,
@@ -109,6 +172,7 @@ enum TraceAgreement {
     Matched,
     Diverged,
     CoverageIncomplete,
+    BoundaryPartial,
 }
 
 fn agreement_label(agreement: TraceAgreement) -> String {
@@ -116,6 +180,7 @@ fn agreement_label(agreement: TraceAgreement) -> String {
         TraceAgreement::Matched => String::from("matched"),
         TraceAgreement::Diverged => String::from("diverged"),
         TraceAgreement::CoverageIncomplete => String::from("coverage-incomplete"),
+        TraceAgreement::BoundaryPartial => String::from("partial-boundary"),
     }
 }
 
@@ -147,6 +212,7 @@ fn run_generated_harness(
         run_rustc_harness(&harness_dir, &harness_rs_path)?
     };
     let events = parse_harness_events(&process.stdout)?;
+    let service_hook_events = parse_harness_service_hook_events(&process.stdout)?;
     let engine = if uses_loom {
         "generated-rust-loom-process"
     } else {
@@ -165,6 +231,7 @@ fn run_generated_harness(
         stdout_hash: crate::digest::stable_hash(&process.stdout),
         stderr_hash: crate::digest::stable_hash(&process.stderr),
         event_count: events.len(),
+        service_hook_events,
     };
     let manifest_path = harness_dir.join("manifest.json");
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -197,6 +264,10 @@ fn harness_facades(program: &ScenarioProgram) -> Vec<String> {
                 ScenarioModeledBoundary::WardTask => {
                     facades.push("scheduler-task-facade".to_owned());
                     facades.push("tokio-spawn-facade".to_owned());
+                }
+                ScenarioModeledBoundary::WardTaskLocal => {
+                    facades.push("scheduler-task-local-facade".to_owned());
+                    facades.push("tokio-spawn-local-facade".to_owned());
                 }
             },
             ScenarioOpKind::StorageEvent { .. } => {
@@ -351,7 +422,7 @@ fn instrument_generated_rust(
     options: &ScenarioOptions,
 ) -> Result<String> {
     let mut source = String::new();
-    source.push_str(&harness_support_source(program, options)?);
+    source.push_str(&harness_support_source(program, generated_rust, options)?);
     source.push_str(&strip_harness_only_attrs(generated_rust));
     if !source.ends_with('\n') {
         source.push('\n');
@@ -359,12 +430,6 @@ fn instrument_generated_rust(
 
     for operation in &program.operations {
         if let ScenarioOpKind::ModeledEffect { boundary } = &operation.kind {
-            if boundary == &ScenarioModeledBoundary::WardTask
-                && source.contains("tokio::spawn")
-                && !source.contains("ward.task();")
-            {
-                continue;
-            }
             let events = modeled_boundary_events(boundary, options);
             source = inject_modeled_boundary_event(source, boundary, &events)?;
         }
@@ -375,6 +440,7 @@ fn instrument_generated_rust(
         &program.target,
         &final_events,
         options,
+        target_is_async(generated_rust, &program.target),
     )?);
     Ok(source)
 }
@@ -400,7 +466,11 @@ fn strip_harness_only_attrs(source: &str) -> String {
     output
 }
 
-fn harness_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
+fn harness_support_source(
+    program: &ScenarioProgram,
+    generated_rust: &str,
+    options: &ScenarioOptions,
+) -> Result<String> {
     let mut source = String::from(
         r#"
 #[allow(non_camel_case_types)]
@@ -435,12 +505,41 @@ impl __KoboWardRandom {
     fn u64(&self) -> u64 { 0 }
     fn next_u64(&self) -> u64 { 0 }
 }
+
+fn __kobo_block_on<F: std::future::Future>(future: F) -> F::Output {
+    fn clone(_: *const ()) -> std::task::RawWaker {
+        raw_waker()
+    }
+    fn wake(_: *const ()) {}
+    fn wake_by_ref(_: *const ()) {}
+    fn drop(_: *const ()) {}
+    fn raw_waker() -> std::task::RawWaker {
+        std::task::RawWaker::new(
+            std::ptr::null(),
+            &std::task::RawWakerVTable::new(clone, wake, wake_by_ref, drop),
+        )
+    }
+
+    let waker = unsafe { std::task::Waker::from_raw(raw_waker()) };
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            std::task::Poll::Ready(output) => return output,
+            std::task::Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
 "#,
     );
 
     source.push_str(&storage_support_source(program, options)?);
     source.push_str(&network_support_source(program, options)?);
-    source.push_str(&external_boundary_support_source(program, options)?);
+    source.push_str(&external_boundary_support_source(
+        program,
+        generated_rust,
+        options,
+    )?);
     source.push_str(&tokio_support_source(program, options)?);
 
     let mut impls = Vec::new();
@@ -453,12 +552,17 @@ impl __KoboWardRandom {
                 continue;
             }
             impls.push(type_name.clone());
+            if !generated_rust_defines_type(generated_rust, type_name) {
+                source.push_str("struct ");
+                source.push_str(type_name);
+                source.push_str(";\n");
+            }
             source.push_str("impl ");
             source.push_str(type_name);
             source.push_str(" {\n");
             for action in actions {
                 source.push_str("    fn ");
-                source.push_str(action);
+                source.push_str(&rust_method_name(action));
                 source.push_str("(self) {}\n");
             }
             source.push_str("}\n");
@@ -467,58 +571,940 @@ impl __KoboWardRandom {
     Ok(source)
 }
 
+fn generated_rust_defines_type(source: &str, type_name: &str) -> bool {
+    let struct_pattern = format!("struct {type_name}");
+    let enum_pattern = format!("enum {type_name}");
+    let type_pattern = format!("type {type_name}");
+    source.contains(&struct_pattern)
+        || source.contains(&enum_pattern)
+        || source.contains(&type_pattern)
+}
+
+fn rust_method_name(action: &str) -> String {
+    action.replace('-', "_")
+}
+
 fn external_boundary_support_source(
     program: &ScenarioProgram,
+    generated_rust: &str,
     options: &ScenarioOptions,
 ) -> Result<String> {
-    let mut source = String::new();
-    let mut crate_names = Vec::new();
+    let mut crate_facades = BTreeMap::<String, BoundaryFacade>::new();
     for operation in &program.operations {
         let ScenarioOpKind::ExternalBoundary {
-            crate_name, policy, ..
+            crate_name,
+            call_path,
+            call_arguments,
+            return_type,
+            call_shape,
+            policy,
+            reason,
+            ..
         } = &operation.kind
         else {
             continue;
         };
-        if !is_replay_owned_boundary(policy)
-            || crate_names.iter().any(|existing| existing == crate_name)
-            || !is_rust_identifier(crate_name)
-        {
+        if !is_replay_owned_boundary(policy) || !is_rust_identifier(crate_name) {
             continue;
         }
-        crate_names.push(crate_name.clone());
+        let target = boundary_facade_target(call_path.as_deref(), call_shape);
         let event = ScenarioEvent {
             kind: format!("boundary-{}", policy.as_str()),
-            label: Some(crate_name.clone()),
+            label: Some(boundary_event_label(
+                crate_name,
+                call_path.as_deref(),
+                (operation.span.start as usize, operation.span.end as usize),
+            )),
             value: Some(options.seed),
+            io: None,
         };
+        let record_capture = (*policy == ScenarioBoundaryPolicy::Record).then(|| {
+            let span = (operation.span.start as usize, operation.span.end as usize);
+            BoundaryFacadeRecordCapture {
+                crate_name: crate_name.clone(),
+                call_path: call_path.clone(),
+                call_shape: call_shape.as_str().to_owned(),
+                policy: policy.as_str().to_owned(),
+                reason: reason.clone(),
+                return_type: return_type.clone(),
+                span,
+                replay_key: boundary_event_label(crate_name, call_path.as_deref(), span),
+                call_arguments: call_arguments.clone(),
+            }
+        });
+        let facade_event = BoundaryFacadeEvent {
+            event,
+            record_capture,
+        };
+        match target {
+            BoundaryFacadeTarget::Function {
+                module_path,
+                function_name,
+            } if is_rust_identifier(&function_name)
+                && module_path.iter().all(|module| is_rust_identifier(module)) =>
+            {
+                insert_function_event(
+                    &mut crate_facades
+                        .entry(crate_name.clone())
+                        .or_default()
+                        .functions,
+                    &module_path,
+                    function_name,
+                    facade_event,
+                );
+            }
+            BoundaryFacadeTarget::Method {
+                type_name,
+                method_name,
+            } if is_rust_identifier(&type_name) && is_rust_identifier(&method_name) => {
+                crate_facades
+                    .entry(crate_name.clone())
+                    .or_default()
+                    .methods
+                    .entry(type_name)
+                    .or_default()
+                    .entry(method_name)
+                    .or_default()
+                    .push(facade_event);
+            }
+            _ => {}
+        }
+    }
+
+    let mut source = String::new();
+    if crate_facades
+        .values()
+        .any(BoundaryFacade::has_record_capture)
+    {
+        source.push_str(record_boundary_runtime_support_source());
+    }
+    for (crate_name, facade) in crate_facades {
         source.push_str("mod ");
-        source.push_str(crate_name);
+        source.push_str(&crate_name);
         source.push_str(" {\n");
-        source.push_str("    pub struct Client;\n");
-        source.push_str("    impl Client {\n");
-        source.push_str("        pub fn new() -> Self {\n            ");
-        source.push_str(&event_print_statement(&event)?);
-        source.push_str("\n            Client\n        }\n    }\n}\n");
+        source.push_str("    pub struct __KoboBoundaryValue;\n");
+        source.push_str(&function_tree_source(
+            &facade.functions,
+            1,
+            vec![crate_name.clone()],
+        )?);
+        for (type_name, methods) in &facade.methods {
+            for method_name in methods.keys() {
+                source.push_str("    static ");
+                source.push_str(&boundary_counter_name(type_name, method_name));
+                source.push_str(
+                    ": std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);\n",
+                );
+            }
+        }
+        for struct_name in facade_struct_names(&facade) {
+            source.push_str("    pub struct ");
+            source.push_str(&struct_name);
+            source.push_str(";\n");
+        }
+        for (type_name, methods) in &facade.methods {
+            source.push_str("    impl ");
+            source.push_str(type_name);
+            source.push_str(" {\n");
+            for (method_name, events) in methods {
+                let associated = generated_rust.contains(&format!("{type_name}::{method_name}("));
+                if associated {
+                    source.push_str("        pub fn ");
+                    source.push_str(method_name);
+                    source.push_str(&generic_argument_signature(events, true));
+                    source.push_str(" -> ");
+                    source.push_str(&facade_return_type_name(events, type_name));
+                    source.push_str(" {\n");
+                } else {
+                    source.push_str("        pub fn ");
+                    source.push_str(method_name);
+                    source.push_str(&generic_argument_signature(events, false));
+                    source.push_str(" -> ");
+                    source.push_str(&facade_return_type_name(events, type_name));
+                    source.push_str(" {\n");
+                }
+                source.push_str(&boundary_event_sequence_source(
+                    &boundary_counter_name(type_name, method_name),
+                    &format!("{crate_name}::{type_name}::{method_name}"),
+                    events,
+                )?);
+                source.push_str("            ");
+                source.push_str(&facade_return_type_name(events, type_name));
+                source.push('\n');
+                source.push_str("        }\n");
+            }
+            source.push_str("    }\n");
+        }
+        source.push_str("}\n");
     }
     Ok(source)
 }
 
-fn tokio_support_source(program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
-    if !program.operations.iter().any(|operation| {
-        matches!(
-            operation.kind,
-            ScenarioOpKind::ModeledEffect {
-                boundary: ScenarioModeledBoundary::WardTask
-            }
-        )
-    }) {
-        return Ok(String::new());
+struct BoundaryFacade {
+    functions: FunctionTree,
+    methods: BTreeMap<String, BTreeMap<String, Vec<BoundaryFacadeEvent>>>,
+}
+
+impl Default for BoundaryFacade {
+    fn default() -> Self {
+        Self {
+            functions: FunctionTree::Module(BTreeMap::new()),
+            methods: BTreeMap::new(),
+        }
     }
-    let events = modeled_boundary_events(&ScenarioModeledBoundary::WardTask, options);
-    let mut source = String::from("mod tokio {\n    pub fn spawn<F>(_future: F) {\n        ");
-    source.push_str(&event_print_statements(&events)?);
-    source.push_str("\n    }\n}\n");
+}
+
+impl BoundaryFacade {
+    fn has_record_capture(&self) -> bool {
+        self.functions.has_record_capture()
+            || self.methods.values().any(|methods| {
+                methods
+                    .values()
+                    .any(|events| events.iter().any(|event| event.record_capture.is_some()))
+            })
+    }
+}
+
+fn facade_struct_names(facade: &BoundaryFacade) -> Vec<String> {
+    let mut names = facade.methods.keys().cloned().collect::<Vec<_>>();
+    for methods in facade.methods.values() {
+        for events in methods.values() {
+            if let Some(return_type) = facade_return_type_path(events) {
+                if let Some(name) = boundary_type_leaf(&return_type) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+enum FunctionTree {
+    Module(BTreeMap<String, FunctionTree>),
+    Function(Vec<BoundaryFacadeEvent>),
+}
+
+impl FunctionTree {
+    fn has_record_capture(&self) -> bool {
+        match self {
+            Self::Module(children) => children.values().any(Self::has_record_capture),
+            Self::Function(events) => events.iter().any(|event| event.record_capture.is_some()),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BoundaryFacadeEvent {
+    event: ScenarioEvent,
+    record_capture: Option<BoundaryFacadeRecordCapture>,
+}
+
+#[derive(Clone)]
+struct BoundaryFacadeRecordCapture {
+    crate_name: String,
+    call_path: Option<String>,
+    call_shape: String,
+    policy: String,
+    reason: Option<String>,
+    return_type: Option<String>,
+    span: (usize, usize),
+    replay_key: String,
+    call_arguments: Vec<ScenarioBoundaryCallArgument>,
+}
+
+enum BoundaryFacadeTarget {
+    Function {
+        module_path: Vec<String>,
+        function_name: String,
+    },
+    Method {
+        type_name: String,
+        method_name: String,
+    },
+}
+
+fn boundary_facade_target(
+    call_path: Option<&str>,
+    call_shape: &ScenarioExternalCallShape,
+) -> BoundaryFacadeTarget {
+    let Some(call_path) = call_path else {
+        return BoundaryFacadeTarget::Method {
+            type_name: "Client".to_owned(),
+            method_name: "new".to_owned(),
+        };
+    };
+    let segments = call_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if matches!(call_shape, ScenarioExternalCallShape::FreeFunction) {
+        return BoundaryFacadeTarget::Function {
+            module_path: segments
+                .iter()
+                .skip(1)
+                .take(segments.len().saturating_sub(2))
+                .map(|segment| (*segment).to_owned())
+                .collect(),
+            function_name: segments.last().unwrap_or(&"boundary").to_string(),
+        };
+    }
+    if segments.len() < 2 {
+        return BoundaryFacadeTarget::Function {
+            module_path: Vec::new(),
+            function_name: segments.last().unwrap_or(&"boundary").to_string(),
+        };
+    }
+    BoundaryFacadeTarget::Method {
+        type_name: segments[segments.len() - 2].to_owned(),
+        method_name: segments[segments.len() - 1].to_owned(),
+    }
+}
+
+fn insert_function_event(
+    tree: &mut FunctionTree,
+    module_path: &[String],
+    function_name: String,
+    event: BoundaryFacadeEvent,
+) {
+    let FunctionTree::Module(children) = tree else {
+        return;
+    };
+    let Some((module_name, remaining_modules)) = module_path.split_first() else {
+        let function = children
+            .entry(function_name)
+            .or_insert_with(|| FunctionTree::Function(Vec::new()));
+        if let FunctionTree::Function(events) = function {
+            events.push(event);
+        }
+        return;
+    };
+    let module = children
+        .entry(module_name.clone())
+        .or_insert_with(|| FunctionTree::Module(BTreeMap::new()));
+    insert_function_event(module, remaining_modules, function_name, event);
+}
+
+fn function_tree_source(
+    tree: &FunctionTree,
+    indent_level: usize,
+    module_path: Vec<String>,
+) -> Result<String> {
+    let mut source = String::new();
+    let FunctionTree::Module(children) = tree else {
+        return Ok(source);
+    };
+    for (name, child) in children {
+        match child {
+            FunctionTree::Module(_) => {
+                let indent = "    ".repeat(indent_level);
+                source.push_str(&indent);
+                source.push_str("pub mod ");
+                source.push_str(name);
+                source.push_str(" {\n");
+                let mut child_path = module_path.clone();
+                child_path.push(name.clone());
+                source.push_str(&function_tree_source(child, indent_level + 1, child_path)?);
+                source.push_str(&indent);
+                source.push_str("}\n");
+            }
+            FunctionTree::Function(events) => {
+                let indent = "    ".repeat(indent_level);
+                let counter_name = boundary_counter_name("fn", name);
+                source.push_str(&indent);
+                source.push_str("static ");
+                source.push_str(&counter_name);
+                source.push_str(
+                    ": std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);\n",
+                );
+                source.push_str(&indent);
+                source.push_str("pub fn ");
+                source.push_str(name);
+                source.push_str(&generic_argument_signature(events, true));
+                source.push_str(" -> crate::");
+                source.push_str(module_path.first().map(String::as_str).unwrap_or("self"));
+                source.push_str("::__KoboBoundaryValue {\n");
+                let mut function_path = module_path.clone();
+                function_path.push(name.clone());
+                source.push_str(&boundary_event_sequence_source(
+                    &counter_name,
+                    &function_path.join("::"),
+                    events,
+                )?);
+                source.push_str(&indent);
+                source.push_str("    crate::");
+                source.push_str(module_path.first().map(String::as_str).unwrap_or("self"));
+                source.push_str("::__KoboBoundaryValue\n");
+                source.push_str(&indent);
+                source.push_str("}\n");
+            }
+        }
+    }
+    Ok(source)
+}
+
+fn generic_argument_signature(events: &[BoundaryFacadeEvent], no_self: bool) -> String {
+    let arguments = facade_call_arguments(events);
+    let generics = if arguments.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<{}>",
+            arguments
+                .iter()
+                .map(|argument| format!("__KoboArg{}", argument.index))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let mut parameters = Vec::new();
+    if !no_self {
+        parameters.push("self".to_owned());
+    }
+    parameters.extend(
+        arguments
+            .iter()
+            .map(|argument| format!("__kobo_arg{}: __KoboArg{}", argument.index, argument.index)),
+    );
+    format!("{generics}({})", parameters.join(", "))
+}
+
+fn facade_call_arguments(events: &[BoundaryFacadeEvent]) -> Vec<ScenarioBoundaryCallArgument> {
+    events
+        .iter()
+        .find_map(|event| event.record_capture.as_ref())
+        .map(|capture| capture.call_arguments.clone())
+        .unwrap_or_default()
+}
+
+fn facade_return_type_name(events: &[BoundaryFacadeEvent], fallback: &str) -> String {
+    facade_return_type_path(events)
+        .and_then(|path| boundary_type_leaf(&path))
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn facade_return_type_path(events: &[BoundaryFacadeEvent]) -> Option<String> {
+    events
+        .iter()
+        .find_map(|event| event.record_capture.as_ref())
+        .and_then(|capture| capture.return_type.clone())
+}
+
+fn boundary_type_leaf(path: &str) -> Option<String> {
+    path.split("::")
+        .filter(|segment| !segment.is_empty())
+        .last()
+        .map(str::to_owned)
+}
+
+fn boundary_counter_name(type_name: &str, method_name: &str) -> String {
+    format!(
+        "__KOBO_{}_{}_BOUNDARY_INDEX",
+        type_name.to_ascii_uppercase(),
+        method_name.to_ascii_uppercase()
+    )
+}
+
+fn boundary_call_arguments_source(events: &[BoundaryFacadeEvent]) -> String {
+    let arguments = facade_call_arguments(events);
+    if arguments.is_empty() {
+        return "            let __kobo_call_arguments: Vec<(usize, &'static str, String, String)> = Vec::new();\n".to_owned();
+    }
+    let mut source =
+        "            let __kobo_call_arguments: Vec<(usize, &'static str, String, String)> = vec![\n"
+            .to_owned();
+    for argument in arguments {
+        source.push_str("                (");
+        source.push_str(&argument.index.to_string());
+        source.push_str(", ");
+        source.push_str(&format!("{:?}", argument.source));
+        source.push_str(", std::any::type_name::<__KoboArg");
+        source.push_str(&argument.index.to_string());
+        source.push_str(">().to_owned(), std::mem::size_of_val(&__kobo_arg");
+        source.push_str(&argument.index.to_string());
+        source.push_str(").to_string()),\n");
+    }
+    source.push_str("            ];\n");
+    source
+}
+
+fn boundary_facade_event_statement(event: &BoundaryFacadeEvent) -> Result<String> {
+    if let Some(capture) = event.record_capture.as_ref() {
+        return Ok(record_boundary_event_statement(&event.event, capture));
+    }
+    event_print_statement(&event.event)
+}
+
+fn record_boundary_event_statement(
+    event: &ScenarioEvent,
+    capture: &BoundaryFacadeRecordCapture,
+) -> String {
+    let label = event.label.as_deref().unwrap_or("");
+    let value = event.value.unwrap_or_default();
+    let call_path = capture.call_path.as_deref().unwrap_or(&capture.crate_name);
+    let reason = capture.reason.as_deref().unwrap_or("");
+    let return_payload = facade_return_payload(capture);
+    format!(
+        "crate::__kobo_emit_record_boundary_event({:?}, {:?}, {}, {:?}, {:?}, {:?}, {:?}, {:?}, {}, {}, {:?}, {:?}, &__kobo_call_arguments);",
+        event.kind,
+        label,
+        value,
+        capture.crate_name,
+        call_path,
+        capture.call_shape,
+        capture.policy,
+        reason,
+        capture.span.0,
+        capture.span.1,
+        capture.replay_key,
+        return_payload
+    )
+}
+
+fn facade_return_payload(capture: &BoundaryFacadeRecordCapture) -> String {
+    let return_path =
+        capture
+            .return_type
+            .clone()
+            .unwrap_or_else(|| match capture.call_shape.as_str() {
+                "associated_function" | "method" => capture
+                    .call_path
+                    .as_deref()
+                    .and_then(boundary_receiver_type_path)
+                    .unwrap_or_else(|| capture.crate_name.clone()),
+                _ => format!("{}::__KoboBoundaryValue", capture.crate_name),
+            });
+    format!("facade_return:{return_path}")
+}
+
+fn boundary_receiver_type_path(call_path: &str) -> Option<String> {
+    let mut segments = call_path
+        .split("::")
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    (segments.len() >= 2).then(|| {
+        let _method = segments.pop();
+        segments.join("::")
+    })
+}
+
+fn boundary_event_sequence_source(
+    counter_name: &str,
+    label: &str,
+    events: &[BoundaryFacadeEvent],
+) -> Result<String> {
+    let mut source = String::new();
+    source.push_str(&boundary_call_arguments_source(events));
+    source.push_str("            let __kobo_index = ");
+    source.push_str(counter_name);
+    source.push_str(".fetch_add(1, std::sync::atomic::Ordering::SeqCst);\n");
+    source.push_str("            match __kobo_index {\n");
+    for (index, event) in events.iter().enumerate() {
+        source.push_str("                ");
+        source.push_str(&index.to_string());
+        source.push_str(" => { ");
+        source.push_str(&boundary_facade_event_statement(event)?);
+        source.push_str(" }\n");
+    }
+    let overflow = BoundaryFacadeEvent {
+        event: ScenarioEvent {
+            kind: "boundary-overflow".to_owned(),
+            label: Some(label.to_owned()),
+            value: None,
+            io: None,
+        },
+        record_capture: None,
+    };
+    source.push_str("                _ => { ");
+    source.push_str(&boundary_facade_event_statement(&overflow)?);
+    source.push_str(" }\n");
+    source.push_str("            }\n");
+    Ok(source)
+}
+
+fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
+    format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
+}
+
+fn record_boundary_runtime_support_source() -> &'static str {
+    r#"
+fn __kobo_json_string(value: &str) -> String {
+    let mut escaped = String::from("\"");
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => escaped.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn __kobo_stable_hash(source: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn __kobo_field_json(key: &str, value: &str) -> String {
+    format!(
+        "{{\"key\":{},\"value\":{}}}",
+        __kobo_json_string(key),
+        __kobo_json_string(value)
+    )
+}
+
+fn __kobo_payload_json(kind: &str, fields: &[(String, String)]) -> String {
+    let fields = fields
+        .iter()
+        .map(|(key, value)| __kobo_field_json(key, value))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"kind\":{},\"fields\":[{}]}}",
+        __kobo_json_string(kind),
+        fields
+    )
+}
+
+fn __kobo_payload_material(kind: &str, fields: &[(String, String)]) -> String {
+    let mut material = String::from(kind);
+    for (key, value) in fields {
+        material.push('|');
+        material.push_str(key);
+        material.push('=');
+        material.push_str(value);
+    }
+    material
+}
+
+fn __kobo_boundary_protocol(crate_name: &str, call_path: &str) -> &'static str {
+    if crate_name.contains("sql")
+        || call_path.contains("query")
+        || call_path.contains("transaction")
+        || call_path.contains("pool")
+    {
+        "database-like"
+    } else {
+        "http-like"
+    }
+}
+
+fn __kobo_emit_record_boundary_event(
+    kind: &str,
+    label: &str,
+    value: u64,
+    crate_name: &str,
+    call_path: &str,
+    call_shape: &str,
+    policy: &str,
+    reason: &str,
+    span_start: usize,
+    span_end: usize,
+    replay_key: &str,
+    return_payload: &str,
+    call_arguments: &[(usize, &'static str, String, String)],
+) {
+    let mut argument_fragments = Vec::new();
+    let mut request_fields = vec![
+        ("capture_source".to_owned(), "generated-boundary-facade-runtime".to_owned()),
+        ("protocol".to_owned(), __kobo_boundary_protocol(crate_name, call_path).to_owned()),
+        ("crate".to_owned(), crate_name.to_owned()),
+        ("call_path".to_owned(), call_path.to_owned()),
+        ("call_shape".to_owned(), call_shape.to_owned()),
+        ("policy".to_owned(), policy.to_owned()),
+        ("reason".to_owned(), reason.to_owned()),
+        ("argument_count".to_owned(), call_arguments.len().to_string()),
+        ("source_span_start".to_owned(), span_start.to_string()),
+        ("source_span_end".to_owned(), span_end.to_string()),
+    ];
+    for (index, source, type_name, size) in call_arguments {
+        request_fields.push((format!("argument_{index}_source"), (*source).to_owned()));
+        request_fields.push((format!("argument_{index}_type"), type_name.clone()));
+        request_fields.push((format!("argument_{index}_size"), size.clone()));
+        argument_fragments.push(format!(
+            "{{\"index\":{},\"source\":{},\"type\":{},\"size\":{}}}",
+            index,
+            __kobo_json_string(source),
+            __kobo_json_string(type_name),
+            size
+        ));
+    }
+    let request_body = format!(
+        "{{\"boundary\":{},\"operation\":{},\"arguments\":[{}]}}",
+        __kobo_json_string(crate_name),
+        __kobo_json_string(call_path),
+        argument_fragments.join(",")
+    );
+    request_fields.push(("request_body".to_owned(), request_body));
+    let request_hash = __kobo_stable_hash(&__kobo_payload_material(
+        "kobo-boundary-request",
+        &request_fields,
+    ));
+
+    let replay_result =
+        __kobo_stable_hash(&format!("recorded-response:{replay_key}:{request_hash}:{return_payload}"));
+    let response_body = format!(
+        "{{\"recorded\":true,\"return\":{},\"replay_result\":{}}}",
+        __kobo_json_string(return_payload),
+        __kobo_json_string(&replay_result)
+    );
+    let response_fields = vec![
+        ("capture_source".to_owned(), "generated-boundary-facade-runtime".to_owned()),
+        ("status".to_owned(), "recorded".to_owned()),
+        ("status_code".to_owned(), "200".to_owned()),
+        ("replay_key".to_owned(), replay_key.to_owned()),
+        ("replay_result".to_owned(), replay_result),
+        ("return_payload".to_owned(), return_payload.to_owned()),
+        ("response_body".to_owned(), response_body),
+        ("external_internals_replayed".to_owned(), "false".to_owned()),
+    ];
+    let response_hash = __kobo_stable_hash(&__kobo_payload_material(
+        "kobo-boundary-response",
+        &response_fields,
+    ));
+
+    let request_json = __kobo_payload_json("kobo-boundary-request", &request_fields);
+    let response_json = __kobo_payload_json("kobo-boundary-response", &response_fields);
+    let io_json = format!(
+        "{{\"mode\":\"recorded-boundary-io\",\"replay_key\":{},\"request\":{},\"response\":{},\"request_hash\":{},\"response_hash\":{}}}",
+        __kobo_json_string(replay_key),
+        request_json,
+        response_json,
+        __kobo_json_string(&request_hash),
+        __kobo_json_string(&response_hash)
+    );
+    println!(
+        "KOBO_EVENT:{{\"kind\":{},\"label\":{},\"value\":{},\"io\":{}}}",
+        __kobo_json_string(kind),
+        __kobo_json_string(label),
+        value,
+        io_json
+    );
+}
+
+"#
+}
+
+fn tokio_support_source(_program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
+    let local_events = modeled_boundary_events(&ScenarioModeledBoundary::WardTaskLocal, options);
+    let mut source = String::from(
+        r#"
+mod tokio {
+    pub mod sync {
+        pub mod mpsc {
+            use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+
+            pub struct Sender<T> {
+                inner: std_mpsc::SyncSender<T>,
+            }
+
+            pub struct Receiver<T> {
+                inner: Arc<Mutex<std_mpsc::Receiver<T>>>,
+            }
+
+            pub mod error {
+                pub struct SendError<T>(pub T);
+                pub enum TrySendError<T> { Full(T), Closed(T) }
+            }
+
+            pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
+                let (tx, rx) = std_mpsc::sync_channel(capacity);
+                (
+                    Sender { inner: tx },
+                    Receiver { inner: Arc::new(Mutex::new(rx)) },
+                )
+            }
+
+            impl<T> Clone for Sender<T> {
+                fn clone(&self) -> Self {
+                    Self { inner: self.inner.clone() }
+                }
+            }
+
+            impl<T> Sender<T> {
+                pub async fn send(&self, value: T) -> Result<(), error::SendError<T>> {
+                    self.inner.send(value).map_err(|error| error::SendError(error.0))
+                }
+
+                pub fn try_send(&self, value: T) -> Result<(), error::TrySendError<T>> {
+                    self.inner.try_send(value).map_err(|error| match error {
+                        std_mpsc::TrySendError::Full(value) => error::TrySendError::Full(value),
+                        std_mpsc::TrySendError::Disconnected(value) => error::TrySendError::Closed(value),
+                    })
+                }
+            }
+
+            impl<T> Receiver<T> {
+                pub async fn recv(&mut self) -> Option<T> {
+                    self.inner.lock().ok()?.recv().ok()
+                }
+            }
+        }
+
+        pub mod oneshot {
+            use std::sync::mpsc as std_mpsc;
+
+            pub struct Sender<T> {
+                inner: Option<std_mpsc::Sender<T>>,
+            }
+
+            pub struct Receiver<T> {
+                inner: std_mpsc::Receiver<T>,
+            }
+
+            pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+                let (tx, rx) = std_mpsc::channel();
+                (Sender { inner: Some(tx) }, Receiver { inner: rx })
+            }
+
+            impl<T> Sender<T> {
+                pub fn send(mut self, value: T) -> Result<(), T> {
+                    match self.inner.take() {
+                        Some(sender) => sender.send(value).map_err(|error| error.0),
+                        None => Err(value),
+                    }
+                }
+            }
+
+            impl<T> Unpin for Receiver<T> {}
+
+            impl<T> std::future::Future for Receiver<T> {
+                type Output = Result<T, ()>;
+
+                fn poll(
+                    self: std::pin::Pin<&mut Self>,
+                    cx: &mut std::task::Context<'_>,
+                ) -> std::task::Poll<Self::Output> {
+                    match self.get_mut().inner.try_recv() {
+                        Ok(value) => std::task::Poll::Ready(Ok(value)),
+                        Err(std_mpsc::TryRecvError::Disconnected) => std::task::Poll::Ready(Err(())),
+                        Err(std_mpsc::TryRecvError::Empty) => {
+                            cx.waker().wake_by_ref();
+                            std::task::Poll::Pending
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct JoinError;
+
+    enum JoinState<T> {
+        Thread(std::thread::JoinHandle<T>),
+        Value(T),
+    }
+
+    pub struct JoinHandle<T = ()> {
+        state: Option<JoinState<T>>,
+    }
+
+    impl<T> JoinHandle<T> {
+        fn from_thread(handle: std::thread::JoinHandle<T>) -> Self {
+            Self { state: Some(JoinState::Thread(handle)) }
+        }
+
+        fn from_value(value: T) -> Self {
+            Self { state: Some(JoinState::Value(value)) }
+        }
+
+        pub fn abort(self) {}
+        pub fn detach_with_policy(self) {}
+    }
+
+    impl<T> Unpin for JoinHandle<T> {}
+
+    impl<T> std::future::Future for JoinHandle<T> {
+        type Output = Result<T, JoinError>;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            let this = self.get_mut();
+            if matches!(this.state.as_ref(), Some(JoinState::Thread(handle)) if !handle.is_finished()) {
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            match this.state.take().expect("join handle polled after completion") {
+                JoinState::Thread(handle) => std::task::Poll::Ready(handle.join().map_err(|_| JoinError)),
+                JoinState::Value(value) => std::task::Poll::Ready(Ok(value)),
+            }
+        }
+    }
+
+    pub mod runtime {
+        pub struct Handle;
+
+        impl Handle {
+            pub fn current() -> Self { Self }
+            pub fn try_current() -> Result<Self, ()> { Ok(Self) }
+
+            pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+                crate::__kobo_block_on(future)
+            }
+
+            pub fn spawn<F>(&self, future: F) -> super::JoinHandle<F::Output>
+            where
+                F: std::future::Future + Send + 'static,
+                F::Output: Send + 'static,
+            {
+                super::spawn(future)
+            }
+        }
+    }
+
+    pub mod task {
+        pub type JoinHandle<T = ()> = super::JoinHandle<T>;
+
+        pub struct LocalSet;
+
+        impl LocalSet {
+            pub fn new() -> Self { Self }
+
+            pub async fn run_until<F: std::future::Future>(&self, future: F) -> F::Output {
+                future.await
+            }
+        }
+
+        pub fn spawn_local<F>(_future: F) -> JoinHandle<()>
+        where
+            F: std::future::Future<Output = ()> + 'static,
+        {
+"#,
+    );
+    source.push_str(&event_print_statements(&local_events)?);
+    source.push_str(
+        r#"
+            super::JoinHandle::from_value(())
+        }
+    }
+
+    pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+"#,
+    );
+    source.push_str(
+        r#"
+        JoinHandle::from_thread(std::thread::spawn(move || crate::__kobo_block_on(future)))
+    }
+}
+"#,
+    );
     Ok(source)
 }
 
@@ -616,8 +1602,10 @@ fn network_support_source(program: &ScenarioProgram, options: &ScenarioOptions) 
             methods.push(action.clone());
         }
     }
-    if methods.is_empty() {
-        methods.extend(["send", "delay", "reorder", "drop"].map(str::to_owned));
+    for default_method in ["send", "delay", "reorder", "receive", "drop_message"] {
+        if !methods.iter().any(|existing| existing == default_method) {
+            methods.push(default_method.to_owned());
+        }
     }
     let mut source = String::from(
         r#"
@@ -674,7 +1662,9 @@ fn inject_modeled_boundary_event(
 ) -> Result<String> {
     let print = event_print_statements(events)?;
     let replacements: &[(&str, &str)] = match boundary {
-        ScenarioModeledBoundary::WardTask => &[("ward.task();", "ward.task();")],
+        ScenarioModeledBoundary::WardTask | ScenarioModeledBoundary::WardTaskLocal => {
+            &[("ward.task();", "ward.task();")]
+        }
         ScenarioModeledBoundary::WardTime => &[("ward.time.now()", "ward.time.now()")],
         ScenarioModeledBoundary::WardRandom => &[
             ("ward.random.u64()", "ward.random.u64()"),
@@ -684,6 +1674,13 @@ fn inject_modeled_boundary_event(
     for (needle, replacement) in replacements {
         if source.contains(needle) {
             return Ok(source.replacen(needle, &instrumented_expression(replacement, &print), 1));
+        }
+    }
+    if boundary == &ScenarioModeledBoundary::WardTask {
+        for needle in ["tokio::spawn(async move {", "tokio :: spawn(async move {"] {
+            if source.contains(needle) {
+                return Ok(source.replacen(needle, &format!("{print}\n    {needle}"), 1));
+            }
         }
     }
     Err(SimCoreError::ModeledBoundaryMissing {
@@ -703,6 +1700,7 @@ fn main_wrapper_source(
     target: &str,
     final_events: &[ScenarioEvent],
     options: &ScenarioOptions,
+    target_is_async: bool,
 ) -> Result<String> {
     let mut source = if options.profile == "sync" {
         String::from("\nfn main() {\n    loom::model(|| {\n")
@@ -713,8 +1711,14 @@ fn main_wrapper_source(
     if options.profile == "sync" {
         source.push_str("    ");
     }
-    source.push_str(target);
-    source.push_str("();\n");
+    if target_is_async {
+        source.push_str("__kobo_block_on(");
+        source.push_str(target);
+        source.push_str("());\n");
+    } else {
+        source.push_str(target);
+        source.push_str("();\n");
+    }
     for event in final_events {
         source.push_str("    ");
         if options.profile == "sync" {
@@ -728,6 +1732,10 @@ fn main_wrapper_source(
     }
     source.push_str("}\n");
     Ok(source)
+}
+
+fn target_is_async(source: &str, target: &str) -> bool {
+    source.contains(&format!("async fn {target}"))
 }
 
 fn event_print_statement(event: &ScenarioEvent) -> Result<String> {
@@ -787,6 +1795,7 @@ fn terminal_failure_events(
                 kind: "obligation-transfer".to_owned(),
                 label: Some(format!("{binding}->{callee}")),
                 value: None,
+                io: None,
             }),
             ScenarioOpKind::ModeledEffect { boundary } => {
                 if failure_events.is_none() {
@@ -840,6 +1849,7 @@ fn terminal_failure_events(
                 kind: "failure-injection-cancel".to_owned(),
                 label: Some(obligation.binding.clone()),
                 value: None,
+                io: None,
             }]);
         }
         if failure_events.is_none() {
@@ -848,6 +1858,7 @@ fn terminal_failure_events(
                     kind: "failure-injection-cancel".to_owned(),
                     label: Some(boundary.to_owned()),
                     value: None,
+                    io: None,
                 }]);
             }
         }
@@ -862,6 +1873,7 @@ fn terminal_failure_events(
                     kind: "liveness-token-drop".to_owned(),
                     label: Some(obligation.binding.clone()),
                     value: None,
+                    io: None,
                 }]
             });
     }
@@ -917,6 +1929,7 @@ fn boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
         ScenarioModeledBoundary::WardTime => "ward.time",
         ScenarioModeledBoundary::WardRandom => "ward.random",
         ScenarioModeledBoundary::WardTask => "ward.task",
+        ScenarioModeledBoundary::WardTaskLocal => "ward.task.local",
     }
 }
 
@@ -932,6 +1945,7 @@ fn core_boundary(boundary: &ScenarioModeledBoundary) -> crate::core::ModeledBoun
         ScenarioModeledBoundary::WardTime => crate::core::ModeledBoundary::WardTime,
         ScenarioModeledBoundary::WardRandom => crate::core::ModeledBoundary::WardRandom,
         ScenarioModeledBoundary::WardTask => crate::core::ModeledBoundary::WardTask,
+        ScenarioModeledBoundary::WardTaskLocal => crate::core::ModeledBoundary::WardTaskLocal,
     }
 }
 
@@ -942,6 +1956,17 @@ fn parse_harness_events(stdout: &str) -> Result<Vec<ScenarioEvent>> {
         .map(|json| {
             serde_json::from_str(json)
                 .map_err(|source| SimCoreError::json("parse generated harness event", source))
+        })
+        .collect()
+}
+
+fn parse_harness_service_hook_events(stdout: &str) -> Result<Vec<ServiceHookEvent>> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("KOBO_SERVICE_HOOK:"))
+        .map(|json| {
+            serde_json::from_str(json)
+                .map_err(|source| SimCoreError::json("parse generated service hook event", source))
         })
         .collect()
 }

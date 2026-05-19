@@ -19,6 +19,7 @@ use crate::ErrorFormat;
 
 use super::sim_model::{self, ScenarioDocument};
 use super::witness_evidence;
+use super::{declarations, summary_validation};
 
 pub(super) fn cmd_test(
     file: &Path,
@@ -87,6 +88,7 @@ pub(super) fn cmd_test(
             engine,
         )?,
     };
+    validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
     if run.failure.is_some() || witness_dir.is_some() {
@@ -100,6 +102,8 @@ pub(super) fn cmd_test(
             inject,
             fuzz_plan.as_ref(),
             witness_dir,
+            &session.config,
+            &artifacts.runtime_evidence,
             &run,
         )?);
     }
@@ -348,6 +352,7 @@ fn fuzz_driver_events_for_case(case: &FuzzCase, base_seed: u64) -> Vec<ScenarioE
             case.index, case.seed
         )),
         value: Some(case.seed),
+        io: None,
     }];
     events.extend(fuzz_operation_events(case));
     events.extend(fuzz_shrink_candidate_events(case));
@@ -367,6 +372,7 @@ fn fuzz_operation_events(case: &FuzzCase) -> Vec<ScenarioEvent> {
                 operation.event_label()
             )),
             value: Some(operation.value),
+            io: None,
         })
         .collect()
 }
@@ -382,6 +388,7 @@ fn fuzz_shrink_candidate_events(case: &FuzzCase) -> Vec<ScenarioEvent> {
                 case.index, index, candidate.operation_count, candidate.removed_tail_operations
             )),
             value: Some(candidate.operation_count as u64),
+            io: None,
         })
         .collect()
 }
@@ -423,6 +430,9 @@ fn stateful_input_sources(program: &ScenarioProgram) -> Vec<StatefulInputSource>
                     sources.push(StatefulInputSource::WardRandom);
                 }
                 kobo_ir::ScenarioModeledBoundary::WardTask => {
+                    sources.push(StatefulInputSource::WardTask);
+                }
+                kobo_ir::ScenarioModeledBoundary::WardTaskLocal => {
                     sources.push(StatefulInputSource::WardTask);
                 }
                 kobo_ir::ScenarioModeledBoundary::WardTime => {}
@@ -557,6 +567,8 @@ fn write_run_witness(
     inject: Option<&str>,
     fuzz_plan: Option<&FuzzPlan>,
     witness_dir: Option<&Path>,
+    config: &kobo_driver::KoboConfig,
+    runtime_evidence: &kobo_codegen::RuntimeEvidence,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -575,7 +587,12 @@ fn write_run_witness(
     let coverage = coverage_json(run);
     let event_stream = shrink_event_stream(run, sim_profile);
     let witness_events = events_json(&event_stream.events);
-    let witness = serde_json::json!({
+    let runtime_profile = runtime_profile_json(config, sim_profile, seed, run);
+    let runtime_profile_hash =
+        kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
+    let inferred_obligations =
+        witness_evidence::inferred_obligations_json(&source_path, &document.source, run);
+    let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
         "target": format!("{}:{}", source_path, run.target),
@@ -601,7 +618,6 @@ fn write_run_witness(
         "full_ecosystem_exploration": full_ecosystem_exploration(run),
         "replay_contract": replay_contract_json(run),
         "scheduler": scheduler_json(sim_profile, seed, run),
-        "execution_digest": execution_digest_json(run),
         "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage,
         "operation_coverage": witness_evidence::operation_coverage_json(scenario_program, run),
@@ -613,19 +629,345 @@ fn write_run_witness(
         "modeled_boundaries": modeled_boundaries_json(run),
         "opaque_boundaries": run.opaque_boundaries.clone(),
         "boundary_policies": boundary_policies_json(run),
+        "ecosystem_boundaries": ecosystem_boundaries_json(file, config, run),
         "boundary_assumptions": boundary_assumptions_json(run),
         "obligations": obligations_json(&source_path, &document.source, run),
         "obligation_events": obligation_events_json(run),
         "boundary_decisions": boundary_decisions_json(run),
-        "available_boundary_policies": ["model", "record", "stub", "outside", "opaque", "debt"],
+        "available_boundary_policies": ["typed", "model", "record", "activity", "stub", "outside", "opaque", "debt"],
         "failure": failure_json(&source_path, &document.source, run, primary_span),
         "source_spans": source_spans_json(&source_path, &document.source, run),
         "events": witness_events.clone(),
         "event_stream": witness_events,
     });
+    let object = witness
+        .as_object_mut()
+        .expect("witness json literal should be an object");
+    object.insert("runtime_profile".to_owned(), runtime_profile);
+    object.insert(
+        "execution_digest".to_owned(),
+        execution_digest_json(run, &runtime_profile_hash),
+    );
+    object.insert(
+        "call_graph_obligation_summaries".to_owned(),
+        witness_evidence::call_graph_obligation_summaries_json(scenario_program, run),
+    );
+    object.insert(
+        "replay_grade".to_owned(),
+        serde_json::json!(witness_evidence::replay_grade_json(
+            run,
+            fuzz_plan.is_some()
+        )),
+    );
+    object.insert(
+        "boundary_ledger".to_owned(),
+        witness_evidence::boundary_ledger_json(scenario_program, run),
+    );
+    object.insert(
+        "inferred_obligations".to_owned(),
+        inferred_obligations.clone(),
+    );
+    object.insert(
+        "declarations".to_owned(),
+        serde_json::Value::Array(declarations_json(file, config, run)),
+    );
+    object.insert(
+        "summaries".to_owned(),
+        serde_json::Value::Array(summary_usage_json(config)?),
+    );
+    object.insert(
+        "lifecycle_inference".to_owned(),
+        serde_json::json!({
+            "mode": "observe",
+            "source": "scenario_program",
+            "template_version": "v0.10.1",
+            "obligations": inferred_obligations,
+        }),
+    );
+    object.insert(
+        "service_runtime".to_owned(),
+        service_runtime_json(runtime_evidence, run),
+    );
+    object.insert(
+        "parallel_lowering".to_owned(),
+        parallel_lowering_json(runtime_evidence),
+    );
+    object.insert(
+        "task_local_zones".to_owned(),
+        task_local_zones_json(runtime_evidence),
+    );
+    object.insert(
+        "handler_lifecycle".to_owned(),
+        handler_lifecycle_json(runtime_evidence, run),
+    );
+    object.insert(
+        "available_boundary_ledger_statuses".to_owned(),
+        serde_json::json!([
+            "modeled",
+            "recordable",
+            "activity",
+            "opaque",
+            "outside",
+            "debt"
+        ]),
+    );
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
     Ok(witness_path)
+}
+
+fn service_runtime_json(
+    evidence: &kobo_codegen::RuntimeEvidence,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    serde_json::json!({
+        "evidence_source": "codegen-lowering",
+        "services": evidence.services
+            .iter()
+            .map(|service| service_runtime_service_json(service, run))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn runtime_profile_json(
+    config: &kobo_driver::KoboConfig,
+    sim_profile: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let profile = &config.runtime_profile;
+    serde_json::json!({
+        "service": {
+            "buffer": profile.service_buffer,
+            "backpressure": profile.service_backpressure,
+        },
+        "scenario": {
+            "scheduler": profile.scheduler,
+            "sim_profile": sim_profile,
+            "backend_profile": run.profile,
+            "seed": seed,
+            "event_budget": profile.scenario_event_budget,
+        },
+        "record": {
+            "default": profile.record,
+        },
+        "activity": {
+            "default": profile.activity,
+        },
+        "runtime": {
+            "cancellation": profile.cancellation,
+        },
+    })
+}
+
+fn service_runtime_service_json(
+    service: &kobo_codegen::ServiceRuntimeEvidence,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": &service.name,
+        "buffer": service.buffer,
+        "source_line": service.source_line,
+        "backpressure": &service.backpressure,
+        "dispatch_loop": service.dispatch_loop,
+        "client_api": service.client_api,
+        "scenario_hooks": service.scenario_hooks,
+        "hook_events": &service.hook_events,
+        "runtime_hook_events": service_runtime_hook_events_json(&service.name, run),
+        "methods": service.methods
+            .iter()
+            .map(service_runtime_method_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn service_runtime_hook_events_json(service_name: &str, run: &FullDepthRun) -> serde_json::Value {
+    let events = run
+        .harness_manifest
+        .as_ref()
+        .map(|manifest| {
+            manifest
+                .service_hook_events
+                .iter()
+                .filter(|event| event.service == service_name)
+                .map(|event| {
+                    serde_json::json!({
+                        "phase": &event.phase,
+                        "method": &event.method,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::Value::Array(events)
+}
+
+fn service_runtime_method_json(
+    method: &kobo_codegen::ServiceRuntimeMethodEvidence,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": &method.name,
+        "variant": &method.variant,
+    })
+}
+
+fn handler_lifecycle_json(
+    evidence: &kobo_codegen::RuntimeEvidence,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    serde_json::json!({
+        "evidence_source": "codegen-lowering",
+        "handlers": evidence.handlers
+            .iter()
+            .map(handler_lifecycle_handler_json)
+            .collect::<Vec<_>>(),
+        "scenario_cases": handler_scenario_cases(run),
+    })
+}
+
+fn handler_lifecycle_handler_json(
+    handler: &kobo_codegen::HandlerLifecycleEvidence,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": &handler.name,
+        "source_line": handler.source_line,
+        "cleanup_hook": &handler.cleanup_hook,
+        "must_call": {
+            "kind": "handler_token",
+            "terminal_actions": &handler.terminal_actions,
+            "required": true,
+        },
+        "boundaries": {
+            "tracing": &handler.tracing_boundary,
+            "metrics": &handler.metrics_boundary,
+            "cleanup": &handler.cleanup_boundary,
+            "cancel_cleanup": &handler.cancel_cleanup,
+        },
+        "terminal_evidence_source": &handler.terminal_evidence_source,
+    })
+}
+
+fn parallel_lowering_json(evidence: &kobo_codegen::RuntimeEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "evidence_source": "codegen-lowering",
+        "loops": evidence.parallel_loops
+            .iter()
+            .map(parallel_loop_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn parallel_loop_json(loop_evidence: &kobo_codegen::ParallelLoopEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "source_line": loop_evidence.source_line,
+        "lowering": &loop_evidence.lowering,
+        "policy": &loop_evidence.policy,
+        "analysis_gate": &loop_evidence.analysis_gate,
+        "proof": &loop_evidence.proof,
+        "iterator": &loop_evidence.iterator,
+        "captured_bindings": &loop_evidence.captured_bindings,
+        "safety_checks": &loop_evidence.safety_checks,
+    })
+}
+
+fn task_local_zones_json(evidence: &kobo_codegen::RuntimeEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "evidence_source": "codegen-lowering",
+        "zones": evidence.task_local_zones
+            .iter()
+            .map(task_local_zone_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn task_local_zone_json(zone: &kobo_codegen::TaskLocalEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "source_line": zone.source_line,
+        "strategy": &zone.strategy,
+        "proof": &zone.proof,
+        "captured_bindings": &zone.captured_bindings,
+        "safety_checks": &zone.safety_checks,
+    })
+}
+
+fn handler_scenario_cases(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    let mut cases = Vec::new();
+    if run
+        .events
+        .iter()
+        .any(|event| event.kind == "network-dropped" || event.kind == "network-drop-message")
+    {
+        cases.push(serde_json::json!({
+            "kind": "disconnect",
+            "source": "network-model",
+            "event": "network-drop-message",
+        }));
+    }
+    if run
+        .events
+        .iter()
+        .any(|event| event.kind == "failure-injection-cancel")
+    {
+        cases.push(serde_json::json!({
+            "kind": "cancellation",
+            "source": "scheduler",
+            "event": "failure-injection-cancel",
+        }));
+    }
+    cases
+}
+
+fn validate_run_boundary_declarations(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    run: &FullDepthRun,
+) -> anyhow::Result<()> {
+    for decision in &run.boundary_decisions {
+        let policy = decision.policy.as_str();
+        let adapter = config.ecosystem_policy.adapter_for(&decision.crate_name);
+        if policy == "model" && adapter.is_none() {
+            anyhow::bail!(
+                "K0123: model boundary for `{}` has no adapter package",
+                decision.crate_name
+            );
+        }
+        if let Some(adapter) = adapter {
+            if let Err(message) = super::ecosystem::validate_model_adapter_package(adapter) {
+                anyhow::bail!(
+                    "K0123: adapter package for `{}` failed validation: {message}",
+                    decision.crate_name
+                );
+            }
+        }
+        if !matches!(policy, "typed" | "activity") {
+            continue;
+        }
+        if let Err(error) = declarations::declaration_facts_for_boundary(
+            file,
+            config,
+            &decision.crate_name,
+            policy,
+            decision.call_path.as_deref(),
+        ) {
+            let code = declaration_error_code(policy, error.key);
+            anyhow::bail!(
+                "{code}: configured {policy} metadata for `{}` failed validation at {} key `{}`: {}",
+                decision.crate_name,
+                error.path.display(),
+                error.key,
+                error.message
+            );
+        }
+    }
+    Ok(())
+}
+
+fn declaration_error_code(policy: &str, key: &str) -> &'static str {
+    match (policy, key) {
+        ("activity", "activity") => "K0125",
+        ("typed", "declaration") => "K0122",
+        _ => "K0121",
+    }
 }
 
 fn replay_contract_json(run: &FullDepthRun) -> serde_json::Value {
@@ -656,7 +998,7 @@ fn full_ecosystem_exploration(run: &FullDepthRun) -> bool {
         .is_some_and(|manifest| manifest.full_ecosystem_exploration)
 }
 
-fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
+fn execution_digest_json(run: &FullDepthRun, runtime_profile_hash: &str) -> serde_json::Value {
     serde_json::json!({
         "engine": "semantic-sim",
         "semantic_engine": run.digest.semantic_engine,
@@ -674,6 +1016,7 @@ fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
         "harness_manifest_hash": run.digest.harness_manifest_hash,
         "harness_exit_code": run.digest.harness_exit_code,
         "harness_event_count": run.digest.harness_event_count,
+        "runtime_profile_hash": runtime_profile_hash,
     })
 }
 
@@ -723,7 +1066,45 @@ fn scheduler_json(sim_profile: &str, seed: u64, run: &FullDepthRun) -> serde_jso
             .iter()
             .find(|event| event.kind == "scheduler-portfolio")
             .and_then(|event| event.value),
+        "cancellation": scheduler_cancellation_json(run),
     })
+}
+
+fn scheduler_cancellation_json(run: &FullDepthRun) -> serde_json::Value {
+    let events = scheduler_cancellation_events(run);
+    if events.is_empty() {
+        return serde_json::json!({
+            "mode": "none",
+            "token_source": null,
+            "events": [],
+        });
+    }
+    serde_json::json!({
+        "mode": "explicit-scheduler-history",
+        "token_source": "kobo.scheduler.cancel",
+        "events": events,
+    })
+}
+
+fn scheduler_cancellation_events(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    run.events
+        .iter()
+        .filter(|event| is_scheduler_cancellation_event(&event.kind))
+        .map(|event| {
+            serde_json::json!({
+                "kind": event.kind.clone(),
+                "label": event.label.clone(),
+                "value": event.value,
+            })
+        })
+        .collect()
+}
+
+fn is_scheduler_cancellation_event(kind: &str) -> bool {
+    matches!(
+        kind,
+        "scheduler-cancel-path" | "scheduler-future-dropped" | "failure-injection-cancel"
+    )
 }
 
 fn exactness_json(run: &FullDepthRun) -> &'static str {
@@ -1045,7 +1426,7 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
             "Reduce the scenario, split it into smaller scenarios, or run it under a profile with a larger budget.".to_owned()
         }
         KErrorCode::K0107 => {
-            "Choose model, record, stub, outside, opaque, or debt for this boundary before claiming exact replay.".to_owned()
+            "Choose a typed/model policy, record it, wrap it as an activity, or keep this path partial with outside, opaque, or debt before claiming exact replay.".to_owned()
         }
         KErrorCode::K0116 => {
             "Use a modeled construct, split the scenario, or keep the witness partial until coverage is implemented.".to_owned()
@@ -1100,6 +1481,292 @@ fn boundary_policies_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
         }));
     }
     policies
+}
+
+fn ecosystem_boundaries_json(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    run: &FullDepthRun,
+) -> Vec<serde_json::Value> {
+    run.boundary_decisions
+        .iter()
+        .map(|decision| {
+            let evidence = boundary_evidence_for_policy(decision, run);
+            serde_json::json!({
+                "crate": decision.crate_name,
+                "call_path": decision.call_path,
+                "call_arguments": decision.call_arguments,
+                "return_type": decision.return_type,
+                "call_shape": decision.call_shape.as_str(),
+                "policy": decision.policy.as_str(),
+                "reason": decision.reason,
+                "evidence": evidence,
+                "capture": boundary_capture_json(decision, run),
+                "activity_metadata": activity_metadata_for_boundary(file, config, decision),
+                "source_span": {
+                    "start": decision.span_start,
+                    "end": decision.span_end,
+                },
+                "declaration": declaration_metadata_for_boundary(file, config, &decision.crate_name, decision.policy.as_str()),
+                "adapter": config.ecosystem_policy.adapter_for(&decision.crate_name).map(|adapter| serde_json::json!({
+                    "package": adapter.package,
+                    "version": adapter.version,
+                    "source": adapter.source,
+                    "registry": adapter.registry,
+                    "checksum": adapter.checksum,
+                    "compatible_crate": adapter.compatible_crate,
+                    "metadata_path": adapter.metadata_path.as_ref().map(|path| path.display().to_string()),
+                    "trust_policy": adapter.trust_policy,
+                    "signed_by": adapter.signed_by,
+                    "validated": adapter.validated,
+                    "adapter_runtime": adapter.adapter_runtime,
+                    "capture": adapter.capture,
+                    "reason": adapter.reason,
+                })),
+                "full_ecosystem_exploration": false,
+            })
+        })
+        .collect()
+}
+
+fn declaration_metadata_for_boundary(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    crate_name: &str,
+    policy: &str,
+) -> Option<serde_json::Value> {
+    if !matches!(policy, "typed" | "activity") {
+        return None;
+    }
+    let facts = match declarations::declaration_facts_for_config(file, crate_name, config) {
+        declarations::DeclarationLookup::Valid(facts) => facts,
+        declarations::DeclarationLookup::Missing | declarations::DeclarationLookup::Invalid(_) => {
+            return None;
+        }
+    };
+    Some(declaration_metadata_json(&facts))
+}
+
+fn activity_metadata_for_boundary(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    decision: &kobo_sim_core::BoundaryDecision,
+) -> Option<serde_json::Value> {
+    if decision.policy.as_str() != "activity" {
+        return None;
+    }
+    let facts = match declarations::declaration_facts_for_config(file, &decision.crate_name, config)
+    {
+        declarations::DeclarationLookup::Valid(facts) => facts,
+        declarations::DeclarationLookup::Missing | declarations::DeclarationLookup::Invalid(_) => {
+            return None;
+        }
+    };
+    let activity = declarations::activity_fact_for_call(&facts, decision.call_path.as_deref())?;
+    Some(serde_json::json!({
+        "path": activity.path.clone(),
+        "retry": activity.retry.clone(),
+        "idempotency": activity.idempotency.clone(),
+        "result": activity.result.clone(),
+        "compensation": activity.compensation.clone(),
+        "declaration_hash": facts.hash.clone(),
+        "declaration_version": facts.version.clone(),
+    }))
+}
+
+fn declarations_json(
+    file: &Path,
+    config: &kobo_driver::KoboConfig,
+    run: &FullDepthRun,
+) -> Vec<serde_json::Value> {
+    run.boundary_decisions
+        .iter()
+        .filter_map(|decision| {
+            if decision.policy.as_str() != "typed" {
+                return None;
+            }
+            let facts = match declarations::declaration_facts_for_config(
+                file,
+                &decision.crate_name,
+                config,
+            ) {
+                declarations::DeclarationLookup::Valid(facts) => facts,
+                declarations::DeclarationLookup::Missing
+                | declarations::DeclarationLookup::Invalid(_) => return None,
+            };
+            Some(serde_json::json!({
+                "crate": decision.crate_name,
+                "path": facts.path.display().to_string(),
+                "version": facts.version.clone(),
+                "schema_version": facts.schema_version,
+                "hash": facts.hash.clone(),
+                "declaration_version": facts.version.clone(),
+                "declaration_hash": facts.hash.clone(),
+            }))
+        })
+        .collect()
+}
+
+fn declaration_metadata_json(facts: &declarations::DeclarationFacts) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "path": facts.path.display().to_string(),
+        "version": facts.version.clone(),
+        "schema_version": facts.schema_version,
+        "hash": facts.hash.clone(),
+    });
+    if let Some(package) = facts.metadata_package.as_ref() {
+        value
+            .as_object_mut()
+            .expect("declaration metadata json should be an object")
+            .insert(
+                "metadata_package".to_owned(),
+                serde_json::json!({
+                    "package": package.package.clone(),
+                    "version": package.version.clone(),
+                    "path": package.path.display().to_string(),
+                    "source": package.source.clone(),
+                    "registry": package.registry.clone(),
+                    "checksum": package.checksum.clone(),
+                    "signed_by": package.signed_by.clone(),
+                    "validated": package.validated,
+                }),
+            );
+    }
+    value
+}
+
+fn summary_usage_json(config: &kobo_driver::KoboConfig) -> anyhow::Result<Vec<serde_json::Value>> {
+    let mut summaries = Vec::new();
+    for summary in &config.ecosystem_policy.summaries {
+        let valid = summary_validation::load_valid_summary(summary)?;
+        let parsed = valid.value;
+        let obligations = parsed
+            .get("obligations")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let functions = parsed
+            .get("functions")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let solver_metadata = parsed
+            .get("solver_metadata")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"engine": "unknown", "outcome": "missing"}));
+        summaries.push(serde_json::json!({
+            "crate": summary.crate_name,
+            "path": summary.path.display().to_string(),
+            "summary_hash": valid.hash,
+            "schema_version": valid.schema_version,
+            "solver_metadata": solver_metadata,
+            "obligation_count": obligations.len(),
+            "function_count": functions.len(),
+            "obligations": obligations,
+            "functions": functions,
+        }));
+    }
+    Ok(summaries)
+}
+
+fn boundary_evidence_for_policy(
+    decision: &kobo_sim_core::BoundaryDecision,
+    run: &FullDepthRun,
+) -> &'static str {
+    let expected_label = boundary_event_label(decision);
+    match decision.policy.as_str() {
+        "record"
+            if run.events.iter().any(|event| {
+                event.kind == "boundary-record"
+                    && event.label.as_deref() == Some(expected_label.as_str())
+            }) =>
+        {
+            "recorded-event"
+        }
+        "activity"
+            if run.events.iter().any(|event| {
+                event.kind == "boundary-activity"
+                    && event.label.as_deref() == Some(expected_label.as_str())
+            }) =>
+        {
+            "activity-result"
+        }
+        "model" => "modeled-facade",
+        "typed" => "declaration",
+        "stub" => "scenario-stub",
+        "outside" => "outside-assumption",
+        "opaque" | "debt" => "assumption",
+        _ => "unverified",
+    }
+}
+
+fn boundary_capture_json(
+    decision: &kobo_sim_core::BoundaryDecision,
+    run: &FullDepthRun,
+) -> Option<serde_json::Value> {
+    let expected_label = boundary_event_label(decision);
+    let event = run.events.iter().find(|event| {
+        matches!(
+            event.kind.as_str(),
+            "boundary-record" | "boundary-activity" | "boundary-model" | "boundary-stub"
+        ) && event.label.as_deref() == Some(expected_label.as_str())
+    })?;
+    let capture_source = if run.harness_manifest.is_some() {
+        "facade-call-capture"
+    } else {
+        "semantic-boundary-capture"
+    };
+    Some(serde_json::json!({
+        "mode": "boundary-call-capture",
+        "capture_source": capture_source,
+        "event_kind": event.kind.clone(),
+        "event_label": event.label.clone(),
+        "event_value": event.value,
+        "io_capture": record_io_capture_json(decision),
+        "call_path": decision.call_path.clone(),
+        "call_arguments": decision.call_arguments.clone(),
+        "return_type": decision.return_type.clone(),
+        "call_shape": decision.call_shape.as_str(),
+        "source_span": {
+            "start": decision.span_start,
+            "end": decision.span_end,
+        },
+        "external_internals_replayed": false,
+    }))
+}
+
+fn record_io_capture_json(decision: &kobo_sim_core::BoundaryDecision) -> Option<serde_json::Value> {
+    if decision.policy.as_str() != "record" {
+        return None;
+    }
+    let capture = decision.recorded_io.as_ref()?;
+    Some(boundary_io_capture_json(capture))
+}
+
+fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> serde_json::Value {
+    let mut fields = serde_json::Map::new();
+    for field in &payload.fields {
+        fields.insert(
+            field.key.clone(),
+            serde_json::Value::String(field.value.clone()),
+        );
+    }
+    serde_json::json!({
+        "kind": payload.kind.clone(),
+        "payload": fields,
+    })
+}
+
+fn boundary_event_label(decision: &kobo_sim_core::BoundaryDecision) -> String {
+    format!(
+        "{}@{}..{}",
+        decision
+            .call_path
+            .as_deref()
+            .unwrap_or(decision.crate_name.as_str()),
+        decision.span_start,
+        decision.span_end
+    )
 }
 
 fn obligations_json(source_path: &str, source: &str, run: &FullDepthRun) -> Vec<serde_json::Value> {
@@ -1331,8 +1998,16 @@ fn boundary_decisions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
         .map(|decision| {
             serde_json::json!({
                 "crate": decision.crate_name,
+                "call_path": decision.call_path,
+                "call_arguments": decision.call_arguments,
+                "return_type": decision.return_type,
+                "call_shape": decision.call_shape.as_str(),
                 "policy": decision.policy.as_str(),
                 "reason": decision.reason,
+                "source_span": {
+                    "start": decision.span_start,
+                    "end": decision.span_end,
+                },
             })
         })
         .collect()
@@ -1343,14 +2018,32 @@ fn events_json(events: &[ScenarioEvent]) -> Vec<serde_json::Value> {
         .iter()
         .enumerate()
         .map(|(id, event)| {
-            serde_json::json!({
+            let mut value = serde_json::json!({
                 "id": id,
-                "kind": event.kind,
-                "label": event.label,
+                "kind": event.kind.clone(),
+                "label": event.label.clone(),
                 "value": event.value,
-            })
+            });
+            if let Some(io) = event.io.as_ref() {
+                value
+                    .as_object_mut()
+                    .expect("event json should be an object")
+                    .insert("io_capture".to_owned(), boundary_io_capture_json(io));
+            }
+            value
         })
         .collect()
+}
+
+fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> serde_json::Value {
+    serde_json::json!({
+        "mode": capture.mode.clone(),
+        "replay_key": capture.replay_key.clone(),
+        "request": boundary_io_payload_json(&capture.request),
+        "response": boundary_io_payload_json(&capture.response),
+        "request_hash": capture.request_hash.clone(),
+        "response_hash": capture.response_hash.clone(),
+    })
 }
 
 fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String {

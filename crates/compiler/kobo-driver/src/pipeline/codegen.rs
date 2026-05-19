@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap};
-use kobo_ir::{FileId, MustCallObligation, ScenarioProgram};
+use kobo_codegen::{codegen_file, CodegenOptions, CodegenOutput, KoboSourceMap, RuntimeEvidence};
+use kobo_ir::{FileId, MustCallObligation, ScenarioOpKind, ScenarioProgram};
 use kobo_migrate::SolveOutcome;
 use kobo_parser::KoboFile;
 
@@ -28,6 +28,7 @@ pub struct CodegenArtifacts {
     pub must_call_obligations: Vec<MustCallObligation>,
     pub error_policy_sites: Vec<ErrorPolicySite>,
     pub scenario_programs: Vec<ScenarioProgram>,
+    pub runtime_evidence: RuntimeEvidence,
 }
 
 pub fn run_codegen_pipeline(
@@ -66,6 +67,7 @@ pub fn run_codegen_pipeline(
         rs_source,
         source_map,
         error_policy_sites,
+        runtime_evidence,
     } = codegen_file(
         &kir,
         &kobo_file,
@@ -75,6 +77,7 @@ pub fn run_codegen_pipeline(
         &CodegenOptions {
             diag_mode: session.diag_enabled,
             executor_choice,
+            runtime_profile: session.config.runtime_profile.to_codegen_options(),
         },
     );
 
@@ -97,7 +100,6 @@ pub fn run_codegen_pipeline(
             .source
         }
     };
-
     // S-66: Stable-toolchain-only guarantee — Kobo never emits #![feature(...)].
     // Catch any accidental nightly-only code in generated output.
     debug_assert!(
@@ -131,8 +133,54 @@ pub fn run_codegen_pipeline(
         source_map: injected_map,
         must_call_obligations: kir.must_call_obligations().to_vec(),
         error_policy_sites,
-        scenario_programs: kir.scenario_programs().to_vec(),
+        scenario_programs: scenario_programs_with_ecosystem_policy(
+            kir.scenario_programs(),
+            &session.config.ecosystem_policy,
+        ),
+        runtime_evidence,
     })
+}
+
+fn scenario_programs_with_ecosystem_policy(
+    programs: &[ScenarioProgram],
+    policy: &crate::config::EcosystemPolicyConfig,
+) -> Vec<ScenarioProgram> {
+    programs
+        .iter()
+        .cloned()
+        .map(|mut program| {
+            apply_ecosystem_policy(&mut program, policy);
+            program
+        })
+        .collect()
+}
+
+fn apply_ecosystem_policy(
+    program: &mut ScenarioProgram,
+    policy: &crate::config::EcosystemPolicyConfig,
+) {
+    for operation in &mut program.operations {
+        let ScenarioOpKind::ExternalBoundary {
+            crate_name,
+            policy: boundary_policy,
+            reason,
+            ..
+        } = &mut operation.kind
+        else {
+            continue;
+        };
+        if !matches!(boundary_policy, kobo_ir::ScenarioBoundaryPolicy::Unselected) {
+            continue;
+        }
+        if let Some(crate_policy) = policy.crate_policy(crate_name) {
+            *boundary_policy = crate_policy.policy.clone();
+            if reason.is_none() {
+                *reason = crate_policy.reason.clone();
+            }
+        } else if policy.default_is_configured {
+            *boundary_policy = policy.default.clone();
+        }
+    }
 }
 
 pub fn apply_error_policy_sites(

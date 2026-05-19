@@ -13,6 +13,7 @@ use syn::parse_quote;
 
 /// Name of the marker macro emitted by the spawn preprocessor.
 const SPAWN_MACRO_NAME: &str = "__kobo_spawn_block";
+const SPAWN_LOCAL_MACRO_NAME: &str = "__kobo_spawn_local_block";
 
 /// Check if a macro invocation is a spawn block marker.
 pub(crate) fn is_spawn_block_macro(mac: &syn::Macro) -> bool {
@@ -20,6 +21,17 @@ pub(crate) fn is_spawn_block_macro(mac: &syn::Macro) -> bool {
         .get_ident()
         .map(|id| id == SPAWN_MACRO_NAME)
         .unwrap_or(false)
+}
+
+pub(crate) fn is_spawn_local_block_macro(mac: &syn::Macro) -> bool {
+    mac.path
+        .get_ident()
+        .map(|id| id == SPAWN_LOCAL_MACRO_NAME)
+        .unwrap_or(false)
+}
+
+pub(crate) fn is_any_spawn_block_macro(mac: &syn::Macro) -> bool {
+    is_spawn_block_macro(mac) || is_spawn_local_block_macro(mac)
 }
 
 /// Lower a `__kobo_spawn_block!({ body })` macro into `tokio::spawn(async move { body })`.
@@ -38,7 +50,7 @@ pub(crate) fn lower_spawn_macro_with_strategy(
     mac: &syn::Macro,
     use_spawn_local: bool,
 ) -> Option<syn::Expr> {
-    if !is_spawn_block_macro(mac) {
+    if !is_any_spawn_block_macro(mac) {
         return None;
     }
 
@@ -46,7 +58,7 @@ pub(crate) fn lower_spawn_macro_with_strategy(
     let block: syn::Block = syn::parse2(mac.tokens.clone()).ok()?;
 
     let stmts = &block.stmts;
-    if use_spawn_local {
+    if use_spawn_local || is_spawn_local_block_macro(mac) {
         Some(parse_quote! {
             tokio::task::spawn_local(async move { #(#stmts)* })
         })

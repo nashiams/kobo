@@ -1507,7 +1507,8 @@ fn local_suppression_reason(local: &Local) -> Option<String> {
             Meta::List(list) => list.tokens.to_string(),
             other => other.to_token_stream().to_string(),
         };
-        extract_quoted_value(&rendered, "reason").or_else(|| Some("reasoned suppression".to_owned()))
+        extract_quoted_value(&rendered, "reason")
+            .or_else(|| Some("reasoned suppression".to_owned()))
     })
 }
 

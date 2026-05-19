@@ -246,7 +246,14 @@ fn preprocess_ward_syntax_mapped(source: &str, file_id: FileId) -> PreprocessedS
         let Some(ward) = parse_ward_block(source, ward_start) else {
             break;
         };
-        push_rewrite_segment(&mut rewritten, &mut source_map, file_id, source, cursor, ward_start);
+        push_rewrite_segment(
+            &mut rewritten,
+            &mut source_map,
+            file_id,
+            source,
+            cursor,
+            ward_start,
+        );
         let generated_start = rewritten.len();
         rewritten.push_str(&ward_to_attribute_source(&ward));
         source_map.push_segment(
@@ -328,11 +335,7 @@ fn parse_ward_block(source: &str, start: usize) -> Option<WardBlock> {
         name_start += 1;
     }
     let mut name_end = name_start;
-    while source
-        .as_bytes()
-        .get(name_end)
-        .is_some_and(is_ident_byte)
-    {
+    while source.as_bytes().get(name_end).is_some_and(is_ident_byte) {
         name_end += 1;
     }
     let name = source[name_start..name_end].to_owned();
@@ -436,7 +439,9 @@ fn parse_ward_facts(body: &str) -> WardFacts {
             .map(|relative| name_start + relative)
             .unwrap_or(body.len());
         let name = body[name_start..name_end].trim().to_owned();
-        let Some(brace_start) = body[name_end..].find('{').map(|relative| name_end + relative)
+        let Some(brace_start) = body[name_end..]
+            .find('{')
+            .map(|relative| name_end + relative)
         else {
             break;
         };
@@ -445,7 +450,9 @@ fn parse_ward_facts(body: &str) -> WardFacts {
         };
         facts.scenarios.push((
             name,
-            body[brace_start + 1..brace_end].trim_matches('\n').to_owned(),
+            body[brace_start + 1..brace_end]
+                .trim_matches('\n')
+                .to_owned(),
         ));
         search = brace_end + 1;
     }

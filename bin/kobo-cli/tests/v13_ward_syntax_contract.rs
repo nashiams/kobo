@@ -153,11 +153,7 @@ fn multi_module_ward_preserves_ports_recordings_and_debt() {
     let project = TestProject::new("v13-multi-module-ward");
     let queue = project.write("src/queue.kobo", ward_source());
     let output = run_kobo(
-        &[
-            s("inspect"),
-            s("--scenario-metadata"),
-            path_arg(&queue),
-        ],
+        &[s("inspect"), s("--scenario-metadata"), path_arg(&queue)],
         &project.root,
     );
     assert_success(&output, "multi-module ward file should inspect");
@@ -168,7 +164,11 @@ fn multi_module_ward_preserves_ports_recordings_and_debt() {
         "recording ack_log",
         "debt external_metrics",
     ] {
-        assert_contains(&text, expected, "ward metadata should preserve external facts");
+        assert_contains(
+            &text,
+            expected,
+            "ward metadata should preserve external facts",
+        );
     }
 }
 
@@ -177,11 +177,7 @@ fn ward_inspect_reports_state_obligation_invariant_scenario_and_port_facts() {
     let project = TestProject::new("v13-ward-inspect-facts");
     let file = project.main_file(ward_source());
     let output = run_kobo(
-        &[
-            s("inspect"),
-            s("--scenario-metadata"),
-            path_arg(&file),
-        ],
+        &[s("inspect"), s("--scenario-metadata"), path_arg(&file)],
         &project.root,
     );
     assert_success(&output, "ward syntax should inspect");

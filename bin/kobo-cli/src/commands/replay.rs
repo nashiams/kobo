@@ -7,8 +7,8 @@ use serde_json::Value;
 
 use crate::ErrorFormat;
 
-use super::sim_model;
 use super::formal_core;
+use super::sim_model;
 use super::witness_evidence;
 use super::{declarations, summary_validation};
 

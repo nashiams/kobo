@@ -17,8 +17,8 @@ use proptest::test_runner::{
 
 use crate::ErrorFormat;
 
-use super::sim_model::{self, ScenarioDocument};
 use super::formal_core;
+use super::sim_model::{self, ScenarioDocument};
 use super::witness_evidence;
 use super::{declarations, summary_validation};
 
@@ -97,6 +97,7 @@ pub(super) fn cmd_test(
         &mut run,
     );
     apply_trace_checks(&strict_source_path, &document.source, &mut run);
+    apply_model_vs_implementation(&strict_source_path, &document.source, &mut run);
     validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
@@ -608,6 +609,8 @@ fn write_run_witness(
     let strict_liveness =
         formal_core::strict_liveness_json(&source_path, &document.source, scenario_program, run);
     let trace_checks = trace_checks_json(&source_path, &document.source, run);
+    let model_vs_implementation =
+        model_vs_implementation_json(&source_path, &document.source, seed, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -683,6 +686,10 @@ fn write_run_witness(
     object.insert(
         "temporal_checks".to_owned(),
         trace_checks["temporal_checks"].clone(),
+    );
+    object.insert(
+        "model_vs_implementation".to_owned(),
+        model_vs_implementation,
     );
     object.insert(
         "replay_grade".to_owned(),
@@ -1405,6 +1412,12 @@ fn scenario_failure_finding(failure: &ScenarioFailure, witness_path: Option<&Pat
         KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
             "A temporal trace check failed against the recorded scenario trace.".to_owned()
         }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-trace-divergence") => {
+            "The ward model and implementation produced different event traces.".to_owned()
+        }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-obligation-divergence") => {
+            "The ward model and implementation disagree about obligation state.".to_owned()
+        }
         KErrorCode::K0116 => {
             "This scenario uses syntax Kobo has not modeled for exact replay yet.".to_owned()
         }
@@ -1446,6 +1459,14 @@ fn scenario_failure_explanation(failure: &ScenarioFailure) -> String {
         KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
             "Temporal checks are evaluated over ordered witness events with stable event names. Missing or forbidden events are reported separately from replay mismatch diagnostics.".to_owned()
         }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-trace-divergence") => {
+            "Model-vs-implementation comparison uses the same scheduler seed and compares ordered witness events, so a different first event is real comparison evidence.".to_owned()
+        }
+        KErrorCode::K0117
+            if scenario_failure_has_event(failure, "model-obligation-divergence") =>
+        {
+            "Model-vs-implementation comparison includes liveness obligation state, not just return values.".to_owned()
+        }
         KErrorCode::K0116 => {
             "Exact replay is only sound for modeled syntax. Kobo found a construct outside the current modeled island coverage.".to_owned()
         }
@@ -1485,6 +1506,14 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
         }
         KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
             "Inspect the witness temporal_checks trace excerpt, then update the model, expected event name, or scenario ordering.".to_owned()
+        }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-trace-divergence") => {
+            "Inspect model_vs_implementation.trace.first_difference, then align the ward model event or the implementation behavior.".to_owned()
+        }
+        KErrorCode::K0117
+            if scenario_failure_has_event(failure, "model-obligation-divergence") =>
+        {
+            "Inspect model_vs_implementation.obligations.first_difference, then align the model state or discharge path.".to_owned()
         }
         KErrorCode::K0116 => {
             "Use a modeled construct, split the scenario, or keep the witness partial until coverage is implemented.".to_owned()
@@ -2141,6 +2170,441 @@ impl TraceCheckKind {
     }
 }
 
+#[derive(Clone)]
+struct ModelEventExpectation {
+    event: String,
+    span: (usize, usize),
+}
+
+#[derive(Clone)]
+struct ModelObligationExpectation {
+    binding: String,
+    state: String,
+    span: (usize, usize),
+}
+
+struct ModelComparisonSpec {
+    events: Vec<ModelEventExpectation>,
+    obligations: Vec<ModelObligationExpectation>,
+}
+
+struct ModelComparisonFailure {
+    kind: &'static str,
+    label: String,
+    message: String,
+    span: (usize, usize),
+}
+
+fn apply_model_vs_implementation(source_path: &str, source: &str, run: &mut FullDepthRun) {
+    if run.failure.is_some() {
+        return;
+    }
+    let Some(failure) = model_comparison_failure(source_path, source, run) else {
+        return;
+    };
+    run.failure = Some(ScenarioFailure {
+        code: KErrorCode::K0117,
+        message: failure.message,
+        primary_start: failure.span.0,
+        primary_end: failure.span.1,
+        events: vec![ScenarioEvent {
+            kind: failure.kind.to_owned(),
+            label: Some(failure.label),
+            value: None,
+            io: None,
+        }],
+    });
+}
+
+fn model_vs_implementation_json(
+    source_path: &str,
+    source: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let spec = parse_model_comparison_spec(source);
+    let boundary = model_boundary_policy_json(run);
+    if !spec.requested() {
+        return serde_json::json!({
+            "status": "not_requested",
+            "scheduler_seed": model_scheduler_seed_json(seed),
+            "trace": {
+                "status": "not_requested",
+                "model_events": [],
+                "implementation_events": implementation_event_kinds(run),
+            },
+            "obligations": {
+                "status": "not_requested",
+                "model_states": [],
+                "implementation_states": implementation_obligation_states(run),
+            },
+            "boundary_policy": boundary,
+        });
+    }
+
+    let trace = model_trace_comparison_json(source_path, source, run, &spec);
+    let obligations = model_obligation_comparison_json(source_path, source, run, &spec);
+    let status = if boundary["status"] == "downgraded" {
+        "partial"
+    } else if trace["status"] == "diverged" || obligations["status"] == "diverged" {
+        "diverged"
+    } else {
+        "matched"
+    };
+
+    serde_json::json!({
+        "status": status,
+        "selection": {
+            "requested": true,
+            "source": "ward_model_directives",
+        },
+        "scheduler_seed": model_scheduler_seed_json(seed),
+        "trace": trace,
+        "obligations": obligations,
+        "boundary_policy": boundary,
+    })
+}
+
+fn model_comparison_failure(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+) -> Option<ModelComparisonFailure> {
+    let spec = parse_model_comparison_spec(source);
+    if !spec.requested() || model_boundary_downgrade(run) {
+        return None;
+    }
+    if let Some(diff) = first_model_trace_difference(run, &spec) {
+        let model = diff.model.as_deref().unwrap_or("<missing model event>");
+        let implementation = diff
+            .implementation
+            .as_deref()
+            .unwrap_or("<missing implementation event>");
+        return Some(ModelComparisonFailure {
+            kind: "model-trace-divergence",
+            label: diff.label(),
+            message: format!(
+                "model-vs-implementation trace diverged at event {}: model `{model}`, implementation `{implementation}`",
+                diff.index
+            ),
+            span: diff.span,
+        });
+    }
+    if let Some(diff) = first_model_obligation_difference(run, &spec) {
+        let model = diff.model.as_deref().unwrap_or("<missing model state>");
+        let implementation = diff
+            .implementation
+            .as_deref()
+            .unwrap_or("<missing implementation state>");
+        return Some(ModelComparisonFailure {
+            kind: "model-obligation-divergence",
+            label: diff.binding.clone(),
+            message: format!(
+                "model-vs-implementation obligation `{}` diverged: model `{model}`, implementation `{implementation}`",
+                diff.binding
+            ),
+            span: diff.span,
+        });
+    }
+    let _ = source_path;
+    None
+}
+
+fn model_trace_comparison_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+    spec: &ModelComparisonSpec,
+) -> serde_json::Value {
+    let model_events = spec
+        .events
+        .iter()
+        .map(|expectation| expectation.event.clone())
+        .collect::<Vec<_>>();
+    let implementation_events = implementation_event_kinds(run);
+    let first_difference = first_model_trace_difference(run, spec);
+    let status = if first_difference.is_some() {
+        "diverged"
+    } else {
+        "matched"
+    };
+    let source_span = first_difference
+        .as_ref()
+        .map(|difference| span_json(source_path, source, difference.span))
+        .unwrap_or_else(|| {
+            spec.events
+                .first()
+                .map(|expectation| span_json(source_path, source, expectation.span))
+                .unwrap_or_else(|| span_json(source_path, source, (0, 0)))
+        });
+    serde_json::json!({
+        "status": status,
+        "model_events": model_events,
+        "implementation_events": implementation_events,
+        "first_difference": first_difference.as_ref().map(ModelTraceDifference::to_json),
+        "source_span": source_span,
+        "trace_excerpt": trace_excerpt_for_difference(run, first_difference.as_ref()),
+    })
+}
+
+fn model_obligation_comparison_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+    spec: &ModelComparisonSpec,
+) -> serde_json::Value {
+    let model_states = spec
+        .obligations
+        .iter()
+        .map(|expectation| {
+            serde_json::json!({
+                "binding": expectation.binding,
+                "state": expectation.state,
+                "source_span": span_json(source_path, source, expectation.span),
+            })
+        })
+        .collect::<Vec<_>>();
+    let implementation_states = implementation_obligation_states(run);
+    let first_difference = first_model_obligation_difference(run, spec);
+    let status = if first_difference.is_some() {
+        "diverged"
+    } else {
+        "matched"
+    };
+    serde_json::json!({
+        "status": status,
+        "model_states": model_states,
+        "implementation_states": implementation_states,
+        "first_difference": first_difference.as_ref().map(ModelObligationDifference::to_json),
+    })
+}
+
+struct ModelTraceDifference {
+    index: usize,
+    model: Option<String>,
+    implementation: Option<String>,
+    span: (usize, usize),
+}
+
+impl ModelTraceDifference {
+    fn label(&self) -> String {
+        format!(
+            "event:{}:model={}:implementation={}",
+            self.index,
+            self.model.as_deref().unwrap_or("<missing>"),
+            self.implementation.as_deref().unwrap_or("<missing>")
+        )
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "index": self.index,
+            "model": self.model,
+            "implementation": self.implementation,
+        })
+    }
+}
+
+struct ModelObligationDifference {
+    binding: String,
+    model: Option<String>,
+    implementation: Option<String>,
+    span: (usize, usize),
+}
+
+impl ModelObligationDifference {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "binding": self.binding,
+            "model": self.model,
+            "implementation": self.implementation,
+        })
+    }
+}
+
+fn first_model_trace_difference(
+    run: &FullDepthRun,
+    spec: &ModelComparisonSpec,
+) -> Option<ModelTraceDifference> {
+    if spec.events.is_empty() {
+        return None;
+    }
+    let implementation_events = implementation_event_kinds(run);
+    let max_len = spec.events.len().max(implementation_events.len());
+    for index in 0..max_len {
+        let model = spec
+            .events
+            .get(index)
+            .map(|expectation| expectation.event.clone());
+        let implementation = implementation_events.get(index).cloned();
+        if model != implementation {
+            let span = spec
+                .events
+                .get(index)
+                .or_else(|| spec.events.last())
+                .map(|expectation| expectation.span)
+                .unwrap_or((0, 0));
+            return Some(ModelTraceDifference {
+                index,
+                model,
+                implementation,
+                span,
+            });
+        }
+    }
+    None
+}
+
+fn first_model_obligation_difference(
+    run: &FullDepthRun,
+    spec: &ModelComparisonSpec,
+) -> Option<ModelObligationDifference> {
+    for expectation in &spec.obligations {
+        let implementation = run
+            .obligations
+            .iter()
+            .find(|obligation| obligation.binding == expectation.binding)
+            .map(|obligation| {
+                if obligation.is_discharged {
+                    "discharged".to_owned()
+                } else {
+                    "leaked".to_owned()
+                }
+            });
+        if implementation.as_deref() != Some(expectation.state.as_str()) {
+            return Some(ModelObligationDifference {
+                binding: expectation.binding.clone(),
+                model: Some(expectation.state.clone()),
+                implementation,
+                span: expectation.span,
+            });
+        }
+    }
+    None
+}
+
+fn trace_excerpt_for_difference(
+    run: &FullDepthRun,
+    difference: Option<&ModelTraceDifference>,
+) -> Vec<serde_json::Value> {
+    let Some(difference) = difference else {
+        return Vec::new();
+    };
+    events_json(&run.events)
+        .into_iter()
+        .skip(difference.index.saturating_sub(2))
+        .take(5)
+        .collect()
+}
+
+fn implementation_event_kinds(run: &FullDepthRun) -> Vec<String> {
+    run.events
+        .iter()
+        .filter(|event| is_model_trace_event(&event.kind))
+        .map(|event| event.kind.clone())
+        .collect()
+}
+
+fn is_model_trace_event(kind: &str) -> bool {
+    kind.starts_with("deterministic-")
+        || kind.ends_with("-boundary")
+        || kind == "obligation-transfer"
+}
+
+fn implementation_obligation_states(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    run.obligations
+        .iter()
+        .map(|obligation| {
+            serde_json::json!({
+                "binding": obligation.binding,
+                "state": if obligation.is_discharged { "discharged" } else { "leaked" },
+                "actions": obligation.actions,
+            })
+        })
+        .collect()
+}
+
+fn model_boundary_policy_json(run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "status": if model_boundary_downgrade(run) { "downgraded" } else { "comparable" },
+        "decisions": boundary_decisions_json(run),
+    })
+}
+
+fn model_boundary_downgrade(run: &FullDepthRun) -> bool {
+    run.boundary_decisions.iter().any(|decision| {
+        matches!(
+            decision.policy.as_str(),
+            "opaque" | "outside" | "debt" | "stub"
+        )
+    })
+}
+
+fn model_scheduler_seed_json(seed: u64) -> serde_json::Value {
+    serde_json::json!({
+        "model": seed,
+        "implementation": seed,
+        "same_seed": true,
+    })
+}
+
+fn parse_model_comparison_spec(source: &str) -> ModelComparisonSpec {
+    let mut spec = ModelComparisonSpec {
+        events: Vec::new(),
+        obligations: Vec::new(),
+    };
+    let mut offset = 0;
+    for raw_line in source.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
+        let leading = line.find(trimmed).unwrap_or(0);
+        let span = (offset + leading, offset + line.len());
+        if let Some(rest) = model_directive(trimmed) {
+            parse_model_directive(rest, span, &mut spec);
+        }
+        offset += raw_line.len();
+    }
+    spec
+}
+
+fn model_directive(line: &str) -> Option<&str> {
+    line.strip_prefix("model ")
+        .or_else(|| line.strip_prefix("// kobo:model "))
+}
+
+fn parse_model_directive(rest: &str, span: (usize, usize), spec: &mut ModelComparisonSpec) {
+    if let Some(event) = rest.strip_prefix("event ") {
+        let event = event.trim().trim_matches([';', '}']);
+        if !event.is_empty() {
+            spec.events.push(ModelEventExpectation {
+                event: event.to_owned(),
+                span,
+            });
+        }
+    } else if let Some(obligation) = rest.strip_prefix("obligation ") {
+        let mut parts = obligation.split_whitespace();
+        let Some(binding) = parts.next() else {
+            return;
+        };
+        let Some(state) = parts.next() else {
+            return;
+        };
+        if matches!(state, "discharged" | "leaked") {
+            spec.obligations.push(ModelObligationExpectation {
+                binding: binding.to_owned(),
+                state: state.to_owned(),
+                span,
+            });
+        }
+    }
+}
+
+impl ModelComparisonSpec {
+    fn requested(&self) -> bool {
+        !self.events.is_empty() || !self.obligations.is_empty()
+    }
+}
+
 fn expanded_policy_json(profile: &str) -> serde_json::Value {
     let (ownership, liveness, replay, boundaries, errors) = match profile {
         "dev" => ("record", "record", "record", "record", "ergonomic"),
@@ -2242,6 +2706,20 @@ fn source_spans_json(
 }
 
 fn run_failure_mode(run: &FullDepthRun) -> &'static str {
+    if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "model-trace-divergence"))
+    {
+        return "model_trace_divergence";
+    }
+    if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "model-obligation-divergence"))
+    {
+        return "model_obligation_divergence";
+    }
     if run
         .failure
         .as_ref()

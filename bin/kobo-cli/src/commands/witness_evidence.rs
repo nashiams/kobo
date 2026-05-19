@@ -519,7 +519,10 @@ fn span_json_for_binding(
     binding: &str,
 ) -> serde_json::Value {
     let value = span_json(source_path, source, span);
-    if value["snippet"].as_str().is_some_and(|snippet| !snippet.is_empty()) {
+    if value["snippet"]
+        .as_str()
+        .is_some_and(|snippet| !snippet.is_empty())
+    {
         return value;
     }
     let Some(start) = source.find(binding) else {

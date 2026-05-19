@@ -372,18 +372,16 @@ fn main() {
     let mut outputs = Vec::new();
     for profile in ["dev", "checked", "release"] {
         let output = run_kobo(
-            &[
-                s("run"),
-                s("--profile"),
-                s(profile),
-                path_arg(&file),
-            ],
+            &[s("run"), s("--profile"), s(profile), path_arg(&file)],
             &project.root,
         );
         assert_success(&output, "accepted ordinary code should run in every mode");
         outputs.push(output.stdout);
     }
-    assert_eq!(outputs[0], outputs[1], "dev and checked output should match");
+    assert_eq!(
+        outputs[0], outputs[1],
+        "dev and checked output should match"
+    );
     assert_eq!(
         outputs[1], outputs[2],
         "checked and strict/release output should match"

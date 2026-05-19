@@ -307,10 +307,7 @@ fn unmapped_case() {
         ],
         &project.root,
     );
-    assert_failure(
-        &output,
-        "unmapped Core nodes must fail witness validation",
-    );
+    assert_failure(&output, "unmapped Core nodes must fail witness validation");
     assert_contains(
         &output.combined(),
         "unmapped Core node",
@@ -338,10 +335,9 @@ fn text_bait_case() {
         .filter_map(|terminator| terminator["kind"].as_str())
         .collect::<Vec<_>>();
     assert!(
-        !kinds.iter().any(|kind| matches!(
-            *kind,
-            "error_exit" | "panic" | "await" | "opaque_boundary"
-        )),
+        !kinds
+            .iter()
+            .any(|kind| matches!(*kind, "error_exit" | "panic" | "await" | "opaque_boundary")),
         "comments, strings, and renamed variables must not create Core edges: {kinds:?}"
     );
 }

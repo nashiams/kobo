@@ -285,8 +285,13 @@ fn lower_formal_core(
     function_ranges
         .into_iter()
         .map(|function| {
-            let terminators =
-                terminators_for_function(source_path, source, &cleaned, &function, &boundary_imports);
+            let terminators = terminators_for_function(
+                source_path,
+                source,
+                &cleaned,
+                &function,
+                &boundary_imports,
+            );
             let statements = statements_by_function
                 .remove(&function.name)
                 .unwrap_or_default();
@@ -863,13 +868,20 @@ fn boundary_imports(source: &str) -> Vec<BoundaryImport> {
             break;
         };
         let attr = &source[attr_start..=attr_end];
-        let boundary = attribute_string_value(attr, "crate").unwrap_or_else(|| "unknown".to_owned());
+        let boundary =
+            attribute_string_value(attr, "crate").unwrap_or_else(|| "unknown".to_owned());
         let policy = attribute_string_value(attr, "policy").unwrap_or_else(|| "debt".to_owned());
-        let Some(use_start) = source[attr_end..].find("use ").map(|offset| attr_end + offset) else {
+        let Some(use_start) = source[attr_end..]
+            .find("use ")
+            .map(|offset| attr_end + offset)
+        else {
             cursor = attr_end + 1;
             continue;
         };
-        let Some(use_end) = source[use_start..].find(';').map(|offset| use_start + offset) else {
+        let Some(use_end) = source[use_start..]
+            .find(';')
+            .map(|offset| use_start + offset)
+        else {
             cursor = attr_end + 1;
             continue;
         };
@@ -951,8 +963,7 @@ fn scrub_comments_and_strings(source: &str) -> Vec<u8> {
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 let start = index;
                 index += 2;
-                while index + 1 < bytes.len()
-                    && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
                 {
                     index += 1;
                 }
@@ -1171,7 +1182,9 @@ fn validate_source_span(span: &Value, context: &str) -> anyhow::Result<()> {
     let non_empty = start.zip(end).is_some_and(|(start, end)| end > start);
     let has_original = span["path"].as_str().is_some()
         && span["line"].as_u64().is_some()
-        && span["snippet"].as_str().is_some_and(|snippet| !snippet.is_empty());
+        && span["snippet"]
+            .as_str()
+            .is_some_and(|snippet| !snippet.is_empty());
     if mapped && non_empty && has_original {
         return Ok(());
     }

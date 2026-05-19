@@ -40,10 +40,9 @@ fn run_trace_witness(project: &TestProject, source: &str, target: &str) -> (CliO
         .into_iter()
         .next()
         .expect("witness should exist");
-    let witness = serde_json::from_str(
-        &std::fs::read_to_string(witness_path).expect("witness should read"),
-    )
-    .expect("witness should parse");
+    let witness =
+        serde_json::from_str(&std::fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
     (output, witness)
 }
 
@@ -74,7 +73,9 @@ fn ward_invariant_appears_in_witness_output_with_source_span() {
     assert_eq!(invariant["status"], "passed");
     assert_eq!(invariant["source_span"]["mapped"], Value::Bool(true));
     assert_contains(
-        invariant["source_span"]["snippet"].as_str().unwrap_or_default(),
+        invariant["source_span"]["snippet"]
+            .as_str()
+            .unwrap_or_default(),
         "task_event_visible",
         "invariant source span should point to original check",
     );
@@ -117,7 +118,9 @@ fn temporal_eventually_check_fails_when_event_never_occurs() {
     assert_eq!(witness["temporal_checks"][0]["kind"], "eventually");
     assert_eq!(witness["temporal_checks"][0]["status"], "failed");
     assert_contains(
-        witness["temporal_checks"][0]["message"].as_str().unwrap_or_default(),
+        witness["temporal_checks"][0]["message"]
+            .as_str()
+            .unwrap_or_default(),
         "missing-event",
         "temporal failure should name the missing event",
     );
@@ -145,7 +148,11 @@ fn invariant_failure_is_distinct_from_replay_mismatch() {
 
     let (output, witness) = run_trace_witness(&project, &source, "trace_case");
     assert_failure(&output, "invariant failure should fail");
-    assert_contains(&output.combined(), "K0108", "invariant failure should use K0108");
+    assert_contains(
+        &output.combined(),
+        "K0108",
+        "invariant failure should use K0108",
+    );
     assert_eq!(witness["failure"]["mode"], "invariant_failure");
     assert!(
         !output.combined().contains("K0104") && !output.combined().contains("K0117"),

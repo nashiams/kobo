@@ -82,12 +82,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// S-53: Check whether any captured binding has a non-Send ownership tier.
-    /// When true, the spawn block should use `spawn_local` instead of `tokio::spawn`.
-    fn any_captured_non_send(&self, captured: &[clone_inject::CapturedBinding]) -> bool {
-        captured_bindings_need_spawn_local(captured)
-    }
-
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -596,8 +590,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 let captured = collect_spawn_captures(&stmt_macro.mac.tokens, scopes);
-                let use_spawn_local = spawn::is_spawn_local_block_macro(&stmt_macro.mac)
-                    || self.any_captured_non_send(&captured);
+                let use_spawn_local = spawn::is_spawn_local_block_macro(&stmt_macro.mac);
                 if use_spawn_local {
                     self.needs_local_set = true;
                     let captured_bindings = captured
@@ -879,6 +872,7 @@ fn collect_block_captures(
         .collect()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn captured_bindings_need_spawn_local(captured: &[clone_inject::CapturedBinding]) -> bool {
     captured.iter().any(|binding| {
         matches!(

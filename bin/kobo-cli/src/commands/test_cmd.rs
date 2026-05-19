@@ -686,7 +686,7 @@ fn write_run_witness(
     );
     object.insert(
         "service_runtime".to_owned(),
-        service_runtime_json(runtime_evidence),
+        service_runtime_json(runtime_evidence, run),
     );
     object.insert(
         "parallel_lowering".to_owned(),
@@ -716,12 +716,15 @@ fn write_run_witness(
     Ok(witness_path)
 }
 
-fn service_runtime_json(evidence: &kobo_codegen::RuntimeEvidence) -> serde_json::Value {
+fn service_runtime_json(
+    evidence: &kobo_codegen::RuntimeEvidence,
+    run: &FullDepthRun,
+) -> serde_json::Value {
     serde_json::json!({
         "evidence_source": "codegen-lowering",
         "services": evidence.services
             .iter()
-            .map(service_runtime_service_json)
+            .map(|service| service_runtime_service_json(service, run))
             .collect::<Vec<_>>(),
     })
 }
@@ -759,6 +762,7 @@ fn runtime_profile_json(
 
 fn service_runtime_service_json(
     service: &kobo_codegen::ServiceRuntimeEvidence,
+    run: &FullDepthRun,
 ) -> serde_json::Value {
     serde_json::json!({
         "name": &service.name,
@@ -769,11 +773,33 @@ fn service_runtime_service_json(
         "client_api": service.client_api,
         "scenario_hooks": service.scenario_hooks,
         "hook_events": &service.hook_events,
+        "runtime_hook_events": service_runtime_hook_events_json(&service.name, run),
         "methods": service.methods
             .iter()
             .map(service_runtime_method_json)
             .collect::<Vec<_>>(),
     })
+}
+
+fn service_runtime_hook_events_json(service_name: &str, run: &FullDepthRun) -> serde_json::Value {
+    let events = run
+        .harness_manifest
+        .as_ref()
+        .map(|manifest| {
+            manifest
+                .service_hook_events
+                .iter()
+                .filter(|event| event.service == service_name)
+                .map(|event| {
+                    serde_json::json!({
+                        "phase": &event.phase,
+                        "method": &event.method,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::Value::Array(events)
 }
 
 fn service_runtime_method_json(

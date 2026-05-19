@@ -282,6 +282,12 @@ fn shared_service_runtime_items() -> Vec<syn::Item> {
                         method,
                     });
                 }
+                println!(
+                    "KOBO_SERVICE_HOOK:{{\"phase\":\"{}\",\"service\":\"{}\",\"method\":\"{}\"}}",
+                    phase,
+                    service,
+                    method
+                );
             }
 
             fn before(service: &'static str, method: &'static str) {

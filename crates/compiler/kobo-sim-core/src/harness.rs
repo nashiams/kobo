@@ -12,7 +12,7 @@ use crate::core::{
     EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure, ScenarioOptions,
 };
 use crate::error::{Result, SimCoreError};
-use crate::harness_manifest::HarnessManifest;
+use crate::harness_manifest::{HarnessManifest, ServiceHookEvent};
 use crate::network::NetworkModel;
 use crate::storage::StorageModel;
 
@@ -212,6 +212,7 @@ fn run_generated_harness(
         run_rustc_harness(&harness_dir, &harness_rs_path)?
     };
     let events = parse_harness_events(&process.stdout)?;
+    let service_hook_events = parse_harness_service_hook_events(&process.stdout)?;
     let engine = if uses_loom {
         "generated-rust-loom-process"
     } else {
@@ -230,6 +231,7 @@ fn run_generated_harness(
         stdout_hash: crate::digest::stable_hash(&process.stdout),
         stderr_hash: crate::digest::stable_hash(&process.stderr),
         event_count: events.len(),
+        service_hook_events,
     };
     let manifest_path = harness_dir.join("manifest.json");
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -428,12 +430,6 @@ fn instrument_generated_rust(
 
     for operation in &program.operations {
         if let ScenarioOpKind::ModeledEffect { boundary } = &operation.kind {
-            if boundary == &ScenarioModeledBoundary::WardTask
-                && source.contains("tokio::spawn")
-                && !source.contains("ward.task();")
-            {
-                continue;
-            }
             let events = modeled_boundary_events(boundary, options);
             source = inject_modeled_boundary_event(source, boundary, &events)?;
         }
@@ -1680,6 +1676,13 @@ fn inject_modeled_boundary_event(
             return Ok(source.replacen(needle, &instrumented_expression(replacement, &print), 1));
         }
     }
+    if boundary == &ScenarioModeledBoundary::WardTask {
+        for needle in ["tokio::spawn(async move {", "tokio :: spawn(async move {"] {
+            if source.contains(needle) {
+                return Ok(source.replacen(needle, &format!("{print}\n    {needle}"), 1));
+            }
+        }
+    }
     Err(SimCoreError::ModeledBoundaryMissing {
         boundary: boundary_label(boundary),
     })
@@ -1953,6 +1956,17 @@ fn parse_harness_events(stdout: &str) -> Result<Vec<ScenarioEvent>> {
         .map(|json| {
             serde_json::from_str(json)
                 .map_err(|source| SimCoreError::json("parse generated harness event", source))
+        })
+        .collect()
+}
+
+fn parse_harness_service_hook_events(stdout: &str) -> Result<Vec<ServiceHookEvent>> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("KOBO_SERVICE_HOOK:"))
+        .map(|json| {
+            serde_json::from_str(json)
+                .map_err(|source| SimCoreError::json("parse generated service hook event", source))
         })
         .collect()
 }

@@ -1,4 +1,11 @@
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServiceHookEvent {
+    pub phase: String,
+    pub service: String,
+    pub method: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HarnessManifest {
     pub source_hash: String,
     pub generated_rust_hash: String,
@@ -12,4 +19,5 @@ pub struct HarnessManifest {
     pub stdout_hash: String,
     pub stderr_hash: String,
     pub event_count: usize,
+    pub service_hook_events: Vec<ServiceHookEvent>,
 }

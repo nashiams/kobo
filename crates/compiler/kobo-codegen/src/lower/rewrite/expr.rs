@@ -90,9 +90,7 @@ impl super::Lowerer<'_> {
                     return;
                 }
 
-                let captured = super::collect_spawn_captures(&expr_macro.mac.tokens, scopes);
-                let use_spawn_local = super::spawn::is_spawn_local_block_macro(&expr_macro.mac)
-                    || self.any_captured_non_send(&captured);
+                let use_spawn_local = super::spawn::is_spawn_local_block_macro(&expr_macro.mac);
                 if use_spawn_local {
                     self.needs_local_set = true;
                 }

@@ -220,6 +220,7 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
         "Gateway",
         "refresh",
         "hook_events",
+        "runtime_hook_events",
         "handle",
         "parallel_lowering",
         "task_local_zones",

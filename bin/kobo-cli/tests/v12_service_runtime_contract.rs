@@ -233,6 +233,11 @@ fn service_sim_quick_runs_one_critical_path_without_manual_runtime_plumbing() {
         "service witness should expose generated hook events used by the client/dispatch path",
     );
     assert_contains(
+        &witness["service_runtime"]["services"][0]["runtime_hook_events"].to_string(),
+        "submit",
+        "service witness should consume runtime hook events emitted by the generated dispatch path",
+    );
+    assert_contains(
         &witness["service_runtime"]["services"][0]["hook_events"].to_string(),
         "shutdown",
         "service witness should expose shutdown hook evidence",

@@ -29,6 +29,23 @@ struct ProtocolSourceFacts {
     has_terminal_action: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProtocolObligation {
+    type_name: String,
+    actions: Vec<String>,
+    line: usize,
+    character: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProtocolDiagnosticFact {
+    line: usize,
+    character_start: usize,
+    character_end: usize,
+    code: &'static str,
+    message: String,
+}
+
 pub fn diagnostic_payload(file_set: &FileSet, diagnostic: &KDiagnostic) -> DiagnosticLspPayload {
     DiagnosticLspPayload::from_diagnostic(file_set, diagnostic)
 }
@@ -115,20 +132,123 @@ pub fn protocol_document_snapshot(uri: &str, source: &str, witness_path: Option<
 }
 
 fn protocol_diagnostics(source: &str) -> Vec<Value> {
-    let facts = protocol_source_facts(source);
-    if facts.has_liveness_obligation && !facts.has_terminal_action {
+    if let Some(fact) = unresolved_liveness_diagnostic(source) {
         return vec![json!({
             "range": {
-                "start": {"line": 0, "character": 0},
-                "end": {"line": 0, "character": 1},
+                "start": {"line": fact.line, "character": fact.character_start},
+                "end": {"line": fact.line, "character": fact.character_end},
             },
             "severity": 1,
-            "code": "K0100",
+            "code": fact.code,
             "source": "kobo",
-            "message": "unresolved liveness obligation",
+            "message": fact.message,
         })];
     }
     Vec::new()
+}
+
+fn unresolved_liveness_diagnostic(source: &str) -> Option<ProtocolDiagnosticFact> {
+    let semantic_source = source_without_text(source);
+    let obligations = ward_obligations(&semantic_source);
+    for obligation in obligations {
+        if let Some(fact) = unresolved_binding_for_obligation(source, &semantic_source, &obligation)
+        {
+            return Some(fact);
+        }
+    }
+    let facts = protocol_source_facts(source);
+    (facts.has_liveness_obligation && !facts.has_terminal_action).then(|| ProtocolDiagnosticFact {
+        line: 0,
+        character_start: 0,
+        character_end: 1,
+        code: "K0100",
+        message: "unresolved liveness obligation".to_owned(),
+    })
+}
+
+fn ward_obligations(source: &str) -> Vec<ProtocolObligation> {
+    source
+        .lines()
+        .enumerate()
+        .filter_map(|(line, text)| ward_obligation_from_line(line, text))
+        .collect()
+}
+
+fn ward_obligation_from_line(line: usize, text: &str) -> Option<ProtocolObligation> {
+    let character = text.find("obligation ")?;
+    let rest = text[character + "obligation ".len()..].trim_start();
+    let (type_name, after_type) = rest.split_once(char::is_whitespace)?;
+    let actions_text = after_type.trim_start().strip_prefix("must")?.trim();
+    let actions = actions_text
+        .split('|')
+        .flat_map(str::split_whitespace)
+        .filter(|action| !action.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    (!type_name.is_empty() && !actions.is_empty()).then(|| ProtocolObligation {
+        type_name: type_name.to_owned(),
+        actions,
+        line,
+        character,
+    })
+}
+
+fn unresolved_binding_for_obligation(
+    original_source: &str,
+    semantic_source: &str,
+    obligation: &ProtocolObligation,
+) -> Option<ProtocolDiagnosticFact> {
+    for (line, text) in semantic_source.lines().enumerate() {
+        let Some(binding) = binding_constructed_on_line(text, &obligation.type_name) else {
+            continue;
+        };
+        if binding_has_terminal_action(semantic_source, &binding, &obligation.actions) {
+            continue;
+        }
+        let original_line = original_source.lines().nth(line).unwrap_or(text);
+        let character_start = original_line.find(&binding).unwrap_or(0);
+        return Some(ProtocolDiagnosticFact {
+            line,
+            character_start,
+            character_end: character_start + binding.len(),
+            code: "K0100",
+            message: format!(
+                "unresolved liveness obligation `{binding}` requires {}",
+                obligation.actions.join(" | ")
+            ),
+        });
+    }
+    Some(ProtocolDiagnosticFact {
+        line: obligation.line,
+        character_start: obligation.character,
+        character_end: obligation.character + obligation.type_name.len(),
+        code: "K0100",
+        message: format!(
+            "unresolved liveness obligation for `{}`",
+            obligation.type_name
+        ),
+    })
+}
+
+fn binding_constructed_on_line(line: &str, type_name: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("let ")?;
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+    if !rest.contains(&format!("{type_name} {{")) {
+        return None;
+    }
+    let binding = rest
+        .split(|ch: char| ch == ':' || ch == '=' || ch.is_whitespace())
+        .next()?
+        .trim();
+    (!binding.is_empty()).then(|| binding.to_owned())
+}
+
+fn binding_has_terminal_action(source: &str, binding: &str, actions: &[String]) -> bool {
+    actions.iter().any(|action| {
+        let call = format!("{binding}.{action}(");
+        let spaced_call = format!("{binding}.{action} (");
+        source.contains(&call) || source.contains(&spaced_call)
+    })
 }
 
 fn protocol_source_facts(source: &str) -> ProtocolSourceFacts {

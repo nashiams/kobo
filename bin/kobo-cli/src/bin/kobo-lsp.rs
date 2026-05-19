@@ -33,12 +33,35 @@ fn run_stdio() -> anyhow::Result<()> {
         return Ok(());
     }
     for value in parse_json_rpc_inputs(&input) {
-        if value["method"].as_str() == Some("initialize") {
-            let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
-            println!("{}", kobo_lsp::initialize_response(id));
+        match value["method"].as_str() {
+            Some("initialize") => {
+                let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+                println!("{}", kobo_lsp::initialize_response(id));
+            }
+            Some("textDocument/didOpen") => {
+                if let Some(notification) = publish_diagnostics_for_open_document(&value) {
+                    println!("{notification}");
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
+}
+
+fn publish_diagnostics_for_open_document(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let document = &value["params"]["textDocument"];
+    let uri = document["uri"].as_str()?;
+    let text = document["text"].as_str()?;
+    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
+    Some(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "diagnostics": snapshot["diagnostics"].clone(),
+        },
+    }))
 }
 
 fn parse_json_rpc_inputs(input: &str) -> Vec<serde_json::Value> {

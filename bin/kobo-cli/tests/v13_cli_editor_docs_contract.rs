@@ -1,7 +1,8 @@
 mod v09_common;
 
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -183,6 +184,11 @@ ward Demo {
         "K0100",
         "protocol snapshot should publish diagnostics for a real document",
     );
+    assert_eq!(
+        snapshot["diagnostics"][0]["range"]["start"]["line"],
+        Value::from(4),
+        "protocol diagnostics should point at the unresolved token site"
+    );
     assert_contains(
         &snapshot["hover"].to_string(),
         "ward model",
@@ -197,6 +203,57 @@ ward Demo {
         &snapshot["codeActions"].to_string(),
         "kobo replay .kobo/witnesses/run-1.kwit",
         "protocol snapshot should expose replay actions",
+    );
+}
+
+#[test]
+fn lsp_stdio_publishes_document_diagnostics_for_opened_document() {
+    let lsp = env!("CARGO_BIN_EXE_kobo-lsp");
+    let source = r#"
+ward Demo {
+    obligation Token must close
+    scenario run {
+        let token = Token {};
+    }
+}
+"#;
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": "file:///workspace/src/main.kobo",
+                "text": source
+            }
+        }
+    })
+    .to_string();
+    let mut child = Command::new(lsp)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("kobo-lsp --stdio should launch");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(request.as_bytes())
+        .expect("didOpen request should write");
+    let output = child
+        .wait_with_output()
+        .expect("kobo-lsp should finish bounded stdio request");
+    let lsp_output = command_output(output);
+    assert_success(&lsp_output, "kobo-lsp --stdio didOpen request");
+    assert_contains(
+        &lsp_output.stdout,
+        "textDocument/publishDiagnostics",
+        "stdio server should publish diagnostics for opened documents",
+    );
+    assert_contains(
+        &lsp_output.stdout,
+        "K0100",
+        "stdio diagnostics should carry compiler diagnostic code",
     );
 }
 

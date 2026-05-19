@@ -1,0 +1,628 @@
+---
+source: bin/kobo-cli/tests/v13_k0100_diagnostics_snapshot_contract.rs
+expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagnostic should serialize\")"
+---
+{
+  "code": "K0104",
+  "expected": {
+    "backend": "shuttle",
+    "backend_replay": "e0aa41bcdd76605b",
+    "boundary_ledger": [
+      {
+        "boundary": "ward.task",
+        "policy": "model",
+        "reason": "modeled v0.10 facade",
+        "source": "scenario_program",
+        "status": "modeled"
+      }
+    ],
+    "call_graph_obligation_summaries": {
+      "sccs": [
+        {
+          "functions": [
+            "stable_replay"
+          ],
+          "is_recursive": false
+        }
+      ],
+      "source": "scenario_program.call_graph_sccs",
+      "summaries": [
+        {
+          "creates": [],
+          "discharges": [],
+          "escapes": [],
+          "function": "stable_replay",
+          "leaks": [],
+          "returns": [
+            "return"
+          ],
+          "suppressed": [],
+          "transfers": [],
+          "transfers_in": []
+        }
+      ],
+      "target": "stable_replay"
+    },
+    "declarations": [],
+    "ecosystem_boundaries": [],
+    "ecosystem_scope": "generated-user-rust-adapter",
+    "events": [
+      {
+        "id": 0,
+        "kind": "deterministic-task",
+        "label": "ward.task",
+        "value": 0
+      },
+      {
+        "id": 1,
+        "kind": "scheduler-task-enqueued",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 2,
+        "kind": "scheduler-runnable-queue",
+        "label": "len",
+        "value": 1
+      },
+      {
+        "id": 3,
+        "kind": "scheduler-task-wakeup",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 4,
+        "kind": "scheduler-runnable-queue",
+        "label": "len",
+        "value": 1
+      },
+      {
+        "id": 5,
+        "kind": "scheduler-task-polled",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 6,
+        "kind": "scheduler-runnable-queue",
+        "label": "len",
+        "value": 0
+      },
+      {
+        "id": 7,
+        "kind": "scheduler-task-completed",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 8,
+        "kind": "scheduler-portfolio",
+        "label": "quick",
+        "value": 64
+      }
+    ],
+    "execution_digest": {
+      "agreement": "matched",
+      "engine": "semantic-sim",
+      "event_hash": "44a55175a3923021",
+      "fuzz_driver_event_count": 0,
+      "fuzz_driver_trace_hash": null,
+      "generated_rust_hash": "7fa93a9348b1d6f2",
+      "harness_engine": "generated-rust-process",
+      "harness_event_count": 9,
+      "harness_exit_code": 0,
+      "harness_manifest_hash": "<hash>",
+      "harness_trace_hash": "8a4aedfdd2dc9203",
+      "model_version": "v0.11-driver-kir-generated-user-rust-harness-call-shape-1",
+      "operation_count": 1,
+      "runtime_profile_hash": "23d3ae32fc8789d5",
+      "scenario_ir_hash": "51eed2a9fac90296",
+      "semantic_engine": "driver-kir-scenario",
+      "semantic_trace_hash": "44a55175a3923021"
+    },
+    "failure": null,
+    "flagship_demo": null,
+    "formal_core": {
+      "core_version": "core-1",
+      "functions": [
+        {
+          "blocks": [
+            {
+              "id": "bb0",
+              "statements": [
+                {
+                  "action": null,
+                  "binding": null,
+                  "boundary": null,
+                  "id": "stmt-0",
+                  "kind": "call",
+                  "source_span": {
+                    "end": 74,
+                    "line": 4,
+                    "mapped": true,
+                    "path": "src/main.kobo",
+                    "snippet": "ward.task();",
+                    "start": 63
+                  }
+                }
+              ],
+              "successors": [],
+              "terminators": []
+            }
+          ],
+          "name": "stable_replay",
+          "source_span": {
+            "end": 74,
+            "line": 4,
+            "mapped": true,
+            "path": "src/main.kobo",
+            "snippet": "ward.task();",
+            "start": 63
+          }
+        }
+      ],
+      "source": "compiler_core_ir"
+    },
+    "full_ecosystem_exploration": false,
+    "function_summaries": [
+      {
+        "creates": [],
+        "discharges": [],
+        "escapes": [],
+        "function": "stable_replay",
+        "leaks": [],
+        "returns": [
+          "return"
+        ],
+        "suppressed": [],
+        "transfers": [],
+        "transfers_in": []
+      }
+    ],
+    "harness_manifest": {
+      "command": [
+        "<temp-path>"
+      ],
+      "event_count": 9,
+      "execution_scope": "generated-user-rust-adapter",
+      "exit_code": 0,
+      "facades": [
+        "scheduler-task-facade",
+        "tokio-spawn-facade"
+      ],
+      "full_ecosystem_exploration": false,
+      "generated_rust_hash": "7fa93a9348b1d6f2",
+      "harness_dir": "<temp-path>",
+      "harness_rs_path": "<temp-path>",
+      "service_hook_events": [],
+      "source_hash": "84874d92ac6e8825",
+      "stderr_hash": "cbf29ce484222325",
+      "stdout_hash": "c429a5d0bc994f98"
+    },
+    "inferred_obligations": [],
+    "invariant_checks": [],
+    "lifecycle_inference": {
+      "mode": "observe",
+      "obligations": [],
+      "source": "scenario_program",
+      "template_version": "v0.13.0"
+    },
+    "model_vs_implementation": {
+      "boundary_policy": {
+        "decisions": [],
+        "status": "comparable"
+      },
+      "model_run": {
+        "events": [],
+        "obligations": [],
+        "source": "not_requested"
+      },
+      "obligations": {
+        "implementation_states": [],
+        "model_states": [],
+        "status": "not_requested"
+      },
+      "scheduler_seed": {
+        "implementation": 0,
+        "model": 0,
+        "same_seed": true
+      },
+      "status": "not_requested",
+      "trace": {
+        "implementation_events": [
+          "deterministic-task"
+        ],
+        "model_events": [],
+        "status": "not_requested"
+      }
+    },
+    "operation_coverage": {
+      "boundary_owned": [],
+      "modeled": [
+        "modeled.ward.task",
+        "return"
+      ],
+      "operation_count": 2,
+      "source": "scenario_program",
+      "unsupported": []
+    },
+    "proof_seed": {
+      "core_edges": [],
+      "modeled_exit_obligation_states": [],
+      "source": "compiler_core",
+      "theorem_target": "no_unresolved_local_obligation_on_modeled_exit"
+    },
+    "replay_contract": {
+      "agreement": "matched",
+      "facades": [
+        "scheduler-task-facade",
+        "tokio-spawn-facade"
+      ],
+      "full_ecosystem_exploration": false,
+      "harness_engine": "generated-rust-process",
+      "scope": "generated-user-rust-adapter",
+      "semantic_engine": "driver-kir-scenario"
+    },
+    "replay_grade": "exact",
+    "runtime_profile": {
+      "activity": {
+        "default": "retry-idempotency"
+      },
+      "record": {
+        "default": "recorded-boundary-io"
+      },
+      "runtime": {
+        "cancellation": "scheduler-history"
+      },
+      "scenario": {
+        "backend_profile": "async",
+        "event_budget": 64,
+        "scheduler": "small-random",
+        "seed": 0,
+        "sim_profile": "quick"
+      },
+      "service": {
+        "backpressure": "block-on-full",
+        "buffer": 64
+      }
+    },
+    "strict_liveness": {
+      "errors": [],
+      "reasoned_suppressions": [],
+      "resolved_paths": [],
+      "source": "compiler_core_forward_dataflow",
+      "status": "passed",
+      "theorem_target": "no_unresolved_local_obligation_on_modeled_exit"
+    },
+    "summaries": [
+      {
+        "core_fact_count": 2,
+        "crate": "formal_core",
+        "functions": [
+          "stable_replay"
+        ],
+        "path": null,
+        "schema_version": 1,
+        "solver_metadata": {
+          "engine": "kobo-compiler-core",
+          "outcome": "evidence-only"
+        },
+        "summary_hash": "84874d92ac6e8825",
+        "template_fact_source": "scenario_program.typed_lifecycle_template"
+      }
+    ],
+    "temporal_checks": []
+  },
+  "message": "kwit replay diverged",
+  "observed": {
+    "backend": "shuttle",
+    "backend_replay": "e0aa41bcdd76605b",
+    "boundary_ledger": [
+      {
+        "boundary": "ward.task",
+        "policy": "model",
+        "reason": "modeled v0.10 facade",
+        "source": "scenario_program",
+        "status": "modeled"
+      }
+    ],
+    "call_graph_obligation_summaries": {
+      "sccs": [
+        {
+          "functions": [
+            "stable_replay"
+          ],
+          "is_recursive": false
+        }
+      ],
+      "source": "scenario_program.call_graph_sccs",
+      "summaries": [
+        {
+          "creates": [],
+          "discharges": [],
+          "escapes": [],
+          "function": "stable_replay",
+          "leaks": [],
+          "returns": [
+            "return"
+          ],
+          "suppressed": [],
+          "transfers": [],
+          "transfers_in": []
+        }
+      ],
+      "target": "stable_replay"
+    },
+    "declarations": [],
+    "ecosystem_boundaries": [],
+    "ecosystem_scope": "generated-user-rust-adapter",
+    "events": [
+      {
+        "id": 0,
+        "kind": "mutated-event",
+        "label": "ward.task",
+        "value": 0
+      },
+      {
+        "id": 1,
+        "kind": "scheduler-task-enqueued",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 2,
+        "kind": "scheduler-runnable-queue",
+        "label": "len",
+        "value": 1
+      },
+      {
+        "id": 3,
+        "kind": "scheduler-task-wakeup",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 4,
+        "kind": "scheduler-runnable-queue",
+        "label": "len",
+        "value": 1
+      },
+      {
+        "id": 5,
+        "kind": "scheduler-task-polled",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 6,
+        "kind": "scheduler-runnable-queue",
+        "label": "len",
+        "value": 0
+      },
+      {
+        "id": 7,
+        "kind": "scheduler-task-completed",
+        "label": "ward.task",
+        "value": 1
+      },
+      {
+        "id": 8,
+        "kind": "scheduler-portfolio",
+        "label": "quick",
+        "value": 64
+      }
+    ],
+    "execution_digest": {
+      "agreement": "matched",
+      "engine": "semantic-sim",
+      "event_hash": "44a55175a3923021",
+      "fuzz_driver_event_count": 0,
+      "fuzz_driver_trace_hash": null,
+      "generated_rust_hash": "7fa93a9348b1d6f2",
+      "harness_engine": "generated-rust-process",
+      "harness_event_count": 9,
+      "harness_exit_code": 0,
+      "harness_manifest_hash": "<hash>",
+      "harness_trace_hash": "8a4aedfdd2dc9203",
+      "model_version": "v0.11-driver-kir-generated-user-rust-harness-call-shape-1",
+      "operation_count": 1,
+      "runtime_profile_hash": "23d3ae32fc8789d5",
+      "scenario_ir_hash": "51eed2a9fac90296",
+      "semantic_engine": "driver-kir-scenario",
+      "semantic_trace_hash": "44a55175a3923021"
+    },
+    "failure": null,
+    "flagship_demo": null,
+    "formal_core": {
+      "core_version": "core-1",
+      "functions": [
+        {
+          "blocks": [
+            {
+              "id": "bb0",
+              "statements": [
+                {
+                  "action": null,
+                  "binding": null,
+                  "boundary": null,
+                  "id": "stmt-0",
+                  "kind": "call",
+                  "source_span": {
+                    "end": 74,
+                    "line": 4,
+                    "mapped": true,
+                    "path": "src/main.kobo",
+                    "snippet": "ward.task();",
+                    "start": 63
+                  }
+                }
+              ],
+              "successors": [],
+              "terminators": []
+            }
+          ],
+          "name": "stable_replay",
+          "source_span": {
+            "end": 74,
+            "line": 4,
+            "mapped": true,
+            "path": "src/main.kobo",
+            "snippet": "ward.task();",
+            "start": 63
+          }
+        }
+      ],
+      "source": "compiler_core_ir"
+    },
+    "full_ecosystem_exploration": false,
+    "function_summaries": [
+      {
+        "creates": [],
+        "discharges": [],
+        "escapes": [],
+        "function": "stable_replay",
+        "leaks": [],
+        "returns": [
+          "return"
+        ],
+        "suppressed": [],
+        "transfers": [],
+        "transfers_in": []
+      }
+    ],
+    "harness_manifest": {
+      "command": [
+        "<temp-path>"
+      ],
+      "event_count": 9,
+      "execution_scope": "generated-user-rust-adapter",
+      "exit_code": 0,
+      "facades": [
+        "scheduler-task-facade",
+        "tokio-spawn-facade"
+      ],
+      "full_ecosystem_exploration": false,
+      "generated_rust_hash": "7fa93a9348b1d6f2",
+      "harness_dir": "<temp-path>",
+      "harness_rs_path": "<temp-path>",
+      "service_hook_events": [],
+      "source_hash": "84874d92ac6e8825",
+      "stderr_hash": "cbf29ce484222325",
+      "stdout_hash": "c429a5d0bc994f98"
+    },
+    "inferred_obligations": [],
+    "invariant_checks": [],
+    "lifecycle_inference": {
+      "mode": "observe",
+      "obligations": [],
+      "source": "scenario_program",
+      "template_version": "v0.13.0"
+    },
+    "model_vs_implementation": {
+      "boundary_policy": {
+        "decisions": [],
+        "status": "comparable"
+      },
+      "model_run": {
+        "events": [],
+        "obligations": [],
+        "source": "not_requested"
+      },
+      "obligations": {
+        "implementation_states": [],
+        "model_states": [],
+        "status": "not_requested"
+      },
+      "scheduler_seed": {
+        "implementation": 0,
+        "model": 0,
+        "same_seed": true
+      },
+      "status": "not_requested",
+      "trace": {
+        "implementation_events": [
+          "deterministic-task"
+        ],
+        "model_events": [],
+        "status": "not_requested"
+      }
+    },
+    "operation_coverage": {
+      "boundary_owned": [],
+      "modeled": [
+        "modeled.ward.task",
+        "return"
+      ],
+      "operation_count": 2,
+      "source": "scenario_program",
+      "unsupported": []
+    },
+    "proof_seed": {
+      "core_edges": [],
+      "modeled_exit_obligation_states": [],
+      "source": "compiler_core",
+      "theorem_target": "no_unresolved_local_obligation_on_modeled_exit"
+    },
+    "replay_contract": {
+      "agreement": "matched",
+      "facades": [
+        "scheduler-task-facade",
+        "tokio-spawn-facade"
+      ],
+      "full_ecosystem_exploration": false,
+      "harness_engine": "generated-rust-process",
+      "scope": "generated-user-rust-adapter",
+      "semantic_engine": "driver-kir-scenario"
+    },
+    "replay_grade": "exact",
+    "runtime_profile": {
+      "activity": {
+        "default": "retry-idempotency"
+      },
+      "record": {
+        "default": "recorded-boundary-io"
+      },
+      "runtime": {
+        "cancellation": "scheduler-history"
+      },
+      "scenario": {
+        "backend_profile": "async",
+        "event_budget": 64,
+        "scheduler": "small-random",
+        "seed": 0,
+        "sim_profile": "quick"
+      },
+      "service": {
+        "backpressure": "block-on-full",
+        "buffer": 64
+      }
+    },
+    "strict_liveness": {
+      "errors": [],
+      "reasoned_suppressions": [],
+      "resolved_paths": [],
+      "source": "compiler_core_forward_dataflow",
+      "status": "passed",
+      "theorem_target": "no_unresolved_local_obligation_on_modeled_exit"
+    },
+    "summaries": [
+      {
+        "core_fact_count": 2,
+        "crate": "formal_core",
+        "functions": [
+          "stable_replay"
+        ],
+        "path": null,
+        "schema_version": 1,
+        "solver_metadata": {
+          "engine": "kobo-compiler-core",
+          "outcome": "evidence-only"
+        },
+        "summary_hash": "84874d92ac6e8825",
+        "template_fact_source": "scenario_program.typed_lifecycle_template"
+      }
+    ],
+    "temporal_checks": []
+  }
+}

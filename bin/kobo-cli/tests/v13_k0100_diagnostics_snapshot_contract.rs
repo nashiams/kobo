@@ -28,6 +28,71 @@ fn json_diagnostic(output: &CliOutput) -> Value {
         .unwrap_or_else(|error| panic!("diagnostic JSON should parse: {error}\n{}", output.stdout))
 }
 
+fn assert_json_diagnostic_snapshot(name: &str, diagnostic: &Value) {
+    let normalized = normalize_json(diagnostic.clone());
+    insta::with_settings!({
+        snapshot_path => "../../../tests/snapshots/v13",
+        sort_maps => true,
+    }, {
+        insta::assert_snapshot!(
+            name,
+            serde_json::to_string_pretty(&normalized).expect("normalized diagnostic should serialize")
+        );
+    });
+}
+
+fn assert_text_snapshot(name: &str, text: &str) {
+    insta::with_settings!({
+        snapshot_path => "../../../tests/snapshots/v13",
+    }, {
+        insta::assert_snapshot!(name, normalize_text(text));
+    });
+}
+
+fn normalize_json(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(normalize_text(&text)),
+        Value::Array(items) => Value::Array(items.into_iter().map(normalize_json).collect()),
+        Value::Object(entries) => Value::Object(
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    let normalized = if key == "file_path" {
+                        Value::String("<source>".to_owned())
+                    } else if key == "harness_manifest_hash" {
+                        Value::String("<hash>".to_owned())
+                    } else {
+                        normalize_json(value)
+                    };
+                    (key, normalized)
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn normalize_text(text: &str) -> String {
+    text.lines()
+        .map(normalize_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_line(line: &str) -> String {
+    let slash_line = line.replace('\\', "/");
+    if slash_line.contains("AppData/Local/Temp/kobo-") {
+        return "<temp-path>".to_owned();
+    }
+    if let Some(index) = line.find("; witness ") {
+        return format!("{}; witness <witness>", &line[..index]);
+    }
+    if line.contains("\\.kobo\\witnesses\\") || line.contains("/.kobo/witnesses/") {
+        return "<witness>".to_owned();
+    }
+    slash_line
+}
+
 #[test]
 fn k0100_liveness_diagnostic_snapshot() {
     let project = TestProject::new("v13-k0100-snapshot");
@@ -57,6 +122,7 @@ fn missing_ack() {
     assert_failure(&output, "missing liveness action should fail");
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0100");
+    assert_json_diagnostic_snapshot("v13_k0100_liveness_diagnostic", &diagnostic);
     assert_eq!(diagnostic["category"], "liveness");
     assert_contains(
         diagnostic["decision"].as_str().unwrap_or_default(),
@@ -87,6 +153,7 @@ fn handler() {
         &project.root,
     );
     assert_failure_or_text(&output, "K0101");
+    assert_text_snapshot("v13_k0101_liveness_escape_diagnostic", &output.combined());
     assert_contains(&output.combined(), "K0101", "escape should use K0101");
     assert_contains(
         &output.combined(),
@@ -127,6 +194,7 @@ fn raw_time() {
     assert_failure(&output, "raw nondeterminism should fail");
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0102");
+    assert_json_diagnostic_snapshot("v13_k0102_raw_nondeterminism_diagnostic", &diagnostic);
     assert_eq!(diagnostic["category"], "nondeterminism");
     assert_contains(
         diagnostic["explanation"].as_str().unwrap_or_default(),
@@ -165,6 +233,7 @@ fn crash_path() {
     );
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0103");
+    assert_json_diagnostic_snapshot("v13_k0103_uncontrolled_effect_diagnostic", &diagnostic);
     assert_eq!(diagnostic["category"], "replay");
     assert_contains(
         diagnostic["decision"].as_str().unwrap_or_default(),
@@ -212,6 +281,7 @@ fn stable_replay() {
     assert_failure(&replay, "mutated exact witness should diverge");
     let diagnostic = json_diagnostic(&replay);
     assert_eq!(diagnostic["code"], "K0104");
+    assert_json_diagnostic_snapshot("v13_k0104_replay_divergence_diagnostic", &diagnostic);
     assert_contains(
         &replay.combined(),
         "expected",
@@ -243,6 +313,7 @@ fn k0105_budget_diagnostic_snapshot() {
     assert_failure(&output, "budget overflow should fail");
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0105");
+    assert_json_diagnostic_snapshot("v13_k0105_budget_diagnostic", &diagnostic);
     assert_contains(&diagnostic.to_string(), "8", "K0105 should include budget");
 }
 
@@ -294,6 +365,7 @@ fn shrink_replay() {
     assert_failure(&replay, "unsafe shrink metadata should fail");
     let diagnostic = json_diagnostic(&replay);
     assert_eq!(diagnostic["code"], "K0106");
+    assert_json_diagnostic_snapshot("v13_k0106_shrink_safety_diagnostic", &diagnostic);
     assert_contains(
         diagnostic["message"].as_str().unwrap_or_default(),
         "shrink",
@@ -319,6 +391,7 @@ fn k0107_boundary_policy_diagnostic_snapshot() {
     assert_failure(&output, "unconfigured boundary should fail");
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0107");
+    assert_json_diagnostic_snapshot("v13_k0107_boundary_policy_diagnostic", &diagnostic);
     for choice in ["model", "record", "outside", "opaque", "debt"] {
         assert_contains(
             &output.combined(),
@@ -354,6 +427,7 @@ fn temporal_failure() {
     assert_failure(&output, "temporal failure should fail");
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0108");
+    assert_json_diagnostic_snapshot("v13_k0108_trace_check_diagnostic", &diagnostic);
     assert_contains(
         diagnostic["explanation"].as_str().unwrap_or_default(),
         "Temporal checks",

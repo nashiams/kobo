@@ -248,3 +248,40 @@ fn bait_case() {
         "comments must not create ward facts",
     );
 }
+
+#[test]
+fn ward_fact_parser_ignores_nested_comments_and_strings() {
+    let project = TestProject::new("v13-ward-fact-parser-bait");
+    let file = project.main_file(
+        r#"
+ward ParserBacked {
+    state log: Vec<String>
+    obligation Delivery must ack
+
+    // scenario comment_only { let delivery = Delivery {}; delivery.ack(); }
+    scenario real_case {
+        let text = "scenario string_only { let delivery = Delivery {}; }";
+        let delivery = Delivery {};
+        delivery.ack();
+    }
+}
+"#,
+    );
+    let output = run_kobo(&[s("inspect"), s("--clean"), path_arg(&file)], &project.root);
+    assert_success(&output, "ward clean output should ignore nested parser bait");
+    assert_contains(
+        &output.stdout,
+        "fn real_case",
+        "real ward scenario should still be generated",
+    );
+    assert_not_contains(
+        &output.stdout,
+        "fn comment_only",
+        "commented scenario text must not become a generated function",
+    );
+    assert_not_contains(
+        &output.stdout,
+        "fn string_only",
+        "string scenario text must not become a generated function",
+    );
+}

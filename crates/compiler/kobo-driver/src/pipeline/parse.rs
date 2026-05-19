@@ -434,22 +434,20 @@ fn parse_ward_facts(body: &str) -> WardFacts {
                 .push(format!("// kobo: debt {}", rest.trim()));
         }
     }
+    let cleaned = scrub_comments_and_strings(body);
     let mut search = 0;
-    while let Some(relative) = body[search..].find("scenario ") {
-        let scenario_start = search + relative;
+    while let Some(scenario_start) = find_keyword(&cleaned, search, "scenario") {
         let name_start = scenario_start + "scenario ".len();
-        let name_end = body[name_start..]
-            .find(|ch: char| ch.is_ascii_whitespace() || ch == '{')
-            .map(|relative| name_start + relative)
-            .unwrap_or(body.len());
+        let mut name_end = name_start;
+        while cleaned.get(name_end).is_some_and(is_ident_byte) {
+            name_end += 1;
+        }
         let name = body[name_start..name_end].trim().to_owned();
-        let Some(brace_start) = body[name_end..]
-            .find('{')
-            .map(|relative| name_end + relative)
-        else {
-            break;
+        let Some(brace_start) = find_bytes(&cleaned[name_end..], b"{").map(|relative| name_end + relative) else {
+            search = name_end;
+            continue;
         };
-        let Some(brace_end) = matching_brace_in_source(body, brace_start) else {
+        let Some(brace_end) = matching_brace_in_bytes(&cleaned, brace_start) else {
             break;
         };
         facts.scenarios.push((
@@ -463,8 +461,25 @@ fn parse_ward_facts(body: &str) -> WardFacts {
     facts
 }
 
-fn matching_brace_in_source(source: &str, open: usize) -> Option<usize> {
-    matching_brace_in_bytes(source.as_bytes(), open)
+fn find_keyword(source: &[u8], from: usize, keyword: &str) -> Option<usize> {
+    let needle = keyword.as_bytes();
+    let mut cursor = from;
+    while cursor + needle.len() <= source.len() {
+        let Some(relative) = find_bytes(&source[cursor..], needle) else {
+            return None;
+        };
+        let start = cursor + relative;
+        let end = start + needle.len();
+        let before = source.get(start.saturating_sub(1));
+        let after = source.get(end);
+        if !before.is_some_and(is_ident_byte)
+            && after.is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            return Some(start);
+        }
+        cursor = end;
+    }
+    None
 }
 
 fn matching_brace_in_bytes(bytes: &[u8], open: usize) -> Option<usize> {

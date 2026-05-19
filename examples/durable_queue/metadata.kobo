@@ -1,0 +1,14 @@
+ward DurableQueue {
+    state log: Vec<String>
+    state pending: Vec<String>
+
+    obligation Delivery must ack | nack | requeue
+    port storage: durable_log
+    recording ack_log
+    debt external_metrics
+
+    scenario metadata_case {
+        let delivery = Delivery {};
+        delivery.ack();
+    }
+}

@@ -16,87 +16,23 @@ fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, V13_TIMEOUT)
 }
 
-fn async_gateway_inferred_source() -> &'static str {
-    r#"
-struct AsyncGateway {}
-struct RequestToken {}
-
-impl RequestToken {
-    fn reply(self) {}
-    fn reject(self) {}
-    fn cancel(self) {}
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
-#[kobo::handler]
-async fn gateway_handler(token: RequestToken) {
-    token.reject();
-}
-
-#[kobo::scenario(profile = "async")]
-async fn gateway_success() {
-    let _gateway = AsyncGateway {};
-    gateway_handler(RequestToken {}).await;
-    ward.task();
-}
-"#
-}
-
-fn async_gateway_manual_token_source(scenario: &str) -> String {
-    format!(
-        r#"
-struct AsyncGateway {{}}
-
-#[kobo::must_call(reply | reject | cancel)]
-struct RequestToken {{}}
-
-{scenario}
-"#
-    )
-}
-
-fn async_gateway_orphan_source() -> &'static str {
-    r#"
-struct AsyncGateway {}
-
-// kobo:invariant no_orphan_tasks { never scheduler-task-enqueued }
-#[kobo::scenario(profile = "async")]
-fn orphan_task_failure() {
-    let _gateway = AsyncGateway {};
-    ward.task();
-}
-"#
-}
-
-fn gateway_clean_source() -> String {
-    r#"
-struct AsyncGateway {}
-struct RequestToken {}
-
-impl RequestToken {
-    fn reply(self) {}
-    fn reject(self) {}
-    fn cancel(self) {}
-}
-
-fn gateway_clean_path() {
-    let _gateway = AsyncGateway {};
-    let token = RequestToken {};
-    token.reply();
-}
-
-fn main() {}
-"#
-    .to_owned()
+fn demo_file(relative: &str) -> PathBuf {
+    let path = repo_root().join(relative);
+    assert!(path.is_file(), "{relative} should be a shipped demo source");
+    path
 }
 
 fn run_gateway_test(
     project: &TestProject,
-    source: &str,
+    file: &Path,
     target: &str,
     extra_args: &[String],
     expect_success: bool,
 ) -> (CliOutput, PathBuf, Value) {
-    let file = project.main_file(source);
     let mut args = vec![
         s("test"),
         s("--sim"),
@@ -112,7 +48,7 @@ fn run_gateway_test(
         s("--error-format=json"),
     ];
     args.extend_from_slice(extra_args);
-    args.push(path_arg(&file));
+    args.push(path_arg(file));
     let output = run_kobo(&args, &project.root);
     if expect_success {
         assert_success(&output, "async gateway demo scenario");
@@ -133,21 +69,11 @@ fn run_gateway_test(
 #[test]
 fn async_gateway_catches_cancellation_failure() {
     let project = TestProject::new("v13-async-gateway-cancel");
-    let source = async_gateway_manual_token_source(
-        r#"
-#[kobo::scenario(profile = "async")]
-fn cancellation_failure() {
-    let _gateway = AsyncGateway {};
-    let token = RequestToken {};
-    ward.task();
-    token.reply();
-}
-"#,
-    );
+    let demo = demo_file("examples/async_gateway/cancellation_failure.kobo");
 
     let (output, _witness_path, witness) = run_gateway_test(
         &project,
-        &source,
+        &demo,
         "cancellation_failure",
         &[s("--inject"), s("cancel")],
         false,
@@ -164,10 +90,11 @@ fn cancellation_failure() {
 #[test]
 fn async_gateway_catches_orphan_task_failure() {
     let project = TestProject::new("v13-async-gateway-orphan");
+    let demo = demo_file("examples/async_gateway/orphan_task_failure.kobo");
 
     let (output, _witness_path, witness) = run_gateway_test(
         &project,
-        async_gateway_orphan_source(),
+        &demo,
         "orphan_task_failure",
         &[],
         false,
@@ -183,19 +110,10 @@ fn async_gateway_catches_orphan_task_failure() {
 #[test]
 fn async_gateway_catches_request_token_failure() {
     let project = TestProject::new("v13-async-gateway-token-failure");
-    let source = async_gateway_manual_token_source(
-        r#"
-#[kobo::scenario(profile = "async")]
-fn request_token_failure() {
-    let _gateway = AsyncGateway {};
-    let token = RequestToken {};
-    let _lost = token;
-}
-"#,
-    );
+    let demo = demo_file("examples/async_gateway/request_token_failure.kobo");
 
     let (output, _witness_path, witness) =
-        run_gateway_test(&project, &source, "request_token_failure", &[], false);
+        run_gateway_test(&project, &demo, "request_token_failure", &[], false);
     assert_contains(&output.combined(), "reply", "diagnostic should name reply");
     assert_eq!(witness["failure"]["mode"], "unresolved-reply");
 }
@@ -203,9 +121,10 @@ fn request_token_failure() {
 #[test]
 fn async_gateway_reply_reject_cancel_inferred_without_manual_declarations() {
     let project = TestProject::new("v13-async-gateway-inferred");
+    let demo = demo_file("examples/async_gateway/passing_history.kobo");
     let (_output, _witness_path, witness) = run_gateway_test(
         &project,
-        async_gateway_inferred_source(),
+        &demo,
         "gateway_success",
         &[],
         true,
@@ -234,9 +153,10 @@ fn async_gateway_reply_reject_cancel_inferred_without_manual_declarations() {
 #[test]
 fn async_gateway_emits_replayable_kwit_witness() {
     let project = TestProject::new("v13-async-gateway-replay");
+    let demo = demo_file("examples/async_gateway/passing_history.kobo");
     let (_output, witness_path, witness) = run_gateway_test(
         &project,
-        async_gateway_inferred_source(),
+        &demo,
         "gateway_success",
         &[],
         true,
@@ -279,8 +199,7 @@ fn async_gateway_emits_replayable_kwit_witness() {
 #[test]
 fn async_gateway_clean_rust_output_builds() {
     let project = TestProject::new("v13-async-gateway-clean-rust");
-    let clean_source = gateway_clean_source();
-    let file = project.main_file(&clean_source);
+    let file = demo_file("examples/async_gateway/clean_exit.kobo");
     let out_dir = project.root.join("target/gateway-clean");
     let output = run_kobo(
         &[

@@ -16,89 +16,22 @@ fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, V13_TIMEOUT)
 }
 
-fn durable_queue_crash_source() -> &'static str {
-    r#"
-struct DurableQueue {}
-
-// kobo:temporal never storage-crash-after-write
-#[kobo::must_call(ack | nack | requeue)]
-struct Delivery {}
-
-#[kobo::scenario(profile = "async")]
-fn crash_after_ack() {
-    let _queue = DurableQueue {};
-    let delivery = Delivery {};
-    delivery.ack();
-    ward.storage.write("pending");
-    ward.storage.crash_after_write();
-}
-"#
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
-fn durable_queue_inferred_source() -> &'static str {
-    r#"
-struct DurableQueue {}
-struct StorageFacade {}
-struct Queue {}
-struct Parcel {}
-
-impl Queue {
-    async fn recv(&mut self) -> Parcel { Parcel {} }
-}
-
-impl Parcel {
-    fn ack(self) {}
-    fn nack(self) {}
-    fn requeue(self) {}
-}
-
-impl StorageFacade {
-    fn append(&mut self, _record: &str) {}
-    fn flush(&mut self) {}
-}
-
-#[kobo::scenario(profile = "async")]
-async fn durable_queue_ok() {
-    let mut queue = Queue {};
-    let mut storage = StorageFacade {};
-    let delivery = queue.recv().await;
-    storage.append("pending");
-    storage.flush();
-    delivery.ack();
-}
-"#
-}
-
-fn durable_queue_clean_source() -> String {
-    format!("{}\nfn main() {{}}\n", durable_queue_inferred_source())
-}
-
-fn durable_queue_metadata_source() -> &'static str {
-    r#"
-ward DurableQueue {
-    state log: Vec<String>
-    state pending: Vec<String>
-
-    obligation Delivery must ack | nack | requeue
-    port storage: durable_log
-    recording ack_log
-    debt external_metrics
-
-    scenario metadata_case {
-        let delivery = Delivery {};
-        delivery.ack();
-    }
-}
-"#
+fn demo_file(relative: &str) -> PathBuf {
+    let path = repo_root().join(relative);
+    assert!(path.is_file(), "{relative} should be a shipped demo source");
+    path
 }
 
 fn run_demo_test(
     project: &TestProject,
-    source: &str,
+    file: &Path,
     target: &str,
     expect_success: bool,
 ) -> (CliOutput, PathBuf, Value) {
-    let file = project.main_file(source);
     let output = run_kobo(
         &[
             s("test"),
@@ -113,7 +46,7 @@ fn run_demo_test(
             s("--target"),
             s(target),
             s("--error-format=json"),
-            path_arg(&file),
+            path_arg(file),
         ],
         &project.root,
     );
@@ -136,9 +69,10 @@ fn run_demo_test(
 #[test]
 fn durable_queue_finds_or_proves_crash_after_ack() {
     let project = TestProject::new("v13-durable-queue-crash");
+    let demo = demo_file("examples/durable_queue/crash_after_ack.kobo");
     let (output, _witness_path, witness) = run_demo_test(
         &project,
-        durable_queue_crash_source(),
+        &demo,
         "crash_after_ack",
         false,
     );
@@ -170,9 +104,10 @@ fn durable_queue_finds_or_proves_crash_after_ack() {
 #[test]
 fn durable_queue_emits_replayable_kwit_witness() {
     let project = TestProject::new("v13-durable-queue-replay");
+    let demo = demo_file("examples/durable_queue/crash_after_ack.kobo");
     let (_output, witness_path, witness) = run_demo_test(
         &project,
-        durable_queue_crash_source(),
+        &demo,
         "crash_after_ack",
         false,
     );
@@ -201,9 +136,10 @@ fn durable_queue_emits_replayable_kwit_witness() {
 #[test]
 fn durable_queue_ack_nack_requeue_inferred_without_manual_declarations() {
     let project = TestProject::new("v13-durable-queue-inferred");
+    let demo = demo_file("examples/durable_queue/passing_history.kobo");
     let (_output, _witness_path, witness) = run_demo_test(
         &project,
-        durable_queue_inferred_source(),
+        &demo,
         "durable_queue_ok",
         true,
     );
@@ -232,8 +168,7 @@ fn durable_queue_ack_nack_requeue_inferred_without_manual_declarations() {
 #[test]
 fn durable_queue_clean_rust_output_builds() {
     let project = TestProject::new("v13-durable-queue-clean-rust");
-    let clean_source = durable_queue_clean_source();
-    let file = project.main_file(&clean_source);
+    let file = demo_file("examples/durable_queue/clean_exit.kobo");
     let out_dir = project.root.join("target/durable-clean");
     let output = run_kobo(
         &[
@@ -268,7 +203,7 @@ fn durable_queue_clean_rust_output_builds() {
 #[test]
 fn durable_queue_ports_recordings_and_debt_are_visible() {
     let project = TestProject::new("v13-durable-queue-metadata");
-    let file = project.main_file(durable_queue_metadata_source());
+    let file = demo_file("examples/durable_queue/metadata.kobo");
     let inspect = run_kobo(
         &[s("inspect"), s("--scenario-metadata"), path_arg(&file)],
         &project.root,

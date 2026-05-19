@@ -112,6 +112,18 @@ pub(super) fn cmd_inspect(
         return Ok(());
     }
 
+    if scenario_metadata && !clean && cargo_dir.is_none() {
+        let source = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        eprintln!(
+            "// effective guarantee profile: {}",
+            session.guarantee_profile().as_str()
+        );
+        emit_boundary_policy_comments(&boundary_policies);
+        print!("{}", scenario_metadata_output(&source));
+        return Ok(());
+    }
+
     if let Some(dir) = cargo_dir {
         let InspectCargoOutput {
             project_config,

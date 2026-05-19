@@ -1,0 +1,31 @@
+struct DurableQueue {}
+struct StorageFacade {}
+struct Queue {}
+struct Parcel {}
+
+impl Queue {
+    async fn recv(&mut self) -> Parcel {
+        Parcel {}
+    }
+}
+
+impl Parcel {
+    fn ack(self) {}
+    fn nack(self) {}
+    fn requeue(self) {}
+}
+
+impl StorageFacade {
+    fn append(&mut self, _record: &str) {}
+    fn flush(&mut self) {}
+}
+
+#[kobo::scenario(profile = "async")]
+async fn durable_queue_ok() {
+    let mut queue = Queue {};
+    let mut storage = StorageFacade {};
+    let delivery = queue.recv().await;
+    storage.append("pending");
+    storage.flush();
+    delivery.ack();
+}

@@ -207,6 +207,46 @@ ward Demo {
 }
 
 #[test]
+fn lsp_diagnostics_use_compiler_scenario_facts_for_attribute_sources() {
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+impl Token {
+    fn close(self) {}
+}
+
+#[kobo::scenario(profile = "sync")]
+fn run() {
+    let token = Token {};
+}
+"#,
+        None,
+    );
+    assert_contains(
+        &snapshot["diagnostics"].to_string(),
+        "compiler-scenario-program",
+        "LSP diagnostics should be fed by compiler scenario facts",
+    );
+    assert_eq!(
+        snapshot["diagnostics"][0]["source"], "kobo-compiler",
+        "attribute-form diagnostics should not use the source-heuristic fallback"
+    );
+    assert_contains(
+        &snapshot["hover"].to_string(),
+        "must_call obligation",
+        "hover should be derived from compiler facts for attribute sources",
+    );
+    assert_contains(
+        &snapshot["documentLinks"].to_string(),
+        "generated-rust",
+        "Rust navigation should be present for compiler-parsed documents",
+    );
+}
+
+#[test]
 fn lsp_stdio_publishes_document_diagnostics_for_opened_document() {
     let lsp = env!("CARGO_BIN_EXE_kobo-lsp");
     let source = r#"

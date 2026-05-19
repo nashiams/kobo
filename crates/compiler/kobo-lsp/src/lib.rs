@@ -1,5 +1,5 @@
 use kobo_errors::{DiagnosticLspPayload, KDiagnostic, KErrorCode};
-use kobo_ir::FileSet;
+use kobo_ir::{FileId, FileSet, KoboSpan, NodeIdGen, ScenarioOpKind, ScenarioProgram};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -43,7 +43,23 @@ struct ProtocolDiagnosticFact {
     character_start: usize,
     character_end: usize,
     code: &'static str,
+    source: &'static str,
+    fact_source: &'static str,
     message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProtocolDocumentAnalysis {
+    diagnostics: Vec<ProtocolDiagnosticFact>,
+    hover: ProtocolHoverKind,
+    has_rust_navigation: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProtocolHoverKind {
+    Ward,
+    MustCall,
+    RustShape,
 }
 
 pub fn diagnostic_payload(file_set: &FileSet, diagnostic: &KDiagnostic) -> DiagnosticLspPayload {
@@ -120,31 +136,153 @@ pub fn initialize_response(id: Value) -> Value {
 }
 
 pub fn protocol_document_snapshot(uri: &str, source: &str, witness_path: Option<&str>) -> Value {
+    let analysis = protocol_document_analysis(source);
     json!({
         "uri": uri,
-        "diagnostics": protocol_diagnostics(source),
-        "hover": protocol_hover(source),
+        "diagnostics": protocol_diagnostics(&analysis),
+        "hover": protocol_hover(analysis.hover),
         "codeActions": protocol_code_actions(witness_path),
-        "documentLinks": protocol_document_links(uri, source, witness_path),
+        "documentLinks": protocol_document_links(uri, witness_path, analysis.has_rust_navigation),
         "runnables": editor_capabilities()["runnables"].clone(),
         "definitionProvider": editor_capabilities()["definitionProvider"].clone(),
     })
 }
 
-fn protocol_diagnostics(source: &str) -> Vec<Value> {
-    if let Some(fact) = unresolved_liveness_diagnostic(source) {
-        return vec![json!({
+fn protocol_diagnostics(analysis: &ProtocolDocumentAnalysis) -> Vec<Value> {
+    analysis
+        .diagnostics
+        .iter()
+        .map(|fact| {
+            json!({
             "range": {
                 "start": {"line": fact.line, "character": fact.character_start},
                 "end": {"line": fact.line, "character": fact.character_end},
             },
             "severity": 1,
             "code": fact.code,
-            "source": "kobo",
+            "source": fact.source,
+            "data": {
+                "fact_source": fact.fact_source,
+            },
             "message": fact.message,
-        })];
+            })
+        })
+        .collect()
+}
+
+fn protocol_document_analysis(source: &str) -> ProtocolDocumentAnalysis {
+    if let Some(analysis) = compiler_document_analysis(source) {
+        return analysis;
     }
-    Vec::new()
+    let diagnostic = unresolved_liveness_diagnostic(source);
+    ProtocolDocumentAnalysis {
+        diagnostics: diagnostic.into_iter().collect(),
+        hover: fallback_hover_kind(source),
+        has_rust_navigation: false,
+    }
+}
+
+fn compiler_document_analysis(source: &str) -> Option<ProtocolDocumentAnalysis> {
+    let mut id_gen = NodeIdGen::new();
+    let ast = kobo_parser::parse_file(source, FileId(0), &mut id_gen).ok()?;
+    let kir = kobo_transform::build_kir(
+        &ast,
+        &mut id_gen,
+        kobo_transform::TransformOptions::default(),
+    );
+    let programs = kir.scenario_programs();
+    let diagnostics = programs
+        .iter()
+        .flat_map(|program| compiler_liveness_diagnostics(source, program))
+        .collect::<Vec<_>>();
+    let hover = if programs.iter().any(program_has_obligation) || !diagnostics.is_empty() {
+        ProtocolHoverKind::MustCall
+    } else {
+        ProtocolHoverKind::RustShape
+    };
+    Some(ProtocolDocumentAnalysis {
+        diagnostics,
+        hover,
+        has_rust_navigation: true,
+    })
+}
+
+fn compiler_liveness_diagnostics(
+    source: &str,
+    program: &ScenarioProgram,
+) -> Vec<ProtocolDiagnosticFact> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::CreateObligation {
+                binding, actions, ..
+            } if !compiler_binding_is_resolved(program, binding, actions) => {
+                let (line, character_start, character_end) =
+                    line_range_from_span(source, operation.span);
+                Some(ProtocolDiagnosticFact {
+                    line,
+                    character_start,
+                    character_end,
+                    code: "K0100",
+                    source: "kobo-compiler",
+                    fact_source: "compiler-scenario-program",
+                    message: format!(
+                        "unresolved liveness obligation `{binding}` requires {}",
+                        actions.join(" | ")
+                    ),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn compiler_binding_is_resolved(
+    program: &ScenarioProgram,
+    binding: &str,
+    actions: &[String],
+) -> bool {
+    program
+        .operations
+        .iter()
+        .any(|operation| match &operation.kind {
+            ScenarioOpKind::Discharge {
+                binding: candidate,
+                action,
+            } => candidate == binding && actions.iter().any(|expected| expected == action),
+            ScenarioOpKind::Transfer {
+                binding: candidate, ..
+            } => candidate == binding,
+            ScenarioOpKind::ExternalBoundary { .. } => true,
+            _ => false,
+        })
+}
+
+fn program_has_obligation(program: &ScenarioProgram) -> bool {
+    program
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.kind, ScenarioOpKind::CreateObligation { .. }))
+}
+
+fn line_range_from_span(source: &str, span: KoboSpan) -> (usize, usize, usize) {
+    let start = span.start as usize;
+    let end = span.end.max(span.start + 1) as usize;
+    let mut line = 0usize;
+    let mut line_start = 0usize;
+    for (index, byte) in source.as_bytes().iter().enumerate() {
+        if index >= start {
+            break;
+        }
+        if *byte == b'\n' {
+            line += 1;
+            line_start = index + 1;
+        }
+    }
+    let character_start = start.saturating_sub(line_start);
+    let character_end = end.saturating_sub(line_start).max(character_start + 1);
+    (line, character_start, character_end)
 }
 
 fn unresolved_liveness_diagnostic(source: &str) -> Option<ProtocolDiagnosticFact> {
@@ -162,6 +300,8 @@ fn unresolved_liveness_diagnostic(source: &str) -> Option<ProtocolDiagnosticFact
         character_start: 0,
         character_end: 1,
         code: "K0100",
+        source: "kobo",
+        fact_source: "source-fallback",
         message: "unresolved liveness obligation".to_owned(),
     })
 }
@@ -212,6 +352,8 @@ fn unresolved_binding_for_obligation(
             character_start,
             character_end: character_start + binding.len(),
             code: "K0100",
+            source: "kobo",
+            fact_source: "source-fallback",
             message: format!(
                 "unresolved liveness obligation `{binding}` requires {}",
                 obligation.actions.join(" | ")
@@ -223,6 +365,8 @@ fn unresolved_binding_for_obligation(
         character_start: obligation.character,
         character_end: obligation.character + obligation.type_name.len(),
         code: "K0100",
+        source: "kobo",
+        fact_source: "source-fallback",
         message: format!(
             "unresolved liveness obligation for `{}`",
             obligation.type_name
@@ -269,6 +413,20 @@ fn protocol_source_facts(source: &str) -> ProtocolSourceFacts {
         ]
         .iter()
         .any(|action| semantic_source.contains(action)),
+    }
+}
+
+fn fallback_hover_kind(source: &str) -> ProtocolHoverKind {
+    let semantic_source = source_without_text(source);
+    if ward_obligations(&semantic_source).is_empty() {
+        let facts = protocol_source_facts(&semantic_source);
+        if facts.has_liveness_obligation {
+            ProtocolHoverKind::MustCall
+        } else {
+            ProtocolHoverKind::RustShape
+        }
+    } else {
+        ProtocolHoverKind::Ward
     }
 }
 
@@ -319,13 +477,17 @@ fn source_without_text(source: &str) -> String {
     scrubbed
 }
 
-fn protocol_hover(source: &str) -> Value {
-    let contents = if source.contains("ward ") {
-        "Kobo ward model: states, obligations, scenarios, ports, recordings, and debt."
-    } else if source.contains("must_call") {
-        "Kobo must_call obligation: every path must use one terminal action."
-    } else {
-        "Kobo source: Rust-shaped code with gradual runtime guarantees."
+fn protocol_hover(kind: ProtocolHoverKind) -> Value {
+    let contents = match kind {
+        ProtocolHoverKind::Ward => {
+            "Kobo ward model: states, obligations, scenarios, ports, recordings, and debt."
+        }
+        ProtocolHoverKind::MustCall => {
+            "Kobo must_call obligation: every path must use one terminal action."
+        }
+        ProtocolHoverKind::RustShape => {
+            "Kobo source: Rust-shaped code with gradual runtime guarantees."
+        }
     };
     json!({
         "contents": {
@@ -340,7 +502,11 @@ fn protocol_code_actions(witness_path: Option<&str>) -> Vec<LspCodeAction> {
     code_actions_for_code_and_replay(KErrorCode::K0100, replay_command.as_deref())
 }
 
-fn protocol_document_links(uri: &str, source: &str, witness_path: Option<&str>) -> Vec<Value> {
+fn protocol_document_links(
+    uri: &str,
+    witness_path: Option<&str>,
+    has_rust_navigation: bool,
+) -> Vec<Value> {
     let mut links = Vec::new();
     if let Some(path) = witness_path {
         links.push(json!({
@@ -352,7 +518,7 @@ fn protocol_document_links(uri: &str, source: &str, witness_path: Option<&str>) 
             "tooltip": "Replay Kobo witness",
         }));
     }
-    if source.contains("fn ") {
+    if has_rust_navigation {
         links.push(json!({
             "range": {
                 "start": {"line": 0, "character": 0},

@@ -6,5 +6,7 @@ edition = "2021"
 [dependencies]
 kobo-errors = { path = "../kobo-errors" }
 kobo-ir     = { path = "../kobo-ir" }
+kobo-parser = { path = "../kobo-parser" }
+kobo-transform = { path = "../kobo-transform" }
 serde       = { workspace = true }
 serde_json  = { workspace = true }

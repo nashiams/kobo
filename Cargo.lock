@@ -439,6 +439,8 @@ version = "0.1.0"
 dependencies = [
  "kobo-errors",
  "kobo-ir",
+ "kobo-parser",
+ "kobo-transform",
  "serde",
  "serde_json",
 ]

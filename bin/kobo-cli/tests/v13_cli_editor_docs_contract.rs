@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use serde_json::Value;
 use v09_common::{
     assert_contains, assert_not_contains, assert_success, path_arg, run_kobo_with_timeout, s,
     CliOutput, TestProject,
@@ -139,5 +140,125 @@ fn command_output(output: std::process::Output) -> CliOutput {
         status: output.status,
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+#[test]
+fn lsp_reports_diagnostics_hovers_runnables_and_witness_links() {
+    let capabilities = kobo_lsp::editor_capabilities();
+    assert_eq!(capabilities["diagnostics"]["provider"], "kobo-lsp");
+    assert_eq!(capabilities["hoverProvider"], Value::Bool(true));
+    assert_eq!(capabilities["codeActionProvider"], Value::Bool(true));
+    assert_eq!(capabilities["documentLinkProvider"], Value::Bool(true));
+    assert_eq!(
+        capabilities["definitionProvider"]["delegate"],
+        "rust-analyzer"
+    );
+    for command in [
+        "kobo.testScenario",
+        "kobo.replayWitness",
+        "kobo.explainDiagnostic",
+    ] {
+        assert_contains(
+            &capabilities["runnables"].to_string(),
+            command,
+            "LSP capabilities should expose runnable workflow commands",
+        );
+    }
+}
+
+#[test]
+fn vscode_extension_contract_exposes_syntax_and_actions() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let package = root.join("editors/vscode/package.json");
+    let syntax = root.join("editors/vscode/syntaxes/kobo.tmLanguage.json");
+    let language = root.join("editors/vscode/language-configuration.json");
+
+    let package_json: Value = serde_json::from_str(
+        &std::fs::read_to_string(&package).expect("VS Code package should exist"),
+    )
+    .expect("VS Code package should parse");
+    assert_contains(
+        &package_json["contributes"]["languages"].to_string(),
+        "kobo",
+        "VS Code extension should register Kobo syntax",
+    );
+    for command in [
+        "kobo.runScenario",
+        "kobo.replayWitness",
+        "kobo.explainDiagnostic",
+    ] {
+        assert_contains(
+            &package_json["contributes"]["commands"].to_string(),
+            command,
+            "VS Code extension should expose workflow action",
+        );
+    }
+    assert!(
+        syntax.is_file(),
+        "VS Code extension should ship a TextMate grammar"
+    );
+    assert!(
+        language.is_file(),
+        "VS Code extension should ship language configuration"
+    );
+}
+
+#[test]
+fn formatting_delegates_rust_shaped_code_to_rustfmt() {
+    let rust_project = TestProject::new("v13-fmt-rust-shaped");
+    let rust_file = rust_project.main_file("fn main(){println!(\"hi\");}\n");
+    let rust_fmt = run_kobo(&[s("fmt"), path_arg(&rust_file)], &rust_project.root);
+    assert_success(&rust_fmt, "rust-shaped formatting should succeed");
+    let formatted_rust =
+        std::fs::read_to_string(&rust_file).expect("formatted Rust-shaped source should read");
+    assert_contains(
+        &formatted_rust,
+        "fn main() {",
+        "rust-shaped Kobo source should be delegated to rustfmt",
+    );
+
+    let ward_project = TestProject::new("v13-fmt-ward-syntax");
+    let ward_file =
+        ward_project.main_file("ward Demo{state log: Vec<String>\nscenario run{ward.task();}}\n");
+    let ward_fmt = run_kobo(&[s("fmt"), path_arg(&ward_file)], &ward_project.root);
+    assert_success(&ward_fmt, "Kobo-only ward formatting should succeed");
+    let formatted_ward =
+        std::fs::read_to_string(&ward_file).expect("formatted ward source should read");
+    assert_contains(
+        &formatted_ward,
+        "ward Demo {",
+        "Kobo-only formatter should handle ward syntax without rustfmt",
+    );
+    assert_contains(
+        &formatted_ward,
+        "scenario run {",
+        "Kobo-only formatter should preserve scenario syntax",
+    );
+}
+
+#[test]
+fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
+    let readme = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("README.md"),
+    )
+    .expect("README should read");
+    for expected in [
+        "modeled wards",
+        "ports",
+        "recordings",
+        "opaque boundaries",
+        "scoped modes",
+        "gradual guarantees",
+        "mode invariant",
+        "Script, Checked, and Strict preserve the same ordinary runtime behavior",
+    ] {
+        assert_contains(&readme, expected, "README should document workflow claim");
+    }
+    for forbidden in ["gradual typing", "formally proves arbitrary"] {
+        assert_not_contains(&readme, forbidden, "README should avoid overclaim");
     }
 }

@@ -1,0 +1,52 @@
+{
+  "name": "kobo-vscode",
+  "displayName": "Kobo",
+  "description": "Kobo language support for diagnostics, scenario runs, and replay witnesses.",
+  "version": "0.0.1",
+  "publisher": "kobo",
+  "engines": {
+    "vscode": "^1.88.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:kobo"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "kobo",
+        "aliases": [
+          "Kobo",
+          "kobo"
+        ],
+        "extensions": [
+          ".kobo"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kobo",
+        "scopeName": "source.kobo",
+        "path": "./syntaxes/kobo.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "kobo.runScenario",
+        "title": "Kobo: Run Scenario"
+      },
+      {
+        "command": "kobo.replayWitness",
+        "title": "Kobo: Replay Witness"
+      },
+      {
+        "command": "kobo.explainDiagnostic",
+        "title": "Kobo: Explain Diagnostic"
+      }
+    ]
+  }
+}

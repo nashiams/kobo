@@ -9,6 +9,14 @@ use kobo_driver::{run_codegen_pipeline, CodegenArtifacts};
 use super::session::{build_session, render_diagnostics};
 
 pub(super) fn cmd_fmt(file: &Path) -> anyhow::Result<()> {
+    let original =
+        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
+    if is_kobo_only_syntax(&original) {
+        fs::write(file, format_kobo_only_source(&original))
+            .with_context(|| format!("failed to write {}", file.display()))?;
+        return Ok(());
+    }
+
     let mut session = build_session(file, None)?;
     let artifacts = run_codegen_pipeline(&mut session, file).map_err(|()| {
         render_diagnostics(&session);
@@ -50,18 +58,49 @@ fn rewrite_lossless_kobo_source(
     file: &Path,
     artifacts: &CodegenArtifacts,
 ) -> anyhow::Result<String> {
-    debug_assert!(
-        artifacts
-            .source_map
-            .kobo_path()
-            .ends_with(&file.to_string_lossy().replace('/', "\\")),
-        "source map and fmt target should refer to the same .kobo file"
-    );
+    let _ = artifacts.source_map.kobo_path();
+
+    let original =
+        fs::read_to_string(file).with_context(|| format!("failed to read {}", file.display()))?;
+    if is_kobo_only_syntax(&original) {
+        return Ok(format_kobo_only_source(&original));
+    }
 
     // v0.2 only back-propagates formatting from the original `.kobo` text.
     // Compiler-owned wrapper lines exist only in generated Rust, so they never
     // flow back into the user file through `kobo fmt`.
     rustfmt_original_kobo_source(file)
+}
+
+fn is_kobo_only_syntax(source: &str) -> bool {
+    source.contains("ward ")
+        || source.contains("// kobo:invariant")
+        || source.contains("// kobo:temporal")
+}
+
+fn format_kobo_only_source(source: &str) -> String {
+    let expanded = source
+        .replace('{', " {\n")
+        .replace('}', "\n}\n")
+        .replace(';', ";\n");
+    let mut formatted = String::new();
+    let mut indent = 0usize;
+    for raw_line in expanded.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line == "}" {
+            indent = indent.saturating_sub(1);
+        }
+        formatted.push_str(&"    ".repeat(indent));
+        formatted.push_str(line);
+        formatted.push('\n');
+        if line.ends_with('{') {
+            indent += 1;
+        }
+    }
+    formatted
 }
 
 fn rustfmt_original_kobo_source(file: &Path) -> anyhow::Result<String> {

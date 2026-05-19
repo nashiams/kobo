@@ -45,6 +45,43 @@ pub fn code_action_commands(code: KErrorCode) -> Vec<String> {
     action_commands(&code_actions_for(code))
 }
 
+pub fn editor_capabilities() -> Value {
+    json!({
+        "diagnostics": {
+            "provider": "kobo-lsp",
+            "source": "compiler-diagnostics",
+        },
+        "hoverProvider": true,
+        "codeActionProvider": true,
+        "documentLinkProvider": true,
+        "definitionProvider": {
+            "delegate": "rust-analyzer",
+            "source_map": "generated-rust-to-kobo",
+        },
+        "runnables": [
+            {
+                "command": "kobo.testScenario",
+                "title": "Run Kobo scenario",
+                "cli": "kobo test --sim quick --witness-dir .kobo/witnesses",
+            },
+            {
+                "command": "kobo.replayWitness",
+                "title": "Replay Kobo witness",
+                "cli": "kobo replay <witness>",
+            },
+            {
+                "command": "kobo.explainDiagnostic",
+                "title": "Explain diagnostic",
+                "cli": "kobo explain <code>",
+            }
+        ],
+        "witnessLinks": {
+            "pattern": ".kobo/witnesses/*.kwit",
+            "command": "kobo.replayWitness",
+        },
+    })
+}
+
 pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {
     code_actions_for_code_and_replay(code, None)
 }

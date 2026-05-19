@@ -1,6 +1,8 @@
 use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 
+use crate::RuntimeProfileOptions;
+
 #[derive(Clone)]
 struct ServiceSpec {
     service_ident: syn::Ident,
@@ -8,6 +10,7 @@ struct ServiceSpec {
     handle_ident: syn::Ident,
     buffer_size: usize,
     source_line: usize,
+    runtime_profile: RuntimeProfileOptions,
     methods: Vec<ServiceMethod>,
 }
 
@@ -24,8 +27,12 @@ struct ServiceField {
     ty: syn::Type,
 }
 
-pub(crate) fn service_support_items(ast: &kobo_parser::KoboFile, file: &syn::File) -> Vec<syn::Item> {
-    let specs = service_specs(ast, file);
+pub(crate) fn service_support_items(
+    ast: &kobo_parser::KoboFile,
+    file: &syn::File,
+    runtime_profile: &RuntimeProfileOptions,
+) -> Vec<syn::Item> {
+    let specs = service_specs(ast, file, runtime_profile);
     if specs.is_empty() {
         return Vec::new();
     }
@@ -42,14 +49,18 @@ pub(crate) fn append_service_support_items(file: &mut syn::File, items: Vec<syn:
     file.items.extend(items);
 }
 
-fn service_specs(ast: &kobo_parser::KoboFile, file: &syn::File) -> Vec<ServiceSpec> {
+fn service_specs(
+    ast: &kobo_parser::KoboFile,
+    file: &syn::File,
+    runtime_profile: &RuntimeProfileOptions,
+) -> Vec<ServiceSpec> {
     file.items
         .iter()
         .filter_map(|item| {
             let syn::Item::Impl(item_impl) = item else {
                 return None;
             };
-            service_spec_from_impl(ast, item_impl)
+            service_spec_from_impl(ast, item_impl, runtime_profile)
         })
         .collect()
 }
@@ -57,9 +68,10 @@ fn service_specs(ast: &kobo_parser::KoboFile, file: &syn::File) -> Vec<ServiceSp
 fn service_spec_from_impl(
     ast: &kobo_parser::KoboFile,
     item_impl: &syn::ItemImpl,
+    runtime_profile: &RuntimeProfileOptions,
 ) -> Option<ServiceSpec> {
     let attr = service_attr(&item_impl.attrs)?;
-    let buffer_size = service_buffer_size(attr);
+    let buffer_size = service_buffer_size(attr).unwrap_or(runtime_profile.service_buffer);
     let service_ident = service_ident_from_self_ty(&item_impl.self_ty)?;
     let service_name = service_ident.to_string();
     let methods = service_methods(item_impl);
@@ -73,6 +85,7 @@ fn service_spec_from_impl(
         handle_ident: format_ident!("{}Service", service_name),
         buffer_size,
         source_line: service_source_line(ast, attr),
+        runtime_profile: runtime_profile.clone(),
         methods,
     })
 }
@@ -81,15 +94,14 @@ fn service_attr(attrs: &[syn::Attribute]) -> Option<&syn::Attribute> {
     attrs.iter().find(|attr| is_service_attr(attr))
 }
 
-fn service_buffer_size(attr: &syn::Attribute) -> usize {
+fn service_buffer_size(attr: &syn::Attribute) -> Option<usize> {
     let syn::Meta::List(list) = &attr.meta else {
-        return 64;
+        return None;
     };
     let compact = list.tokens.to_string().replace(' ', "");
-    let Some(rest) = compact.strip_prefix("buffer=") else {
-        return 64;
-    };
-    rest.parse::<usize>().unwrap_or(64)
+    compact
+        .strip_prefix("buffer=")
+        .and_then(|rest| rest.parse::<usize>().ok())
 }
 
 fn service_source_line(ast: &kobo_parser::KoboFile, attr: &syn::Attribute) -> usize {
@@ -237,9 +249,11 @@ fn message_enum_item(spec: &ServiceSpec) -> Option<syn::Item> {
     let service_name = spec.service_ident.to_string();
     let source_line = spec.source_line;
     let source_doc = format!("kobo: service {service_name} source_line={source_line}");
+    let runtime_doc = spec.runtime_profile.inspect_comment();
     let variants = spec.methods.iter().map(message_variant_tokens);
     syn::parse2(quote! {
         #[doc = #source_doc]
+        #[doc = #runtime_doc]
         enum #message_ident {
             #(#variants,)*
             Shutdown,
@@ -272,8 +286,10 @@ fn service_handle_struct_item(spec: &ServiceSpec) -> Option<syn::Item> {
     let service_name = spec.service_ident.to_string();
     let source_line = spec.source_line;
     let source_doc = format!("kobo: service {service_name} source_line={source_line}");
+    let runtime_doc = spec.runtime_profile.inspect_comment();
     syn::parse2(quote! {
         #[doc = #source_doc]
+        #[doc = #runtime_doc]
         struct #handle_ident {
             sender: tokio::sync::mpsc::Sender<#message_ident>,
             cancellation: KoboServiceCancellationToken,
@@ -290,6 +306,25 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
         proc_macro2::Span::call_site(),
     );
     let service_ident = &spec.service_ident;
+    let send_method = if spec.runtime_profile.service_backpressure == "try-send" {
+        quote! {
+            async fn send(
+                &self,
+                message: #message_ident,
+            ) -> Result<(), tokio::sync::mpsc::error::TrySendError<#message_ident>> {
+                self.sender.try_send(message)
+            }
+        }
+    } else {
+        quote! {
+            async fn send(
+                &self,
+                message: #message_ident,
+            ) -> Result<(), tokio::sync::mpsc::error::SendError<#message_ident>> {
+                self.sender.send(message).await
+            }
+        }
+    };
     syn::parse2(quote! {
         impl #handle_ident {
             fn new(sender: tokio::sync::mpsc::Sender<#message_ident>) -> Self {
@@ -306,12 +341,7 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
                 tokio::sync::mpsc::channel::<#message_ident>(#buffer_size)
             }
 
-            async fn send(
-                &self,
-                message: #message_ident,
-            ) -> Result<(), tokio::sync::mpsc::error::SendError<#message_ident>> {
-                self.sender.send(message).await
-            }
+            #send_method
 
             async fn shutdown(
                 &self,

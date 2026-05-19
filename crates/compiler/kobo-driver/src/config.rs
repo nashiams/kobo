@@ -29,8 +29,34 @@ pub struct KoboConfig {
     pub copy_types: Vec<String>,
     pub mutating_methods: Vec<String>,
     pub ecosystem_policy: EcosystemPolicyConfig,
+    pub runtime_profile: RuntimeProfileConfig,
     pub src_dir: PathBuf,
     pub enable_parse_recovery: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProfileConfig {
+    pub service_buffer: usize,
+    pub service_backpressure: String,
+    pub scheduler: String,
+    pub record: String,
+    pub activity: String,
+    pub cancellation: String,
+    pub scenario_event_budget: u64,
+}
+
+impl RuntimeProfileConfig {
+    pub fn to_codegen_options(&self) -> kobo_codegen::RuntimeProfileOptions {
+        kobo_codegen::RuntimeProfileOptions {
+            service_buffer: self.service_buffer,
+            service_backpressure: self.service_backpressure.clone(),
+            scheduler: self.scheduler.clone(),
+            record: self.record.clone(),
+            activity: self.activity.clone(),
+            cancellation: self.cancellation.clone(),
+            scenario_event_budget: self.scenario_event_budget,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +152,8 @@ struct RawKoboConfig {
     #[serde(default)]
     ecosystem: RawEcosystemSection,
     #[serde(default)]
+    runtime: RawRuntimeSection,
+    #[serde(default)]
     profiles: HashMap<String, RawProfileSection>,
     mode: Option<LegacyMode>,
     profile: Option<GuaranteeProfile>,
@@ -214,6 +242,23 @@ struct RawEcosystemSection {
     adapter: Vec<RawEcosystemAdapterSection>,
     #[serde(default)]
     summary: Vec<RawEcosystemSummarySection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawRuntimeSection {
+    #[serde(default)]
+    profile: RawRuntimeProfileSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawRuntimeProfileSection {
+    service_buffer: Option<usize>,
+    service_backpressure: Option<String>,
+    scheduler: Option<String>,
+    record: Option<String>,
+    activity: Option<String>,
+    cancellation: Option<String>,
+    scenario_event_budget: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -311,8 +356,23 @@ impl Default for KoboConfig {
             copy_types: Vec::new(),
             mutating_methods: Vec::new(),
             ecosystem_policy: EcosystemPolicyConfig::default(),
+            runtime_profile: RuntimeProfileConfig::default(),
             src_dir: PathBuf::from("src"),
             enable_parse_recovery: false,
+        }
+    }
+}
+
+impl Default for RuntimeProfileConfig {
+    fn default() -> Self {
+        Self {
+            service_buffer: 64,
+            service_backpressure: "block-on-full".to_owned(),
+            scheduler: "small-random".to_owned(),
+            record: "recorded-boundary-io".to_owned(),
+            activity: "retry-idempotency".to_owned(),
+            cancellation: "scheduler-history".to_owned(),
+            scenario_event_budget: 64,
         }
     }
 }
@@ -568,7 +628,34 @@ impl RawKoboConfig {
         }
         self.ecosystem
             .apply_to(&mut config.ecosystem_policy, config_dir)?;
+        self.runtime.profile.apply_to(&mut config.runtime_profile);
         Ok(())
+    }
+}
+
+impl RawRuntimeProfileSection {
+    fn apply_to(self, profile: &mut RuntimeProfileConfig) {
+        if let Some(service_buffer) = self.service_buffer {
+            profile.service_buffer = service_buffer;
+        }
+        if let Some(service_backpressure) = self.service_backpressure {
+            profile.service_backpressure = service_backpressure;
+        }
+        if let Some(scheduler) = self.scheduler {
+            profile.scheduler = scheduler;
+        }
+        if let Some(record) = self.record {
+            profile.record = record;
+        }
+        if let Some(activity) = self.activity {
+            profile.activity = activity;
+        }
+        if let Some(cancellation) = self.cancellation {
+            profile.cancellation = cancellation;
+        }
+        if let Some(scenario_event_budget) = self.scenario_event_budget {
+            profile.scenario_event_budget = scenario_event_budget;
+        }
     }
 }
 

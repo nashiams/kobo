@@ -32,6 +32,7 @@ fn build_codegen_output(source: &str, deps: HashMap<String, toml::Value>) -> Str
         &CodegenOptions {
             diag_mode: false,
             executor_choice: select_executor(&deps),
+            ..CodegenOptions::default()
         },
     );
     output.rs_source

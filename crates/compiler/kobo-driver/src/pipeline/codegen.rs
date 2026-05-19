@@ -75,6 +75,7 @@ pub fn run_codegen_pipeline(
         &CodegenOptions {
             diag_mode: session.diag_enabled,
             executor_choice,
+            runtime_profile: session.config.runtime_profile.to_codegen_options(),
         },
     );
 

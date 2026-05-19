@@ -607,6 +607,9 @@ fn write_run_witness(
     let coverage = coverage_json(run);
     let event_stream = shrink_event_stream(run, sim_profile);
     let witness_events = events_json(&event_stream.events);
+    let runtime_profile = runtime_profile_json(config, sim_profile, seed, run);
+    let runtime_profile_hash =
+        kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
     let inferred_obligations =
         witness_evidence::inferred_obligations_json(&source_path, &document.source, run);
     let mut witness = serde_json::json!({
@@ -635,7 +638,6 @@ fn write_run_witness(
         "full_ecosystem_exploration": full_ecosystem_exploration(run),
         "replay_contract": replay_contract_json(run),
         "scheduler": scheduler_json(sim_profile, seed, run),
-        "execution_digest": execution_digest_json(run),
         "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage,
         "operation_coverage": witness_evidence::operation_coverage_json(scenario_program, run),
@@ -661,6 +663,11 @@ fn write_run_witness(
     let object = witness
         .as_object_mut()
         .expect("witness json literal should be an object");
+    object.insert("runtime_profile".to_owned(), runtime_profile);
+    object.insert(
+        "execution_digest".to_owned(),
+        execution_digest_json(run, &runtime_profile_hash),
+    );
     object.insert(
         "call_graph_obligation_summaries".to_owned(),
         witness_evidence::call_graph_obligation_summaries_json(scenario_program, run),
@@ -727,6 +734,37 @@ fn service_runtime_json(source: &str) -> serde_json::Value {
             .into_iter()
             .map(service_runtime_service_json)
             .collect::<Vec<_>>(),
+    })
+}
+
+fn runtime_profile_json(
+    config: &kobo_driver::KoboConfig,
+    sim_profile: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let profile = &config.runtime_profile;
+    serde_json::json!({
+        "service": {
+            "buffer": profile.service_buffer,
+            "backpressure": profile.service_backpressure,
+        },
+        "scenario": {
+            "scheduler": profile.scheduler,
+            "sim_profile": sim_profile,
+            "backend_profile": run.profile,
+            "seed": seed,
+            "event_budget": profile.scenario_event_budget,
+        },
+        "record": {
+            "default": profile.record,
+        },
+        "activity": {
+            "default": profile.activity,
+        },
+        "runtime": {
+            "cancellation": profile.cancellation,
+        },
     })
 }
 
@@ -963,7 +1001,11 @@ fn cleanup_hook_name(attr: &syn::Attribute) -> Option<String> {
     };
     syn::parse2::<syn::Path>(list.tokens.clone())
         .ok()
-        .and_then(|path| path.segments.last().map(|segment| segment.ident.to_string()))
+        .and_then(|path| {
+            path.segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+        })
 }
 
 fn handler_terminal_actions() -> Vec<String> {
@@ -1081,7 +1123,7 @@ fn full_ecosystem_exploration(run: &FullDepthRun) -> bool {
         .is_some_and(|manifest| manifest.full_ecosystem_exploration)
 }
 
-fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
+fn execution_digest_json(run: &FullDepthRun, runtime_profile_hash: &str) -> serde_json::Value {
     serde_json::json!({
         "engine": "semantic-sim",
         "semantic_engine": run.digest.semantic_engine,
@@ -1099,6 +1141,7 @@ fn execution_digest_json(run: &FullDepthRun) -> serde_json::Value {
         "harness_manifest_hash": run.digest.harness_manifest_hash,
         "harness_exit_code": run.digest.harness_exit_code,
         "harness_event_count": run.digest.harness_event_count,
+        "runtime_profile_hash": runtime_profile_hash,
     })
 }
 

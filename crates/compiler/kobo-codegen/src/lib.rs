@@ -35,6 +35,46 @@ pub struct CodegenOutput {
     pub error_policy_sites: Vec<ErrorPolicySite>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeProfileOptions {
+    pub service_buffer: usize,
+    pub service_backpressure: String,
+    pub scheduler: String,
+    pub record: String,
+    pub activity: String,
+    pub cancellation: String,
+    pub scenario_event_budget: u64,
+}
+
+impl Default for RuntimeProfileOptions {
+    fn default() -> Self {
+        Self {
+            service_buffer: 64,
+            service_backpressure: "block-on-full".to_owned(),
+            scheduler: "small-random".to_owned(),
+            record: "recorded-boundary-io".to_owned(),
+            activity: "retry-idempotency".to_owned(),
+            cancellation: "scheduler-history".to_owned(),
+            scenario_event_budget: 64,
+        }
+    }
+}
+
+impl RuntimeProfileOptions {
+    pub fn inspect_comment(&self) -> String {
+        format!(
+            "kobo: runtime profile service_buffer={} service_backpressure={} scheduler={} record={} activity={} cancellation={} scenario_event_budget={}",
+            self.service_buffer,
+            self.service_backpressure,
+            self.scheduler,
+            self.record,
+            self.activity,
+            self.cancellation,
+            self.scenario_event_budget
+        )
+    }
+}
+
 /// Options that control code generation behaviour.
 ///
 /// Passed into `codegen_file()` from the driver. The driver reads `KOBO_DIAG`
@@ -47,6 +87,8 @@ pub struct CodegenOptions {
     pub diag_mode: bool,
     /// Async executor selected from direct dependencies for `async fn main()`.
     pub executor_choice: executor::ExecutorChoice,
+    /// Unified service/scenario/runtime profile visible in generated artifacts.
+    pub runtime_profile: RuntimeProfileOptions,
 }
 
 impl Default for CodegenOptions {
@@ -54,6 +96,7 @@ impl Default for CodegenOptions {
         Self {
             diag_mode: false,
             executor_choice: executor::ExecutorChoice::None,
+            runtime_profile: RuntimeProfileOptions::default(),
         }
     }
 }

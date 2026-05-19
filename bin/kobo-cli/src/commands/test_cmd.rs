@@ -685,7 +685,7 @@ fn write_run_witness(
         serde_json::json!({
             "mode": "observe",
             "source": "scenario_program",
-            "template_version": "v0.10.1",
+            "template_version": "v0.13.0",
             "obligations": inferred_obligations,
         }),
     );

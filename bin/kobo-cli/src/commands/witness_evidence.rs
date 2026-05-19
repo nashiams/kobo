@@ -210,7 +210,7 @@ pub(super) fn inferred_obligations_json(
                     "id": format!("{}:{}", template.id, obligation.binding),
                     "kind": template.kind,
                     "template_id": template.id,
-                    "template_version": "v0.10.1",
+                    "template_version": "v0.13.0",
                     "binding": obligation.binding,
                     "state": state,
                     "terminal_actions": obligation.actions.clone(),
@@ -447,11 +447,31 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
     }
     if actions
         .iter()
-        .any(|action| matches!(action.as_str(), "join" | "abort" | "detach-with-policy"))
+        .any(|action| matches!(action.as_str(), "await" | "abort" | "detach-with-policy"))
     {
         return LifecycleTemplate {
             kind: "spawned_task",
             id: "spawned_task",
+            confidence: "exact_template",
+        };
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "release" | "drop-at-safe-boundary"))
+    {
+        return LifecycleTemplate {
+            kind: "lock_permit",
+            id: "lock_permit",
+            confidence: "exact_template",
+        };
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "close" | "transfer" | "opaque-boundary"))
+    {
+        return LifecycleTemplate {
+            kind: "file_socket",
+            id: "file_socket",
             confidence: "exact_template",
         };
     }

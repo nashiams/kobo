@@ -599,7 +599,10 @@ fn generated_rust_defines_type(source: &str, type_name: &str) -> bool {
 }
 
 fn rust_method_name(action: &str) -> String {
-    action.replace('-', "_")
+    match action {
+        "await" => "r#await".to_owned(),
+        _ => action.replace('-', "_"),
+    }
 }
 
 fn external_boundary_support_source(
@@ -1711,7 +1714,21 @@ fn inject_modeled_boundary_event(
         }
     }
     if boundary == &ScenarioModeledBoundary::WardTask {
-        for needle in ["tokio::spawn(async move {", "tokio :: spawn(async move {"] {
+        for needle in ["tokio::spawn(async {})", "tokio :: spawn(async {})"] {
+            if source.contains(needle) {
+                return Ok(source.replacen(
+                    needle,
+                    &format!("{{\n        {print}\n        {needle}\n    }}"),
+                    1,
+                ));
+            }
+        }
+        for needle in [
+            "tokio::spawn(async move {",
+            "tokio :: spawn(async move {",
+            "tokio::spawn(async {",
+            "tokio :: spawn(async {",
+        ] {
             if source.contains(needle) {
                 return Ok(source.replacen(needle, &format!("{print}\n    {needle}"), 1));
             }

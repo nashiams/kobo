@@ -18,6 +18,7 @@ use syn::{
 
 type BindingMap = HashMap<String, String>;
 type BoolMap = HashMap<String, bool>;
+type ActionMap = HashMap<String, Vec<String>>;
 type ExternalBindingMap = HashMap<String, ExternalBoundaryValue>;
 type ImportMap = HashMap<String, Vec<String>>;
 type BoundaryPolicyMap = HashMap<String, BoundaryPolicyFact>;
@@ -28,6 +29,7 @@ type FunctionSccMap = HashMap<String, usize>;
 struct BindingEnv {
     bindings: BindingMap,
     bools: BoolMap,
+    terminal_actions: ActionMap,
     external_values: ExternalBindingMap,
     imports: ImportMap,
 }
@@ -460,6 +462,17 @@ impl BindingEnv {
         self.bindings.insert(local, obligation_key);
     }
 
+    fn bind_obligation(
+        &mut self,
+        local: String,
+        obligation_key: String,
+        terminal_actions: Vec<String>,
+    ) {
+        self.bindings.insert(local.clone(), obligation_key.clone());
+        self.terminal_actions
+            .insert(obligation_key, terminal_actions);
+    }
+
     fn bind_bool(&mut self, local: String, value: bool) {
         self.bools.insert(local, value);
     }
@@ -470,6 +483,10 @@ impl BindingEnv {
 
     fn resolve(&self, local: &str) -> Option<String> {
         self.bindings.get(local).cloned()
+    }
+
+    fn terminal_actions(&self, obligation_key: &str) -> Option<Vec<String>> {
+        self.terminal_actions.get(obligation_key).cloned()
     }
 
     fn resolve_bool(&self, local: &str) -> Option<bool> {
@@ -517,7 +534,7 @@ impl<'a> ScenarioLowerer<'a> {
             let Some(binding) = pat_ident(argument.pat.as_ref()) else {
                 continue;
             };
-            env.bind(binding.clone(), binding.clone());
+            env.bind_obligation(binding.clone(), binding.clone(), handler_reply_actions());
             self.operations.push(ScenarioOp {
                 span: self.span(argument),
                 kind: ScenarioOpKind::CreateObligation {
@@ -562,7 +579,7 @@ impl<'a> ScenarioLowerer<'a> {
             self.local_must_call_creation(local, init.expr.as_ref())
         {
             if let Some(actions) = self.must_call_types.get(&type_name).cloned() {
-                env.bind(binding.clone(), binding.clone());
+                env.bind_obligation(binding.clone(), binding.clone(), actions.clone());
                 self.operations.push(ScenarioOp {
                     span,
                     kind: ScenarioOpKind::CreateObligation {
@@ -575,7 +592,11 @@ impl<'a> ScenarioLowerer<'a> {
             }
         }
         if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref()) {
-            env.bind(creation.binding.clone(), creation.binding.clone());
+            env.bind_obligation(
+                creation.binding.clone(),
+                creation.binding.clone(),
+                creation.actions.clone(),
+            );
             self.operations.push(ScenarioOp {
                 span: creation.span,
                 kind: ScenarioOpKind::CreateObligation {
@@ -655,6 +676,18 @@ impl<'a> ScenarioLowerer<'a> {
                 actions: transaction_actions(),
                 span: self.span(call),
             }),
+            "acquire" | "lock" | "try_acquire" => Some(InferredLifecycleCreation {
+                binding,
+                type_name: "LockPermit".to_owned(),
+                actions: lock_permit_actions(),
+                span: self.span(call),
+            }),
+            "open" | "connect" | "accept" => Some(InferredLifecycleCreation {
+                binding,
+                type_name: "FileSocket".to_owned(),
+                actions: file_socket_actions(),
+                span: self.span(call),
+            }),
             _ => None,
         }
     }
@@ -674,7 +707,7 @@ impl<'a> ScenarioLowerer<'a> {
                         span: self.span(expr),
                         kind: ScenarioOpKind::Discharge {
                             binding,
-                            action: "join".to_owned(),
+                            action: "await".to_owned(),
                         },
                     });
                     return;
@@ -762,6 +795,20 @@ impl<'a> ScenarioLowerer<'a> {
                 .and_then(expr_path_ident)
                 .and_then(|name| env.resolve(&name))
             {
+                if env.terminal_actions(&binding).is_some_and(|actions| {
+                    actions
+                        .iter()
+                        .any(|action| action == "drop-at-safe-boundary")
+                }) {
+                    self.operations.push(ScenarioOp {
+                        span: self.span(call),
+                        kind: ScenarioOpKind::Discharge {
+                            binding,
+                            action: "drop-at-safe-boundary".to_owned(),
+                        },
+                    });
+                    return true;
+                }
                 self.operations.push(ScenarioOp {
                     span: self.span(call),
                     kind: ScenarioOpKind::MoveBinding { binding },
@@ -1092,7 +1139,11 @@ impl<'a> ScenarioLowerer<'a> {
                         callee: function_name.clone(),
                     },
                 });
-                helper_env.bind(parameter.clone(), argument_binding);
+                if let Some(actions) = env.terminal_actions(&argument_binding) {
+                    helper_env.bind_obligation(parameter.clone(), argument_binding, actions);
+                } else {
+                    helper_env.bind(parameter.clone(), argument_binding);
+                }
             }
             if let Some(value) = self.eval_bool(argument, env) {
                 helper_env.bind_bool(parameter.clone(), value);
@@ -1475,7 +1526,21 @@ fn handler_reply_actions() -> Vec<String> {
 }
 
 fn spawned_task_actions() -> Vec<String> {
-    ["join", "abort", "detach-with-policy"]
+    ["await", "abort", "detach-with-policy"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn lock_permit_actions() -> Vec<String> {
+    ["release", "drop-at-safe-boundary"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn file_socket_actions() -> Vec<String> {
+    ["close", "transfer", "opaque-boundary"]
         .into_iter()
         .map(str::to_owned)
         .collect()

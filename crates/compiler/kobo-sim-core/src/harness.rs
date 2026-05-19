@@ -1887,6 +1887,7 @@ fn terminal_failure_events(
             ScenarioOpKind::RawNondeterminism { .. }
             | ScenarioOpKind::UncontrolledEffect { .. }
             | ScenarioOpKind::ExternalBoundary { .. }
+            | ScenarioOpKind::CoreTerminator { .. }
             | ScenarioOpKind::Loop => {}
             ScenarioOpKind::MoveBinding { .. } | ScenarioOpKind::Return => {}
         }

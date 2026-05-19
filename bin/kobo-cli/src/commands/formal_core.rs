@@ -1,78 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use kobo_errors::KErrorCode;
-use kobo_ir::{ScenarioBoundaryPolicy, ScenarioOpKind, ScenarioProgram};
+use kobo_ir::{
+    lower_core_program, CoreBlock, CoreFunction, CoreStatement, CoreStatementKind, CoreTerminator,
+    CoreTerminatorKind, KoboSpan, ScenarioProgram,
+};
 use kobo_sim_core::{FullDepthRun, ScenarioEvent, ScenarioFailure};
 use serde_json::Value;
-
-#[derive(Clone, Debug)]
-struct CoreFunction {
-    name: String,
-    source_span: CoreSourceSpan,
-    block: CoreBlock,
-}
-
-#[derive(Clone, Debug, Default)]
-struct CoreBlock {
-    id: String,
-    statements: Vec<CoreStatement>,
-    terminators: Vec<CoreTerminator>,
-}
-
-#[derive(Clone, Debug)]
-struct CoreStatement {
-    id: String,
-    kind: CoreStatementKind,
-    binding: Option<String>,
-    action: Option<String>,
-    boundary: Option<String>,
-    source_span: CoreSourceSpan,
-}
-
-#[derive(Clone, Debug)]
-enum CoreStatementKind {
-    ObligationCreate,
-    ObligationDischarge,
-    ObligationTransfer,
-    ObligationMove,
-    ObligationEscape,
-    Call,
-}
-
-#[derive(Clone, Debug)]
-struct CoreTerminator {
-    id: String,
-    kind: CoreTerminatorKind,
-    boundary: Option<String>,
-    policy: Option<String>,
-    edges: Vec<String>,
-    source_span: CoreSourceSpan,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum CoreTerminatorKind {
-    Return,
-    ErrorExit,
-    Panic,
-    Await,
-    OpaqueBoundary,
-}
-
-#[derive(Clone, Debug)]
-struct BoundaryImport {
-    boundary: String,
-    policy: String,
-    alias: String,
-}
-
-#[derive(Clone, Debug)]
-struct FunctionRange {
-    name: String,
-    start: usize,
-    body_start: usize,
-    body_end: usize,
-    end: usize,
-}
 
 #[derive(Clone, Debug)]
 struct CoreSourceSpan {
@@ -118,11 +52,15 @@ pub(super) fn formal_core_json(
     source: &str,
     program: &ScenarioProgram,
 ) -> Value {
-    let core = lower_formal_core(source_path, source, program);
+    let core = lower_core_program(program);
     serde_json::json!({
-        "source": "kir-to-core",
-        "core_version": "v0.13-core-1",
-        "functions": core.into_iter().map(function_json).collect::<Vec<_>>(),
+        "source": core.source,
+        "core_version": core.core_version,
+        "functions": core
+            .functions
+            .into_iter()
+            .map(|function| function_json(source_path, source, function))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -159,7 +97,7 @@ pub(super) fn strict_liveness_json(
 ) -> Value {
     let analysis = analyze_strict_liveness(source_path, source, program, run);
     serde_json::json!({
-        "source": "formal_core_dataflow",
+        "source": "compiler_core_forward_dataflow",
         "theorem_target": "no_unresolved_local_obligation_on_modeled_exit",
         "status": if analysis.errors.is_empty() { "passed" } else { "failed" },
         "errors": analysis.errors.into_iter().map(strict_error_json).collect::<Vec<_>>(),
@@ -177,17 +115,24 @@ pub(super) fn proof_seed_json(
     program: &ScenarioProgram,
     run: &FullDepthRun,
 ) -> Value {
-    let core = lower_formal_core(source_path, source, program);
+    let core = lower_core_program(program);
     let core_edges = core
+        .functions
         .iter()
         .flat_map(|function| {
-            function.block.terminators.iter().map(move |terminator| {
-                serde_json::json!({
-                    "function": function.name,
-                    "block": function.block.id,
-                    "kind": terminator.kind.as_str(),
-                    "edges": terminator.edges,
-                    "source_span": source_span_json(&terminator.source_span),
+            function.blocks.iter().flat_map(move |block| {
+                block.terminators.iter().map(move |terminator| {
+                    serde_json::json!({
+                        "function": function.name,
+                        "block": block.id,
+                        "kind": terminator.kind.as_str(),
+                        "edges": terminator.edges,
+                        "source_span": source_span_json(&source_span_from_kobo(
+                            source_path,
+                            source,
+                            terminator.source_span,
+                        )),
+                    })
                 })
             })
         })
@@ -217,7 +162,7 @@ pub(super) fn proof_seed_json(
         .collect::<Vec<_>>();
 
     serde_json::json!({
-        "source": "formal_core",
+        "source": "compiler_core",
         "theorem_target": "no_unresolved_local_obligation_on_modeled_exit",
         "core_edges": core_edges,
         "modeled_exit_obligation_states": obligation_states,
@@ -231,11 +176,11 @@ pub(super) fn summary_json(program: &ScenarioProgram) -> Value {
         "schema_version": 1,
         "summary_hash": program.source_hash,
         "solver_metadata": {
-            "engine": "kobo-core-v0.13",
+            "engine": "kobo-compiler-core",
             "outcome": "evidence-only",
         },
         "core_fact_count": program.operations.len(),
-        "template_fact_source": "scenario_program",
+        "template_fact_source": "scenario_program.typed_lifecycle_template",
         "functions": [program.target.clone()],
     })
 }
@@ -243,6 +188,10 @@ pub(super) fn summary_json(program: &ScenarioProgram) -> Value {
 pub(super) fn validate_formal_core_witness(witness: &Value) -> anyhow::Result<()> {
     if witness["schema_version"].as_u64() != Some(1) || witness["formal_core"].is_null() {
         return Ok(());
+    }
+
+    if witness["formal_core"]["source"].as_str() != Some("compiler_core_ir") {
+        return formal_core_error("formal_core.source must be compiler_core_ir");
     }
 
     let Some(functions) = witness["formal_core"]["functions"].as_array() else {
@@ -271,59 +220,23 @@ pub(super) fn validate_formal_core_witness(witness: &Value) -> anyhow::Result<()
     Ok(())
 }
 
-fn lower_formal_core(
-    source_path: &str,
-    source: &str,
-    program: &ScenarioProgram,
-) -> Vec<CoreFunction> {
-    let cleaned = scrub_comments_and_strings(source);
-    let function_ranges = function_ranges(source, &cleaned);
-    let boundary_imports = boundary_imports(source);
-    let mut statements_by_function =
-        statements_by_function(source_path, source, program, &function_ranges);
-
-    function_ranges
-        .into_iter()
-        .map(|function| {
-            let terminators = terminators_for_function(
-                source_path,
-                source,
-                &cleaned,
-                &function,
-                &boundary_imports,
-            );
-            let statements = statements_by_function
-                .remove(&function.name)
-                .unwrap_or_default();
-            CoreFunction {
-                name: function.name.clone(),
-                source_span: source_span_from_range(
-                    source_path,
-                    source,
-                    function.start,
-                    function.end,
-                ),
-                block: CoreBlock {
-                    id: "entry".to_owned(),
-                    statements,
-                    terminators,
-                },
-            }
-        })
-        .collect()
-}
-
 fn analyze_strict_liveness(
     source_path: &str,
     source: &str,
     program: &ScenarioProgram,
     run: &FullDepthRun,
 ) -> StrictLivenessAnalysis {
-    let core = lower_formal_core(source_path, source, program);
+    let core = lower_core_program(program);
     let recursive_functions = recursive_functions(program);
     let mut analysis = StrictLivenessAnalysis::default();
-    for function in &core {
-        analyze_function_liveness(function, &recursive_functions, &mut analysis);
+    for function in &core.functions {
+        analyze_function_liveness(
+            source_path,
+            source,
+            function,
+            &recursive_functions,
+            &mut analysis,
+        );
     }
     add_arc_mutex_error(source_path, source, &mut analysis);
     add_runtime_failure_error(source_path, source, run, &mut analysis);
@@ -331,58 +244,86 @@ fn analyze_strict_liveness(
 }
 
 fn analyze_function_liveness(
+    source_path: &str,
+    source: &str,
     function: &CoreFunction,
     recursive_functions: &BTreeSet<String>,
     analysis: &mut StrictLivenessAnalysis,
 ) {
-    let mut active = BTreeMap::<String, ActiveObligation>::new();
-    let mut events = function
-        .block
-        .statements
+    let blocks = function
+        .blocks
         .iter()
-        .map(|statement| {
-            (
-                statement.source_span.start,
-                0_u8,
-                StrictEvent::Statement(statement),
-            )
-        })
-        .chain(function.block.terminators.iter().map(|terminator| {
-            (
-                terminator.source_span.start,
-                1_u8,
-                StrictEvent::Terminator(terminator),
-            )
-        }))
-        .collect::<Vec<_>>();
-    events.sort_by_key(|(start, order, _)| (*start, *order));
+        .map(|block| (block.id.clone(), block))
+        .collect::<BTreeMap<_, _>>();
+    let Some(entry) = function.blocks.first() else {
+        return;
+    };
+    let mut in_states: BTreeMap<String, BTreeMap<String, ActiveObligation>> = BTreeMap::new();
+    let mut worklist = VecDeque::from([entry.id.clone()]);
+    in_states.insert(entry.id.clone(), BTreeMap::new());
 
-    for (_, _, event) in events {
-        match event {
-            StrictEvent::Statement(statement) => {
-                apply_statement_liveness(statement, recursive_functions, &mut active, analysis);
+    while let Some(block_id) = worklist.pop_front() {
+        let Some(block) = blocks.get(&block_id) else {
+            continue;
+        };
+        let mut active = in_states.remove(&block_id).unwrap_or_default();
+        apply_block_liveness(
+            source_path,
+            source,
+            block,
+            recursive_functions,
+            &mut active,
+            analysis,
+        );
+
+        if block.successors.is_empty() {
+            let span = source_span_from_kobo(source_path, source, function.source_span);
+            record_active_exit_errors("normal_exit", &span, &active, analysis);
+            continue;
+        }
+
+        for successor in &block.successors {
+            if successor == &block.id {
+                continue;
             }
-            StrictEvent::Terminator(terminator) => {
-                if should_check_terminator(terminator) {
-                    record_active_exit_errors(
-                        terminator.kind.as_str(),
-                        &terminator.source_span,
-                        &active,
-                        analysis,
-                    );
-                }
+            let existed = in_states.contains_key(successor);
+            let changed = merge_active_state(
+                in_states.entry(successor.clone()).or_default(),
+                active.clone(),
+            );
+            if (!existed || changed) && !worklist.iter().any(|candidate| candidate == successor) {
+                worklist.push_back(successor.clone());
             }
         }
     }
-    record_active_exit_errors("normal_exit", &function.source_span, &active, analysis);
 }
 
-enum StrictEvent<'a> {
-    Statement(&'a CoreStatement),
-    Terminator(&'a CoreTerminator),
+fn apply_block_liveness(
+    source_path: &str,
+    source: &str,
+    block: &CoreBlock,
+    recursive_functions: &BTreeSet<String>,
+    active: &mut BTreeMap<String, ActiveObligation>,
+    analysis: &mut StrictLivenessAnalysis,
+) {
+    for statement in &block.statements {
+        apply_statement_liveness(
+            source_path,
+            source,
+            statement,
+            recursive_functions,
+            active,
+            analysis,
+        );
+    }
+    for terminator in &block.terminators {
+        apply_terminator_liveness(source_path, source, terminator, active, analysis);
+    }
 }
 
 fn apply_statement_liveness(
+    source_path: &str,
+    source: &str,
     statement: &CoreStatement,
     recursive_functions: &BTreeSet<String>,
     active: &mut BTreeMap<String, ActiveObligation>,
@@ -395,7 +336,11 @@ fn apply_statement_liveness(
                     binding.clone(),
                     ActiveObligation {
                         binding: binding.clone(),
-                        source_span: statement.source_span.clone(),
+                        source_span: source_span_from_kobo(
+                            source_path,
+                            source,
+                            statement.source_span,
+                        ),
                     },
                 );
             }
@@ -413,28 +358,27 @@ fn apply_statement_liveness(
                 binding: obligation.binding,
                 resolution,
                 reason,
-                source_span: statement.source_span.clone(),
+                source_span: source_span_from_kobo(source_path, source, statement.source_span),
             });
         }
         CoreStatementKind::ObligationTransfer => {
-            if statement
-                .action
-                .as_ref()
-                .is_some_and(|callee| recursive_functions.contains(callee))
-            {
-                return;
-            }
             let Some(binding) = statement.binding.as_ref() else {
                 return;
             };
-            let Some(obligation) = active.remove(binding) else {
+            let Some(obligation) = active.get(binding) else {
                 return;
             };
+            let callee = statement.action.as_deref().unwrap_or_default();
+            let resolution = if recursive_functions.contains(callee) {
+                "pending_recursive_transfer"
+            } else {
+                "transferred_pending_summary"
+            };
             analysis.resolved_paths.push(StrictResolvedPath {
-                binding: obligation.binding,
-                resolution: "transferred".to_owned(),
-                reason: statement.action.clone(),
-                source_span: statement.source_span.clone(),
+                binding: obligation.binding.clone(),
+                resolution: resolution.to_owned(),
+                reason: (!callee.is_empty()).then(|| callee.to_owned()),
+                source_span: source_span_from_kobo(source_path, source, statement.source_span),
             });
         }
         CoreStatementKind::ObligationEscape => {
@@ -446,6 +390,45 @@ fn apply_statement_liveness(
     }
 }
 
+fn apply_terminator_liveness(
+    source_path: &str,
+    source: &str,
+    terminator: &CoreTerminator,
+    active: &BTreeMap<String, ActiveObligation>,
+    analysis: &mut StrictLivenessAnalysis,
+) {
+    let source_span = source_span_from_kobo(source_path, source, terminator.source_span);
+    match terminator.kind {
+        CoreTerminatorKind::Return
+        | CoreTerminatorKind::ErrorExit
+        | CoreTerminatorKind::Panic
+        | CoreTerminatorKind::Await
+        | CoreTerminatorKind::OpaqueBoundary => {
+            record_active_exit_errors(terminator.kind.as_str(), &source_span, active, analysis);
+        }
+        CoreTerminatorKind::Goto => {
+            if terminator.edges.iter().any(|edge| {
+                edge.strip_prefix("goto:")
+                    .is_some_and(|target| target == "bb0")
+            }) {
+                record_active_exit_errors("recursive_scc", &source_span, active, analysis);
+            }
+        }
+        CoreTerminatorKind::Branch => {}
+    }
+}
+
+fn merge_active_state(
+    current: &mut BTreeMap<String, ActiveObligation>,
+    incoming: BTreeMap<String, ActiveObligation>,
+) -> bool {
+    let before = current.len();
+    for (binding, obligation) in incoming {
+        current.entry(binding).or_insert(obligation);
+    }
+    current.len() != before
+}
+
 fn recursive_functions(program: &ScenarioProgram) -> BTreeSet<String> {
     program
         .coverage
@@ -454,16 +437,6 @@ fn recursive_functions(program: &ScenarioProgram) -> BTreeSet<String> {
         .filter(|scc| scc.is_recursive)
         .flat_map(|scc| scc.functions.iter().cloned())
         .collect()
-}
-
-fn should_check_terminator(terminator: &CoreTerminator) -> bool {
-    matches!(
-        terminator.kind,
-        CoreTerminatorKind::Return
-            | CoreTerminatorKind::ErrorExit
-            | CoreTerminatorKind::Panic
-            | CoreTerminatorKind::Await
-    )
 }
 
 fn record_active_exit_errors(
@@ -588,440 +561,82 @@ fn add_runtime_failure_error(
     });
 }
 
-fn statements_by_function(
-    source_path: &str,
-    source: &str,
-    program: &ScenarioProgram,
-    functions: &[FunctionRange],
-) -> BTreeMap<String, Vec<CoreStatement>> {
-    let mut by_function: BTreeMap<String, Vec<CoreStatement>> = BTreeMap::new();
-    for (index, operation) in program.operations.iter().enumerate() {
-        let start = operation.span.start as usize;
-        let function_name = functions
-            .iter()
-            .find(|function| function.start <= start && start <= function.end)
-            .map(|function| function.name.clone())
-            .unwrap_or_else(|| program.target.clone());
-        let Some(statement) = statement_from_operation(source_path, source, index, operation)
-        else {
-            continue;
-        };
-        let suppression = suppression_statement_from_create(source, index, &statement);
-        let statements = by_function.entry(function_name).or_default();
-        statements.push(statement);
-        if let Some(suppression) = suppression {
-            statements.push(suppression);
-        }
-    }
-    for statements in by_function.values_mut() {
-        statements.sort_by_key(|statement| statement.source_span.start);
-    }
-    by_function
-}
-
-fn suppression_statement_from_create(
-    source: &str,
-    index: usize,
-    statement: &CoreStatement,
-) -> Option<CoreStatement> {
-    if !matches!(statement.kind, CoreStatementKind::ObligationCreate) {
-        return None;
-    }
-    let binding = statement.binding.clone()?;
-    let reason = suppression_reason_before(source, statement.source_span.start)?;
-    Some(CoreStatement {
-        id: format!("stmt-{index}-suppression"),
-        kind: CoreStatementKind::ObligationDischarge,
-        binding: Some(binding),
-        action: Some(format!("suppressed:{reason}")),
-        boundary: None,
-        source_span: statement.source_span.clone(),
+fn function_json(source_path: &str, source: &str, function: CoreFunction) -> Value {
+    serde_json::json!({
+        "name": function.name,
+        "source_span": source_span_json(&source_span_from_kobo(source_path, source, function.source_span)),
+        "blocks": function
+            .blocks
+            .into_iter()
+            .map(|block| block_json(source_path, source, block))
+            .collect::<Vec<_>>(),
     })
 }
 
-fn suppression_reason_before(source: &str, start: usize) -> Option<String> {
-    let prefix = &source[..start.min(source.len())];
-    let attr_start = prefix.rfind("kobo::suppress_liveness")?;
-    if start.saturating_sub(attr_start) > 240 {
-        return None;
-    }
-    let attr_end = source[attr_start..start].find(']')? + attr_start;
-    attribute_string_value(&source[attr_start..=attr_end], "reason")
-        .or_else(|| Some("reasoned suppression".to_owned()))
+fn block_json(source_path: &str, source: &str, block: CoreBlock) -> Value {
+    serde_json::json!({
+        "id": block.id,
+        "statements": block
+            .statements
+            .into_iter()
+            .map(|statement| statement_json(source_path, source, statement))
+            .collect::<Vec<_>>(),
+        "terminators": block
+            .terminators
+            .into_iter()
+            .map(|terminator| terminator_json(source_path, source, terminator))
+            .collect::<Vec<_>>(),
+        "successors": block.successors,
+    })
 }
 
-fn statement_from_operation(
-    source_path: &str,
-    source: &str,
-    index: usize,
-    operation: &kobo_ir::ScenarioOp,
-) -> Option<CoreStatement> {
-    let source_span = source_span_from_range(
-        source_path,
-        source,
-        operation.span.start as usize,
-        operation.span.end as usize,
-    );
-    match &operation.kind {
-        ScenarioOpKind::CreateObligation { binding, .. } => Some(CoreStatement {
-            id: format!("stmt-{index}"),
-            kind: CoreStatementKind::ObligationCreate,
-            binding: Some(binding.clone()),
-            action: None,
-            boundary: None,
-            source_span,
-        }),
-        ScenarioOpKind::Discharge { binding, action } => Some(CoreStatement {
-            id: format!("stmt-{index}"),
-            kind: CoreStatementKind::ObligationDischarge,
-            binding: Some(binding.clone()),
-            action: Some(action.clone()),
-            boundary: None,
-            source_span,
-        }),
-        ScenarioOpKind::Transfer { binding, callee } => Some(CoreStatement {
-            id: format!("stmt-{index}"),
-            kind: CoreStatementKind::ObligationTransfer,
-            binding: Some(binding.clone()),
-            action: Some(callee.clone()),
-            boundary: None,
-            source_span,
-        }),
-        ScenarioOpKind::MoveBinding { binding } => Some(CoreStatement {
-            id: format!("stmt-{index}"),
-            kind: CoreStatementKind::ObligationMove,
-            binding: Some(binding.clone()),
-            action: None,
-            boundary: None,
-            source_span,
-        }),
-        ScenarioOpKind::ExternalBoundary {
-            crate_name, policy, ..
-        } => Some(CoreStatement {
-            id: format!("stmt-{index}"),
-            kind: CoreStatementKind::ObligationEscape,
-            binding: None,
-            action: Some(policy.as_str().to_owned()),
-            boundary: Some(crate_name.clone()),
-            source_span,
-        }),
-        ScenarioOpKind::ModeledEffect { .. }
-        | ScenarioOpKind::StorageEvent { .. }
-        | ScenarioOpKind::NetworkEvent { .. } => Some(CoreStatement {
-            id: format!("stmt-{index}"),
-            kind: CoreStatementKind::Call,
-            binding: None,
-            action: None,
-            boundary: None,
-            source_span,
-        }),
-        ScenarioOpKind::Select { .. }
-        | ScenarioOpKind::RawNondeterminism { .. }
-        | ScenarioOpKind::UncontrolledEffect { .. }
-        | ScenarioOpKind::Loop
-        | ScenarioOpKind::Return => None,
-    }
+fn statement_json(source_path: &str, source: &str, statement: CoreStatement) -> Value {
+    serde_json::json!({
+        "id": statement.id,
+        "kind": statement.kind.as_str(),
+        "binding": statement.binding,
+        "action": statement.action,
+        "boundary": statement.boundary,
+        "source_span": source_span_json(&source_span_from_kobo(source_path, source, statement.source_span)),
+    })
 }
 
-fn terminators_for_function(
-    source_path: &str,
-    source: &str,
-    cleaned: &[u8],
-    function: &FunctionRange,
-    imports: &[BoundaryImport],
-) -> Vec<CoreTerminator> {
-    let mut terminators = Vec::new();
-    let body = function.body_start..function.body_end;
-    for start in find_word(cleaned, body.clone(), "return") {
-        terminators.push(CoreTerminator {
-            id: format!("term-{}", terminators.len()),
-            kind: CoreTerminatorKind::Return,
-            boundary: None,
-            policy: None,
-            edges: vec!["return".to_owned()],
-            source_span: source_span_from_needle(source_path, source, start, "return"),
-        });
-    }
-    for start in find_word(cleaned, body.clone(), "panic") {
-        if cleaned.get(start + "panic".len()) == Some(&b'!') {
-            terminators.push(CoreTerminator {
-                id: format!("term-{}", terminators.len()),
-                kind: CoreTerminatorKind::Panic,
-                boundary: None,
-                policy: None,
-                edges: vec!["panic".to_owned()],
-                source_span: source_span_from_needle(source_path, source, start, "panic!"),
-            });
-        }
-    }
-    for start in find_bytes(cleaned, body.clone(), b"?") {
-        terminators.push(CoreTerminator {
-            id: format!("term-{}", terminators.len()),
-            kind: CoreTerminatorKind::ErrorExit,
-            boundary: None,
-            policy: None,
-            edges: vec!["error_exit".to_owned()],
-            source_span: line_span_containing(source_path, source, start),
-        });
-    }
-    for start in find_bytes(cleaned, body.clone(), b".await") {
-        terminators.push(CoreTerminator {
-            id: format!("term-{}", terminators.len()),
-            kind: CoreTerminatorKind::Await,
-            boundary: None,
-            policy: None,
-            edges: vec!["await_resume".to_owned(), "await_cancel".to_owned()],
-            source_span: line_span_containing(source_path, source, start),
-        });
-    }
-    for import in imports {
-        let alias_call = format!("{}::", import.alias);
-        for start in find_bytes(cleaned, body.clone(), alias_call.as_bytes()) {
-            terminators.push(CoreTerminator {
-                id: format!("term-{}", terminators.len()),
-                kind: CoreTerminatorKind::OpaqueBoundary,
-                boundary: Some(import.boundary.clone()),
-                policy: Some(import.policy.clone()),
-                edges: vec!["opaque_boundary_resume".to_owned()],
-                source_span: line_span_containing(source_path, source, start),
-            });
-        }
-    }
-    terminators.sort_by_key(|terminator| terminator.source_span.start);
-    for (index, terminator) in terminators.iter_mut().enumerate() {
-        terminator.id = format!("term-{index}");
-    }
-    terminators
+fn terminator_json(source_path: &str, source: &str, terminator: CoreTerminator) -> Value {
+    serde_json::json!({
+        "id": terminator.id,
+        "kind": terminator.kind.as_str(),
+        "boundary": terminator.boundary,
+        "policy": terminator.policy,
+        "edges": terminator.edges,
+        "source_span": source_span_json(&source_span_from_kobo(source_path, source, terminator.source_span)),
+    })
 }
 
-fn function_ranges(source: &str, cleaned: &[u8]) -> Vec<FunctionRange> {
-    let mut functions = Vec::new();
-    let mut cursor = 0;
-    while let Some(fn_start) = find_next_word(cleaned, cursor, "fn") {
-        let mut name_start = fn_start + "fn".len();
-        while cleaned
-            .get(name_start)
-            .is_some_and(|byte| byte.is_ascii_whitespace())
-        {
-            name_start += 1;
-        }
-        let mut name_end = name_start;
-        while cleaned
-            .get(name_end)
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
-        {
-            name_end += 1;
-        }
-        if name_start == name_end {
-            cursor = fn_start + 2;
-            continue;
-        }
-        let Some(body_start) = cleaned[name_end..]
-            .iter()
-            .position(|byte| *byte == b'{')
-            .map(|offset| name_end + offset)
-        else {
-            break;
-        };
-        let Some(body_end) = matching_brace(cleaned, body_start) else {
-            cursor = body_start + 1;
-            continue;
-        };
-        functions.push(FunctionRange {
-            name: source[name_start..name_end].to_owned(),
-            start: fn_start,
-            body_start,
-            body_end,
-            end: body_end + 1,
-        });
-        cursor = body_end + 1;
-    }
-    functions
+fn strict_error_json(error: StrictLivenessError) -> Value {
+    serde_json::json!({
+        "exit_kind": error.exit_kind,
+        "binding": error.binding,
+        "message": error.message,
+        "source_span": source_span_json(&error.source_span),
+        "obligation_span": source_span_json(&error.obligation_span),
+    })
 }
 
-fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
-    let mut depth = 0_usize;
-    for (index, byte) in bytes.iter().enumerate().skip(open) {
-        match byte {
-            b'{' => depth += 1,
-            b'}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+fn resolved_path_json(path: &StrictResolvedPath) -> Value {
+    serde_json::json!({
+        "binding": &path.binding,
+        "resolution": &path.resolution,
+        "reason": &path.reason,
+        "source_span": source_span_json(&path.source_span),
+    })
 }
 
-fn boundary_imports(source: &str) -> Vec<BoundaryImport> {
-    let mut imports = Vec::new();
-    let mut cursor = 0;
-    while let Some(attr_start) = source[cursor..].find("#[kobo::boundary") {
-        let attr_start = cursor + attr_start;
-        let Some(attr_end) = source[attr_start..]
-            .find(']')
-            .map(|offset| attr_start + offset)
-        else {
-            break;
-        };
-        let attr = &source[attr_start..=attr_end];
-        let boundary =
-            attribute_string_value(attr, "crate").unwrap_or_else(|| "unknown".to_owned());
-        let policy = attribute_string_value(attr, "policy").unwrap_or_else(|| "debt".to_owned());
-        let Some(use_start) = source[attr_end..]
-            .find("use ")
-            .map(|offset| attr_end + offset)
-        else {
-            cursor = attr_end + 1;
-            continue;
-        };
-        let Some(use_end) = source[use_start..]
-            .find(';')
-            .map(|offset| use_start + offset)
-        else {
-            cursor = attr_end + 1;
-            continue;
-        };
-        let use_path = source[use_start + "use ".len()..use_end].trim();
-        let alias = use_path
-            .split_once(" as ")
-            .map(|(_, alias)| alias.trim())
-            .unwrap_or_else(|| use_path.rsplit("::").next().unwrap_or(use_path).trim())
-            .to_owned();
-        imports.push(BoundaryImport {
-            boundary,
-            policy,
-            alias,
-        });
-        cursor = use_end + 1;
-    }
-    imports
+fn source_span_json(span: &CoreSourceSpan) -> Value {
+    span.as_json()
 }
 
-fn attribute_string_value(attr: &str, key: &str) -> Option<String> {
-    let marker = format!("{key} = \"");
-    let start = attr.find(&marker)? + marker.len();
-    let end = attr[start..].find('"')? + start;
-    Some(attr[start..end].to_owned())
-}
-
-fn find_next_word(bytes: &[u8], from: usize, word: &str) -> Option<usize> {
-    find_word(bytes, from..bytes.len(), word).into_iter().next()
-}
-
-fn find_word(bytes: &[u8], range: std::ops::Range<usize>, word: &str) -> Vec<usize> {
-    find_bytes(bytes, range, word.as_bytes())
-        .into_iter()
-        .filter(|start| {
-            let end = start + word.len();
-            !bytes
-                .get(start.saturating_sub(1))
-                .is_some_and(is_identifier_byte)
-                && !bytes.get(end).is_some_and(is_identifier_byte)
-        })
-        .collect()
-}
-
-fn find_bytes(bytes: &[u8], range: std::ops::Range<usize>, needle: &[u8]) -> Vec<usize> {
-    if needle.is_empty() || range.start >= range.end || range.end > bytes.len() {
-        return Vec::new();
-    }
-    let mut starts = Vec::new();
-    let mut cursor = range.start;
-    while cursor + needle.len() <= range.end {
-        if &bytes[cursor..cursor + needle.len()] == needle {
-            starts.push(cursor);
-            cursor += needle.len();
-        } else {
-            cursor += 1;
-        }
-    }
-    starts
-}
-
-fn is_identifier_byte(byte: &u8) -> bool {
-    byte.is_ascii_alphanumeric() || *byte == b'_'
-}
-
-fn scrub_comments_and_strings(source: &str) -> Vec<u8> {
-    let bytes = source.as_bytes();
-    let mut cleaned = bytes.to_vec();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'/' if bytes.get(index + 1) == Some(&b'/') => {
-                let start = index;
-                index += 2;
-                while index < bytes.len() && bytes[index] != b'\n' {
-                    index += 1;
-                }
-                blank(&mut cleaned, start, index);
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                let start = index;
-                index += 2;
-                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-                {
-                    index += 1;
-                }
-                index = (index + 2).min(bytes.len());
-                blank(&mut cleaned, start, index);
-            }
-            b'"' => {
-                let start = index;
-                index += 1;
-                while index < bytes.len() {
-                    if bytes[index] == b'\\' {
-                        index = (index + 2).min(bytes.len());
-                    } else if bytes[index] == b'"' {
-                        index += 1;
-                        break;
-                    } else {
-                        index += 1;
-                    }
-                }
-                blank(&mut cleaned, start, index);
-            }
-            b'\'' => {
-                let start = index;
-                index += 1;
-                while index < bytes.len() {
-                    if bytes[index] == b'\\' {
-                        index = (index + 2).min(bytes.len());
-                    } else if bytes[index] == b'\'' {
-                        index += 1;
-                        break;
-                    } else {
-                        index += 1;
-                    }
-                }
-                blank(&mut cleaned, start, index);
-            }
-            _ => index += 1,
-        }
-    }
-    cleaned
-}
-
-fn blank(bytes: &mut [u8], start: usize, end: usize) {
-    let bounded_end = end.min(bytes.len());
-    for byte in &mut bytes[start..bounded_end] {
-        if *byte != b'\n' {
-            *byte = b' ';
-        }
-    }
-}
-
-fn source_span_from_needle(
-    source_path: &str,
-    source: &str,
-    start: usize,
-    needle: &str,
-) -> CoreSourceSpan {
-    source_span_from_range(source_path, source, start, start + needle.len())
+fn source_span_from_kobo(source_path: &str, source: &str, span: KoboSpan) -> CoreSourceSpan {
+    source_span_from_range(source_path, source, span.start as usize, span.end as usize)
 }
 
 fn source_span_from_range(
@@ -1076,67 +691,6 @@ fn line_snippet(source: &str, offset: usize) -> String {
     source[line_start..line_end].trim().to_owned()
 }
 
-fn function_json(function: CoreFunction) -> Value {
-    serde_json::json!({
-        "name": function.name,
-        "source_span": source_span_json(&function.source_span),
-        "blocks": [block_json(function.block)],
-    })
-}
-
-fn block_json(block: CoreBlock) -> Value {
-    serde_json::json!({
-        "id": block.id,
-        "statements": block.statements.into_iter().map(statement_json).collect::<Vec<_>>(),
-        "terminators": block.terminators.into_iter().map(terminator_json).collect::<Vec<_>>(),
-    })
-}
-
-fn statement_json(statement: CoreStatement) -> Value {
-    serde_json::json!({
-        "id": statement.id,
-        "kind": statement.kind.as_str(),
-        "binding": statement.binding,
-        "action": statement.action,
-        "boundary": statement.boundary,
-        "source_span": source_span_json(&statement.source_span),
-    })
-}
-
-fn terminator_json(terminator: CoreTerminator) -> Value {
-    serde_json::json!({
-        "id": terminator.id,
-        "kind": terminator.kind.as_str(),
-        "boundary": terminator.boundary,
-        "policy": terminator.policy,
-        "edges": terminator.edges,
-        "source_span": source_span_json(&terminator.source_span),
-    })
-}
-
-fn strict_error_json(error: StrictLivenessError) -> Value {
-    serde_json::json!({
-        "exit_kind": error.exit_kind,
-        "binding": error.binding,
-        "message": error.message,
-        "source_span": source_span_json(&error.source_span),
-        "obligation_span": source_span_json(&error.obligation_span),
-    })
-}
-
-fn resolved_path_json(path: &StrictResolvedPath) -> Value {
-    serde_json::json!({
-        "binding": &path.binding,
-        "resolution": &path.resolution,
-        "reason": &path.reason,
-        "source_span": source_span_json(&path.source_span),
-    })
-}
-
-fn source_span_json(span: &CoreSourceSpan) -> Value {
-    span.as_json()
-}
-
 impl CoreSourceSpan {
     fn as_json(&self) -> Value {
         serde_json::json!({
@@ -1147,31 +701,6 @@ impl CoreSourceSpan {
             "mapped": self.mapped,
             "snippet": self.snippet,
         })
-    }
-}
-
-impl CoreStatementKind {
-    const fn as_str(&self) -> &'static str {
-        match self {
-            Self::ObligationCreate => "obligation_create",
-            Self::ObligationDischarge => "obligation_discharge",
-            Self::ObligationTransfer => "obligation_transfer",
-            Self::ObligationMove => "obligation_move",
-            Self::ObligationEscape => "obligation_escape",
-            Self::Call => "call",
-        }
-    }
-}
-
-impl CoreTerminatorKind {
-    const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Return => "return",
-            Self::ErrorExit => "error_exit",
-            Self::Panic => "panic",
-            Self::Await => "await",
-            Self::OpaqueBoundary => "opaque_boundary",
-        }
     }
 }
 
@@ -1197,9 +726,4 @@ fn formal_core_error<T>(message: &str) -> anyhow::Result<T> {
     eprintln!("error[K0115]: {message}");
     eprintln!("help: Core evidence must be source-mapped to the original .kobo file");
     anyhow::bail!("invalid formal Core evidence")
-}
-
-#[allow(dead_code)]
-fn _policy_name(policy: &ScenarioBoundaryPolicy) -> &'static str {
-    policy.as_str()
 }

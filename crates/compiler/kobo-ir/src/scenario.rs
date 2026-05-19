@@ -22,6 +22,8 @@ pub enum ScenarioOpKind {
         binding: String,
         type_name: String,
         actions: Vec<String>,
+        #[serde(default)]
+        template: Option<ScenarioLifecycleTemplate>,
     },
     Discharge {
         binding: String,
@@ -61,8 +63,72 @@ pub enum ScenarioOpKind {
         policy: ScenarioBoundaryPolicy,
         reason: Option<String>,
     },
+    CoreTerminator {
+        kind: ScenarioCoreTerminatorKind,
+        boundary: Option<String>,
+        policy: Option<ScenarioBoundaryPolicy>,
+        edges: Vec<String>,
+    },
     Loop,
     Return,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioLifecycleTemplate {
+    pub id: String,
+    pub kind: String,
+    pub version: String,
+    pub confidence: String,
+    pub source: ScenarioLifecycleTemplateSource,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ScenarioLifecycleTemplateSource {
+    Declaration,
+    Inference,
+}
+
+impl ScenarioLifecycleTemplate {
+    pub fn inferred(id: &str, kind: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            kind: kind.to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "exact_template".to_owned(),
+            source: ScenarioLifecycleTemplateSource::Inference,
+        }
+    }
+
+    pub fn declared(type_name: &str) -> Self {
+        Self {
+            id: format!("declared_must_call:{}", type_name),
+            kind: "declared_must_call".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "declared_contract".to_owned(),
+            source: ScenarioLifecycleTemplateSource::Declaration,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ScenarioCoreTerminatorKind {
+    Return,
+    ErrorExit,
+    Panic,
+    Await,
+    OpaqueBoundary,
+}
+
+impl ScenarioCoreTerminatorKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Return => "return",
+            Self::ErrorExit => "error_exit",
+            Self::Panic => "panic",
+            Self::Await => "await",
+            Self::OpaqueBoundary => "opaque_boundary",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

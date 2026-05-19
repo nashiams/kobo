@@ -600,8 +600,12 @@ fn write_run_witness(
     let runtime_profile = runtime_profile_json(config, sim_profile, seed, run);
     let runtime_profile_hash =
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
-    let inferred_obligations =
-        witness_evidence::inferred_obligations_json(&source_path, &document.source, run);
+    let inferred_obligations = witness_evidence::inferred_obligations_json(
+        &source_path,
+        &document.source,
+        scenario_program,
+        run,
+    );
     let formal_core =
         formal_core::formal_core_json(&source_path, &document.source, scenario_program);
     let proof_seed =

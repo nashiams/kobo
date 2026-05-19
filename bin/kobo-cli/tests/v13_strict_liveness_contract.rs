@@ -360,6 +360,31 @@ fn arc_mutex_case() {
 }
 
 #[test]
+fn opaque_boundary_exit_with_unresolved_obligation_fails() {
+    let project = TestProject::new("v13-strict-opaque-exit");
+    let source = delivery_source(
+        r#"
+#[kobo::boundary(crate = "live_payments", policy = "opaque", reason = "outside replay")]
+use live_payments::Client;
+
+#[kobo::scenario(profile = "sync")]
+fn opaque_exit_case() {
+    let token = Delivery {};
+    let _client = Client::new();
+    token.ack();
+}
+"#,
+    );
+
+    let (output, witness) = run_strict_witness(&project, &source, "opaque_exit_case");
+    assert_failure(
+        &output,
+        "opaque boundary edge must reject unresolved local obligations",
+    );
+    assert_strict_error(&witness, "opaque_boundary", "token");
+}
+
+#[test]
 fn mode_invariant_preserves_runtime_output_for_accepted_code() {
     let project = TestProject::new("v13-strict-mode-invariant");
     let file = project.main_file(

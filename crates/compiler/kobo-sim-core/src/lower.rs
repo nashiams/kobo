@@ -18,6 +18,7 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     binding,
                     type_name,
                     actions,
+                    ..
                 } => Some(ScenarioOperation::CreateObligation {
                     binding: binding.clone(),
                     type_name: type_name.clone(),
@@ -101,6 +102,7 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     span_start,
                     span_end,
                 }),
+                ScenarioOpKind::CoreTerminator { .. } => None,
                 ScenarioOpKind::Return => None,
             }
         })

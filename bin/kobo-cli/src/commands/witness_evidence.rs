@@ -188,13 +188,18 @@ fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> serde
 pub(super) fn inferred_obligations_json(
     source_path: &str,
     source: &str,
+    program: &ScenarioProgram,
     run: &FullDepthRun,
 ) -> serde_json::Value {
+    let template_facts = lifecycle_template_facts(program);
     serde_json::Value::Array(
         run.obligations
             .iter()
             .map(|obligation| {
-                let template = lifecycle_template(&obligation.actions);
+                let template = template_facts
+                    .get(&obligation.binding)
+                    .cloned()
+                    .unwrap_or_else(|| lifecycle_template(&obligation.actions));
                 let state = if obligation.is_discharged {
                     "discharged"
                 } else {
@@ -217,7 +222,8 @@ pub(super) fn inferred_obligations_json(
                     "id": format!("{}:{}", template.id, obligation.binding),
                     "kind": template.kind,
                     "template_id": template.id,
-                    "template_version": "v0.13.0",
+                    "template_version": template.version,
+                    "template_source": template.source,
                     "binding": obligation.binding,
                     "state": state,
                     "terminal_actions": obligation.actions.clone(),
@@ -320,6 +326,7 @@ impl FunctionSummaryBuilder {
                         .push(operation.clone());
                 }
                 ScenarioOpKind::MoveBinding { .. }
+                | ScenarioOpKind::CoreTerminator { .. }
                 | ScenarioOpKind::ModeledEffect { .. }
                 | ScenarioOpKind::StorageEvent { .. }
                 | ScenarioOpKind::NetworkEvent { .. }
@@ -401,6 +408,9 @@ fn operation_coverage_label(operation: &kobo_ir::ScenarioOp) -> String {
         } => {
             format!("external-boundary.{}.{}", policy.as_str(), crate_name)
         }
+        ScenarioOpKind::CoreTerminator { kind, .. } => {
+            format!("core-terminator.{}", kind.as_str())
+        }
         ScenarioOpKind::Loop => "loop".to_owned(),
         ScenarioOpKind::Return => "return".to_owned(),
     }
@@ -415,10 +425,43 @@ fn modeled_boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 struct LifecycleTemplate {
-    kind: &'static str,
-    id: &'static str,
-    confidence: &'static str,
+    kind: String,
+    id: String,
+    version: String,
+    confidence: String,
+    source: &'static str,
+}
+
+fn lifecycle_template_facts(program: &ScenarioProgram) -> BTreeMap<String, LifecycleTemplate> {
+    let mut facts = BTreeMap::new();
+    for operation in &program.operations {
+        let ScenarioOpKind::CreateObligation {
+            binding,
+            actions,
+            template,
+            ..
+        } = &operation.kind
+        else {
+            continue;
+        };
+        let fact = template.as_ref().map_or_else(
+            || lifecycle_template(actions),
+            |template| LifecycleTemplate {
+                kind: template.kind.clone(),
+                id: template.id.clone(),
+                version: template.version.clone(),
+                confidence: template.confidence.clone(),
+                source: match template.source {
+                    kobo_ir::ScenarioLifecycleTemplateSource::Declaration => "declaration",
+                    kobo_ir::ScenarioLifecycleTemplateSource::Inference => "inference",
+                },
+            },
+        );
+        facts.entry(binding.clone()).or_insert(fact);
+    }
+    facts
 }
 
 fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
@@ -427,9 +470,11 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "ack" | "nack" | "requeue"))
     {
         return LifecycleTemplate {
-            kind: "queue_delivery",
-            id: "queue_delivery",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:ack_nack_requeue".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
@@ -437,9 +482,11 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "commit" | "rollback"))
     {
         return LifecycleTemplate {
-            kind: "transaction",
-            id: "transaction",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:transaction".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
@@ -447,9 +494,11 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "reply" | "reject" | "cancel"))
     {
         return LifecycleTemplate {
-            kind: "handler_reply",
-            id: "handler_reply",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:handler_reply".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
@@ -457,9 +506,11 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "await" | "abort" | "detach-with-policy"))
     {
         return LifecycleTemplate {
-            kind: "spawned_task",
-            id: "spawned_task",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:spawned_task".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
@@ -467,9 +518,11 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "release" | "drop-at-safe-boundary"))
     {
         return LifecycleTemplate {
-            kind: "lock_permit",
-            id: "lock_permit",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:lock_permit".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
@@ -477,15 +530,19 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "close" | "transfer" | "opaque-boundary"))
     {
         return LifecycleTemplate {
-            kind: "file_socket",
-            id: "file_socket",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:file_socket".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     LifecycleTemplate {
-        kind: "lifecycle_obligation",
-        id: "custom_lifecycle_obligation",
-        confidence: "heuristic",
+        kind: "lifecycle_obligation".to_owned(),
+        id: "custom_lifecycle_obligation".to_owned(),
+        version: "v0.13.0".to_owned(),
+        confidence: "compatibility_fallback".to_owned(),
+        source: "compatibility_fallback",
     }
 }
 

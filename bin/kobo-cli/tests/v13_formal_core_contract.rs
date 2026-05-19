@@ -392,7 +392,7 @@ fn summary_case() {
 "#;
 
     let (_path, witness) = run_witness(&project, source, "summary_case");
-    assert_eq!(witness["formal_core"]["source"], "kir-to-core");
+    assert_eq!(witness["formal_core"]["source"], "compiler_core_ir");
     assert!(
         witness["summaries"]
             .as_array()
@@ -475,4 +475,79 @@ fn downgrade_case() {
         "opaque boundary should be represented as policy evidence: {}",
         witness["boundary_ledger"]
     );
+}
+
+#[test]
+fn formal_core_is_compiler_owned_cfg_not_cli_text_scan() {
+    let project = TestProject::new("v13-core-compiler-owned-cfg");
+    let source = r#"
+#[kobo::must_call(done)]
+struct Token {}
+
+impl Token {
+    fn done(self) {}
+}
+
+#[kobo::scenario(profile = "sync")]
+fn compiler_owned_cfg_case() {
+    let token = Token {};
+    token.done();
+    let renamed = 10;
+    if renamed > 1 {
+        return;
+    }
+}
+"#;
+
+    let (_path, witness) = run_witness(&project, source, "compiler_owned_cfg_case");
+    assert_eq!(witness["formal_core"]["source"], "compiler_core_ir");
+    let blocks = witness["formal_core"]["functions"][0]["blocks"]
+        .as_array()
+        .expect("Core function should expose CFG blocks");
+    assert!(
+        blocks.len() > 1,
+        "compiler Core should expose block-level CFG evidence, not a single entry bucket: {blocks:?}"
+    );
+    assert!(
+        blocks
+            .iter()
+            .any(|block| block["successors"].as_array().is_some()),
+        "Core blocks should carry successor evidence: {blocks:?}"
+    );
+}
+
+#[test]
+fn declared_ack_nack_requeue_is_not_guessed_as_queue_delivery() {
+    let project = TestProject::new("v13-core-declared-template");
+    let source = r#"
+#[kobo::must_call(ack | nack | requeue)]
+struct ManualToken {}
+
+impl ManualToken {
+    fn ack(self) {}
+    fn nack(self) {}
+    fn requeue(self) {}
+}
+
+#[kobo::scenario(profile = "sync")]
+fn declared_template_case() {
+    let token = ManualToken {};
+    token.ack();
+}
+"#;
+
+    let (_path, witness) = run_witness(&project, source, "declared_template_case");
+    let obligations = witness["lifecycle_inference"]["obligations"]
+        .as_array()
+        .expect("lifecycle inference obligations should be present");
+    let token = obligations
+        .iter()
+        .find(|obligation| obligation["binding"].as_str() == Some("token"))
+        .expect("manual token lifecycle evidence should exist");
+    assert_ne!(
+        token["template_id"], "queue_delivery",
+        "manual must_call declarations must not be relabeled as inferred queue templates: {token}"
+    );
+    assert_eq!(token["template_source"], "declaration");
+    assert_eq!(token["kind"], "declared_must_call");
 }

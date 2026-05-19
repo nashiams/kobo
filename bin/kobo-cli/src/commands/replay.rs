@@ -136,8 +136,12 @@ fn replay_v1(
     validate_removed_events_replay_safe(witness, &run.events, error_format)?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
-    let inferred_obligations =
-        witness_evidence::inferred_obligations_json(source_display, &verified_source.source, &run);
+    let inferred_obligations = witness_evidence::inferred_obligations_json(
+        source_display,
+        &verified_source.source,
+        &scenario_program,
+        &run,
+    );
     let fuzz_enabled = witness["fuzz"]["enabled"].as_bool().unwrap_or(false);
     let summaries = summary_usage_json(&session.config, &scenario_program)?;
     let formal_core =

@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
     KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryCallArgument,
-    ScenarioBoundaryPolicy, ScenarioCallGraphScc, ScenarioCoverageFacts, ScenarioExternalCallShape,
+    ScenarioBoundaryPolicy, ScenarioCallGraphScc, ScenarioCoreTerminatorKind,
+    ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioLifecycleTemplate,
     ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_parser::KoboFile;
@@ -12,8 +13,8 @@ use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 use syn::{
     Block, Expr, ExprAsync, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath,
-    ExprStruct, File, Item, ItemFn, ItemUse, Lit, Local, Macro, Meta, MetaNameValue, Pat, PatIdent,
-    PatType, Path, Stmt, UseTree,
+    ExprStruct, ExprTry, File, Item, ItemFn, ItemUse, Lit, Local, Macro, Meta, MetaNameValue, Pat,
+    PatIdent, PatType, Path, Stmt, UseTree,
 };
 
 type BindingMap = HashMap<String, String>;
@@ -62,6 +63,7 @@ struct InferredLifecycleCreation {
     binding: String,
     type_name: String,
     actions: Vec<String>,
+    template: ScenarioLifecycleTemplate,
     span: KoboSpan,
 }
 
@@ -541,6 +543,10 @@ impl<'a> ScenarioLowerer<'a> {
                     binding,
                     type_name: "HandlerReply".to_owned(),
                     actions: handler_reply_actions(),
+                    template: Some(ScenarioLifecycleTemplate::inferred(
+                        "handler_reply",
+                        "handler_reply",
+                    )),
                 },
             });
         }
@@ -564,6 +570,9 @@ impl<'a> ScenarioLowerer<'a> {
             Stmt::Expr(expr, _) => self.execute_expr(expr, env),
             Stmt::Item(_) => {}
             Stmt::Macro(statement_macro) => {
+                if self.record_panic_macro(&statement_macro.mac) {
+                    return;
+                }
                 if !self.record_spawn_macro(&statement_macro.mac) {
                     self.unsupported_macro(&statement_macro.mac);
                 }
@@ -579,6 +588,7 @@ impl<'a> ScenarioLowerer<'a> {
             self.local_must_call_creation(local, init.expr.as_ref())
         {
             if let Some(actions) = self.must_call_types.get(&type_name).cloned() {
+                let template = ScenarioLifecycleTemplate::declared(&type_name);
                 env.bind_obligation(binding.clone(), binding.clone(), actions.clone());
                 self.operations.push(ScenarioOp {
                     span,
@@ -586,6 +596,7 @@ impl<'a> ScenarioLowerer<'a> {
                         binding: binding.clone(),
                         type_name,
                         actions,
+                        template: Some(template),
                     },
                 });
                 self.record_reasoned_suppression(local, &binding);
@@ -604,10 +615,10 @@ impl<'a> ScenarioLowerer<'a> {
                     binding: creation.binding.clone(),
                     type_name: creation.type_name,
                     actions: creation.actions,
+                    template: Some(creation.template),
                 },
             });
             self.record_reasoned_suppression(local, &creation.binding);
-            self.execute_expr(init.expr.as_ref(), env);
             return;
         }
         if let Some(binding) =
@@ -663,6 +674,7 @@ impl<'a> ScenarioLowerer<'a> {
                 binding,
                 type_name: "SpawnedTask".to_owned(),
                 actions: spawned_task_actions(),
+                template: ScenarioLifecycleTemplate::inferred("spawned_task", "spawned_task"),
                 span: self.span(expr),
             });
         }
@@ -673,24 +685,28 @@ impl<'a> ScenarioLowerer<'a> {
                 binding,
                 type_name: "Delivery".to_owned(),
                 actions: queue_delivery_actions(),
+                template: ScenarioLifecycleTemplate::inferred("queue_delivery", "queue_delivery"),
                 span: self.span(call),
             }),
             "begin" => Some(InferredLifecycleCreation {
                 binding,
                 type_name: "Transaction".to_owned(),
                 actions: transaction_actions(),
+                template: ScenarioLifecycleTemplate::inferred("transaction", "transaction"),
                 span: self.span(call),
             }),
             "acquire" | "lock" | "try_acquire" => Some(InferredLifecycleCreation {
                 binding,
                 type_name: "LockPermit".to_owned(),
                 actions: lock_permit_actions(),
+                template: ScenarioLifecycleTemplate::inferred("lock_permit", "lock_permit"),
                 span: self.span(call),
             }),
             "open" | "connect" | "accept" => Some(InferredLifecycleCreation {
                 binding,
                 type_name: "FileSocket".to_owned(),
                 actions: file_socket_actions(),
+                template: ScenarioLifecycleTemplate::inferred("file_socket", "file_socket"),
                 span: self.span(call),
             }),
             _ => None,
@@ -705,6 +721,13 @@ impl<'a> ScenarioLowerer<'a> {
             Expr::Match(expr_match) => self.execute_match(expr_match, env),
             Expr::Async(expr_async) => self.execute_async(expr_async, env),
             Expr::Await(await_expr) => {
+                self.record_core_terminator(
+                    ScenarioCoreTerminatorKind::Await,
+                    None,
+                    None,
+                    vec!["await_resume".to_owned(), "await_cancel".to_owned()],
+                    expr,
+                );
                 if let Some(binding) =
                     expr_path_ident(await_expr.base.as_ref()).and_then(|name| env.resolve(&name))
                 {
@@ -719,6 +742,7 @@ impl<'a> ScenarioLowerer<'a> {
                 }
                 self.execute_expr(await_expr.base.as_ref(), env);
             }
+            Expr::Try(expr_try) => self.execute_try(expr_try, env),
             Expr::Block(block) => self.execute_block(&block.block, env),
             Expr::Loop(expr_loop) => self.operations.push(ScenarioOp {
                 span: self.span(expr_loop),
@@ -726,6 +750,9 @@ impl<'a> ScenarioLowerer<'a> {
             }),
             Expr::Paren(paren) => self.execute_expr(paren.expr.as_ref(), env),
             Expr::Macro(expr_macro) => {
+                if self.record_panic_macro(&expr_macro.mac) {
+                    return;
+                }
                 if !self.record_spawn_macro(&expr_macro.mac) {
                     self.unsupported_macro(&expr_macro.mac);
                 }
@@ -745,9 +772,27 @@ impl<'a> ScenarioLowerer<'a> {
                         },
                     });
                 }
+                self.record_core_terminator(
+                    ScenarioCoreTerminatorKind::Return,
+                    None,
+                    None,
+                    vec!["return".to_owned()],
+                    expr_return,
+                );
             }
             _ => {}
         }
+    }
+
+    fn execute_try(&mut self, expr_try: &'a ExprTry, env: &mut BindingEnv) {
+        self.record_core_terminator(
+            ScenarioCoreTerminatorKind::ErrorExit,
+            None,
+            None,
+            vec!["error_exit".to_owned()],
+            expr_try,
+        );
+        self.execute_expr(expr_try.expr.as_ref(), env);
     }
 
     fn execute_if(&mut self, expr_if: &'a ExprIf, env: &mut BindingEnv) {
@@ -915,6 +960,7 @@ impl<'a> ScenarioLowerer<'a> {
             let call_path = self.external_call_path(&path.path, &crate_name, env);
             let return_type = associated_return_type_path(&call_path)
                 .unwrap_or_else(|| format!("{crate_name}::__KoboBoundaryValue"));
+            self.record_boundary_argument_escapes(&call.args, env, &crate_name);
             self.record_external_boundary_operation(
                 call,
                 crate_name.clone(),
@@ -923,7 +969,6 @@ impl<'a> ScenarioLowerer<'a> {
                 Some(return_type.clone()),
                 ScenarioExternalCallShape::AssociatedFunction,
             );
-            self.record_boundary_argument_escapes(&call.args, env, &crate_name);
             return Some(ExternalBoundaryValue {
                 crate_name,
                 type_path: return_type,
@@ -944,6 +989,7 @@ impl<'a> ScenarioLowerer<'a> {
                     format!("{crate_name}::__KoboBoundaryValue")
                 }
             };
+            self.record_boundary_argument_escapes(&call.args, env, &crate_name);
             self.record_external_boundary_operation(
                 call,
                 crate_name.clone(),
@@ -952,7 +998,6 @@ impl<'a> ScenarioLowerer<'a> {
                 Some(return_type.clone()),
                 call_shape,
             );
-            self.record_boundary_argument_escapes(&call.args, env, &crate_name);
             return Some(ExternalBoundaryValue {
                 crate_name,
                 type_path: return_type,
@@ -974,6 +1019,7 @@ impl<'a> ScenarioLowerer<'a> {
             &receiver.type_path,
             &call.method.to_string(),
         );
+        self.record_boundary_argument_escapes(&call.args, env, &receiver.crate_name);
         self.record_external_boundary_operation(
             call,
             receiver.crate_name.clone(),
@@ -982,7 +1028,6 @@ impl<'a> ScenarioLowerer<'a> {
             Some(return_type.clone()),
             ScenarioExternalCallShape::Method,
         );
-        self.record_boundary_argument_escapes(&call.args, env, &receiver.crate_name);
         Some(ExternalBoundaryValue {
             crate_name: receiver.crate_name,
             type_path: return_type,
@@ -1038,6 +1083,8 @@ impl<'a> ScenarioLowerer<'a> {
         if !is_replay_owned_policy(&policy.policy) {
             self.record_opaque_boundary(&crate_name);
         }
+        let terminator_policy = policy.policy.clone();
+        let terminator_boundary = crate_name.clone();
         self.operations.push(ScenarioOp {
             span: self.span(node),
             kind: ScenarioOpKind::ExternalBoundary {
@@ -1050,6 +1097,17 @@ impl<'a> ScenarioLowerer<'a> {
                 reason: policy.reason,
             },
         });
+        if !is_replay_owned_policy(&terminator_policy) {
+            self.operations.push(ScenarioOp {
+                span: self.span(node),
+                kind: ScenarioOpKind::CoreTerminator {
+                    kind: ScenarioCoreTerminatorKind::OpaqueBoundary,
+                    boundary: Some(terminator_boundary),
+                    policy: Some(terminator_policy),
+                    edges: vec!["opaque_boundary_resume".to_owned()],
+                },
+            });
+        }
     }
 
     fn execute_async(&mut self, expr_async: &'a ExprAsync, env: &mut BindingEnv) {
@@ -1342,6 +1400,39 @@ impl<'a> ScenarioLowerer<'a> {
             kind: ScenarioOpKind::ModeledEffect { boundary },
         });
         true
+    }
+
+    fn record_panic_macro(&mut self, mac: &Macro) -> bool {
+        if !path_ends_with(&mac.path, &["panic"]) {
+            return false;
+        }
+        self.record_core_terminator(
+            ScenarioCoreTerminatorKind::Panic,
+            None,
+            None,
+            vec!["panic".to_owned()],
+            mac,
+        );
+        true
+    }
+
+    fn record_core_terminator(
+        &mut self,
+        kind: ScenarioCoreTerminatorKind,
+        boundary: Option<String>,
+        policy: Option<ScenarioBoundaryPolicy>,
+        edges: Vec<String>,
+        node: &impl Spanned,
+    ) {
+        self.operations.push(ScenarioOp {
+            span: self.span(node),
+            kind: ScenarioOpKind::CoreTerminator {
+                kind,
+                boundary,
+                policy,
+                edges,
+            },
+        });
     }
 
     fn record_unsupported_construct(&mut self, label: &str) {
@@ -1855,6 +1946,7 @@ async fn service(request: Request) {
                     binding,
                     type_name,
                     actions,
+                    ..
                 } => Some((binding.as_str(), type_name.as_str(), actions.clone())),
                 _ => None,
             })

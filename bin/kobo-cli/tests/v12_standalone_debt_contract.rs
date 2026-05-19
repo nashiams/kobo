@@ -124,6 +124,49 @@ fn debt_reports_liveness_candidate_with_source_span() {
 }
 
 #[test]
+fn debt_reports_multiline_spawn_liveness_candidate() {
+    let project = TestProject::new("standalone-debt-multiline-spawn");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "multiline_spawn"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    project.write(
+        "src/main.rs",
+        r#"
+fn main() {
+    let worker =
+        std::thread::spawn(
+        || {
+            println!("background");
+        },
+    );
+    let _ = worker.thread().id();
+}
+"#,
+    );
+
+    let json = debt_json(&project);
+    let findings = json["findings"]
+        .as_array()
+        .expect("findings should be array");
+    let finding = findings
+        .iter()
+        .find(|finding| finding["kind"] == "liveness-candidate")
+        .expect("multi-line thread spawn should produce a liveness candidate");
+
+    assert_eq!(finding["symbol"], "worker");
+    assert_contains(
+        &finding["evidence"].to_string(),
+        "std::thread::spawn",
+        "multi-line liveness finding should preserve spawn evidence",
+    );
+}
+
+#[test]
 fn debt_reports_nondeterminism_boundary_candidate() {
     let project = write_rust_only_project("standalone-debt-nondeterminism");
     let json = debt_json(&project);

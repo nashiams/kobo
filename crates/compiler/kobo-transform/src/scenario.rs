@@ -257,15 +257,26 @@ fn collect_boundary_policies(file: &File) -> BoundaryPolicyMap {
 }
 
 fn boundary_policy_from_use(item_use: &ItemUse) -> Option<(String, BoundaryPolicyFact)> {
-    item_use.attrs.iter().find_map(|attr| {
-        if !path_ends_with(attr.path(), &["kobo", "boundary"]) {
-            return None;
-        }
-        parse_boundary_attr(attr)
-    })
+    item_use.attrs.iter().find_map(boundary_policy_from_attr)
 }
 
-fn parse_boundary_attr(attr: &syn::Attribute) -> Option<(String, BoundaryPolicyFact)> {
+fn boundary_policy_from_attr(attr: &syn::Attribute) -> Option<(String, BoundaryPolicyFact)> {
+    if path_ends_with(attr.path(), &["kobo", "boundary"]) {
+        return parse_boundary_attr(attr, ScenarioBoundaryPolicy::Unselected);
+    }
+    if path_ends_with(attr.path(), &["kobo", "record"]) {
+        return parse_boundary_attr(attr, ScenarioBoundaryPolicy::Record);
+    }
+    if path_ends_with(attr.path(), &["kobo", "activity"]) {
+        return parse_boundary_attr(attr, ScenarioBoundaryPolicy::Activity);
+    }
+    None
+}
+
+fn parse_boundary_attr(
+    attr: &syn::Attribute,
+    default_policy: ScenarioBoundaryPolicy,
+) -> Option<(String, BoundaryPolicyFact)> {
     let syn::Meta::List(list) = &attr.meta else {
         return None;
     };
@@ -273,7 +284,7 @@ fn parse_boundary_attr(attr: &syn::Attribute) -> Option<(String, BoundaryPolicyF
         .parse_args_with(Punctuated::<MetaNameValue, syn::Token![,]>::parse_terminated)
         .ok()?;
     let mut crate_name = None;
-    let mut policy = ScenarioBoundaryPolicy::Unselected;
+    let mut policy = default_policy;
     let mut reason = None;
 
     for entry in entries {

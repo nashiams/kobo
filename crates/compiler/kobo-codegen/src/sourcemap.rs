@@ -10,6 +10,7 @@ use kobo_ir::{KoboSpan, OwnershipTier};
 use serde::{Deserialize, Serialize};
 
 use crate::lower::{LoweringSite, ResolvedAnchorMap};
+use crate::RuntimeEvidence;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RsSpan {
@@ -53,6 +54,8 @@ pub struct KoboSourceMap {
     pub sources: Vec<String>,
     #[serde(rename = "x_kobo_mappings")]
     pub x_kobo_mappings: Vec<SourceMapEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_evidence: Option<RuntimeEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solver_evidence: Option<SolverEvidenceJson>,
 }
@@ -98,6 +101,7 @@ pub fn wrap_source_map(
         file: rs_path.display().to_string(),
         sources: vec![kobo_path.display().to_string()],
         x_kobo_mappings: entries,
+        runtime_evidence: None,
         solver_evidence: None,
     }
 }

@@ -494,7 +494,8 @@ fn collect_liveness_candidates(
         return;
     }
 
-    for (line_index, line) in source.lines().enumerate() {
+    let lines = source.lines().collect::<Vec<_>>();
+    for (line_index, line) in lines.iter().enumerate() {
         let spawn_needle = if line.contains("std::thread::spawn") {
             Some("std::thread::spawn")
         } else if line.contains("tokio::spawn") {
@@ -505,7 +506,8 @@ fn collect_liveness_candidates(
         let Some(spawn_needle) = spawn_needle else {
             continue;
         };
-        let binding = extract_let_binding(line).unwrap_or_else(|| "<unbound>".to_owned());
+        let binding =
+            extract_spawn_binding(&lines, line_index).unwrap_or_else(|| "<unbound>".to_owned());
         if binding != "<unbound>" && spawn_handle_is_observed(source, &binding) {
             continue;
         }
@@ -521,6 +523,19 @@ fn collect_liveness_candidates(
             "spawned work handle is not visibly joined or awaited".to_owned(),
         ));
     }
+}
+
+fn extract_spawn_binding(lines: &[&str], spawn_line_index: usize) -> Option<String> {
+    extract_let_binding(lines[spawn_line_index]).or_else(|| {
+        lines[..spawn_line_index]
+            .iter()
+            .rev()
+            .take(4)
+            .find_map(|line| {
+                let binding = extract_let_binding(line)?;
+                line.contains('=').then_some(binding)
+            })
+    })
 }
 
 fn collect_nondeterminism_candidates(

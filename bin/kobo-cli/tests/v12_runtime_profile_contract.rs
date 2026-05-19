@@ -148,6 +148,10 @@ fn runtime_profile_unifies_service_scenario_and_runtime_settings() {
         "pct-random-bounded"
     );
     assert_eq!(
+        witness["scheduler"]["strategy"], "pct-random-bounded",
+        "the configured runtime scheduler should drive witness scheduler behavior, not only profile text"
+    );
+    assert_eq!(
         witness["runtime_profile"]["record"]["default"],
         "recorded-boundary-io"
     );

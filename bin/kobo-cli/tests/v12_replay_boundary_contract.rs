@@ -48,6 +48,26 @@ compensation = "cancel-email"
     );
 }
 
+fn write_activity_alias_declaration(project: &TestProject) {
+    project.write(
+        "mailer.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "mailer"
+version = "0.1"
+source = "bindgen"
+
+[[activity]]
+path = "mailer::send_email"
+retry = "retry-with-backoff"
+idempotency = "message-id"
+result = "record"
+compensation = "cancel-email"
+"#,
+    );
+}
+
 fn record_fixture(config_key: &str, generated_seed: u64) -> String {
     format!(
         r#"
@@ -63,6 +83,56 @@ fn load_config() {{
 }}
 "#
     )
+}
+
+#[test]
+fn record_and_activity_have_first_class_policy_attributes() {
+    let project = TestProject::new("v12-first-class-record-activity");
+    write_activity_alias_declaration(&project);
+    let file = project.main_file(
+        r#"
+#[kobo::record(crate = "config_source", reason = "record service config reads")]
+use config_source::config_value;
+
+#[kobo::activity(crate = "mailer", reason = "email side effect runs outside replay")]
+use mailer::send_email;
+
+#[kobo::scenario(profile = "async")]
+fn first_class_boundaries() {
+    let _config = config_value("region-a");
+    let _sent = send_email("receipt-123");
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "first-class record/activity policy attributes should produce witness evidence",
+    );
+    let (_, witness) = first_witness(&project);
+    let boundary_text = witness["ecosystem_boundaries"].to_string();
+    assert_contains(
+        &boundary_text,
+        r#""policy":"record""#,
+        "record attribute should lower to a record boundary policy",
+    );
+    assert_contains(
+        &boundary_text,
+        r#""policy":"activity""#,
+        "activity attribute should lower to an activity boundary policy",
+    );
 }
 
 #[test]

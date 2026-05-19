@@ -411,33 +411,27 @@ fn handler_cleanup_runtime_impl_item() -> syn::Item {
         impl KoboHandlerCleanupRuntime {
             fn run(cleanup: fn() -> KoboHandlerCleanupFuture) {
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(cleanup());
+                    let cleanup_task = handle.spawn(cleanup());
+                    handle.spawn(async move {
+                        if let Err(error) = cleanup_task.await {
+                            eprintln!("kobo handler cleanup task failed: {error:?}");
+                        }
+                    });
                 } else {
                     Self::block_on(cleanup());
                 }
             }
 
-            fn block_on<F: std::future::Future>(future: F) -> F::Output {
-                fn clone(_: *const ()) -> std::task::RawWaker {
-                    raw_waker()
-                }
-                fn wake(_: *const ()) {}
-                fn wake_by_ref(_: *const ()) {}
-                fn drop(_: *const ()) {}
-                fn raw_waker() -> std::task::RawWaker {
-                    std::task::RawWaker::new(
-                        std::ptr::null(),
-                        &std::task::RawWakerVTable::new(clone, wake, wake_by_ref, drop),
-                    )
-                }
-
-                let waker = unsafe { std::task::Waker::from_raw(raw_waker()) };
-                let mut context = std::task::Context::from_waker(&waker);
-                let mut future = std::pin::pin!(future);
-                loop {
-                    match future.as_mut().poll(&mut context) {
-                        std::task::Poll::Ready(output) => return output,
-                        std::task::Poll::Pending => std::thread::yield_now(),
+            fn block_on(cleanup: KoboHandlerCleanupFuture) {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => {
+                        runtime.block_on(cleanup);
+                    }
+                    Err(error) => {
+                        eprintln!("kobo handler cleanup runtime failed: {error:?}");
                     }
                 }
             }

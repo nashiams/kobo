@@ -55,8 +55,12 @@ pub fn check_harness_agreement(
     }
 
     let harness = run_generated_harness(program, generated_rust, options)?;
-    if events_match_with_harness_recording(&semantic.events, &harness.events) {
-        merge_harness_recordings(&mut semantic, &harness.events);
+    let comparable_harness_events = comparable_harness_events(&harness.events);
+    if events_match_with_harness_recording(&semantic.events, &comparable_harness_events) {
+        merge_harness_recordings(&mut semantic, &comparable_harness_events);
+        if comparable_harness_events.len() != harness.events.len() {
+            semantic.events = harness.events.clone();
+        }
         semantic.digest.semantic_trace_hash = crate::digest::events_hash(&semantic.events);
     }
     let mut harness_hash = crate::digest::events_hash(&harness.events);
@@ -123,6 +127,14 @@ fn events_match_with_harness_recording(
                             && semantic.io.is_none()
                             && harness.io.is_some()))
             })
+}
+
+fn comparable_harness_events(events: &[ScenarioEvent]) -> Vec<ScenarioEvent> {
+    events
+        .iter()
+        .filter(|event| event.kind != "service-scheduler-hook")
+        .cloned()
+        .collect()
 }
 
 fn merge_harness_recordings(run: &mut FullDepthRun, harness_events: &[ScenarioEvent]) {
@@ -409,7 +421,7 @@ fn harness_source(
 }
 
 fn has_event_marker(source: &str) -> bool {
-    source.contains(&event_marker())
+    source.contains(&event_marker()) && source.contains("struct __KoboWard")
 }
 
 fn event_marker() -> String {
@@ -456,7 +468,7 @@ fn strip_harness_only_attrs(source: &str) -> String {
             }
             continue;
         }
-        if trimmed.starts_with("#[kobo::boundary") {
+        if is_harness_only_kobo_attr(trimmed) {
             skipping_kobo_attr = !trimmed.ends_with(']');
             continue;
         }
@@ -464,6 +476,12 @@ fn strip_harness_only_attrs(source: &str) -> String {
         output.push('\n');
     }
     output
+}
+
+fn is_harness_only_kobo_attr(trimmed_line: &str) -> bool {
+    trimmed_line.starts_with("#[kobo::boundary")
+        || trimmed_line.starts_with("#[kobo::record")
+        || trimmed_line.starts_with("#[kobo::activity")
 }
 
 fn harness_support_source(
@@ -1446,6 +1464,22 @@ mod tokio {
 
     pub mod runtime {
         pub struct Handle;
+        pub struct Runtime;
+        #[derive(Debug)]
+        pub struct BuildError;
+        pub struct Builder;
+
+        impl Builder {
+            pub fn new_current_thread() -> Self { Self }
+            pub fn enable_all(self) -> Self { self }
+            pub fn build(self) -> Result<Runtime, BuildError> { Ok(Runtime) }
+        }
+
+        impl Runtime {
+            pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+                crate::__kobo_block_on(future)
+            }
+        }
 
         impl Handle {
             pub fn current() -> Self { Self }

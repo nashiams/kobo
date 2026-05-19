@@ -184,7 +184,8 @@ pub fn codegen_file(
     );
     let (rs_source, error_policy_sites) =
         error_policy::resolve_marked_error_policy_sites(rs_source, &lowered.error_policy_markers);
-    let source_map = wrap_source_map(kobo_path, rs_path, entries);
+    let mut source_map = wrap_source_map(kobo_path, rs_path, entries);
+    source_map.runtime_evidence = Some(lowered.runtime_evidence.clone());
 
     CodegenOutput {
         rs_source,

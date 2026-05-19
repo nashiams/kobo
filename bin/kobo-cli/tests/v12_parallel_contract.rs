@@ -98,6 +98,49 @@ fn crunch(values: Vec<u64>) {
 }
 
 #[test]
+fn parallel_rejects_user_defined_non_send_capture() {
+    let project = TestProject::new("parallel-user-defined-non-send");
+    let source = r#"
+use std::rc::Rc;
+
+struct LocalState {
+    inner: Rc<u64>,
+}
+
+impl LocalState {
+    fn new() -> Self {
+        Self { inner: Rc::new(1_u64) }
+    }
+}
+
+fn crunch(values: Vec<u64>) {
+    let state = LocalState::new();
+    #[kobo::parallel]
+    for value in values.iter() {
+        let _seen = *value + *state.inner;
+    }
+}
+"#;
+    let file = project.main_file(source);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "parallel loop should reject user-defined captures that carry non-Send fields",
+    );
+    for expected in ["state", "LocalState", "non-Send"] {
+        assert_contains(
+            &output.combined(),
+            expected,
+            "parallel diagnostic should name the user-defined non-Send capture",
+        );
+    }
+}
+
+#[test]
 fn generated_safe_parallel_cargo_fixture_compiles() {
     let project = TestProject::new("parallel-safe-cargo-check");
     let file = project.main_file(

@@ -105,6 +105,7 @@ struct SpawnBlock {
 }
 
 fn non_send_bindings(source: &str) -> Vec<NonSendBinding> {
+    let non_send_type_names = non_send_type_names(source);
     source
         .lines()
         .scan(0usize, |offset, line| {
@@ -130,9 +131,61 @@ fn non_send_bindings(source: &str) -> Vec<NonSendBinding> {
                     type_name: "RefCell".to_owned(),
                 });
             }
+            for type_name in &non_send_type_names {
+                if rest.contains(&format!("{type_name}::"))
+                    || rest.contains(&format!("{type_name} {{"))
+                    || rest.contains(&format!(": {type_name}"))
+                {
+                    return Some(NonSendBinding {
+                        name: name.to_owned(),
+                        type_name: type_name.clone(),
+                    });
+                }
+            }
             None
         })
         .collect()
+}
+
+fn non_send_type_names(source: &str) -> Vec<String> {
+    let mut type_names = Vec::new();
+    let mut search_offset = 0usize;
+    while let Some(found) = source[search_offset..].find("struct ") {
+        let struct_offset = search_offset + found;
+        let name_start = struct_offset + "struct ".len();
+        let Some(name_end) = source[name_start..]
+            .find(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+            .map(|relative| name_start + relative)
+        else {
+            break;
+        };
+        let type_name = source[name_start..name_end].trim();
+        let Some(open_brace) = source[name_end..]
+            .find('{')
+            .map(|relative| name_end + relative)
+        else {
+            search_offset = name_end;
+            continue;
+        };
+        let Some(close_brace) = find_matching_delimiter(source, open_brace, '{', '}') else {
+            search_offset = open_brace + 1;
+            continue;
+        };
+        let body = &source[open_brace + 1..close_brace];
+        if contains_non_send_type(body) {
+            type_names.push(type_name.to_owned());
+        }
+        search_offset = close_brace + 1;
+    }
+    type_names
+}
+
+fn contains_non_send_type(source: &str) -> bool {
+    source.contains("Rc<")
+        || source.contains("Rc ::")
+        || source.contains("std::rc::Rc")
+        || source.contains("RefCell<")
+        || source.contains("Cell<")
 }
 
 fn spawn_block(source: &str, offset: usize) -> Option<SpawnBlock> {
@@ -263,6 +316,38 @@ async fn f() {
             warnings[0].kind,
             TaskLocalWarningKind::NormalSpawnNonSendCapture { .. }
         ));
+    }
+
+    #[test]
+    fn detects_normal_spawn_user_defined_non_send_capture() {
+        let warnings = scan_source_task_local_warnings(
+            r#"
+use std::rc::Rc;
+
+struct LocalState {
+    inner: Rc<String>,
+}
+
+impl LocalState {
+    fn new() -> Self {
+        Self { inner: Rc::new(String::from("local")) }
+    }
+}
+
+async fn f() {
+    let state = LocalState::new();
+    spawn { println!("{}", state.inner); };
+}
+"#,
+        );
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(
+            warnings[0].kind,
+            TaskLocalWarningKind::NormalSpawnNonSendCapture {
+                binding_name: "state".to_owned(),
+                type_name: "LocalState".to_owned(),
+            }
+        );
     }
 
     #[test]

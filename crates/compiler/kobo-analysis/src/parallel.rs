@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use quote::ToTokens;
 use syn::visit::Visit;
 
@@ -37,6 +39,7 @@ pub fn scan_source_parallel_warnings(source: &str) -> Vec<ParallelWarning> {
         let mut scanner = ParallelAstScanner {
             source,
             bindings: Vec::new(),
+            non_send_types: HashMap::new(),
             warnings: Vec::new(),
         };
         scanner.visit_file(&file);
@@ -71,12 +74,21 @@ pub fn scan_source_parallel_warnings(source: &str) -> Vec<ParallelWarning> {
 struct ParallelAstScanner<'a> {
     source: &'a str,
     bindings: Vec<BindingFact>,
+    non_send_types: HashMap<String, String>,
     warnings: Vec<ParallelWarning>,
 }
 
 impl<'ast> Visit<'ast> for ParallelAstScanner<'_> {
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if struct_has_non_send_field(item) {
+            self.non_send_types
+                .insert(item.ident.to_string(), item.ident.to_string());
+        }
+        syn::visit::visit_item_struct(self, item);
+    }
+
     fn visit_local(&mut self, local: &'ast syn::Local) {
-        if let Some(binding) = binding_from_local(local) {
+        if let Some(binding) = binding_from_local(local, &self.non_send_types) {
             self.bindings.push(binding);
         }
         syn::visit::visit_local(self, local);
@@ -102,16 +114,11 @@ impl<'ast> Visit<'ast> for ParallelAstScanner<'_> {
         }
 
         for binding in &self.bindings {
-            if binding
-                .type_name
-                .as_deref()
-                .is_some_and(|type_name| type_name == "Rc")
-                && contains_ident(&body_source, &binding.name)
-            {
+            if binding.type_name.is_some() && contains_ident(&body_source, &binding.name) {
                 self.warnings.push(ParallelWarning {
                     kind: ParallelWarningKind::NonSendCapture {
                         binding_name: binding.name.clone(),
-                        type_name: "Rc".to_owned(),
+                        type_name: binding.type_name.clone().unwrap_or_default(),
                     },
                     source_offset: token_offset(self.source, &binding.name).unwrap_or(0),
                 });
@@ -222,7 +229,17 @@ fn attr_value(attr: &syn::Attribute, key: &str) -> Option<String> {
     None
 }
 
-fn binding_from_local(local: &syn::Local) -> Option<BindingFact> {
+fn struct_has_non_send_field(item: &syn::ItemStruct) -> bool {
+    item.fields.iter().any(|field| {
+        let tokens = field.ty.to_token_stream().to_string();
+        is_non_send_type_tokens(&tokens)
+    })
+}
+
+fn binding_from_local(
+    local: &syn::Local,
+    non_send_types: &HashMap<String, String>,
+) -> Option<BindingFact> {
     let (name, is_mutable, type_hint) = binding_name_from_pat(&local.pat)?;
     let init_tokens = local
         .init
@@ -230,13 +247,15 @@ fn binding_from_local(local: &syn::Local) -> Option<BindingFact> {
         .map(|init| init.expr.to_token_stream().to_string())
         .unwrap_or_default();
     let type_tokens = type_hint.unwrap_or_default();
-    let type_name = if type_tokens.contains("Rc")
+    let type_name = if is_non_send_type_tokens(&type_tokens)
         || init_tokens.contains("Rc :: new")
         || init_tokens.contains("std :: rc :: Rc")
     {
         Some("Rc".to_owned())
-    } else if type_tokens.contains("Arc") || init_tokens.contains("Arc :: new") {
-        Some("Arc".to_owned())
+    } else if let Some(type_name) =
+        constructed_non_send_type(&type_tokens, &init_tokens, non_send_types)
+    {
+        Some(type_name)
     } else {
         None
     };
@@ -262,6 +281,35 @@ fn binding_name_from_pat(pat: &syn::Pat) -> Option<(String, bool, Option<String>
         }
         _ => None,
     }
+}
+
+fn is_non_send_type_tokens(tokens: &str) -> bool {
+    tokens.contains("Rc")
+        || tokens.contains("std :: rc :: Rc")
+        || tokens.contains("RefCell")
+        || tokens.contains("Cell")
+}
+
+fn constructed_non_send_type(
+    type_tokens: &str,
+    init_tokens: &str,
+    non_send_types: &HashMap<String, String>,
+) -> Option<String> {
+    for type_name in non_send_types.keys() {
+        if contains_type_token(type_tokens, type_name)
+            || init_tokens.starts_with(&format!("{type_name} ::"))
+            || init_tokens.starts_with(&format!("{type_name} {{"))
+        {
+            return Some(type_name.clone());
+        }
+    }
+    None
+}
+
+fn contains_type_token(tokens: &str, type_name: &str) -> bool {
+    tokens
+        .split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+        .any(|part| part == type_name)
 }
 
 fn token_offset(source: &str, token: &str) -> Option<usize> {

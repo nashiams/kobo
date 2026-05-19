@@ -124,6 +124,7 @@ fn handler_runs_cleanup_hook_on_success_error_and_cancel() {
 
     for expected in [
         "type KoboHandlerCleanupFuture",
+        "tokio::runtime::Builder::new_current_thread()",
         "register_cleanup",
         "|| -> KoboHandlerCleanupFuture",
         "run_registered_cleanup(\"success\").await",
@@ -138,6 +139,16 @@ fn handler_runs_cleanup_hook_on_success_error_and_cancel() {
             "handler cleanup hook should be visible on success, error, and cancellation paths",
         );
     }
+    assert_not_contains(
+        &generated,
+        "RawWaker",
+        "handler cleanup fallback should use a real runtime instead of a raw no-op waker loop",
+    );
+    assert_not_contains(
+        &generated,
+        "thread::yield_now",
+        "handler cleanup fallback should not spin-yield while polling cleanup futures",
+    );
 }
 
 #[test]

@@ -212,7 +212,7 @@ fn shared_service_runtime_items() -> Vec<syn::Item> {
     let mut items = Vec::new();
     if let Some(item) = syn::parse2(quote! {
         #[derive(Clone, Default)]
-        struct KoboServiceCancellationToken {
+        pub struct KoboServiceCancellationToken {
             cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
         }
     })
@@ -222,15 +222,15 @@ fn shared_service_runtime_items() -> Vec<syn::Item> {
     }
     if let Some(item) = syn::parse2(quote! {
         impl KoboServiceCancellationToken {
-            fn new() -> Self {
+            pub fn new() -> Self {
                 Self::default()
             }
 
-            fn cancel(&self) {
+            pub fn cancel(&self) {
                 self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
             }
 
-            fn is_cancelled(&self) -> bool {
+            pub fn is_cancelled(&self) -> bool {
                 self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
             }
         }
@@ -287,6 +287,12 @@ fn shared_service_runtime_items() -> Vec<syn::Item> {
                     phase,
                     service,
                     method
+                );
+                println!(
+                    "KOBO_EVENT:{{\"kind\":\"service-scheduler-hook\",\"label\":\"{}::{}:{}\",\"value\":null}}",
+                    service,
+                    method,
+                    phase
                 );
             }
 
@@ -350,7 +356,7 @@ fn message_enum_item(spec: &ServiceSpec) -> Option<syn::Item> {
     syn::parse2(quote! {
         #[doc = #source_doc]
         #[doc = #runtime_doc]
-        enum #message_ident {
+        pub enum #message_ident {
             #(#variants,)*
             Shutdown,
         }
@@ -386,7 +392,7 @@ fn service_handle_struct_item(spec: &ServiceSpec) -> Option<syn::Item> {
     syn::parse2(quote! {
         #[doc = #source_doc]
         #[doc = #runtime_doc]
-        struct #handle_ident {
+        pub struct #handle_ident {
             sender: tokio::sync::mpsc::Sender<#message_ident>,
             cancellation: KoboServiceCancellationToken,
         }
@@ -432,11 +438,11 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
     };
     syn::parse2(quote! {
         impl #handle_ident {
-            fn new(sender: tokio::sync::mpsc::Sender<#message_ident>) -> Self {
+            pub fn new(sender: tokio::sync::mpsc::Sender<#message_ident>) -> Self {
                 Self::new_with_cancellation(sender, KoboServiceCancellationToken::new())
             }
 
-            fn new_with_cancellation(
+            pub fn new_with_cancellation(
                 sender: tokio::sync::mpsc::Sender<#message_ident>,
                 cancellation: KoboServiceCancellationToken,
             ) -> Self {
@@ -446,14 +452,14 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
                 }
             }
 
-            fn channel() -> (
+            pub fn channel() -> (
                 tokio::sync::mpsc::Sender<#message_ident>,
                 tokio::sync::mpsc::Receiver<#message_ident>,
             ) {
                 tokio::sync::mpsc::channel::<#message_ident>(#buffer_size)
             }
 
-            fn start(service: #service_ident) -> (Self, tokio::task::JoinHandle<()>) {
+            pub fn start(service: #service_ident) -> (Self, tokio::task::JoinHandle<()>) {
                 let (sender, receiver) = Self::channel();
                 let cancellation = KoboServiceCancellationToken::new();
                 let handle = Self::new_with_cancellation(sender, cancellation.clone());
@@ -462,14 +468,11 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
             }
 
             async fn serve(
-                service: #service_ident,
+                mut service: #service_ident,
                 mut receiver: tokio::sync::mpsc::Receiver<#message_ident>,
                 cancellation: KoboServiceCancellationToken,
             ) {
                 while let Some(message) = receiver.recv().await {
-                    if cancellation.is_cancelled() {
-                        break;
-                    }
                     match message {
                         #(#dispatch_arms)*
                         #message_ident::Shutdown => {
@@ -485,14 +488,13 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
 
             #(#client_methods)*
 
-            async fn shutdown(
+            pub async fn shutdown(
                 &self,
             ) -> Result<(), tokio::sync::mpsc::error::SendError<#message_ident>> {
-                self.cancellation.cancel();
                 self.sender.send(#message_ident::Shutdown).await
             }
 
-            async fn shutdown_and_wait(
+            pub async fn shutdown_and_wait(
                 self,
                 worker: tokio::task::JoinHandle<()>,
             ) -> Result<(), #error_ident> {
@@ -500,11 +502,11 @@ fn service_handle_impl_item(spec: &ServiceSpec) -> Option<syn::Item> {
                 worker.await.map_err(|_| #error_ident::JoinFailed)
             }
 
-            fn is_shutdown_requested(&self) -> bool {
+            pub fn is_shutdown_requested(&self) -> bool {
                 self.cancellation.is_cancelled()
             }
 
-            fn service_type_name(&self) -> &'static str {
+            pub fn service_type_name(&self) -> &'static str {
                 stringify!(#service_ident)
             }
         }
@@ -516,7 +518,7 @@ fn service_error_item(spec: &ServiceSpec) -> Option<syn::Item> {
     let error_ident = service_error_ident(spec);
     syn::parse2(quote! {
         #[derive(Debug)]
-        enum #error_ident {
+        pub enum #error_ident {
             SendClosed,
             ResponseDropped,
             JoinFailed,
@@ -542,6 +544,9 @@ fn dispatch_arm_tokens(spec: &ServiceSpec, method: &ServiceMethod) -> proc_macro
         .collect::<Vec<_>>();
     quote! {
         #message_ident::#variant_ident { #(#field_idents,)* __reply } => {
+            if cancellation.is_cancelled() {
+                break;
+            }
             KoboServiceScenarioHook::before(stringify!(#service_ident), #method_name);
             let __kobo_reply = service.#method_ident(#(#field_idents),*).await;
             let _ = __reply.send(__kobo_reply);
@@ -567,7 +572,7 @@ fn client_method_tokens(spec: &ServiceSpec, method: &ServiceMethod) -> proc_macr
         .collect::<Vec<_>>();
     let reply_ty = &method.reply_ty;
     quote! {
-        async fn #method_ident(&self #(, #args)*) -> Result<#reply_ty, #error_ident> {
+        pub async fn #method_ident(&self #(, #args)*) -> Result<#reply_ty, #error_ident> {
             let (__reply_tx, __reply_rx) = tokio::sync::oneshot::channel();
             self.send(#message_ident::#variant_ident {
                 #(#field_idents,)*

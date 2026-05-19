@@ -548,7 +548,7 @@ fn print_events(
             "file": sim_model::cli_relative_path(file)?,
             "sim_profile": sim_profile,
             "backend_profile": run.profile,
-            "scheduler": scheduler_json(sim_profile, seed, run),
+            "scheduler": scheduler_json(sim_profile, seed, run, None),
             "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
             "events": events_json(&run.events),
@@ -617,7 +617,12 @@ fn write_run_witness(
         "ecosystem_scope": ecosystem_scope(run),
         "full_ecosystem_exploration": full_ecosystem_exploration(run),
         "replay_contract": replay_contract_json(run),
-        "scheduler": scheduler_json(sim_profile, seed, run),
+        "scheduler": scheduler_json(
+            sim_profile,
+            seed,
+            run,
+            Some(config.runtime_profile.scheduler.as_str()),
+        ),
         "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage,
         "operation_coverage": witness_evidence::operation_coverage_json(scenario_program, run),
@@ -1049,14 +1054,22 @@ fn scenario_coverage_json(run: &FullDepthRun) -> serde_json::Value {
     coverage_json(run)
 }
 
-fn scheduler_json(sim_profile: &str, seed: u64, run: &FullDepthRun) -> serde_json::Value {
-    let strategy = match sim_profile {
+fn scheduler_json(
+    sim_profile: &str,
+    seed: u64,
+    run: &FullDepthRun,
+    runtime_scheduler: Option<&str>,
+) -> serde_json::Value {
+    let profile_strategy = match sim_profile {
         "quick" => "small-random",
         "deep" => "pct-random-bounded",
         "replay" => "witness-event-stream",
         "exhaustive" => "tiny-ward-exhaustive",
         _ => "unknown",
     };
+    let strategy = runtime_scheduler
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(profile_strategy);
     serde_json::json!({
         "profile": sim_profile,
         "strategy": strategy,

@@ -5,7 +5,8 @@ use std::process::Command;
 
 use serde_json::Value;
 use v09_common::{
-    assert_contains, assert_not_contains, assert_success, path_arg, run_kobo, s, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg, run_kobo, s,
+    TestProject,
 };
 
 fn service_fixture(buffer: usize) -> (TestProject, std::path::PathBuf) {
@@ -144,6 +145,82 @@ fn service_backpressure_default_is_block_on_full() {
         "try_send(message)",
         "default service backpressure must not silently drop or fail on full channels",
     );
+}
+
+#[test]
+fn service_try_send_reports_full_backpressure_separately() {
+    let project = TestProject::new("service-runtime-try-send-full");
+    project.write(
+        "Kobo.toml",
+        r#"[runtime.profile]
+service_buffer = 1
+service_backpressure = "try-send"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+struct Gateway {}
+
+#[kobo::service]
+impl Gateway {
+    async fn submit(&self, request: String) -> String {
+        request
+    }
+}
+"#,
+    );
+    let output = run_kobo(&[s("inspect"), path_arg(&file)], &project.root);
+    assert_success(&output, "try-send service fixture should inspect");
+    let generated = output.combined();
+
+    for expected in [
+        "pub enum GatewayServiceError",
+        "SendFull",
+        "TrySendError::Full",
+        "TrySendError::Closed",
+        "GatewayServiceError::SendFull",
+        "GatewayServiceError::SendClosed",
+    ] {
+        assert_contains(
+            &generated,
+            expected,
+            "try-send backpressure should distinguish full channels from closed services",
+        );
+    }
+}
+
+#[test]
+fn service_rejects_unsupported_generic_or_borrowed_signatures() {
+    let project = TestProject::new("service-runtime-signature-diagnostic");
+    let source = r#"
+struct Cache<T> {
+    value: T,
+}
+
+#[kobo::service(buffer=2)]
+impl<T> Cache<T> {
+    async fn lookup<'a>(&self, key: &'a str) -> &'a str {
+        key
+    }
+}
+"#;
+    let file = project.main_file(source);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "unsupported service generics and borrowed message types should fail before codegen",
+    );
+    for expected in ["service signature", "generic", "borrowed", "lookup"] {
+        assert_contains(
+            &output.combined(),
+            expected,
+            "service signature diagnostic should be source-mapped and actionable",
+        );
+    }
 }
 
 #[test]

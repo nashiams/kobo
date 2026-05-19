@@ -106,7 +106,8 @@ struct SpawnBlock {
 
 fn non_send_bindings(source: &str) -> Vec<NonSendBinding> {
     let non_send_type_names = non_send_type_names(source);
-    source
+    let aliases = non_send_aliases(source);
+    let mut bindings = source
         .lines()
         .scan(0usize, |offset, line| {
             let current = *offset;
@@ -119,16 +120,18 @@ fn non_send_bindings(source: &str) -> Vec<NonSendBinding> {
             let name = rest
                 .split([':', '=', ' '])
                 .find(|part| !part.is_empty() && *part != "mut")?;
-            if rest.contains("Rc::new") || rest.contains("Rc<") || rest.contains("std::rc::Rc") {
+            if contains_non_send_alias(rest, &aliases, "Rc") || rest.contains("std::rc::Rc") {
                 return Some(NonSendBinding {
                     name: name.to_owned(),
-                    type_name: "Rc".to_owned(),
+                    type_name: matching_non_send_alias(rest, &aliases, "Rc")
+                        .unwrap_or_else(|| "Rc".to_owned()),
                 });
             }
-            if rest.contains("RefCell::new") || rest.contains("RefCell<") {
+            if contains_non_send_alias(rest, &aliases, "RefCell") {
                 return Some(NonSendBinding {
                     name: name.to_owned(),
-                    type_name: "RefCell".to_owned(),
+                    type_name: matching_non_send_alias(rest, &aliases, "RefCell")
+                        .unwrap_or_else(|| "RefCell".to_owned()),
                 });
             }
             for type_name in &non_send_type_names {
@@ -144,7 +147,128 @@ fn non_send_bindings(source: &str) -> Vec<NonSendBinding> {
             }
             None
         })
-        .collect()
+        .collect::<Vec<_>>();
+    bindings.extend(non_send_fn_params(source, &aliases));
+    bindings.sort_by(|left, right| left.name.cmp(&right.name));
+    bindings.dedup_by(|left, right| left.name == right.name && left.type_name == right.type_name);
+    bindings
+}
+
+fn non_send_aliases(source: &str) -> Vec<(String, String)> {
+    let mut aliases = vec![
+        ("Rc".to_owned(), "Rc".to_owned()),
+        ("RefCell".to_owned(), "RefCell".to_owned()),
+        ("Cell".to_owned(), "Cell".to_owned()),
+    ];
+    for line in source.lines().map(str::trim) {
+        if let Some(alias) = use_alias(line, "std::rc::Rc") {
+            aliases.push((alias, "Rc".to_owned()));
+        }
+        if let Some(alias) = use_alias(line, "std::cell::RefCell") {
+            aliases.push((alias, "RefCell".to_owned()));
+        }
+        if let Some(alias) = use_alias(line, "std::cell::Cell") {
+            aliases.push((alias, "Cell".to_owned()));
+        }
+    }
+    aliases
+}
+
+fn use_alias(line: &str, path: &str) -> Option<String> {
+    let rest = line.strip_prefix("use ")?.strip_suffix(';')?.trim();
+    let alias = rest.strip_prefix(path)?.trim();
+    alias
+        .strip_prefix("as ")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn contains_non_send_alias(source: &str, aliases: &[(String, String)], family: &str) -> bool {
+    matching_non_send_alias(source, aliases, family).is_some()
+}
+
+fn matching_non_send_alias(
+    source: &str,
+    aliases: &[(String, String)],
+    family: &str,
+) -> Option<String> {
+    aliases.iter().find_map(|(alias, alias_family)| {
+        if alias_family != family {
+            return None;
+        }
+        (contains_type_alias(source, alias) || contains_ctor_alias(source, alias))
+            .then(|| alias.clone())
+    })
+}
+
+fn contains_type_alias(source: &str, alias: &str) -> bool {
+    source.match_indices(alias).any(|(index, _)| {
+        let before = source[..index].chars().next_back();
+        let after = source[index + alias.len()..].chars().next();
+        !before.is_some_and(is_ident_char)
+            && matches!(after, Some('<') | Some('>') | Some(',') | Some(')') | None)
+    })
+}
+
+fn contains_ctor_alias(source: &str, alias: &str) -> bool {
+    source.match_indices(alias).any(|(index, _)| {
+        let before = source[..index].chars().next_back();
+        let tail = &source[index + alias.len()..];
+        !before.is_some_and(is_ident_char) && tail.trim_start().starts_with("::new")
+    })
+}
+
+fn non_send_fn_params(source: &str, aliases: &[(String, String)]) -> Vec<NonSendBinding> {
+    let mut bindings = Vec::new();
+    for signature in function_signatures(source) {
+        let Some(params) = signature
+            .split_once('(')
+            .and_then(|(_, rest)| rest.rsplit_once(')').map(|(params, _)| params))
+        else {
+            continue;
+        };
+        for param in params.split(',') {
+            let Some((name, ty)) = param.split_once(':') else {
+                continue;
+            };
+            let name = name.trim().trim_start_matches("mut ").trim();
+            if name.is_empty() || name == "self" {
+                continue;
+            }
+            if let Some(type_name) = matching_non_send_alias(ty, aliases, "Rc")
+                .or_else(|| matching_non_send_alias(ty, aliases, "RefCell"))
+                .or_else(|| matching_non_send_alias(ty, aliases, "Cell"))
+            {
+                bindings.push(NonSendBinding {
+                    name: name.to_owned(),
+                    type_name,
+                });
+            }
+        }
+    }
+    bindings
+}
+
+fn function_signatures(source: &str) -> Vec<String> {
+    let mut signatures = Vec::new();
+    let mut lines = source.lines().peekable();
+    while let Some(line) = lines.next() {
+        if !line.contains("fn ") {
+            continue;
+        }
+        let mut signature = line.trim().to_owned();
+        while !signature.contains('{') && !signature.ends_with(';') {
+            let Some(next) = lines.peek() else {
+                break;
+            };
+            signature.push(' ');
+            signature.push_str(next.trim());
+            lines.next();
+        }
+        signatures.push(signature);
+    }
+    signatures
 }
 
 fn non_send_type_names(source: &str) -> Vec<String> {
@@ -245,6 +369,10 @@ fn local_handle_escape(source: &str, after_offset: usize, binding: &str) -> Opti
         format!("return {binding}"),
         format!("{binding}.await"),
         format!("{binding};"),
+        format!("Some({binding}"),
+        format!("Ok({binding}"),
+        format!("vec![{binding}"),
+        format!("{binding},"),
     ] {
         if let Some(found) = tail.find(&pattern) {
             return Some(after_offset + found);

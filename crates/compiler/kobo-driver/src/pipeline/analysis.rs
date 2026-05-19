@@ -2,9 +2,10 @@ use std::path::Path;
 
 use kobo_analysis::{
     analyze_send_violations, facts_to_diagnostics, run_analysis, scan_source_cancel_safety,
-    scan_source_handler_leaks, scan_source_parallel_warnings, scan_source_task_local_captures,
-    scan_source_task_local_warnings, ParallelWarningKind, SpawnSite as AnalysisSpawnSite,
-    TaskLocalWarningKind,
+    scan_source_handler_leaks, scan_source_parallel_warnings,
+    scan_source_service_signature_warnings, scan_source_task_local_captures,
+    scan_source_task_local_warnings, ParallelWarningKind, ServiceSignatureWarningReason,
+    SpawnSite as AnalysisSpawnSite, TaskLocalWarningKind,
 };
 use kobo_errors::{
     resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
@@ -67,6 +68,7 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
     project_guard_liveness_diagnostics(session, kir);
     project_cancel_safety_diagnostics(session);
     project_handler_leak_diagnostics(session);
+    project_service_signature_diagnostics(session);
     project_parallel_diagnostics(session);
     project_task_local_diagnostics(session);
     session.suppress_diagnostics_from(downstream_diagnostics_start);
@@ -427,6 +429,73 @@ fn project_handler_leak_diagnostics(session: &mut CompileSession) {
         }
     }
     session.diagnostics.extend(diagnostics);
+}
+
+fn project_service_signature_diagnostics(session: &mut CompileSession) {
+    let mut diagnostics = Vec::new();
+    for (file_id, entry) in session.file_set().iter_files() {
+        let warnings = scan_source_service_signature_warnings(entry.source());
+        for warning in &warnings {
+            let severity = resolve_severity(KErrorCode::K0061, session.guarantee_policy())
+                .unwrap_or(Severity::Error);
+            let span = KoboSpan::new(
+                warning.source_offset as u32,
+                (warning.source_offset + warning.span_len).max(warning.source_offset + 1) as u32,
+                file_id,
+            );
+            let method = warning
+                .method_name
+                .as_deref()
+                .unwrap_or(warning.service_name.as_str());
+            let (label, why, decision) =
+                service_signature_warning_message(&warning.reason, &warning.service_name, method);
+            diagnostics.push(KDiagnostic::new(
+                KErrorCode::K0061,
+                severity,
+                DiagLabel::primary(span, label),
+                why,
+                DiagDecision(decision),
+            ));
+        }
+    }
+    session.diagnostics.extend(diagnostics);
+}
+
+fn service_signature_warning_message(
+    reason: &ServiceSignatureWarningReason,
+    service_name: &str,
+    method: &str,
+) -> (String, String, String) {
+    match reason {
+        ServiceSignatureWarningReason::GenericService => (
+            format!("service signature `{service_name}` uses unsupported generics"),
+            format!(
+                "service signature `{service_name}` is generic; Kobo cannot generate a bounded typed message enum until the service type is monomorphic"
+            ),
+            "specialize the service type before applying #[kobo::service], or move the generic API behind a typed wrapper".to_owned(),
+        ),
+        ServiceSignatureWarningReason::GenericMethod => (
+            format!("service signature `{method}` uses unsupported method generics"),
+            format!(
+                "service method `{method}` has generic parameters; generated service messages need concrete owned field and reply types"
+            ),
+            "specialize the method arguments before crossing the service channel".to_owned(),
+        ),
+        ServiceSignatureWarningReason::BorrowedMessageType => (
+            format!("service signature `{method}` uses borrowed channel data"),
+            format!(
+                "service method `{method}` uses borrowed message or reply data; bounded service channels require owned values with a supported lifetime model"
+            ),
+            "pass owned data such as String/Arc<T>, or keep the method outside #[kobo::service] until a borrow-safe protocol is modeled".to_owned(),
+        ),
+        ServiceSignatureWarningReason::UnsupportedReceiver => (
+            format!("service signature `{method}` has unsupported receiver"),
+            format!(
+                "service method `{method}` must use &self or &mut self so the generated worker does not move the service out of its dispatch loop"
+            ),
+            "change the service method receiver to &self or &mut self".to_owned(),
+        ),
+    }
 }
 
 fn project_task_local_diagnostics(session: &mut CompileSession) {

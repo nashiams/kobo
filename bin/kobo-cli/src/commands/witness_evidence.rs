@@ -154,7 +154,7 @@ pub(super) fn boundary_ledger_json(
 fn boundary_ledger_io_capture_json(
     decision: &kobo_sim_core::BoundaryDecision,
 ) -> Option<serde_json::Value> {
-    if decision.policy.as_str() != "record" {
+    if !matches!(decision.policy.as_str(), "record" | "activity") {
         return None;
     }
     decision.recorded_io.as_ref().map(boundary_io_capture_json)

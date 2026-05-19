@@ -520,6 +520,7 @@ fn service_error_item(spec: &ServiceSpec) -> Option<syn::Item> {
         #[derive(Debug)]
         pub enum #error_ident {
             SendClosed,
+            SendFull,
             ResponseDropped,
             JoinFailed,
         }
@@ -571,6 +572,18 @@ fn client_method_tokens(spec: &ServiceSpec, method: &ServiceMethod) -> proc_macr
         .map(|field| &field.ident)
         .collect::<Vec<_>>();
     let reply_ty = &method.reply_ty;
+    let map_send_error = if spec.runtime_profile.service_backpressure == "try-send" {
+        quote! {
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => #error_ident::SendFull,
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => #error_ident::SendClosed,
+            })?
+        }
+    } else {
+        quote! {
+            .map_err(|_| #error_ident::SendClosed)?
+        }
+    };
     quote! {
         pub async fn #method_ident(&self #(, #args)*) -> Result<#reply_ty, #error_ident> {
             let (__reply_tx, __reply_rx) = tokio::sync::oneshot::channel();
@@ -579,7 +592,7 @@ fn client_method_tokens(spec: &ServiceSpec, method: &ServiceMethod) -> proc_macr
                 __reply: __reply_tx,
             })
             .await
-            .map_err(|_| #error_ident::SendClosed)?;
+            #map_send_error;
             __reply_rx.await.map_err(|_| #error_ident::ResponseDropped)
         }
     }

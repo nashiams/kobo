@@ -129,6 +129,7 @@ fn handler_runs_cleanup_hook_on_success_error_and_cancel() {
         "|| -> KoboHandlerCleanupFuture",
         "run_registered_cleanup(\"success\").await",
         "run_registered_cleanup(\"error\").await",
+        "record_error_boundary(\"handle\"",
         "run_cancel_cleanup_on_drop",
         "KoboHandlerCleanupRuntime::run(cleanup);",
         "record_cleanup_run",
@@ -259,7 +260,7 @@ fn handler_tokens_emit_must_call_metadata() {
     assert_contains(
         &witness["handler_lifecycle"].to_string(),
         "reply",
-        "handler witness should include reply/reject/cancel must_call metadata",
+        "handler witness should include reply terminal metadata from lowered result paths",
     );
     assert_contains(
         &witness["handler_lifecycle"].to_string(),
@@ -268,13 +269,13 @@ fn handler_tokens_emit_must_call_metadata() {
     );
     assert_contains(
         &witness["handler_lifecycle"].to_string(),
-        "cancel",
-        "handler witness should include the cancel terminal action from lowered guard support",
+        "drop-runs-registered-cleanup",
+        "handler witness should expose cancel cleanup as lifecycle evidence instead of an unconditional terminal action",
     );
     assert_contains(
         &witness["handler_lifecycle"].to_string(),
-        "lowered-function-and-support-guard-scan",
-        "handler witness should cite lowered function and support guard scans instead of raw source token shape",
+        "lowered-result-path-guard-scan",
+        "handler witness should cite lowered result paths instead of raw source token shape",
     );
 }
 

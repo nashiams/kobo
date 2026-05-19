@@ -1735,7 +1735,7 @@ fn boundary_capture_json(
         "event_kind": event.kind.clone(),
         "event_label": event.label.clone(),
         "event_value": event.value,
-        "io_capture": record_io_capture_json(decision),
+        "io_capture": boundary_decision_io_capture_json(decision),
         "call_path": decision.call_path.clone(),
         "call_arguments": decision.call_arguments.clone(),
         "return_type": decision.return_type.clone(),
@@ -1748,8 +1748,10 @@ fn boundary_capture_json(
     }))
 }
 
-fn record_io_capture_json(decision: &kobo_sim_core::BoundaryDecision) -> Option<serde_json::Value> {
-    if decision.policy.as_str() != "record" {
+fn boundary_decision_io_capture_json(
+    decision: &kobo_sim_core::BoundaryDecision,
+) -> Option<serde_json::Value> {
+    if !matches!(decision.policy.as_str(), "record" | "activity") {
         return None;
     }
     let capture = decision.recorded_io.as_ref()?;

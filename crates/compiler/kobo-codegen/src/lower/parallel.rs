@@ -24,14 +24,13 @@ pub(crate) fn lower_for_loop(
     if attr_has_value(&attr, "order", "serial") {
         return ParallelLowering::SerialPolicy;
     }
-    if attr_has_key(&attr, "policy") {
-        return ParallelLowering::BoundaryPolicy;
-    }
     if !safety_gate_accepted {
         return ParallelLowering::SafetyBlocked;
     }
     if lower_iterator_expr_to_rayon(&mut for_loop.expr) {
         ParallelLowering::Parallel
+    } else if attr_has_key(&attr, "policy") {
+        ParallelLowering::BoundaryPolicy
     } else {
         ParallelLowering::SerialPolicy
     }

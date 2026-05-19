@@ -139,6 +139,83 @@ fn normal_spawn_rejects_non_send_capture() {
 }
 
 #[test]
+fn normal_spawn_rejects_alias_non_send_parameter_capture() {
+    let project = TestProject::new("normal-spawn-alias-parameter-reject");
+    write_tokio_manifest(&project);
+    let source = r#"
+use std::rc::Rc as LocalRc;
+
+async fn serve_local(state: LocalRc<String>) {
+    spawn {
+        let _seen = state.clone();
+    };
+}
+"#;
+    let file = project.main_file(source);
+
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "normal spawn should reject aliased non-Send function parameter captures",
+    );
+    for expected in ["K0061", "state", "LocalRc", "spawn local"] {
+        assert_contains(
+            &output.combined(),
+            expected,
+            "normal spawn diagnostic should preserve alias and parameter evidence",
+        );
+    }
+}
+
+#[test]
+fn spawn_local_harness_polls_future_body() {
+    let project = TestProject::new("spawn-local-harness-body");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "network")]
+fn local_body_runs() {
+    spawn local {
+        ward.task();
+    };
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "generated harness should poll the spawn local body instead of only logging the spawn call",
+    );
+    let (_, witness) = first_witness(&project);
+    let events = witness["events"].to_string();
+    assert_contains(
+        &events,
+        "ward.task.local",
+        "task-local future body side effects should be present in harness-backed witness events",
+    );
+    assert_contains(
+        &witness["harness_manifest"].to_string(),
+        "tokio-spawn-local-facade",
+        "harness manifest should show the spawn-local facade executed",
+    );
+}
+
+#[test]
 fn spawn_local_escape_is_diagnostic_with_source_span() {
     let project = TestProject::new("spawn-local-escape");
     write_tokio_manifest(&project);

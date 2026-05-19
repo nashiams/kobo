@@ -1313,8 +1313,7 @@ fn __kobo_emit_record_boundary_event(
 "#
 }
 
-fn tokio_support_source(_program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
-    let local_events = modeled_boundary_events(&ScenarioModeledBoundary::WardTaskLocal, options);
+fn tokio_support_source(_program: &ScenarioProgram, _options: &ScenarioOptions) -> Result<String> {
     let mut source = String::from(
         r#"
 mod tokio {
@@ -1512,16 +1511,17 @@ mod tokio {
             }
         }
 
-        pub fn spawn_local<F>(_future: F) -> JoinHandle<()>
+        pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
         where
-            F: std::future::Future<Output = ()> + 'static,
+            F: std::future::Future + 'static,
+            F::Output: 'static,
         {
 "#,
     );
-    source.push_str(&event_print_statements(&local_events)?);
     source.push_str(
         r#"
-            super::JoinHandle::from_value(())
+            let output = crate::__kobo_block_on(future);
+            super::JoinHandle::from_value(output)
         }
     }
 

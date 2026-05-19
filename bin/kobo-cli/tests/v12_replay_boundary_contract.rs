@@ -335,6 +335,8 @@ fn send_receipt() {
     let boundary_text = witness["ecosystem_boundaries"].to_string();
     for expected in [
         r#""evidence":"activity-result""#,
+        "activity-result-metadata",
+        "semantic-activity-boundary",
         "activity_metadata",
         "retry-with-backoff",
         "message-id",
@@ -348,6 +350,11 @@ fn send_receipt() {
             "activity evidence should carry result/retry/idempotency metadata",
         );
     }
+    assert_contains(
+        &witness["boundary_ledger"].to_string(),
+        "activity-result-metadata",
+        "activity result metadata should be recorded in the boundary ledger without claiming exact replay",
+    );
 }
 
 #[test]

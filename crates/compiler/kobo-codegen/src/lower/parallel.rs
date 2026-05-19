@@ -1,4 +1,5 @@
 use quote::ToTokens;
+use syn::parse_quote;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ParallelLowering {
@@ -61,6 +62,17 @@ pub(crate) fn mark_safety_blocked(for_loop: &mut syn::ExprForLoop, blockers: &[S
         .body
         .stmts
         .insert(0, syn::parse_quote!(let _ = #marker;));
+}
+
+pub(crate) fn for_each_adapter_expr(for_loop: &syn::ExprForLoop) -> syn::Expr {
+    let iterator = for_loop.expr.as_ref();
+    let pat = for_loop.pat.as_ref();
+    let stmts = &for_loop.body.stmts;
+    parse_quote! {
+        #iterator.for_each(|#pat| {
+            #(#stmts)*
+        })
+    }
 }
 
 pub(crate) fn policy_value(attrs: &[syn::Attribute]) -> Option<String> {

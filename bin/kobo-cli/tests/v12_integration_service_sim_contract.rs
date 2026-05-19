@@ -37,6 +37,75 @@ compensation = "cancel-email"
 }
 
 fn integration_project(label: &str) -> (TestProject, PathBuf) {
+    integration_project_with_config(label, "region-a")
+}
+
+fn record_replay_integration_project(label: &str, config_key: &str) -> (TestProject, PathBuf) {
+    let project = TestProject::new(label);
+    project.write(
+        "Kobo.toml",
+        r#"[runtime.profile]
+service_buffer = 17
+service_backpressure = "block-on-full"
+scheduler = "pct-random-bounded"
+record = "recorded-boundary-io"
+activity = "retry-idempotency"
+cancellation = "cooperative"
+scenario_event_budget = 128
+"#,
+    );
+    let source = r#"
+#[kobo::boundary(crate = "config_source", policy = "record", reason = "record service config reads")]
+use config_source::config_value;
+
+struct Gateway {}
+
+struct Request {
+    id: u64,
+}
+
+struct Response {
+    status: u16,
+}
+
+struct HandlerError {}
+
+impl Request {
+    fn reply(&self) {}
+    fn reject(&self) {}
+    fn cancel(&self) {}
+}
+
+#[kobo::service]
+impl Gateway {
+    async fn submit(&self, request: Request) -> Response {
+        Response { status: 202 }
+    }
+}
+
+#[kobo::handler]
+async fn handle(request: Request) -> Result<Response, HandlerError> {
+    request.reply();
+    Ok(Response { status: 200 })
+}
+
+#[kobo::scenario(profile = "async")]
+async fn record_only_replay_path() {
+    let _config = config_value("__CONFIG_KEY__");
+    let (client, worker) = GatewayService::start(Gateway {});
+    let _submitted = client.submit(Request { id: 10 }).await.expect("submit");
+    client.shutdown_and_wait(worker).await.expect("shutdown");
+    let request = Request { id: 1 };
+    handle(request).await;
+    ward.task();
+}
+"#
+    .replace("__CONFIG_KEY__", config_key);
+    let file = project.main_file(&source);
+    (project, file)
+}
+
+fn integration_project_with_config(label: &str, config_key: &str) -> (TestProject, PathBuf) {
     let project = TestProject::new(label);
     write_activity_declaration(&project);
     project.write(
@@ -51,8 +120,7 @@ cancellation = "cooperative"
 scenario_event_budget = 128
 "#,
     );
-    let file = project.main_file(
-        r#"
+    let source = r#"
 #[kobo::boundary(crate = "config_source", policy = "record", reason = "record service config reads")]
 use config_source::config_value;
 
@@ -109,7 +177,7 @@ fn crunch(values: Vec<u64>) {
 
 #[kobo::scenario(profile = "async")]
 async fn product_loop() {
-    let _config = config_value("region-a");
+    let _config = config_value("__CONFIG_KEY__");
     let _sent = send_email("receipt-123");
     let (client, worker) = GatewayService::start(Gateway {});
     let _submitted = client.submit(Request { id: 10 }).await.expect("submit");
@@ -125,8 +193,15 @@ async fn product_loop() {
     handle(request).await;
     ward.network.drop_message("client");
 }
-"#,
-    );
+
+#[kobo::scenario(profile = "async")]
+fn record_only_replay_path() {
+    let _config = config_value("__CONFIG_KEY__");
+    ward.task();
+}
+"#
+    .replace("__CONFIG_KEY__", config_key);
+    let file = project.main_file(&source);
     project.write(
         "Cargo.toml",
         r#"[package]
@@ -149,14 +224,20 @@ fn main() {
     (project, file)
 }
 
-fn first_witness(project: &TestProject) -> Value {
+fn first_witness_with_path(project: &TestProject) -> (PathBuf, Value) {
     let witness_path = project
         .find_files_with_ext("kwit")
         .into_iter()
         .next()
         .expect("integrated scenario should write a witness");
-    serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
-        .expect("witness should parse")
+    let witness =
+        serde_json::from_str(&fs::read_to_string(&witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    (witness_path, witness)
+}
+
+fn first_witness(project: &TestProject) -> Value {
+    first_witness_with_path(project).1
 }
 
 #[test]
@@ -175,7 +256,8 @@ fn integrated_service_handler_record_activity_spawn_local_and_parallel_are_visib
         "run_registered_cleanup",
         "record_reply",
         "tokio::task::spawn_local",
-        "values.par_iter()",
+        ".par_iter()",
+        ".for_each",
         "kobo: runtime profile service_buffer=17",
     ] {
         assert_contains(
@@ -271,6 +353,142 @@ fn integrated_service_sim_witness_carries_full_product_loop_evidence() {
     assert_eq!(
         witness["full_ecosystem_exploration"], false,
         "integrated fixture must not claim arbitrary ecosystem exploration"
+    );
+}
+
+#[test]
+fn integrated_record_path_reuses_values_on_replay_and_changes_digest_when_mutated() {
+    let (first_project, first_file) =
+        record_replay_integration_project("v12-integrated-record-replay-first", "region-a");
+    let first_output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--target"),
+            s("record_only_replay_path"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&first_file),
+        ],
+        &first_project.root,
+    );
+    assert_success(
+        &first_output,
+        "integrated record-only target should produce an exact witness",
+    );
+    let (first_witness_path, first_witness_json) = first_witness_with_path(&first_project);
+    assert_eq!(
+        first_witness_json["replay_guarantee"], "exact",
+        "record-only integrated target should remain exact"
+    );
+    assert_contains(
+        &first_witness_json["ecosystem_boundaries"].to_string(),
+        "recorded-boundary-io",
+        "integrated record-only target should carry recorded I/O evidence",
+    );
+    assert_not_contains(
+        &first_witness_json["events"].to_string(),
+        "boundary-activity",
+        "record replay target should not include the activity side effect path",
+    );
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&first_witness_path),
+            s("--error-format=json"),
+        ],
+        &first_project.root,
+    );
+    assert_success(
+        &replay,
+        "integrated record-only witness should reuse recorded values during replay",
+    );
+
+    let (second_project, second_file) =
+        record_replay_integration_project("v12-integrated-record-replay-second", "region-b");
+    let second_output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--target"),
+            s("record_only_replay_path"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&second_file),
+        ],
+        &second_project.root,
+    );
+    assert_success(
+        &second_output,
+        "mutated integrated record-only target should produce a witness",
+    );
+    let second_witness = first_witness(&second_project);
+
+    assert_ne!(
+        first_witness_json["events"], second_witness["events"],
+        "mutating the integrated record value should change witness event material",
+    );
+    assert_ne!(
+        first_witness_json["backend_replay_token"], second_witness["backend_replay_token"],
+        "mutating the integrated record value should change the replay token",
+    );
+}
+
+#[test]
+fn integrated_activity_side_effect_is_not_rerun_by_deterministic_replay() {
+    let (project, file) = integration_project("v12-integrated-activity-replay-blocked");
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--target"),
+            s("product_loop"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "integrated product loop should produce a partial activity witness",
+    );
+    let (witness_path, witness) = first_witness_with_path(&project);
+    assert_eq!(
+        witness["replay_guarantee"], "partial",
+        "activity side effect should keep the integrated witness partial",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        "boundary-activity",
+        "integrated product loop should record the activity boundary event",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        r#""external_internals_replayed":false"#,
+        "integrated activity metadata should prove external internals were not replayed",
+    );
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &replay,
+        "deterministic replay must stop before rerunning integrated activity side effects",
+    );
+    assert_contains(
+        &replay.combined(),
+        "partial",
+        "replay failure should disclose that activity evidence is partial",
     );
 }
 

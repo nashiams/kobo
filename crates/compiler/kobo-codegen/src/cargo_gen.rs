@@ -307,6 +307,10 @@ fn config_with_inferred_dependencies(
         .iter()
         .any(|(_, source)| source.contains("tokio::"));
     let has_tokio = config.dependencies.iter().any(|(name, _)| name == "tokio");
+    let needs_rayon = source_files
+        .iter()
+        .any(|(_, source)| source.contains("rayon::") || source.contains(".par_iter()"));
+    let has_rayon = config.dependencies.iter().any(|(name, _)| name == "rayon");
 
     if needs_tokio && !has_tokio {
         config.dependencies.push((
@@ -314,6 +318,11 @@ fn config_with_inferred_dependencies(
             "{ version = \"1\", features = [\"rt-multi-thread\", \"macros\", \"sync\", \"time\"] }"
                 .to_owned(),
         ));
+    }
+    if needs_rayon && !has_rayon {
+        config
+            .dependencies
+            .push(("rayon".to_owned(), "1".to_owned()));
     }
 
     config
@@ -400,6 +409,21 @@ mod tests {
         let cargo_toml = fs::read_to_string(temp.path().join("Cargo.toml")).unwrap();
         assert!(cargo_toml.contains("tokio = { version = \"1\""));
         assert!(cargo_toml.contains("\"time\""));
+    }
+
+    #[test]
+    fn cargo_generation_infers_rayon_dependency_from_generated_source() {
+        let config = KoboProjectConfig::default();
+        let sources = vec![(
+            PathBuf::from("src/main.kobo"),
+            "use rayon::prelude::*;\nfn main() { let values = vec![1]; values.par_iter().for_each(|_| {}); }".to_owned(),
+        )];
+
+        let temp = tempfile::tempdir().unwrap();
+        generate_cargo_project(&config, &sources, temp.path()).unwrap();
+
+        let cargo_toml = fs::read_to_string(temp.path().join("Cargo.toml")).unwrap();
+        assert!(cargo_toml.contains("rayon = \"1\""));
     }
 
     #[test]

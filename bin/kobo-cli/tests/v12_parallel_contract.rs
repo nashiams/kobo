@@ -1,5 +1,7 @@
 mod v09_common;
 
+use std::process::Command;
+
 use v09_common::{
     assert_contains, assert_failure, assert_mentions_line, assert_not_contains, assert_success,
     one_based_line_of, path_arg, run_kobo, s, TestProject,
@@ -38,8 +40,13 @@ fn crunch(values: Vec<u64>) {
     );
     assert_contains(
         &generated,
-        "values.par_iter()",
+        ".par_iter()",
         "safe CPU-bound loop should lower iter() to par_iter()",
+    );
+    assert_contains(
+        &generated,
+        ".for_each(|value|",
+        "safe CPU-bound loop should lower to a Rayon adapter instead of a plain for loop over par_iter",
     );
 }
 
@@ -80,8 +87,78 @@ fn crunch(values: Vec<u64>) {
     );
     assert_contains(
         &generated,
-        "values.par_iter()",
+        ".par_iter()",
         "repairing Rc to Arc should allow Rayon lowering",
+    );
+    assert_contains(
+        &generated,
+        ".for_each(|value|",
+        "safe repaired loop should use a compiling Rayon adapter",
+    );
+}
+
+#[test]
+fn generated_safe_parallel_cargo_fixture_compiles() {
+    let project = TestProject::new("parallel-safe-cargo-check");
+    let file = project.main_file(
+        r#"
+fn cpu_hash(value: u64) -> u64 {
+    value.wrapping_mul(31).rotate_left(3)
+}
+
+fn crunch(values: Vec<u64>) {
+    #[kobo::parallel]
+    for value in values.iter() {
+        let _hashed = cpu_hash(*value);
+    }
+}
+
+fn main() {
+    crunch(vec![1, 2, 3, 4]);
+}
+"#,
+    );
+    let cargo_dir = project.root.join("target").join("parallel-cargo");
+    let output = run_kobo(
+        &[
+            s("inspect"),
+            s("--cargo"),
+            path_arg(&cargo_dir),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "safe parallel fixture should generate Cargo output",
+    );
+    let generated = std::fs::read_to_string(cargo_dir.join("src").join("main.rs"))
+        .expect("generated main.rs should be readable");
+    assert_contains(
+        &generated,
+        ".for_each(|value|",
+        "generated Cargo fixture should contain production Rayon adapter code",
+    );
+    let cargo_toml = std::fs::read_to_string(cargo_dir.join("Cargo.toml"))
+        .expect("generated Cargo.toml should be readable");
+    assert_contains(
+        &cargo_toml,
+        "rayon",
+        "generated Cargo project should infer the Rayon dependency",
+    );
+
+    let check = Command::new("cargo")
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(cargo_dir.join("Cargo.toml"))
+        .current_dir(&project.root)
+        .output()
+        .expect("cargo check should run for generated parallel fixture");
+    assert!(
+        check.status.success(),
+        "generated safe parallel Cargo fixture should compile\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
     );
 }
 
@@ -193,8 +270,13 @@ fn crunch(values: Vec<u64>) {
 
     assert_contains(
         &generated,
-        "values.par_iter().map",
+        ".par_iter()",
         "iterator chain should stay lazy after parallel lowering",
+    );
+    assert_contains(
+        &generated,
+        ".map",
+        "iterator chain should preserve the map adapter after parallel lowering",
     );
     assert_not_contains(
         &generated,

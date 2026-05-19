@@ -556,6 +556,8 @@ impl<'a> Lowerer<'a> {
                     match parallel::lower_for_loop(for_loop, safety_gate.accepted) {
                         parallel::ParallelLowering::Parallel => {
                             self.needs_rayon = true;
+                            self.lower_expr(for_loop.expr.as_mut(), scopes);
+                            self.lower_nested_block(&mut for_loop.body, scopes);
                             self.parallel_evidence.push(self.parallel_loop_evidence(
                                 for_loop,
                                 scopes,
@@ -564,6 +566,9 @@ impl<'a> Lowerer<'a> {
                                 &policy,
                                 safety_gate,
                             ));
+                            *expr = parallel::for_each_adapter_expr(for_loop);
+                            *semi = Some(syn::token::Semi::default());
+                            return;
                         }
                         parallel::ParallelLowering::SerialPolicy => {
                             parallel::mark_serial_policy(for_loop);

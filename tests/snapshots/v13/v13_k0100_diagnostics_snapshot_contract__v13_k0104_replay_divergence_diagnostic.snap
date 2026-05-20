@@ -1,5 +1,6 @@
 ---
 source: bin/kobo-cli/tests/v13_k0100_diagnostics_snapshot_contract.rs
+assertion_line: 37
 expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagnostic should serialize\")"
 ---
 {
@@ -218,8 +219,15 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
         "events": [],
         "ir": [],
         "obligations": [],
+        "scheduler_assumptions": {
+          "preset": null,
+          "same_as_implementation": true,
+          "seed": 0
+        },
         "seed": 0,
+        "semantics": "typed_ward_model_ir",
         "source": "not_requested",
+        "states": [],
         "steps_executed": 0
       },
       "obligations": {
@@ -292,7 +300,21 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       }
     },
     "strict_liveness": {
+      "dataflow": {
+        "engine": "core_cfg_forward",
+        "join_semantics": "semantic_obligation_state",
+        "states": [
+          "owned",
+          "discharged",
+          "returned",
+          "transferred",
+          "escaped",
+          "suppressed",
+          "proof_failure"
+        ]
+      },
       "errors": [],
+      "join_conflicts": [],
       "reasoned_suppressions": [],
       "resolved_paths": [],
       "source": "compiler_core_forward_dataflow",
@@ -533,8 +555,15 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
         "events": [],
         "ir": [],
         "obligations": [],
+        "scheduler_assumptions": {
+          "preset": null,
+          "same_as_implementation": true,
+          "seed": 0
+        },
         "seed": 0,
+        "semantics": "typed_ward_model_ir",
         "source": "not_requested",
+        "states": [],
         "steps_executed": 0
       },
       "obligations": {
@@ -607,7 +636,21 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       }
     },
     "strict_liveness": {
+      "dataflow": {
+        "engine": "core_cfg_forward",
+        "join_semantics": "semantic_obligation_state",
+        "states": [
+          "owned",
+          "discharged",
+          "returned",
+          "transferred",
+          "escaped",
+          "suppressed",
+          "proof_failure"
+        ]
+      },
       "errors": [],
+      "join_conflicts": [],
       "reasoned_suppressions": [],
       "resolved_paths": [],
       "source": "compiler_core_forward_dataflow",

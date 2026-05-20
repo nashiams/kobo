@@ -254,6 +254,58 @@ fn run() {
 }
 
 #[test]
+fn lsp_ward_syntax_uses_compiler_facts_and_source_map_navigation() {
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+ward Demo {
+    obligation Token must close
+    scenario run {
+        let token = Token {};
+    }
+}
+"#,
+        Some(".kobo/witnesses/run-1.kwit"),
+    );
+
+    let diagnostics = snapshot["diagnostics"].to_string();
+    assert_contains(
+        &diagnostics,
+        "compiler-scenario-program",
+        "ward syntax diagnostics should come from compiler scenario facts",
+    );
+    assert_not_contains(
+        &diagnostics,
+        "source-fallback",
+        "ward syntax diagnostics must not use the text-scanning fallback",
+    );
+    assert_eq!(
+        snapshot["diagnostics"][0]["source"], "kobo-compiler",
+        "ward syntax diagnostics should use compiler diagnostic ownership",
+    );
+    assert_contains(
+        &snapshot["hover"].to_string(),
+        "ward model",
+        "ward syntax hover should preserve ward context",
+    );
+    assert_contains(
+        &snapshot["documentLinks"].to_string(),
+        "file:///workspace/src/main.rs",
+        "ward syntax navigation should target generated Rust",
+    );
+    assert_contains(
+        &snapshot["documentLinks"].to_string(),
+        "file:///workspace/src/main.kobo.map",
+        "ward syntax navigation should expose the source map",
+    );
+    assert_contains(
+        &snapshot["runnables"].to_string(),
+        "source_map",
+        "ward syntax runnables should carry source-map delegation metadata",
+    );
+}
+
+#[test]
 fn lsp_navigation_uses_compiler_source_map_ranges() {
     let snapshot = kobo_lsp::protocol_document_snapshot(
         "file:///workspace/src/main.kobo",

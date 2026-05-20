@@ -5,6 +5,7 @@ use kobo_errors::{DiagnosticLspPayload, KDiagnostic, KErrorCode};
 use kobo_ir::{
     FileId, FileSet, Kir, KoboSpan, NodeIdGen, ScenarioOpKind, ScenarioProgram, SolutionMap,
 };
+use kobo_parser::PreprocessSourceMap;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -213,7 +214,12 @@ fn protocol_document_analysis(uri: &str, source: &str) -> ProtocolDocumentAnalys
 
 fn compiler_document_analysis(uri: &str, source: &str) -> Option<ProtocolDocumentAnalysis> {
     let mut id_gen = NodeIdGen::new();
-    let ast = kobo_parser::parse_file(source, FileId(0), &mut id_gen).ok()?;
+    let file_id = FileId(0);
+    let ward_mapped = kobo_parser::preprocess_ward_syntax_mapped(source, file_id);
+    let has_ward_syntax = !ward_mapped.metadata.wards.is_empty();
+    let preprocess_source_map = ward_mapped.source_map;
+    let rewritten = ward_mapped.rewritten;
+    let ast = kobo_parser::parse_file(&rewritten, file_id, &mut id_gen).ok()?;
     let kir = kobo_transform::build_kir(
         &ast,
         &mut id_gen,
@@ -222,14 +228,17 @@ fn compiler_document_analysis(uri: &str, source: &str) -> Option<ProtocolDocumen
     let programs = kir.scenario_programs();
     let diagnostics = programs
         .iter()
-        .flat_map(|program| compiler_liveness_diagnostics(source, program))
+        .flat_map(|program| compiler_liveness_diagnostics(source, program, &preprocess_source_map))
         .collect::<Vec<_>>();
-    let hover = if programs.iter().any(program_has_obligation) || !diagnostics.is_empty() {
+    let hover = if has_ward_syntax {
+        ProtocolHoverKind::Ward
+    } else if programs.iter().any(program_has_obligation) || !diagnostics.is_empty() {
         ProtocolHoverKind::MustCall
     } else {
         ProtocolHoverKind::RustShape
     };
-    let rust_navigation = compiler_rust_navigation(uri, source, &ast, &kir, &programs);
+    let rust_navigation =
+        compiler_rust_navigation(uri, source, &preprocess_source_map, &ast, &kir, &programs);
     Some(ProtocolDocumentAnalysis {
         diagnostics,
         hover,
@@ -240,11 +249,12 @@ fn compiler_document_analysis(uri: &str, source: &str) -> Option<ProtocolDocumen
 fn compiler_rust_navigation(
     uri: &str,
     source: &str,
+    preprocess_source_map: &PreprocessSourceMap,
     ast: &kobo_parser::KoboFile,
     kir: &Kir,
     programs: &[ScenarioProgram],
 ) -> Option<ProtocolRustNavigation> {
-    let navigation_site = first_navigation_site(source, programs)?;
+    let navigation_site = first_navigation_site(source, programs, preprocess_source_map)?;
     let codegen_output = kobo_codegen::codegen_file(
         kir,
         ast,
@@ -272,17 +282,21 @@ fn compiler_rust_navigation(
 fn first_navigation_site(
     source: &str,
     programs: &[ScenarioProgram],
+    preprocess_source_map: &PreprocessSourceMap,
 ) -> Option<ProtocolNavigationSite> {
     programs.iter().find_map(|program| {
         program
             .operations
             .iter()
             .find_map(|operation| match &operation.kind {
-                ScenarioOpKind::CreateObligation { binding, .. } => Some(ProtocolNavigationSite {
-                    binding: binding.clone(),
-                    span: operation.span,
-                    source_range: protocol_range_from_span(source, operation.span),
-                }),
+                ScenarioOpKind::CreateObligation { binding, .. } => {
+                    let original_span = original_span_for(preprocess_source_map, operation.span);
+                    Some(ProtocolNavigationSite {
+                        binding: binding.clone(),
+                        span: operation.span,
+                        source_range: protocol_range_from_span(source, original_span),
+                    })
+                }
                 _ => None,
             })
     })
@@ -316,6 +330,7 @@ fn generated_binding_range(generated_source: &str, binding: &str) -> Option<Prot
 fn compiler_liveness_diagnostics(
     source: &str,
     program: &ScenarioProgram,
+    preprocess_source_map: &PreprocessSourceMap,
 ) -> Vec<ProtocolDiagnosticFact> {
     program
         .operations
@@ -324,8 +339,9 @@ fn compiler_liveness_diagnostics(
             ScenarioOpKind::CreateObligation {
                 binding, actions, ..
             } if !compiler_binding_is_resolved(program, binding, actions) => {
+                let original_span = original_span_for(preprocess_source_map, operation.span);
                 let (line, character_start, character_end) =
-                    line_range_from_span(source, operation.span);
+                    line_range_from_span(source, original_span);
                 Some(ProtocolDiagnosticFact {
                     line,
                     character_start,
@@ -358,11 +374,17 @@ fn compiler_binding_is_resolved(
                 action,
             } => candidate == binding && actions.iter().any(|expected| expected == action),
             ScenarioOpKind::Transfer {
-                binding: candidate, ..
-            } => candidate == binding,
+                binding: candidate,
+                proven,
+                ..
+            } => candidate == binding && *proven,
             ScenarioOpKind::ExternalBoundary { .. } => true,
             _ => false,
         })
+}
+
+fn original_span_for(source_map: &PreprocessSourceMap, span: KoboSpan) -> KoboSpan {
+    source_map.rewritten_span_to_original(span).unwrap_or(span)
 }
 
 fn program_has_obligation(program: &ScenarioProgram) -> bool {

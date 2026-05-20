@@ -189,6 +189,91 @@ fn unproven_helper_check_case() {
 }
 
 #[test]
+fn check_release_rejects_unresolved_obligation_across_await() {
+    let project = TestProject::new("v13-strict-check-await");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "v13_strict_check_await"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = "1"
+"#,
+    );
+    let file = project.main_file(&delivery_source(
+        r#"
+async fn pause() {}
+
+#[kobo::scenario(profile = "async")]
+async fn await_check_case() {
+    let delivery = Delivery {};
+    pause().await;
+    delivery.ack();
+}
+"#,
+    ));
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "release check must reject unresolved obligations across await/cancel edges",
+    );
+    assert_contains(&output.combined(), "K0100", "check should emit K0100");
+    assert_contains(
+        &output.combined(),
+        "await",
+        "check diagnostic should name the await edge",
+    );
+}
+
+#[test]
+fn check_release_rejects_unsupported_obligation_container() {
+    let project = TestProject::new("v13-strict-check-unsupported-container");
+    let file = project.main_file(&delivery_source(
+        r#"
+use std::sync::{Arc, Mutex};
+
+#[kobo::scenario(profile = "sync")]
+fn unsupported_container_check_case() {
+    let _shared = Arc::new(Mutex::new(Delivery {}));
+}
+"#,
+    ));
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "release check must reject unsupported containers carrying obligations",
+    );
+    assert_contains(&output.combined(), "K0100", "check should emit K0100");
+    assert_contains(
+        &output.combined(),
+        "Arc<Mutex",
+        "check diagnostic should name the unsupported container",
+    );
+}
+
+#[test]
 fn strict_accepts_discharge_return_transfer_escape_and_reasoned_suppression() {
     let project = TestProject::new("v13-strict-accepted-forms");
     let source = delivery_source(

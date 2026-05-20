@@ -90,6 +90,14 @@ struct DriverActiveObligation {
     span: KoboSpan,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DriverStrictLivenessFailure {
+    span: KoboSpan,
+    binding: String,
+    exit_kind: String,
+    detail: Option<String>,
+}
+
 type DriverObligationEnv = BTreeMap<String, DriverActiveObligation>;
 
 fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
@@ -102,21 +110,20 @@ fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) 
         let core = lower_core_program(program);
         let recursive_functions = strict_liveness_recursive_functions(program);
         for function in &core.functions {
-            for (span, binding, exit_kind) in
-                strict_liveness_failures(function, &recursive_functions)
-            {
+            for failure in strict_liveness_failures(function, &recursive_functions) {
                 if session.diagnostics.iter().any(|diagnostic| {
-                    diagnostic.code == KErrorCode::K0100 && diagnostic.primary.span == span
+                    diagnostic.code == KErrorCode::K0100 && diagnostic.primary.span == failure.span
                 }) {
                     continue;
                 }
-                let message = format!(
-                    "strict liveness: unresolved obligation `{binding}` reaches {exit_kind}"
-                );
+                let message = strict_liveness_failure_message(&failure);
                 session.diagnostics.push(KDiagnostic::new(
                     KErrorCode::K0100,
                     severity,
-                    DiagLabel::primary(span, "unresolved strict liveness obligation"),
+                    DiagLabel::primary(
+                        failure.span,
+                        "unresolved strict liveness obligation",
+                    ),
                     message,
                     DiagDecision(
                         "discharge, return, transfer, suppress with reason, or mark the boundary explicit"
@@ -131,7 +138,7 @@ fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) 
 fn strict_liveness_failures(
     function: &CoreFunction,
     recursive_functions: &BTreeSet<String>,
-) -> Vec<(KoboSpan, String, &'static str)> {
+) -> Vec<DriverStrictLivenessFailure> {
     let blocks = function
         .blocks
         .iter()
@@ -152,11 +159,9 @@ fn strict_liveness_failures(
         let mut active = in_states.get(&block_id).cloned().unwrap_or_default();
         apply_driver_block_liveness(block, recursive_functions, &mut active, &mut failures);
         if block.successors.is_empty() {
-            failures.extend(
-                active
-                    .values()
-                    .map(|obligation| (obligation.span, obligation.binding.clone(), "normal_exit")),
-            );
+            failures.extend(active.values().map(|obligation| {
+                driver_strict_failure(obligation.span, obligation.binding.clone(), "normal_exit")
+            }));
             continue;
         }
         for successor in &block.successors {
@@ -180,7 +185,7 @@ fn apply_driver_block_liveness(
     block: &CoreBlock,
     recursive_functions: &BTreeSet<String>,
     active: &mut DriverObligationEnv,
-    failures: &mut Vec<(KoboSpan, String, &'static str)>,
+    failures: &mut Vec<DriverStrictLivenessFailure>,
 ) {
     for statement in &block.statements {
         match statement.kind {
@@ -213,12 +218,22 @@ fn apply_driver_block_liveness(
                         .get(binding)
                         .map(|obligation| obligation.span)
                         .unwrap_or(statement.source_span);
-                    failures.push((span, binding.clone(), "branch_exit"));
+                    failures.push(driver_strict_failure(span, binding.clone(), "branch_exit"));
                 }
             }
-            CoreStatementKind::ObligationMove
-            | CoreStatementKind::UnsupportedContainer
-            | CoreStatementKind::Call => {}
+            CoreStatementKind::UnsupportedContainer => {
+                let binding = statement
+                    .binding
+                    .clone()
+                    .unwrap_or_else(|| "_shared".to_owned());
+                failures.push(DriverStrictLivenessFailure {
+                    span: statement.source_span,
+                    binding,
+                    exit_kind: "unsupported_container".to_owned(),
+                    detail: statement.action.clone(),
+                });
+            }
+            CoreStatementKind::ObligationMove | CoreStatementKind::Call => {}
         }
     }
     for terminator in &block.terminators {
@@ -226,19 +241,43 @@ fn apply_driver_block_liveness(
             CoreTerminatorKind::Return => Some("return"),
             CoreTerminatorKind::ErrorExit => Some("error_exit"),
             CoreTerminatorKind::Panic => Some("panic"),
+            CoreTerminatorKind::Await => Some("await"),
             CoreTerminatorKind::OpaqueBoundary => Some("opaque_boundary"),
-            CoreTerminatorKind::Await | CoreTerminatorKind::Goto | CoreTerminatorKind::Branch => {
-                None
-            }
+            CoreTerminatorKind::Goto | CoreTerminatorKind::Branch => None,
         };
         if let Some(exit_kind) = exit_kind {
-            failures.extend(
-                active
-                    .values()
-                    .map(|obligation| (obligation.span, obligation.binding.clone(), exit_kind)),
-            );
+            failures.extend(active.values().map(|obligation| {
+                driver_strict_failure(obligation.span, obligation.binding.clone(), exit_kind)
+            }));
         }
     }
+}
+
+fn driver_strict_failure(
+    span: KoboSpan,
+    binding: String,
+    exit_kind: &str,
+) -> DriverStrictLivenessFailure {
+    DriverStrictLivenessFailure {
+        span,
+        binding,
+        exit_kind: exit_kind.to_owned(),
+        detail: None,
+    }
+}
+
+fn strict_liveness_failure_message(failure: &DriverStrictLivenessFailure) -> String {
+    if failure.exit_kind == "unsupported_container" {
+        let container = failure.detail.as_deref().unwrap_or("unsupported container");
+        return format!(
+            "strict liveness: unsupported obligation container `{container}` keeps `{}` unresolved",
+            failure.binding
+        );
+    }
+    format!(
+        "strict liveness: unresolved obligation `{}` reaches {}",
+        failure.binding, failure.exit_kind
+    )
 }
 
 fn driver_transfer_is_summary_proved(
@@ -262,8 +301,8 @@ fn strict_liveness_recursive_functions(program: &kobo_ir::ScenarioProgram) -> BT
 }
 
 fn dedupe_strict_liveness_failures(
-    failures: Vec<(KoboSpan, String, &'static str)>,
-) -> Vec<(KoboSpan, String, &'static str)> {
+    failures: Vec<DriverStrictLivenessFailure>,
+) -> Vec<DriverStrictLivenessFailure> {
     let mut deduped = Vec::new();
     for failure in failures {
         if !deduped.iter().any(|existing| existing == &failure) {

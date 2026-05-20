@@ -794,6 +794,15 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(expr),
             });
         }
+        if let Some(span) = self.builtin_file_socket_create_span(expr, env) {
+            return Some(InferredLifecycleCreation {
+                binding,
+                type_name: "FileSocket".to_owned(),
+                actions: file_socket_actions(),
+                template: ScenarioLifecycleTemplate::inferred("file_socket", "file_socket"),
+                span,
+            });
+        }
 
         let call = lifecycle_method_call(expr)?;
         let receiver_type = expr_static_type(call.receiver.as_ref(), env, self.method_shapes)?;
@@ -814,6 +823,34 @@ impl<'a> ScenarioLowerer<'a> {
                 span: self.span(call),
             },
         )
+    }
+
+    fn builtin_file_socket_create_span(
+        &self,
+        expr: &'a Expr,
+        env: &BindingEnv,
+    ) -> Option<KoboSpan> {
+        match peel_paren_expr(expr) {
+            Expr::Call(call) => {
+                let Expr::Path(path) = call.func.as_ref() else {
+                    return None;
+                };
+                let resolved_path = self.resolved_path_segments(&path.path, env);
+                (is_std_file_open_path(&resolved_path) || is_std_tcp_connect_path(&resolved_path))
+                    .then(|| self.span(call))
+            }
+            Expr::Await(await_expr) => {
+                self.builtin_file_socket_create_span(await_expr.base.as_ref(), env)
+            }
+            Expr::MethodCall(call) => {
+                let method = call.method.to_string();
+                let receiver_type =
+                    expr_static_type(call.receiver.as_ref(), env, self.method_shapes)?;
+                (method == "accept" && type_name_ends_with(&receiver_type, "TcpListener"))
+                    .then(|| self.span(call))
+            }
+            _ => None,
+        }
     }
 
     fn unsupported_obligation_container(
@@ -1045,17 +1082,13 @@ impl<'a> ScenarioLowerer<'a> {
                 .and_then(expr_path_ident)
                 .and_then(|name| env.resolve(&name))
             {
-                if env.terminal_actions(&binding).is_some_and(|actions| {
-                    actions
-                        .iter()
-                        .any(|action| action == "drop-at-safe-boundary")
-                }) {
+                if let Some(action) = env
+                    .terminal_actions(&binding)
+                    .and_then(|actions| drop_discharge_action(&actions))
+                {
                     self.operations.push(ScenarioOp {
                         span: self.span(call),
-                        kind: ScenarioOpKind::Discharge {
-                            binding,
-                            action: "drop-at-safe-boundary".to_owned(),
-                        },
+                        kind: ScenarioOpKind::Discharge { binding, action },
                     });
                     return true;
                 }
@@ -1862,7 +1895,19 @@ fn tokio_spawn_call(expr: &Expr) -> Option<&ExprCall> {
 
 fn local_static_type(local: &Local, expr: &Expr) -> Option<(String, String)> {
     let binding = pat_ident(&local.pat)?;
-    expr_static_type_from_initializer(expr).map(|type_name| (binding, type_name))
+    type_annotation_name(&local.pat)
+        .or_else(|| expr_static_type_from_initializer(expr))
+        .map(|type_name| (binding, type_name))
+}
+
+fn type_annotation_name(pat: &Pat) -> Option<String> {
+    let Pat::Type(PatType { ty, .. }) = pat else {
+        return None;
+    };
+    match ty.as_ref() {
+        syn::Type::Path(path) => Some(path_to_string(&path.path)),
+        _ => None,
+    }
 }
 
 fn expr_static_type_from_initializer(expr: &Expr) -> Option<String> {
@@ -1994,6 +2039,20 @@ fn lifecycle_template_from_shape(
     }
 }
 
+fn is_std_file_open_path(path: &[String]) -> bool {
+    path_ends_with_segments(path, &["std", "fs", "File", "open"])
+        || path_ends_with_segments(path, &["std", "fs", "OpenOptions", "open"])
+}
+
+fn is_std_tcp_connect_path(path: &[String]) -> bool {
+    path_ends_with_segments(path, &["std", "net", "TcpStream", "connect"])
+        || path_ends_with_segments(path, &["std", "os", "unix", "net", "UnixStream", "connect"])
+}
+
+fn type_name_ends_with(type_name: &str, suffix: &str) -> bool {
+    type_name == suffix || type_name.ends_with(&format!("::{suffix}"))
+}
+
 fn merge_branch_env(env: &mut BindingEnv, then_env: BindingEnv, else_env: BindingEnv) {
     merge_branch_envs(env, vec![then_env, else_env]);
 }
@@ -2079,6 +2138,21 @@ fn file_socket_actions() -> Vec<String> {
         .into_iter()
         .map(str::to_owned)
         .collect()
+}
+
+fn drop_discharge_action(actions: &[String]) -> Option<String> {
+    if actions
+        .iter()
+        .any(|action| action == "drop-at-safe-boundary")
+    {
+        return Some("drop-at-safe-boundary".to_owned());
+    }
+    if actions.iter().any(|action| action == "close")
+        && actions.iter().any(|action| action == "opaque-boundary")
+    {
+        return Some("close".to_owned());
+    }
+    None
 }
 
 fn terminal_action_name(method: &str) -> String {
@@ -2224,6 +2298,14 @@ fn path_last_ident(path: &Path) -> Option<String> {
     path.segments
         .last()
         .map(|segment| segment.ident.to_string())
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 
 fn path_starts_with(path: &[String], prefix: &[&str]) -> bool {

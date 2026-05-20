@@ -290,6 +290,42 @@ async fn socket_case() {
 }
 
 #[test]
+fn standard_file_and_socket_apis_infer_file_socket_lifecycle() {
+    let project = TestProject::new("v13-template-std-file-socket");
+    let source = r#"
+#[kobo::scenario(profile = "network")]
+fn std_file_socket_case() {
+    let file = std::fs::File::open("audit.log");
+    drop(file);
+
+    let stream = std::net::TcpStream::connect("127.0.0.1:9");
+    drop(stream);
+
+    let listener: std::net::TcpListener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let accepted = listener.accept();
+    drop(accepted);
+}
+"#;
+
+    let witness = run_witness(&project, source, "std_file_socket_case");
+    let obligations = inferred_obligations(&witness)
+        .iter()
+        .filter(|entry| entry["template_id"].as_str() == Some("file_socket"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        obligations.len(),
+        3,
+        "std file open, TcpStream connect, and listener accept should all infer file_socket: {}",
+        witness["inferred_obligations"]
+    );
+    for obligation in obligations {
+        assert_eq!(obligation["state"], "discharged");
+        assert_terminal_actions(obligation, &["close", "transfer", "opaque-boundary"]);
+    }
+}
+
+#[test]
 fn template_facts_are_structured_data_not_diagnostic_text() {
     let project = TestProject::new("v13-template-structured-data");
     let source = r#"

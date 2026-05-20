@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
 use kobo_analysis::{
@@ -100,8 +100,11 @@ fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) 
         resolve_severity(KErrorCode::K0100, session.guarantee_policy()).unwrap_or(Severity::Error);
     for program in kir.scenario_programs() {
         let core = lower_core_program(program);
+        let recursive_functions = strict_liveness_recursive_functions(program);
         for function in &core.functions {
-            for (span, binding, exit_kind) in strict_liveness_failures(function) {
+            for (span, binding, exit_kind) in
+                strict_liveness_failures(function, &recursive_functions)
+            {
                 if session.diagnostics.iter().any(|diagnostic| {
                     diagnostic.code == KErrorCode::K0100 && diagnostic.primary.span == span
                 }) {
@@ -125,7 +128,10 @@ fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) 
     }
 }
 
-fn strict_liveness_failures(function: &CoreFunction) -> Vec<(KoboSpan, String, &'static str)> {
+fn strict_liveness_failures(
+    function: &CoreFunction,
+    recursive_functions: &BTreeSet<String>,
+) -> Vec<(KoboSpan, String, &'static str)> {
     let blocks = function
         .blocks
         .iter()
@@ -144,7 +150,7 @@ fn strict_liveness_failures(function: &CoreFunction) -> Vec<(KoboSpan, String, &
             continue;
         };
         let mut active = in_states.get(&block_id).cloned().unwrap_or_default();
-        apply_driver_block_liveness(block, &mut active, &mut failures);
+        apply_driver_block_liveness(block, recursive_functions, &mut active, &mut failures);
         if block.successors.is_empty() {
             failures.extend(
                 active
@@ -172,6 +178,7 @@ fn strict_liveness_failures(function: &CoreFunction) -> Vec<(KoboSpan, String, &
 
 fn apply_driver_block_liveness(
     block: &CoreBlock,
+    recursive_functions: &BTreeSet<String>,
     active: &mut DriverObligationEnv,
     failures: &mut Vec<(KoboSpan, String, &'static str)>,
 ) {
@@ -188,11 +195,16 @@ fn apply_driver_block_liveness(
                     );
                 }
             }
-            CoreStatementKind::ObligationDischarge
-            | CoreStatementKind::ObligationTransfer
-            | CoreStatementKind::ObligationEscape => {
+            CoreStatementKind::ObligationDischarge | CoreStatementKind::ObligationEscape => {
                 if let Some(binding) = statement.binding.as_ref() {
                     active.remove(binding);
+                }
+            }
+            CoreStatementKind::ObligationTransfer => {
+                if driver_transfer_is_summary_proved(statement, recursive_functions) {
+                    if let Some(binding) = statement.binding.as_ref() {
+                        active.remove(binding);
+                    }
                 }
             }
             CoreStatementKind::ObligationBranchUnresolved => {
@@ -227,6 +239,26 @@ fn apply_driver_block_liveness(
             );
         }
     }
+}
+
+fn driver_transfer_is_summary_proved(
+    statement: &kobo_ir::CoreStatement,
+    recursive_functions: &BTreeSet<String>,
+) -> bool {
+    let Some(callee) = statement.action.as_deref() else {
+        return false;
+    };
+    !callee.starts_with("unproven:") && !recursive_functions.contains(callee)
+}
+
+fn strict_liveness_recursive_functions(program: &kobo_ir::ScenarioProgram) -> BTreeSet<String> {
+    program
+        .coverage
+        .call_graph_sccs
+        .iter()
+        .filter(|scc| scc.is_recursive)
+        .flat_map(|scc| scc.functions.iter().cloned())
+        .collect()
 }
 
 fn dedupe_strict_liveness_failures(

@@ -150,6 +150,45 @@ fn check_path_case() {
 }
 
 #[test]
+fn check_release_rejects_unproven_helper_transfer() {
+    let project = TestProject::new("v13-strict-check-unproven-helper");
+    let file = project.main_file(&delivery_source(
+        r#"
+fn helper_ignores(token: Delivery) {
+    let _kept = token;
+}
+
+#[kobo::scenario(profile = "sync")]
+fn unproven_helper_check_case() {
+    let delivery = Delivery {};
+    helper_ignores(delivery);
+}
+"#,
+    ));
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "release check must reject helper transfers without a discharge summary",
+    );
+    assert_contains(&output.combined(), "K0100", "check should emit K0100");
+    assert_contains(
+        &output.combined(),
+        "delivery",
+        "check diagnostic should keep the unresolved binding",
+    );
+}
+
+#[test]
 fn strict_accepts_discharge_return_transfer_escape_and_reasoned_suppression() {
     let project = TestProject::new("v13-strict-accepted-forms");
     let source = delivery_source(

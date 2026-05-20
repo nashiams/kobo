@@ -120,7 +120,7 @@ pub(super) fn cmd_inspect(
             session.guarantee_profile().as_str()
         );
         emit_boundary_policy_comments(&boundary_policies);
-        print!("{}", scenario_metadata_output(&source));
+        print!("{}", scenario_metadata_output_for_file(file, &source)?);
         return Ok(());
     }
 
@@ -164,7 +164,7 @@ pub(super) fn cmd_inspect(
     let output = if scenario_metadata {
         let source = std::fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
-        scenario_metadata_output(&source)
+        scenario_metadata_output_for_file(file, &source)?
     } else if clean {
         kobo_codegen::clean::strip_kobo_wrappers(&rs_source)
     } else {
@@ -322,6 +322,59 @@ fn append_scenario_metadata(mut output: String, source: &str) -> String {
 
 fn scenario_metadata_output(source: &str) -> String {
     append_ward_metadata(append_scenario_metadata(String::new(), source), source)
+}
+
+fn scenario_metadata_output_for_file(file: &Path, source: &str) -> anyhow::Result<String> {
+    let mut output = scenario_metadata_output(source);
+    for module in sibling_kobo_modules(file, source) {
+        let module_source = fs::read_to_string(&module)
+            .with_context(|| format!("failed to read module {}", module.display()))?;
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&format!("// kobo: module {}\n", relative_display(&module)));
+        output.push_str(&scenario_metadata_output(&module_source));
+    }
+    Ok(output)
+}
+
+fn sibling_kobo_modules(file: &Path, source: &str) -> Vec<PathBuf> {
+    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+    let mut modules = source
+        .lines()
+        .filter_map(module_name_from_line)
+        .map(|name| base_dir.join(format!("{name}.kobo")))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
+fn module_name_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("mod ")?;
+    let name = rest.strip_suffix(';')?.trim();
+    (!name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+        .then(|| name.to_owned())
+}
+
+fn relative_display(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    absolute
+        .strip_prefix(&cwd)
+        .unwrap_or(&absolute)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn append_ward_metadata(mut output: String, source: &str) -> String {

@@ -151,15 +151,43 @@ fn attribute_ward_form_remains_supported() {
 #[test]
 fn multi_module_ward_preserves_ports_recordings_and_debt() {
     let project = TestProject::new("v13-multi-module-ward");
-    let queue = project.write("src/queue.kobo", ward_source());
+    let main = project.main_file(
+        r#"
+mod queue;
+
+ward QueueScenarios {
+    scenario crash_during_ack {
+        let delivery = Delivery {};
+        delivery.ack();
+    }
+}
+"#,
+    );
+    project.write(
+        "src/queue.kobo",
+        r#"
+ward DurableQueue {
+    state log: Vec<String>
+    state pending: Vec<String>
+
+    obligation Delivery must ack | nack | requeue
+    port storage: durable_log
+    recording ack_log
+    debt external_metrics
+}
+"#,
+    );
     let output = run_kobo(
-        &[s("inspect"), s("--scenario-metadata"), path_arg(&queue)],
+        &[s("inspect"), s("--scenario-metadata"), path_arg(&main)],
         &project.root,
     );
-    assert_success(&output, "multi-module ward file should inspect");
+    assert_success(&output, "multi-module ward entry file should inspect");
     let text = output.combined();
     for expected in [
+        "module src/queue.kobo",
         "ward DurableQueue",
+        "ward QueueScenarios",
+        "scenario crash_during_ack",
         "port storage",
         "recording ack_log",
         "debt external_metrics",

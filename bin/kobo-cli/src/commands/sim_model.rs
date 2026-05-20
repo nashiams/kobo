@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_errors::KErrorCode;
-use kobo_ir::ScenarioExternalCallShape;
+use kobo_ir::{FileId, ScenarioExternalCallShape};
+use kobo_parser::{parse_ward_syntax, WardItem};
 
 use kobo_sim_core as sim_core;
 
@@ -587,6 +588,7 @@ fn parse_must_call_types(source: &str) -> Vec<MustCallType> {
             }
         }
     }
+    types.extend(ward_must_call_types(source));
     types
 }
 
@@ -623,7 +625,40 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
             }
         }
     }
+    scenarios.extend(ward_scenarios(source));
     scenarios
+}
+
+fn ward_must_call_types(source: &str) -> Vec<MustCallType> {
+    parse_ward_syntax(source, FileId(0))
+        .wards
+        .into_iter()
+        .flat_map(|ward| ward.items)
+        .filter_map(|item| match item {
+            WardItem::Obligation(obligation) => Some(MustCallType {
+                type_name: obligation.type_name,
+                actions: obligation.actions,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn ward_scenarios(source: &str) -> Vec<Scenario> {
+    parse_ward_syntax(source, FileId(0))
+        .wards
+        .into_iter()
+        .flat_map(|ward| ward.items)
+        .filter_map(|item| match item {
+            WardItem::Scenario(scenario) => Some(Scenario {
+                name: scenario.name,
+                profile: scenario.profile.as_str().to_owned(),
+                body: scenario.body,
+                body_start: scenario.body_span.start as usize,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 impl ScenarioProgram {

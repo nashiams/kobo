@@ -149,6 +149,44 @@ fn attribute_ward_form_remains_supported() {
 }
 
 #[test]
+fn ward_syntax_preserves_scenario_profile_metadata() {
+    let source = r#"
+ward AsyncGateway {
+    obligation ReplyToken must reply | reject | cancel
+
+    scenario handle_request profile async {
+        let token = ReplyToken {};
+        token.reply();
+    }
+}
+"#;
+    let project = TestProject::new("v13-ward-async-profile");
+    let witness = run_witness(&project, source, "handle_request");
+    assert_eq!(
+        witness["scenario"]["profile"],
+        Value::from("async"),
+        "ward scenario profile metadata should select the async backend"
+    );
+    assert_eq!(
+        witness["backend_profile"],
+        Value::from("async"),
+        "ward scenario profile should flow into backend selection"
+    );
+
+    let file = project.main_file(source);
+    let output = run_kobo(
+        &[s("inspect"), s("--scenario-metadata"), path_arg(&file)],
+        &project.root,
+    );
+    assert_success(&output, "ward scenario metadata should inspect");
+    assert_contains(
+        &output.combined(),
+        "scenario handle_request profile async",
+        "inspect metadata should preserve the parsed scenario profile",
+    );
+}
+
+#[test]
 fn multi_module_ward_preserves_ports_recordings_and_debt() {
     let project = TestProject::new("v13-multi-module-ward");
     let main = project.main_file(

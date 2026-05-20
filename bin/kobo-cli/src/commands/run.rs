@@ -7,7 +7,8 @@ use kobo_driver::{
     load_config, run_and_compile, run_and_compile_with_lifetime_erasure, run_codegen_pipeline,
     run_kir_phase, CodegenArtifacts,
 };
-use kobo_ir::{GuaranteePolicy, MustCallObligation};
+use kobo_ir::{FileId, GuaranteePolicy, MustCallObligation};
+use kobo_parser::{parse_ward_syntax, WardItem};
 
 use super::{
     boundary_projection, ownership_analysis, policy,
@@ -381,58 +382,57 @@ fn relative_display(path: &Path) -> String {
 }
 
 fn append_ward_metadata(mut output: String, source: &str) -> String {
-    if !source.contains("ward ") {
+    let model = parse_ward_syntax(source, FileId(0));
+    if model.wards.is_empty() {
         return output;
     }
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    let mut in_ward = false;
-    let mut depth = 0_i32;
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("ward ") {
-            let name = rest
-                .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
-                .next()
-                .unwrap_or(rest);
-            output.push_str(&format!("// kobo: ward {name}\n"));
-            in_ward = true;
-        }
-        if in_ward {
-            if let Some(rest) = trimmed.strip_prefix("state ") {
-                let name = rest.split(':').next().unwrap_or(rest).trim();
-                output.push_str(&format!("// kobo: state {name}\n"));
-            } else if let Some(rest) = trimmed.strip_prefix("obligation ") {
-                output.push_str(&format!("// kobo: obligation {}\n", rest.trim()));
-            } else if let Some(rest) = trimmed.strip_prefix("invariant ") {
-                let name = rest
-                    .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
-                    .next()
-                    .unwrap_or(rest);
-                output.push_str(&format!("// kobo: invariant {name}\n"));
-            } else if let Some(rest) = trimmed.strip_prefix("scenario ") {
-                let name = rest
-                    .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
-                    .next()
-                    .unwrap_or(rest);
-                output.push_str(&format!("// kobo: scenario {name}\n"));
-            } else if let Some(rest) = trimmed.strip_prefix("port ") {
-                output.push_str(&format!("// kobo: port {}\n", rest.trim()));
-            } else if let Some(rest) = trimmed.strip_prefix("recording ") {
-                output.push_str(&format!("// kobo: recording {}\n", rest.trim()));
-            } else if let Some(rest) = trimmed.strip_prefix("debt ") {
-                output.push_str(&format!("// kobo: debt {}\n", rest.trim()));
-            }
-            depth += trimmed.matches('{').count() as i32;
-            depth -= trimmed.matches('}').count() as i32;
-            if depth <= 0 && trimmed.contains('}') {
-                in_ward = false;
-                depth = 0;
-            }
+    for ward in model.wards {
+        output.push_str(&format!("// kobo: ward {}\n", ward.name));
+        for item in ward.items {
+            append_ward_item_metadata(&mut output, item);
         }
     }
     output
+}
+
+fn append_ward_item_metadata(output: &mut String, item: WardItem) {
+    match item {
+        WardItem::State(state) => {
+            output.push_str(&format!("// kobo: state {}\n", state.name));
+        }
+        WardItem::Obligation(obligation) => {
+            output.push_str(&format!(
+                "// kobo: obligation {} must {}\n",
+                obligation.type_name,
+                obligation.actions.join(" | ")
+            ));
+        }
+        WardItem::Invariant(block) => {
+            output.push_str(&format!("// kobo: invariant {}\n", block.name));
+        }
+        WardItem::Temporal(block) => {
+            output.push_str(&format!("// kobo: temporal {}\n", block.name));
+        }
+        WardItem::Port(fact) => {
+            output.push_str(&format!("// kobo: port {}\n", fact.text));
+        }
+        WardItem::Recording(fact) => {
+            output.push_str(&format!("// kobo: recording {}\n", fact.text));
+        }
+        WardItem::Debt(fact) => {
+            output.push_str(&format!("// kobo: debt {}\n", fact.text));
+        }
+        WardItem::Scenario(scenario) => {
+            output.push_str(&format!(
+                "// kobo: scenario {} profile {}\n",
+                scenario.name,
+                scenario.profile.as_str()
+            ));
+        }
+    }
 }
 
 struct ScenarioMetadata {

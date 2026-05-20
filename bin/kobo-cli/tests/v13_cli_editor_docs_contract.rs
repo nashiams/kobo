@@ -542,6 +542,11 @@ fn vscode_extension_contract_exposes_syntax_and_actions() {
         package_json["main"], "./extension.js",
         "VS Code extension should have an activation entrypoint",
     );
+    assert_eq!(
+        package_json["dependencies"]["vscode-languageclient"],
+        Value::String("^9.0.1".to_owned()),
+        "VS Code extension should declare the language client it imports",
+    );
     assert_contains(
         &package_json["contributes"]["languages"].to_string(),
         "kobo",

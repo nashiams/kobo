@@ -8,6 +8,9 @@
   "engines": {
     "vscode": "^1.88.0"
   },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "categories": [
     "Programming Languages"
   ],

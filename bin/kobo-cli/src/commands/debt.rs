@@ -93,14 +93,21 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
 }
 
 pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
-    let mut session = build_session(file, None)?;
-    let (_, kir) = run_kir_phase(&mut session, file)
-        .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
-
-    let (file_count, line_count) = count_files_and_lines(session.file_set());
-    let report = build_debt_report(&kir, file_count, line_count);
-    let codes = precursor_codes(&report);
-    let snapshot = debt_watch_snapshot(file, &report, &codes);
+    let ticks = debt_watch_ticks();
+    let mut observations = Vec::new();
+    let mut latest_scan = None;
+    for tick in 0..ticks {
+        let scan = debt_watch_scan(file)?;
+        observations.push(debt_watch_snapshot(file, &scan.report, &scan.codes, tick));
+        latest_scan = Some(scan);
+        if tick + 1 < ticks {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    let latest_scan = latest_scan.expect("debt watch should run at least one scan");
+    let report = latest_scan.report;
+    let codes = latest_scan.codes;
+    let persisted_state = persist_debt_watch_state(file, &observations, &codes)?;
 
     if json {
         println!(
@@ -114,9 +121,12 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
                     "restartable": true,
                     "rerun_target": format!("kobo debt {} --watch", file.display()),
                     "actual_scan": true,
-                    "observation_count": 1,
+                    "observation_count": observations.len(),
+                    "reload_checkpoint": "debt-precursor-snapshot",
+                    "persisted_state": persisted_state.display().to_string(),
+                    "persisted_state_loaded": persisted_state.is_file(),
                 },
-                "observations": [snapshot],
+                "observations": observations,
                 "precursor_warning_count": report.warn_early.len(),
                 "precursor_codes": codes,
                 "migration_estimate": migration_estimate_json(&report),
@@ -132,10 +142,12 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
     };
     if summary {
         println!(
-            "debt watch scoped-persist-reload: actual scan observations=1; precursor warning changes={} [{}]; migration estimate: {}; rerun target: kobo debt {} --watch",
+            "debt watch scoped-persist-reload: actual scan observations={}; precursor warning changes={} [{}]; migration estimate: {}; persisted state: {}; rerun target: kobo debt {} --watch",
+            observations.len(),
             report.warn_early.len(),
             code_list,
             migration_estimate_label(&report),
+            persisted_state.display(),
             file.display(),
         );
         return Ok(());
@@ -144,20 +156,77 @@ pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::
     println!("debt watch");
     println!("strategy: scoped-persist-reload");
     println!("scope: {}", file.display());
-    println!("actual scan observations: 1");
+    println!("actual scan observations: {}", observations.len());
     println!(
         "precursor warning changes: {} [{}]",
         report.warn_early.len(),
         code_list
     );
     println!("migration estimate: {}", migration_estimate_label(&report));
+    println!("persisted state: {}", persisted_state.display());
+    println!("reload checkpoint: debt-precursor-snapshot");
     println!("rerun target: kobo debt {} --watch", file.display());
     Ok(())
 }
 
-fn debt_watch_snapshot(file: &Path, report: &DebtReport, codes: &[&str]) -> serde_json::Value {
+struct DebtWatchScan {
+    report: DebtReport,
+    codes: Vec<&'static str>,
+}
+
+fn debt_watch_scan(file: &Path) -> anyhow::Result<DebtWatchScan> {
+    let mut session = build_session(file, None)?;
+    let (_, kir) = run_kir_phase(&mut session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
+
+    let (file_count, line_count) = count_files_and_lines(session.file_set());
+    let report = build_debt_report(&kir, file_count, line_count);
+    let codes = precursor_codes(&report);
+    Ok(DebtWatchScan { report, codes })
+}
+
+fn debt_watch_ticks() -> usize {
+    std::env::var("KOBO_DEBT_WATCH_TICKS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|ticks| *ticks > 0)
+        .unwrap_or(1)
+}
+
+fn persist_debt_watch_state(
+    file: &Path,
+    observations: &[serde_json::Value],
+    codes: &[&str],
+) -> anyhow::Result<PathBuf> {
+    let root = std::env::current_dir().context("failed to determine current directory")?;
+    let state_dir = root.join(".kobo").join("watch");
+    fs::create_dir_all(&state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    let state_path = state_dir.join("debt-watch.json");
+    let value = serde_json::json!({
+        "schema_version": 1,
+        "mode": "debt_watch_state",
+        "scope": file.display().to_string(),
+        "reload_checkpoint": "debt-precursor-snapshot",
+        "restartable": true,
+        "precursor_codes": codes,
+        "observation_count": observations.len(),
+        "observations": observations,
+    });
+    fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
+        .with_context(|| format!("failed to write {}", state_path.display()))?;
+    Ok(state_path)
+}
+
+fn debt_watch_snapshot(
+    file: &Path,
+    report: &DebtReport,
+    codes: &[&str],
+    tick: usize,
+) -> serde_json::Value {
     serde_json::json!({
-        "kind": "initial_scan",
+        "kind": if tick == 0 { "initial_scan" } else { "rescan" },
+        "tick": tick,
         "scope": file.display().to_string(),
         "file_count": report.file_count,
         "line_count": report.line_count,

@@ -1,6 +1,7 @@
 mod v09_common;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -24,6 +25,14 @@ fn fixture(relative: &str) -> PathBuf {
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, V13_TIMEOUT)
+}
+
+fn command_output(output: std::process::Output) -> CliOutput {
+    CliOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
 }
 
 #[test]
@@ -98,6 +107,45 @@ fn debt_watch_mode_reports_precursor_warning_changes() {
         &value["observations"][0].to_string(),
         "K0080-P1",
         "watch JSON should carry actual precursor observation data",
+    );
+}
+
+#[test]
+fn debt_watch_persists_reload_state_across_scan_ticks() {
+    let project = TestProject::new("v13-debt-watch-loop");
+    let file = project.main_file(
+        r#"
+struct GraphNode {
+    left: Rc<RefCell<GraphNode>>,
+    right: Rc<RefCell<GraphNode>>,
+    data: i32,
+}
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("debt")
+        .arg(&file)
+        .arg("--watch")
+        .arg("--json")
+        .env("KOBO_DEBT_WATCH_TICKS", "2")
+        .current_dir(&project.root)
+        .output()
+        .expect("debt watch should launch");
+    let output = command_output(output);
+    assert_success(&output, "debt --watch should run bounded scan ticks");
+    let value: Value = serde_json::from_str(&output.stdout).expect("watch JSON should parse");
+    assert_eq!(value["watch"]["actual_scan"], Value::Bool(true));
+    assert_eq!(value["watch"]["observation_count"], Value::from(2));
+    assert_eq!(value["watch"]["reload_checkpoint"], "debt-precursor-snapshot");
+    assert_eq!(value["watch"]["persisted_state_loaded"], Value::Bool(true));
+    assert!(
+        project.root.join(".kobo/watch/debt-watch.json").is_file(),
+        "debt watch should persist restartable state in the project .kobo directory",
+    );
+    assert_eq!(
+        value["observations"].as_array().map(Vec::len),
+        Some(2),
+        "watch JSON should retain every bounded scan observation",
     );
 }
 

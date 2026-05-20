@@ -2,8 +2,8 @@
 
 `kobo-lsp` is the editor entry point for the modeled-ward workflow. A normal
 editor session should provide diagnostics, hovers, explain actions, witness
-links, runnables, and Rust navigation delegation from source-mapped compiler
-facts.
+links, runnables, and generated-Rust navigation hints from the compiler facts
+and witness artifacts available for the open document.
 
 The expected loop is:
 
@@ -12,7 +12,8 @@ The expected loop is:
 3. use hover or explain actions to inspect the obligation and source span;
 4. run the scenario through a runnable command;
 5. follow witness links into `.kobo/witnesses`;
-6. use rust-analyzer delegation and source maps for generated Rust navigation.
+6. use generated-Rust hints when a compiler mapping is available, and treat
+   missing mappings as editor debt instead of invented source locations.
 
 The VS Code extension registers syntax, language configuration, and the run,
 replay, and explain commands. The editor should not invent a generated-only

@@ -1,8 +1,12 @@
 # Strict Liveness Reference
 
 Strict liveness checks whether lifecycle obligations can reach an exit without a
-valid terminal action. It is built around the Core CFG, where each block carries
-an obligation environment through statements, terminators, and joins.
+valid terminal action. Current checks report modeled scenario Core CFG evidence:
+each modeled scenario block carries an obligation environment through the
+statements, terminators, and joins that Kobo can project from compiler scenario
+facts. Unsupported control flow, opaque helpers, or missing summaries are
+reported as conservative debt, escape, or proof failure facts rather than
+claimed as proved.
 
 The checker tracks these obligation outcomes:
 

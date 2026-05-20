@@ -666,7 +666,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
             "docs/replay-and-strict-liveness.md",
             [
                 "Strict Liveness Reference",
-                "Core CFG",
+                "modeled scenario Core CFG evidence",
                 "join",
                 "transfer",
                 "proof failure",
@@ -692,7 +692,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
                 "Editor Workflow",
                 "kobo-lsp",
                 "witness links",
-                "rust-analyzer",
+                "generated-Rust navigation hints",
                 "inspect --clean --cargo",
                 "zero Kobo dependency",
                 "rustfmt",
@@ -732,6 +732,9 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         "formally proves arbitrary",
         "arbitrary crate internals are deterministic",
         "first-class ward syntax is required",
+        "It is built around the Core CFG",
+        "Rust navigation delegation from source-mapped compiler facts",
+        "use rust-analyzer delegation and source maps",
     ] {
         assert_not_contains(
             &combined,

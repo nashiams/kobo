@@ -92,13 +92,8 @@ fn async_gateway_catches_orphan_task_failure() {
     let project = TestProject::new("v13-async-gateway-orphan");
     let demo = demo_file("examples/async_gateway/orphan_task_failure.kobo");
 
-    let (output, _witness_path, witness) = run_gateway_test(
-        &project,
-        &demo,
-        "orphan_task_failure",
-        &[],
-        false,
-    );
+    let (output, _witness_path, witness) =
+        run_gateway_test(&project, &demo, "orphan_task_failure", &[], false);
     assert_contains(
         &output.combined(),
         "no_orphan_tasks",
@@ -122,13 +117,8 @@ fn async_gateway_catches_request_token_failure() {
 fn async_gateway_reply_reject_cancel_inferred_without_manual_declarations() {
     let project = TestProject::new("v13-async-gateway-inferred");
     let demo = demo_file("examples/async_gateway/passing_history.kobo");
-    let (_output, _witness_path, witness) = run_gateway_test(
-        &project,
-        &demo,
-        "gateway_success",
-        &[],
-        true,
-    );
+    let (_output, _witness_path, witness) =
+        run_gateway_test(&project, &demo, "gateway_success", &[], true);
 
     let handler_reply = witness["inferred_obligations"]
         .as_array()
@@ -154,13 +144,8 @@ fn async_gateway_reply_reject_cancel_inferred_without_manual_declarations() {
 fn async_gateway_emits_replayable_kwit_witness() {
     let project = TestProject::new("v13-async-gateway-replay");
     let demo = demo_file("examples/async_gateway/passing_history.kobo");
-    let (_output, witness_path, witness) = run_gateway_test(
-        &project,
-        &demo,
-        "gateway_success",
-        &[],
-        true,
-    );
+    let (_output, witness_path, witness) =
+        run_gateway_test(&project, &demo, "gateway_success", &[], true);
     assert_eq!(witness["replay_guarantee"], "exact");
     assert_eq!(
         witness["flagship_demo"]["replayable_kwit"],

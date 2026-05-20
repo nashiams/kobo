@@ -458,9 +458,9 @@ fn apply_statement_liveness(
                 .and_then(ObligationState::owned)
                 .cloned()
                 .unwrap_or(ActiveObligation {
-                binding: binding.clone(),
-                source_span: source_span_from_kobo(source_path, source, statement.source_span),
-            });
+                    binding: binding.clone(),
+                    source_span: source_span_from_kobo(source_path, source, statement.source_span),
+                });
             let source_span = source_span_from_kobo(source_path, source, statement.source_span);
             if !has_error(analysis, "branch_exit", binding, source_span.start) {
                 analysis.errors.push(StrictLivenessError {
@@ -564,10 +564,7 @@ fn merge_obligation_env(
     changed
 }
 
-fn join_obligation_state(
-    current: ObligationState,
-    incoming: ObligationState,
-) -> ObligationState {
+fn join_obligation_state(current: ObligationState, incoming: ObligationState) -> ObligationState {
     match (&current, &incoming) {
         (ObligationState::Owned(_), _) => current,
         (_, ObligationState::Owned(_)) => incoming,
@@ -597,7 +594,12 @@ fn record_join_conflict_if_needed(
             _ => return,
         },
     };
-    if has_error(analysis, "semantic_join", binding, resolved.source_span.start) {
+    if has_error(
+        analysis,
+        "semantic_join",
+        binding,
+        resolved.source_span.start,
+    ) {
         return;
     }
     let source_span = source_span_from_range(

@@ -295,8 +295,14 @@ ward ParserBacked {
 }
 "#,
     );
-    let output = run_kobo(&[s("inspect"), s("--clean"), path_arg(&file)], &project.root);
-    assert_success(&output, "ward clean output should ignore nested parser bait");
+    let output = run_kobo(
+        &[s("inspect"), s("--clean"), path_arg(&file)],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "ward clean output should ignore nested parser bait",
+    );
     assert_contains(
         &output.stdout,
         "fn real_case",

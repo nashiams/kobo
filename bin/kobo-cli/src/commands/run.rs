@@ -355,8 +355,11 @@ fn module_name_from_line(line: &str) -> Option<String> {
     let trimmed = line.trim();
     let rest = trimmed.strip_prefix("mod ")?;
     let name = rest.strip_suffix(';')?.trim();
-    (!name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
-        .then(|| name.to_owned())
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+    .then(|| name.to_owned())
 }
 
 fn relative_display(path: &Path) -> String {

@@ -136,7 +136,10 @@ struct GraphNode {
     let value: Value = serde_json::from_str(&output.stdout).expect("watch JSON should parse");
     assert_eq!(value["watch"]["actual_scan"], Value::Bool(true));
     assert_eq!(value["watch"]["observation_count"], Value::from(2));
-    assert_eq!(value["watch"]["reload_checkpoint"], "debt-precursor-snapshot");
+    assert_eq!(
+        value["watch"]["reload_checkpoint"],
+        "debt-precursor-snapshot"
+    );
     assert_eq!(value["watch"]["persisted_state_loaded"], Value::Bool(true));
     assert!(
         project.root.join(".kobo/watch/debt-watch.json").is_file(),

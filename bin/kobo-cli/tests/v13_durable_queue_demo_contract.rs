@@ -70,12 +70,7 @@ fn run_demo_test(
 fn durable_queue_finds_or_proves_crash_after_ack() {
     let project = TestProject::new("v13-durable-queue-crash");
     let demo = demo_file("examples/durable_queue/crash_after_ack.kobo");
-    let (output, _witness_path, witness) = run_demo_test(
-        &project,
-        &demo,
-        "crash_after_ack",
-        false,
-    );
+    let (output, _witness_path, witness) = run_demo_test(&project, &demo, "crash_after_ack", false);
 
     assert_contains(
         &output.combined(),
@@ -105,12 +100,7 @@ fn durable_queue_finds_or_proves_crash_after_ack() {
 fn durable_queue_emits_replayable_kwit_witness() {
     let project = TestProject::new("v13-durable-queue-replay");
     let demo = demo_file("examples/durable_queue/crash_after_ack.kobo");
-    let (_output, witness_path, witness) = run_demo_test(
-        &project,
-        &demo,
-        "crash_after_ack",
-        false,
-    );
+    let (_output, witness_path, witness) = run_demo_test(&project, &demo, "crash_after_ack", false);
     assert_eq!(witness["replay_guarantee"], "exact");
     assert_eq!(
         witness["flagship_demo"]["replayable_kwit"],
@@ -137,12 +127,8 @@ fn durable_queue_emits_replayable_kwit_witness() {
 fn durable_queue_ack_nack_requeue_inferred_without_manual_declarations() {
     let project = TestProject::new("v13-durable-queue-inferred");
     let demo = demo_file("examples/durable_queue/passing_history.kobo");
-    let (_output, _witness_path, witness) = run_demo_test(
-        &project,
-        &demo,
-        "durable_queue_ok",
-        true,
-    );
+    let (_output, _witness_path, witness) =
+        run_demo_test(&project, &demo, "durable_queue_ok", true);
 
     let queue_delivery = witness["inferred_obligations"]
         .as_array()

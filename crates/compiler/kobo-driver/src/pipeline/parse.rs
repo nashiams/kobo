@@ -443,7 +443,9 @@ fn parse_ward_facts(body: &str) -> WardFacts {
             name_end += 1;
         }
         let name = body[name_start..name_end].trim().to_owned();
-        let Some(brace_start) = find_bytes(&cleaned[name_end..], b"{").map(|relative| name_end + relative) else {
+        let Some(brace_start) =
+            find_bytes(&cleaned[name_end..], b"{").map(|relative| name_end + relative)
+        else {
             search = name_end;
             continue;
         };

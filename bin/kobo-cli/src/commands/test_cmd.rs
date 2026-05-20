@@ -2372,9 +2372,17 @@ struct WardModelStep {
 #[derive(Clone)]
 enum WardModelStepKind {
     EmitEvent(String),
-    SetObligation { binding: String, state: String },
-    SetState { name: String, value: String },
-    SchedulerAssumption { preset: String },
+    SetObligation {
+        binding: String,
+        state: String,
+    },
+    SetState {
+        name: String,
+        value: String,
+    },
+    SchedulerAssumption {
+        preset: String,
+    },
     Transition {
         name: String,
         boundary: ModelBoundaryCall,
@@ -3148,7 +3156,10 @@ impl WardModelInterpreter {
     }
 
     fn set_state(&mut self, name: &str, value: &str) {
-        if let Some((_, existing)) = self.states.iter_mut().find(|(candidate, _)| candidate == name)
+        if let Some((_, existing)) = self
+            .states
+            .iter_mut()
+            .find(|(candidate, _)| candidate == name)
         {
             *existing = value.to_owned();
             return;
@@ -3169,7 +3180,9 @@ impl WardModelInterpreter {
             .push((binding.to_owned(), state.to_owned()));
     }
 
-    fn finish(self) -> (
+    fn finish(
+        self,
+    ) -> (
         Vec<String>,
         Vec<(String, String)>,
         Vec<(String, String)>,

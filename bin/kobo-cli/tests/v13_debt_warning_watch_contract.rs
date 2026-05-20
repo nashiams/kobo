@@ -1,8 +1,9 @@
 mod v09_common;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use v09_common::{
@@ -32,6 +33,35 @@ fn command_output(output: std::process::Output) -> CliOutput {
         status: output.status,
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+fn wait_child_output(mut child: Child, timeout: Duration) -> CliOutput {
+    let started = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .expect("watch process status should be readable")
+            .is_some()
+        {
+            return command_output(
+                child
+                    .wait_with_output()
+                    .expect("watch process output should read"),
+            );
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .expect("timed-out watch process output should read");
+            panic!(
+                "watch process did not exit before timeout\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -204,4 +234,64 @@ fn watch_persist_reload_loop_is_scoped_and_restartable() {
             "watch plan should expose scoped restart state",
         );
     }
+}
+
+#[test]
+fn watch_simple_observes_module_change_and_persists_reload_state() {
+    let project = TestProject::new("v13-watch-real-reload");
+    let main = project.main_file("mod service;\nfn main() {}\n");
+    let service = project.write("src/service.kobo", "fn helper() {}\n");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("watch")
+        .arg("--simple")
+        .arg(&main)
+        .env("KOBO_WATCH_ONCE", "1")
+        .current_dir(&project.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch process should launch");
+
+    thread::sleep(Duration::from_millis(500));
+    std::fs::write(&service, "fn helper() { let value = 1; }\n")
+        .expect("watched module should be writable");
+
+    let output = wait_child_output(child, Duration::from_secs(8));
+    assert_success(
+        &output,
+        "watch --simple should exit after one scoped module change",
+    );
+    let text = output.combined();
+    for expected in [
+        "scoped-persist-reload",
+        "persisted state loaded",
+        "changed file: src/service.kobo",
+        "reload checkpoint: source-map-and-diagnostics",
+        "restartable: true",
+    ] {
+        assert_contains(
+            &text,
+            expected,
+            "watch output should expose real scoped reload evidence",
+        );
+    }
+
+    let state_path = project.root.join(".kobo/watch/source-watch.json");
+    assert!(
+        state_path.is_file(),
+        "watch should persist restartable source state"
+    );
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("watch state should read"),
+    )
+    .expect("watch state should parse");
+    assert_eq!(state["reload_checkpoint"], "source-map-and-diagnostics");
+    assert_eq!(state["restartable"], Value::Bool(true));
+    assert_contains(
+        &state["scope"]["files"].to_string(),
+        "src/service.kobo",
+        "watch state should retain scoped module files",
+    );
+    assert_eq!(state["changes"][0]["path"], "src/service.kobo");
 }

@@ -116,6 +116,40 @@ fn dropped_delivery_case() {
 }
 
 #[test]
+fn check_release_emits_strict_liveness_compile_error() {
+    let project = TestProject::new("v13-strict-check-path");
+    let file = project.main_file(&delivery_source(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn check_path_case() {
+    let token = Delivery {};
+}
+"#,
+    ));
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "release check should enforce strict liveness diagnostics",
+    );
+    assert_contains(&output.combined(), "K0100", "check should emit K0100");
+    assert_contains(
+        &output.combined(),
+        "strict liveness",
+        "check diagnostic should identify strict liveness",
+    );
+}
+
+#[test]
 fn strict_accepts_discharge_return_transfer_escape_and_reasoned_suppression() {
     let project = TestProject::new("v13-strict-accepted-forms");
     let source = delivery_source(

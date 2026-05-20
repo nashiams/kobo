@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
 use kobo_analysis::{
@@ -11,7 +12,8 @@ use kobo_errors::{
     resolve_severity, DiagDecision, DiagLabel, DiagnosticNote, KDiagnostic, KErrorCode, Severity,
 };
 use kobo_ir::{
-    AsyncViolationKind, Kir, KoboSpan, RelaxAttrError, TransformBindingFacts, UseEvent,
+    lower_core_program, AsyncViolationKind, CoreBlock, CoreFunction, CoreStatementKind,
+    CoreTerminatorKind, Kir, KoboSpan, RelaxAttrError, TransformBindingFacts, UseEvent,
     WarnEarlyPattern,
 };
 use kobo_transform::{
@@ -71,6 +73,7 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
     project_service_signature_diagnostics(session);
     project_parallel_diagnostics(session);
     project_task_local_diagnostics(session);
+    project_strict_liveness_diagnostics(session, kir);
     session.suppress_diagnostics_from(downstream_diagnostics_start);
 
     if session.has_errors() {
@@ -79,6 +82,163 @@ pub(crate) fn run_analysis_phase(session: &mut CompileSession, kir: &Kir) -> Res
         project_live_borrow_liveness_diagnostics(session, kir);
         Ok(())
     }
+}
+
+#[derive(Clone, Debug)]
+struct DriverActiveObligation {
+    binding: String,
+    span: KoboSpan,
+}
+
+type DriverObligationEnv = BTreeMap<String, DriverActiveObligation>;
+
+fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
+    if !session.guarantee_policy().is_release() {
+        return;
+    }
+    let severity =
+        resolve_severity(KErrorCode::K0100, session.guarantee_policy()).unwrap_or(Severity::Error);
+    for program in kir.scenario_programs() {
+        let core = lower_core_program(program);
+        for function in &core.functions {
+            for (span, binding, exit_kind) in strict_liveness_failures(function) {
+                if session.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == KErrorCode::K0100 && diagnostic.primary.span == span
+                }) {
+                    continue;
+                }
+                let message = format!(
+                    "strict liveness: unresolved obligation `{binding}` reaches {exit_kind}"
+                );
+                session.diagnostics.push(KDiagnostic::new(
+                    KErrorCode::K0100,
+                    severity,
+                    DiagLabel::primary(span, "unresolved strict liveness obligation"),
+                    message,
+                    DiagDecision(
+                        "discharge, return, transfer, suppress with reason, or mark the boundary explicit"
+                            .to_owned(),
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn strict_liveness_failures(function: &CoreFunction) -> Vec<(KoboSpan, String, &'static str)> {
+    let blocks = function
+        .blocks
+        .iter()
+        .map(|block| (block.id.clone(), block))
+        .collect::<BTreeMap<_, _>>();
+    let Some(entry) = function.blocks.first() else {
+        return Vec::new();
+    };
+    let mut failures = Vec::new();
+    let mut in_states: BTreeMap<String, DriverObligationEnv> = BTreeMap::new();
+    let mut worklist = VecDeque::from([entry.id.clone()]);
+    in_states.insert(entry.id.clone(), BTreeMap::new());
+
+    while let Some(block_id) = worklist.pop_front() {
+        let Some(block) = blocks.get(&block_id) else {
+            continue;
+        };
+        let mut active = in_states.get(&block_id).cloned().unwrap_or_default();
+        apply_driver_block_liveness(block, &mut active, &mut failures);
+        if block.successors.is_empty() {
+            failures.extend(
+                active
+                    .values()
+                    .map(|obligation| (obligation.span, obligation.binding.clone(), "normal_exit")),
+            );
+            continue;
+        }
+        for successor in &block.successors {
+            if successor == &block.id {
+                continue;
+            }
+            let target = in_states.entry(successor.clone()).or_default();
+            let mut changed = false;
+            for (binding, obligation) in active.clone() {
+                changed |= target.insert(binding, obligation).is_none();
+            }
+            if changed && !worklist.iter().any(|candidate| candidate == successor) {
+                worklist.push_back(successor.clone());
+            }
+        }
+    }
+    dedupe_strict_liveness_failures(failures)
+}
+
+fn apply_driver_block_liveness(
+    block: &CoreBlock,
+    active: &mut DriverObligationEnv,
+    failures: &mut Vec<(KoboSpan, String, &'static str)>,
+) {
+    for statement in &block.statements {
+        match statement.kind {
+            CoreStatementKind::ObligationCreate => {
+                if let Some(binding) = statement.binding.clone() {
+                    active.insert(
+                        binding.clone(),
+                        DriverActiveObligation {
+                            binding,
+                            span: statement.source_span,
+                        },
+                    );
+                }
+            }
+            CoreStatementKind::ObligationDischarge
+            | CoreStatementKind::ObligationTransfer
+            | CoreStatementKind::ObligationEscape => {
+                if let Some(binding) = statement.binding.as_ref() {
+                    active.remove(binding);
+                }
+            }
+            CoreStatementKind::ObligationBranchUnresolved => {
+                if let Some(binding) = statement.binding.as_ref() {
+                    let span = active
+                        .get(binding)
+                        .map(|obligation| obligation.span)
+                        .unwrap_or(statement.source_span);
+                    failures.push((span, binding.clone(), "branch_exit"));
+                }
+            }
+            CoreStatementKind::ObligationMove
+            | CoreStatementKind::UnsupportedContainer
+            | CoreStatementKind::Call => {}
+        }
+    }
+    for terminator in &block.terminators {
+        let exit_kind = match terminator.kind {
+            CoreTerminatorKind::Return => Some("return"),
+            CoreTerminatorKind::ErrorExit => Some("error_exit"),
+            CoreTerminatorKind::Panic => Some("panic"),
+            CoreTerminatorKind::OpaqueBoundary => Some("opaque_boundary"),
+            CoreTerminatorKind::Await | CoreTerminatorKind::Goto | CoreTerminatorKind::Branch => {
+                None
+            }
+        };
+        if let Some(exit_kind) = exit_kind {
+            failures.extend(
+                active
+                    .values()
+                    .map(|obligation| (obligation.span, obligation.binding.clone(), exit_kind)),
+            );
+        }
+    }
+}
+
+fn dedupe_strict_liveness_failures(
+    failures: Vec<(KoboSpan, String, &'static str)>,
+) -> Vec<(KoboSpan, String, &'static str)> {
+    let mut deduped = Vec::new();
+    for failure in failures {
+        if !deduped.iter().any(|existing| existing == &failure) {
+            deduped.push(failure);
+        }
+    }
+    deduped
 }
 
 fn project_known_debt_diagnostics(session: &mut CompileSession, kir: &Kir) {

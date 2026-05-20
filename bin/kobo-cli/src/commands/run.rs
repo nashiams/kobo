@@ -414,7 +414,11 @@ fn append_ward_item_metadata(output: &mut String, item: WardItem) {
             output.push_str(&format!("// kobo: invariant {}\n", block.name));
         }
         WardItem::Temporal(block) => {
-            output.push_str(&format!("// kobo: temporal {}\n", block.name));
+            if block.name.is_empty() {
+                output.push_str(&format!("// kobo: temporal {}\n", block.body));
+            } else {
+                output.push_str(&format!("// kobo: temporal {}\n", block.name));
+            }
         }
         WardItem::Port(fact) => {
             output.push_str(&format!("// kobo: port {}\n", fact.text));

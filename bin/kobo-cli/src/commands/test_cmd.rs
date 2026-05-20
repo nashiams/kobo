@@ -6,8 +6,10 @@ use kobo_errors::{
     DiagnosticRenderer, KDiagnostic, KErrorCode, Severity,
 };
 use kobo_ir::{
-    FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KoboSpan, ScenarioOpKind, ScenarioProgram,
+    FileId, FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KoboSpan, ScenarioOpKind,
+    ScenarioProgram,
 };
+use kobo_parser::{parse_ward_syntax, WardItem};
 use kobo_sim_core::{EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure};
 use proptest::prelude::{any, Strategy};
 use proptest::strategy::ValueTree;
@@ -2104,23 +2106,48 @@ fn parse_trace_checks(source: &str) -> Vec<TraceCheck> {
 }
 
 fn parse_ward_trace_checks(source: &str) -> Vec<TraceCheck> {
-    let mut checks = Vec::new();
-    for block in ward_blocks(source) {
-        let mut offset = block.body_start;
-        for raw_line in block.body.split_inclusive('\n') {
-            let line = raw_line.trim_end_matches(['\r', '\n']);
-            let trimmed = line.trim();
-            let leading = line.find(trimmed).unwrap_or(0);
-            let span = (offset + leading, offset + line.len());
-            if let Some(check) = parse_invariant_line(trimmed, span, "ward_model") {
-                checks.push(check);
-            } else if let Some(check) = parse_temporal_line(trimmed, span, "ward_model") {
-                checks.push(check);
-            }
-            offset += raw_line.len();
+    parse_ward_syntax(source, FileId(0))
+        .wards
+        .into_iter()
+        .flat_map(|ward| ward.items)
+        .filter_map(ward_item_trace_check)
+        .collect()
+}
+
+fn ward_item_trace_check(item: WardItem) -> Option<TraceCheck> {
+    match item {
+        WardItem::Invariant(block) => {
+            let (kind, event) = parse_trace_check_expression(&block.body)?;
+            Some(TraceCheck {
+                domain: TraceCheckDomain::Invariant,
+                name: block.name,
+                kind,
+                event,
+                span: (block.span.start as usize, block.span.end as usize),
+                source: "ward_model",
+            })
         }
+        WardItem::Temporal(block) => {
+            let (kind, event) = parse_trace_check_expression(&block.body)?;
+            Some(TraceCheck {
+                domain: TraceCheckDomain::Temporal,
+                name: temporal_check_name(block.name, kind, &event),
+                kind,
+                event,
+                span: (block.span.start as usize, block.span.end as usize),
+                source: "ward_model",
+            })
+        }
+        _ => None,
     }
-    checks
+}
+
+fn temporal_check_name(name: String, kind: TraceCheckKind, event: &str) -> String {
+    if name.is_empty() {
+        format!("temporal_{}_{}", kind.as_str(), sanitize_name(event))
+    } else {
+        name
+    }
 }
 
 fn parse_legacy_trace_check_directives(source: &str) -> Vec<TraceCheck> {

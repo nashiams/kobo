@@ -223,6 +223,13 @@ fn parse_ward_items(
                 cursor = next;
                 continue;
             }
+            if let Some((block, next)) =
+                parse_temporal_line(source, cleaned, file_id, cursor, body_end)
+            {
+                items.push(WardItem::Temporal(block));
+                cursor = next;
+                continue;
+            }
         } else if starts_with_word(cleaned, cursor, "port") {
             if let Some((fact, next)) =
                 parse_line_fact(source, cleaned, file_id, cursor, body_end, "port")
@@ -359,7 +366,8 @@ fn parse_named_block(
     keyword: &str,
 ) -> Option<(WardNamedBlock, usize)> {
     let header_start = skip_ascii_whitespace(cleaned, start + keyword.len(), body_end);
-    let brace_start = find_bytes(&cleaned[header_start..body_end], b"{")? + header_start;
+    let header_end = statement_end(cleaned, header_start, body_end);
+    let brace_start = find_bytes(&cleaned[header_start..header_end], b"{")? + header_start;
     let brace_end = matching_brace_in_bytes(cleaned, brace_start)?;
     let header = source[header_start..brace_start].trim();
     let name = ident_prefix(header)?;
@@ -370,6 +378,24 @@ fn parse_named_block(
             span: KoboSpan::new(start as u32, (brace_end + 1) as u32, file_id),
         },
         brace_end + 1,
+    ))
+}
+
+fn parse_temporal_line(
+    source: &str,
+    cleaned: &[u8],
+    file_id: FileId,
+    start: usize,
+    body_end: usize,
+) -> Option<(WardNamedBlock, usize)> {
+    let (text, span, next) = line_fact_text(source, cleaned, file_id, start, body_end, "temporal")?;
+    (!text.is_empty()).then_some((
+        WardNamedBlock {
+            name: String::new(),
+            body: text,
+            span,
+        },
+        next,
     ))
 }
 
@@ -480,7 +506,7 @@ fn push_ward_item_attribute_source(
             output,
             source_map,
             file_id,
-            &format!("// kobo: temporal {} {{ {} }}\n", block.name, block.body),
+            &temporal_metadata_comment(block),
             block.span,
         ),
         WardItem::Port(fact) => push_generated(
@@ -507,6 +533,14 @@ fn push_ward_item_attribute_source(
         WardItem::Scenario(scenario) => {
             push_scenario_attribute_source(output, source_map, file_id, scenario)
         }
+    }
+}
+
+fn temporal_metadata_comment(block: &WardNamedBlock) -> String {
+    if block.name.is_empty() {
+        format!("// kobo: temporal {}\n", block.body)
+    } else {
+        format!("// kobo: temporal {} {{ {} }}\n", block.name, block.body)
     }
 }
 
@@ -630,7 +664,7 @@ fn starts_with_word(bytes: &[u8], start: usize, word: &str) -> bool {
     if bytes.get(start..start + word_bytes.len()) != Some(word_bytes) {
         return false;
     }
-    let before = bytes.get(start.saturating_sub(1));
+    let before = start.checked_sub(1).and_then(|index| bytes.get(index));
     let after = bytes.get(start + word_bytes.len());
     !before.is_some_and(is_ident_byte) && !after.is_some_and(is_ident_byte)
 }
@@ -760,5 +794,35 @@ ward Gateway {
             })
             .expect("scenario should parse");
         assert_eq!(scenario.profile, WardScenarioProfile::Async);
+    }
+
+    #[test]
+    fn parser_accepts_ward_at_file_start() {
+        let model = parse_ward_syntax(
+            "ward DurableQueue {\n    port storage: durable_log\n}\n",
+            FileId(0),
+        );
+        assert_eq!(model.wards.len(), 1);
+        assert_eq!(model.wards[0].name, "DurableQueue");
+    }
+
+    #[test]
+    fn parser_preserves_line_temporal_checks() {
+        let model = parse_ward_syntax(
+            "ward TraceWard {\n    temporal always deterministic-task\n\n    scenario trace_case {\n        ward.task();\n    }\n}\n",
+            FileId(0),
+        );
+        let temporal = model.wards[0]
+            .items
+            .iter()
+            .find_map(|item| match item {
+                WardItem::Temporal(block) => Some(block),
+                _ => None,
+            })
+            .expect("temporal check should parse");
+        assert_eq!(temporal.body, "always deterministic-task");
+        assert!(model.wards[0].items.iter().any(
+            |item| matches!(item, WardItem::Scenario(scenario) if scenario.name == "trace_case")
+        ));
     }
 }

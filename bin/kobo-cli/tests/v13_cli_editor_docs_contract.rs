@@ -340,6 +340,48 @@ fn broken( {
 }
 
 #[test]
+fn lsp_external_boundary_does_not_resolve_unrelated_obligations() {
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+impl Token {
+    fn close(self) {}
+}
+
+#[kobo::boundary(crate = "payments", policy = "opaque", reason = "outside replay")]
+use payments::Client;
+
+#[kobo::scenario(profile = "sync")]
+fn run() {
+    let token = Token {};
+    let _client = Client::new();
+}
+"#,
+        None,
+    );
+
+    let diagnostics = snapshot["diagnostics"].to_string();
+    assert_contains(
+        &diagnostics,
+        "compiler-scenario-program",
+        "LSP should keep compiler-owned scenario diagnostics for unrelated boundaries",
+    );
+    assert_contains(
+        &diagnostics,
+        "token",
+        "unrelated external boundary construction must not resolve token",
+    );
+    assert_contains(
+        &diagnostics,
+        "K0100",
+        "unresolved token should remain K0100",
+    );
+}
+
+#[test]
 fn lsp_navigation_uses_compiler_source_map_ranges() {
     let snapshot = kobo_lsp::protocol_document_snapshot(
         "file:///workspace/src/main.kobo",

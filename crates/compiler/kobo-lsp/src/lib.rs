@@ -373,7 +373,6 @@ fn compiler_binding_is_resolved(
                 proven,
                 ..
             } => candidate == binding && *proven,
-            ScenarioOpKind::ExternalBoundary { .. } => true,
             _ => false,
         })
 }

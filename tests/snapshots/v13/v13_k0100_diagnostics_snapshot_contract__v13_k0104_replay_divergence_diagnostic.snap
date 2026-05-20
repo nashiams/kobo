@@ -125,12 +125,14 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
     "failure": null,
     "flagship_demo": null,
     "formal_core": {
+      "cfg_source": "kir_cfg",
       "core_version": "core-1",
       "functions": [
         {
           "blocks": [
             {
               "id": "bb0",
+              "kir_cfg_block": null,
               "statements": [
                 {
                   "action": null,
@@ -148,6 +150,7 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
                   }
                 }
               ],
+              "successor_source": "scenario_linear",
               "successors": [],
               "terminators": []
             }
@@ -461,12 +464,14 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
     "failure": null,
     "flagship_demo": null,
     "formal_core": {
+      "cfg_source": "kir_cfg",
       "core_version": "core-1",
       "functions": [
         {
           "blocks": [
             {
               "id": "bb0",
+              "kir_cfg_block": null,
               "statements": [
                 {
                   "action": null,
@@ -484,6 +489,7 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
                   }
                 }
               ],
+              "successor_source": "scenario_linear",
               "successors": [],
               "terminators": []
             }

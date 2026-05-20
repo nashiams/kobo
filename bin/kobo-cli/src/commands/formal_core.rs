@@ -415,6 +415,8 @@ fn apply_statement_liveness(
             let callee = statement.action.as_deref().unwrap_or_default();
             let resolution = if recursive_functions.contains(callee) {
                 "pending_recursive_transfer"
+            } else if callee.starts_with("unproven:") {
+                "pending_unproven_transfer"
             } else {
                 "summary_proved_discharge"
             };
@@ -432,7 +434,7 @@ fn apply_statement_liveness(
             analysis.resolved_paths.push(StrictResolvedPath {
                 binding: obligation.binding,
                 resolution: resolution.to_owned(),
-                reason: (!callee.is_empty()).then(|| callee.to_owned()),
+                reason: transfer_reason(callee),
                 source_span,
             });
         }
@@ -674,6 +676,18 @@ fn resolution_from_action(action: &str) -> (String, Option<String>) {
         return ("suppressed".to_owned(), Some(reason.to_owned()));
     }
     ("discharged".to_owned(), Some(action.to_owned()))
+}
+
+fn transfer_reason(callee: &str) -> Option<String> {
+    if callee.is_empty() {
+        return None;
+    }
+    Some(
+        callee
+            .strip_prefix("unproven:")
+            .unwrap_or(callee)
+            .to_owned(),
+    )
 }
 
 fn add_runtime_failure_error(

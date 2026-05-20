@@ -1460,6 +1460,7 @@ impl<'a> ScenarioLowerer<'a> {
         }
 
         let mut helper_env = BindingEnv::with_imports(self.imports.clone());
+        let mut transfer_ops = Vec::new();
         for (input, argument) in function.sig.inputs.iter().zip(call.args.iter()) {
             let Some(parameter) = fn_arg_ident(input) else {
                 continue;
@@ -1467,18 +1468,29 @@ impl<'a> ScenarioLowerer<'a> {
             if let Some(argument_binding) =
                 expr_path_ident(argument).and_then(|name| env.resolve(&name))
             {
+                let transfer_index = self.operations.len();
                 self.operations.push(ScenarioOp {
                     span: self.span(call),
                     kind: ScenarioOpKind::Transfer {
                         binding: argument_binding.clone(),
                         callee: function_name.clone(),
+                        proven: false,
                     },
                 });
                 if let Some(actions) = env.terminal_actions(&argument_binding) {
-                    helper_env.bind_obligation(parameter.clone(), argument_binding, actions);
+                    helper_env.bind_obligation(
+                        parameter.clone(),
+                        argument_binding.clone(),
+                        actions,
+                    );
                 } else {
-                    helper_env.bind(parameter.clone(), argument_binding);
+                    helper_env.bind(parameter.clone(), argument_binding.clone());
                 }
+                transfer_ops.push((
+                    transfer_index,
+                    argument_binding.clone(),
+                    function_name.clone(),
+                ));
             }
             if let Some(value) = self.eval_bool(argument, env) {
                 helper_env.bind_bool(parameter.clone(), value);
@@ -1491,6 +1503,16 @@ impl<'a> ScenarioLowerer<'a> {
         }
 
         self.execute_function(&function_name, function, &mut helper_env);
+        for (index, obligation_key, _) in transfer_ops {
+            let proven = !helper_env.has_active_obligation(&obligation_key);
+            if let Some(ScenarioOp {
+                kind: ScenarioOpKind::Transfer { proven: slot, .. },
+                ..
+            }) = self.operations.get_mut(index)
+            {
+                *slot = proven;
+            }
+        }
         true
     }
 

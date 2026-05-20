@@ -447,7 +447,9 @@ fn stateful_input_sources(program: &ScenarioProgram) -> Vec<StatefulInputSource>
                 }
                 kobo_ir::ScenarioModeledBoundary::WardTime => {}
             },
-            ScenarioOpKind::Transfer { binding, callee } => {
+            ScenarioOpKind::Transfer {
+                binding, callee, ..
+            } => {
                 sources.push(StatefulInputSource::ObligationTransfer {
                     binding: binding.clone(),
                     callee: callee.clone(),

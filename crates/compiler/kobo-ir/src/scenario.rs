@@ -32,6 +32,8 @@ pub enum ScenarioOpKind {
     Transfer {
         binding: String,
         callee: String,
+        #[serde(default = "default_transfer_proven")]
+        proven: bool,
     },
     MoveBinding {
         binding: String,
@@ -79,6 +81,10 @@ pub enum ScenarioOpKind {
     },
     Loop,
     Return,
+}
+
+const fn default_transfer_proven() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

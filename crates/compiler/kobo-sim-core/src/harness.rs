@@ -1842,7 +1842,9 @@ fn terminal_failure_events(
                     }
                 }
             }
-            ScenarioOpKind::Transfer { binding, callee } => events.push(ScenarioEvent {
+            ScenarioOpKind::Transfer {
+                binding, callee, ..
+            } => events.push(ScenarioEvent {
                 kind: "obligation-transfer".to_owned(),
                 label: Some(format!("{binding}->{callee}")),
                 value: None,

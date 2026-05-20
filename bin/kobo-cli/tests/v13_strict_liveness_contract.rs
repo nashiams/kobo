@@ -427,6 +427,46 @@ fn helper_case() {
 }
 
 #[test]
+fn helper_transfer_without_summary_proof_remains_unresolved() {
+    let project = TestProject::new("v13-strict-unproven-helper");
+    let source = delivery_source(
+        r#"
+fn helper_ignores(token: Delivery) {
+    let _kept = token;
+}
+
+#[kobo::scenario(profile = "sync")]
+fn unproven_helper_case() {
+    let delivery = Delivery {};
+    helper_ignores(delivery);
+}
+"#,
+    );
+
+    let (output, witness) = run_strict_witness(&project, &source, "unproven_helper_case");
+    assert_failure(
+        &output,
+        "strict liveness should reject helper transfers without a discharge summary",
+    );
+    assert_strict_error(&witness, "normal_exit", "delivery");
+    assert!(
+        !witness["strict_liveness"]["resolved_paths"]
+            .as_array()
+            .expect("strict liveness should expose resolved paths")
+            .iter()
+            .any(|path| path["binding"].as_str() == Some("delivery")
+                && path["resolution"].as_str() == Some("summary_proved_discharge")),
+        "unproven helper transfer must not be reported as summary-proved: {}",
+        witness["strict_liveness"]
+    );
+    assert_contains(
+        &witness["strict_liveness"].to_string(),
+        "pending_unproven_transfer",
+        "strict liveness evidence should name the unproven transfer",
+    );
+}
+
+#[test]
 fn unknown_recursion_scc_conservatively_escapes_or_fails() {
     let project = TestProject::new("v13-strict-recursive-scc");
     let source = delivery_source(

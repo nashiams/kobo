@@ -32,7 +32,9 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                         action: action.clone(),
                     })
                 }
-                ScenarioOpKind::Transfer { binding, callee } => Some(ScenarioOperation::Transfer {
+                ScenarioOpKind::Transfer {
+                    binding, callee, ..
+                } => Some(ScenarioOperation::Transfer {
                     binding: binding.clone(),
                     callee: callee.clone(),
                     span_start,

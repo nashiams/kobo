@@ -248,11 +248,19 @@ fn statement_from_operation(index: usize, operation: &ScenarioOp) -> Option<Core
             boundary: None,
             source_span,
         }),
-        ScenarioOpKind::Transfer { binding, callee } => Some(CoreStatement {
+        ScenarioOpKind::Transfer {
+            binding,
+            callee,
+            proven,
+        } => Some(CoreStatement {
             id: format!("stmt-{index}"),
             kind: CoreStatementKind::ObligationTransfer,
             binding: Some(binding.clone()),
-            action: Some(callee.clone()),
+            action: Some(if *proven {
+                callee.clone()
+            } else {
+                format!("unproven:{callee}")
+            }),
             boundary: None,
             source_span,
         }),

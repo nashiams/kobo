@@ -269,7 +269,9 @@ impl FunctionSummaryBuilder {
                         .creates
                         .push(binding.clone());
                 }
-                ScenarioOpKind::Transfer { binding, callee } => {
+                ScenarioOpKind::Transfer {
+                    binding, callee, ..
+                } => {
                     let owner = builder
                         .binding_owner
                         .get(binding)

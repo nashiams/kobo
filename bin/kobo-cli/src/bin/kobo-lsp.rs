@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -26,61 +26,100 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_stdio() -> anyhow::Result<()> {
-    let mut input = String::new();
-    std::io::stdin().read_to_string(&mut input)?;
-    if input.trim().is_empty() {
+    let stdin = std::io::stdin();
+    let mut reader = BufReader::new(stdin.lock());
+    let mut first_line = String::new();
+    if reader.read_line(&mut first_line)? == 0 {
         emit_protocol_value(
             &kobo_lsp::initialize_response(serde_json::Value::Null),
             false,
         );
         return Ok(());
     }
-    let framed = has_lsp_framing(&input);
     let mut documents = std::collections::BTreeMap::<String, String>::new();
-    for value in parse_json_rpc_inputs(&input) {
-        match value["method"].as_str() {
-            Some("initialize") => {
-                let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
-                emit_protocol_value(&kobo_lsp::initialize_response(id), framed);
+
+    if !line_is_content_length(&first_line) {
+        let mut input = first_line;
+        reader.read_to_string(&mut input)?;
+        for value in parse_json_rpc_inputs(&input) {
+            if process_json_rpc_value(value, false, &mut documents) {
+                break;
             }
-            Some("textDocument/didOpen") => {
-                if let Some((uri, text, notification)) = open_document_notification(&value) {
-                    documents.insert(uri, text);
-                    emit_protocol_value(&notification, framed);
-                }
+        }
+        return Ok(());
+    }
+
+    let mut header_line = first_line;
+    loop {
+        let Some(value) = read_framed_json_rpc_value(&mut reader, header_line)? else {
+            break;
+        };
+        if process_json_rpc_value(value, true, &mut documents) {
+            break;
+        }
+        header_line = String::new();
+        if reader.read_line(&mut header_line)? == 0 {
+            break;
+        }
+        while header_line.trim().is_empty() {
+            header_line.clear();
+            if reader.read_line(&mut header_line)? == 0 {
+                return Ok(());
             }
-            Some("textDocument/hover") => {
-                if let Some(response) = document_feature_response(&value, &documents, "hover") {
-                    emit_protocol_value(&response, framed);
-                }
-            }
-            Some("textDocument/codeAction") => {
-                if let Some(response) = document_feature_response(&value, &documents, "codeActions")
-                {
-                    emit_protocol_value(&response, framed);
-                }
-            }
-            Some("textDocument/documentLink") => {
-                if let Some(response) =
-                    document_feature_response(&value, &documents, "documentLinks")
-                {
-                    emit_protocol_value(&response, framed);
-                }
-            }
-            Some("textDocument/definition") => {
-                if let Some(response) = definition_response(&value, &documents) {
-                    emit_protocol_value(&response, framed);
-                }
-            }
-            Some("kobo/runnables") => {
-                if let Some(response) = document_feature_response(&value, &documents, "runnables") {
-                    emit_protocol_value(&response, framed);
-                }
-            }
-            _ => {}
         }
     }
     Ok(())
+}
+
+fn process_json_rpc_value(
+    value: serde_json::Value,
+    framed: bool,
+    documents: &mut std::collections::BTreeMap<String, String>,
+) -> bool {
+    match value["method"].as_str() {
+        Some("initialize") => {
+            let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            emit_protocol_value(&kobo_lsp::initialize_response(id), framed);
+        }
+        Some("shutdown") => {
+            let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
+            emit_protocol_value(&json_rpc_response(id, serde_json::Value::Null), framed);
+        }
+        Some("exit") => return true,
+        Some("textDocument/didOpen") => {
+            if let Some((uri, text, notification)) = open_document_notification(&value) {
+                documents.insert(uri, text);
+                emit_protocol_value(&notification, framed);
+            }
+        }
+        Some("textDocument/hover") => {
+            if let Some(response) = document_feature_response(&value, documents, "hover") {
+                emit_protocol_value(&response, framed);
+            }
+        }
+        Some("textDocument/codeAction") => {
+            if let Some(response) = document_feature_response(&value, documents, "codeActions") {
+                emit_protocol_value(&response, framed);
+            }
+        }
+        Some("textDocument/documentLink") => {
+            if let Some(response) = document_feature_response(&value, documents, "documentLinks") {
+                emit_protocol_value(&response, framed);
+            }
+        }
+        Some("textDocument/definition") => {
+            if let Some(response) = definition_response(&value, documents) {
+                emit_protocol_value(&response, framed);
+            }
+        }
+        Some("kobo/runnables") => {
+            if let Some(response) = document_feature_response(&value, documents, "runnables") {
+                emit_protocol_value(&response, framed);
+            }
+        }
+        _ => {}
+    }
+    false
 }
 
 fn open_document_notification(
@@ -121,12 +160,19 @@ fn definition_response(
     let uri = value["params"]["textDocument"]["uri"].as_str()?;
     let text = documents.get(uri).map(String::as_str).unwrap_or_default();
     let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
+    let range = snapshot["diagnostics"][0]["range"]
+        .clone()
+        .as_object()
+        .map(|_| snapshot["diagnostics"][0]["range"].clone())
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 1},
+            })
+        });
     let result = serde_json::json!([{
         "uri": uri,
-        "range": {
-            "start": {"line": 0, "character": 0},
-            "end": {"line": 0, "character": 1},
-        },
+        "range": range,
         "data": {
             "delegate": snapshot["definitionProvider"]["delegate"].clone(),
             "source_map": snapshot["definitionProvider"]["source_map"].clone(),
@@ -151,12 +197,7 @@ fn emit_protocol_value(value: &serde_json::Value, framed: bool) {
     } else {
         println!("{body}");
     }
-}
-
-fn has_lsp_framing(input: &str) -> bool {
-    input
-        .get(.."Content-Length:".len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Content-Length:"))
+    let _ = std::io::stdout().flush();
 }
 
 fn parse_json_rpc_inputs(input: &str) -> Vec<serde_json::Value> {
@@ -215,6 +256,37 @@ fn parse_framed_json_rpc_inputs(input: &str) -> Vec<serde_json::Value> {
         cursor = body_end;
     }
     values
+}
+
+fn read_framed_json_rpc_value(
+    reader: &mut impl BufRead,
+    first_header_line: String,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    if !line_is_content_length(&first_header_line) {
+        return Ok(None);
+    }
+    let mut header = first_header_line;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        header.push_str(&line);
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+    }
+    let Some(length) = content_length(&header) else {
+        return Ok(None);
+    };
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body)?;
+    Ok(serde_json::from_slice::<serde_json::Value>(&body).ok())
+}
+
+fn line_is_content_length(line: &str) -> bool {
+    line.split_once(':')
+        .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
 }
 
 fn find_case_insensitive(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {

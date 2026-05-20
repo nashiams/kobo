@@ -4,6 +4,7 @@
   "description": "Kobo language support for diagnostics, scenario runs, and replay witnesses.",
   "version": "0.0.1",
   "publisher": "kobo",
+  "main": "./extension.js",
   "engines": {
     "vscode": "^1.88.0"
   },
@@ -11,7 +12,10 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:kobo"
+    "onLanguage:kobo",
+    "onCommand:kobo.runScenario",
+    "onCommand:kobo.replayWitness",
+    "onCommand:kobo.explainDiagnostic"
   ],
   "contributes": {
     "languages": [

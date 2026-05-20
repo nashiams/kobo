@@ -1,8 +1,10 @@
 mod v09_common;
 
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -399,16 +401,147 @@ fn run() {
 }
 
 #[test]
+fn lsp_stdio_responds_before_stdin_eof_in_live_session() {
+    let lsp = env!("CARGO_BIN_EXE_kobo-lsp");
+    let uri = "file:///workspace/src/main.kobo";
+    let source = r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+#[kobo::scenario(profile = "sync")]
+fn run() {
+    let token = Token {};
+}
+"#;
+    let mut child = Command::new(lsp)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("kobo-lsp --stdio should launch");
+    let mut stdin = child.stdin.take().expect("stdin should be piped");
+    let stdout = child.stdout.take().expect("stdout should be piped");
+    let (sender, receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        while let Ok(message) = read_lsp_frame(&mut stdout) {
+            if sender.send(message).is_err() {
+                break;
+            }
+        }
+    });
+
+    write_lsp_frame(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    );
+    let initialize = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("live LSP should answer initialize before stdin EOF");
+    assert_contains(
+        &initialize,
+        "kobo-lsp",
+        "initialize response should be emitted during live session",
+    );
+    assert!(
+        child
+            .try_wait()
+            .expect("child process status should be available")
+            .is_none(),
+        "stdio server should keep running after initialize in a live session",
+    );
+
+    write_lsp_frame(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": uri, "text": source}}
+        }),
+    );
+    let diagnostics = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("live LSP should publish diagnostics before stdin EOF");
+    assert_contains(
+        &diagnostics,
+        "textDocument/publishDiagnostics",
+        "live session should publish diagnostics for opened documents",
+    );
+    assert_contains(
+        &diagnostics,
+        "compiler-scenario-program",
+        "live session diagnostics should come from compiler scenario facts",
+    );
+
+    write_lsp_frame(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": null}),
+    );
+    let shutdown = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("live LSP should respond to shutdown");
+    assert_contains(&shutdown, r#""id":2"#, "shutdown response should carry id");
+    write_lsp_frame(
+        &mut stdin,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "exit"}),
+    );
+    drop(stdin);
+    let output = child
+        .wait_with_output()
+        .expect("kobo-lsp should finish after exit");
+    assert_success(&command_output(output), "kobo-lsp live stdio exit");
+    let _ = reader.join();
+}
+
+fn write_lsp_frame(stdin: &mut impl Write, value: &Value) {
+    let body = value.to_string();
+    write!(stdin, "Content-Length: {}\r\n\r\n{}", body.len(), body)
+        .expect("LSP frame should write");
+    stdin.flush().expect("LSP frame should flush");
+}
+
+fn read_lsp_frame(stdout: &mut impl Read) -> std::io::Result<String> {
+    let mut header = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stdout.read_exact(&mut byte)?;
+        header.push(byte[0]);
+        if header.ends_with(b"\r\n\r\n") || header.ends_with(b"\n\n") {
+            break;
+        }
+    }
+    let header = String::from_utf8_lossy(&header);
+    let length = header
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .expect("LSP response should include Content-Length");
+    let mut body = vec![0u8; length];
+    stdout.read_exact(&mut body)?;
+    Ok(String::from_utf8_lossy(&body).to_string())
+}
+
+#[test]
 fn vscode_extension_contract_exposes_syntax_and_actions() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let package = root.join("editors/vscode/package.json");
     let syntax = root.join("editors/vscode/syntaxes/kobo.tmLanguage.json");
     let language = root.join("editors/vscode/language-configuration.json");
+    let extension = root.join("editors/vscode/extension.js");
 
     let package_json: Value = serde_json::from_str(
         &std::fs::read_to_string(&package).expect("VS Code package should exist"),
     )
     .expect("VS Code package should parse");
+    assert_eq!(
+        package_json["main"], "./extension.js",
+        "VS Code extension should have an activation entrypoint",
+    );
     assert_contains(
         &package_json["contributes"]["languages"].to_string(),
         "kobo",
@@ -432,6 +565,24 @@ fn vscode_extension_contract_exposes_syntax_and_actions() {
     assert!(
         language.is_file(),
         "VS Code extension should ship language configuration"
+    );
+    let extension_js =
+        std::fs::read_to_string(&extension).expect("VS Code extension entrypoint should exist");
+    for command in [
+        "kobo.runScenario",
+        "kobo.replayWitness",
+        "kobo.explainDiagnostic",
+    ] {
+        assert_contains(
+            &extension_js,
+            &format!("registerCommand('{command}'"),
+            "VS Code extension should register contributed command",
+        );
+    }
+    assert_contains(
+        &extension_js,
+        "LanguageClient",
+        "VS Code extension should start kobo-lsp through a language client",
     );
 }
 

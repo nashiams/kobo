@@ -306,6 +306,40 @@ ward Demo {
 }
 
 #[test]
+fn lsp_parse_recovery_replaces_source_scanned_liveness_fallback() {
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+#[kobo::scenario(profile = "sync")]
+fn broken( {
+    let token = Token {};
+}
+"#,
+        None,
+    );
+
+    let diagnostics = snapshot["diagnostics"].to_string();
+    assert_contains(
+        &diagnostics,
+        "compiler-parse-recovery",
+        "LSP should publish parser-owned diagnostics for invalid documents",
+    );
+    assert_not_contains(
+        &diagnostics,
+        "source-fallback",
+        "LSP must not synthesize semantic K0100 facts with text scanning",
+    );
+    assert_not_contains(
+        &diagnostics,
+        "unresolved liveness obligation",
+        "parse recovery should not invent liveness diagnostics from partial text",
+    );
+}
+
+#[test]
 fn lsp_navigation_uses_compiler_source_map_ranges() {
     let snapshot = kobo_lsp::protocol_document_snapshot(
         "file:///workspace/src/main.kobo",

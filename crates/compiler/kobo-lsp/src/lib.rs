@@ -29,20 +29,6 @@ pub struct WitnessArtifact {
     pub source_hash: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ProtocolSourceFacts {
-    has_liveness_obligation: bool,
-    has_terminal_action: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ProtocolObligation {
-    type_name: String,
-    actions: Vec<String>,
-    line: usize,
-    character: usize,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ProtocolDiagnosticFact {
     line: usize,
@@ -201,35 +187,44 @@ fn protocol_diagnostics(analysis: &ProtocolDocumentAnalysis) -> Vec<Value> {
 }
 
 fn protocol_document_analysis(uri: &str, source: &str) -> ProtocolDocumentAnalysis {
-    if let Some(analysis) = compiler_document_analysis(uri, source) {
-        return analysis;
-    }
-    let diagnostic = unresolved_liveness_diagnostic(source);
-    ProtocolDocumentAnalysis {
-        diagnostics: diagnostic.into_iter().collect(),
-        hover: fallback_hover_kind(source),
-        rust_navigation: None,
-    }
+    compiler_document_analysis(uri, source)
 }
 
-fn compiler_document_analysis(uri: &str, source: &str) -> Option<ProtocolDocumentAnalysis> {
+fn compiler_document_analysis(uri: &str, source: &str) -> ProtocolDocumentAnalysis {
     let mut id_gen = NodeIdGen::new();
     let file_id = FileId(0);
     let ward_mapped = kobo_parser::preprocess_ward_syntax_mapped(source, file_id);
     let has_ward_syntax = !ward_mapped.metadata.wards.is_empty();
     let preprocess_source_map = ward_mapped.source_map;
     let rewritten = ward_mapped.rewritten;
-    let ast = kobo_parser::parse_file(&rewritten, file_id, &mut id_gen).ok()?;
+    let outcome = kobo_parser::parse_file_recovering(
+        &rewritten,
+        file_id,
+        &mut id_gen,
+        kobo_parser::RecoveryMode::Recover,
+    );
+    let mut diagnostics =
+        parse_recovery_diagnostics(source, &outcome.diagnostics, &preprocess_source_map);
+    let Some(ast) = outcome.file else {
+        return ProtocolDocumentAnalysis {
+            diagnostics,
+            hover: if has_ward_syntax {
+                ProtocolHoverKind::Ward
+            } else {
+                ProtocolHoverKind::RustShape
+            },
+            rust_navigation: None,
+        };
+    };
     let kir = kobo_transform::build_kir(
         &ast,
         &mut id_gen,
         kobo_transform::TransformOptions::default(),
     );
     let programs = kir.scenario_programs();
-    let diagnostics = programs
-        .iter()
-        .flat_map(|program| compiler_liveness_diagnostics(source, program, &preprocess_source_map))
-        .collect::<Vec<_>>();
+    diagnostics.extend(programs.iter().flat_map(|program| {
+        compiler_liveness_diagnostics(source, program, &preprocess_source_map)
+    }));
     let hover = if has_ward_syntax {
         ProtocolHoverKind::Ward
     } else if programs.iter().any(program_has_obligation) || !diagnostics.is_empty() {
@@ -239,11 +234,11 @@ fn compiler_document_analysis(uri: &str, source: &str) -> Option<ProtocolDocumen
     };
     let rust_navigation =
         compiler_rust_navigation(uri, source, &preprocess_source_map, &ast, &kir, &programs);
-    Some(ProtocolDocumentAnalysis {
+    ProtocolDocumentAnalysis {
         diagnostics,
         hover,
         rust_navigation,
-    })
+    }
 }
 
 fn compiler_rust_navigation(
@@ -387,6 +382,33 @@ fn original_span_for(source_map: &PreprocessSourceMap, span: KoboSpan) -> KoboSp
     source_map.rewritten_span_to_original(span).unwrap_or(span)
 }
 
+fn parse_recovery_diagnostics(
+    source: &str,
+    diagnostics: &[KDiagnostic],
+    preprocess_source_map: &PreprocessSourceMap,
+) -> Vec<ProtocolDiagnosticFact> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let original_span = original_span_for(preprocess_source_map, diagnostic.primary.span);
+            let (line, character_start, character_end) =
+                line_range_from_span(source, original_span);
+            ProtocolDiagnosticFact {
+                line,
+                character_start,
+                character_end,
+                code: diagnostic.code.as_str(),
+                source: "kobo-compiler",
+                fact_source: "compiler-parse-recovery",
+                message: diagnostic
+                    .finding
+                    .clone()
+                    .unwrap_or_else(|| diagnostic.primary.text.clone()),
+            }
+        })
+        .collect()
+}
+
 fn program_has_obligation(program: &ScenarioProgram) -> bool {
     program
         .operations
@@ -428,198 +450,6 @@ fn protocol_range_from_rs_span(rs_span: RsSpan) -> ProtocolRange {
         character_start: rs_span.column_start,
         character_end: rs_span.column_end.max(rs_span.column_start + 1),
     }
-}
-
-fn unresolved_liveness_diagnostic(source: &str) -> Option<ProtocolDiagnosticFact> {
-    let semantic_source = source_without_text(source);
-    let obligations = ward_obligations(&semantic_source);
-    for obligation in obligations {
-        if let Some(fact) = unresolved_binding_for_obligation(source, &semantic_source, &obligation)
-        {
-            return Some(fact);
-        }
-    }
-    let facts = protocol_source_facts(source);
-    (facts.has_liveness_obligation && !facts.has_terminal_action).then(|| ProtocolDiagnosticFact {
-        line: 0,
-        character_start: 0,
-        character_end: 1,
-        code: "K0100",
-        source: "kobo",
-        fact_source: "source-fallback",
-        message: "unresolved liveness obligation".to_owned(),
-    })
-}
-
-fn ward_obligations(source: &str) -> Vec<ProtocolObligation> {
-    source
-        .lines()
-        .enumerate()
-        .filter_map(|(line, text)| ward_obligation_from_line(line, text))
-        .collect()
-}
-
-fn ward_obligation_from_line(line: usize, text: &str) -> Option<ProtocolObligation> {
-    let character = text.find("obligation ")?;
-    let rest = text[character + "obligation ".len()..].trim_start();
-    let (type_name, after_type) = rest.split_once(char::is_whitespace)?;
-    let actions_text = after_type.trim_start().strip_prefix("must")?.trim();
-    let actions = actions_text
-        .split('|')
-        .flat_map(str::split_whitespace)
-        .filter(|action| !action.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    (!type_name.is_empty() && !actions.is_empty()).then(|| ProtocolObligation {
-        type_name: type_name.to_owned(),
-        actions,
-        line,
-        character,
-    })
-}
-
-fn unresolved_binding_for_obligation(
-    original_source: &str,
-    semantic_source: &str,
-    obligation: &ProtocolObligation,
-) -> Option<ProtocolDiagnosticFact> {
-    for (line, text) in semantic_source.lines().enumerate() {
-        let Some(binding) = binding_constructed_on_line(text, &obligation.type_name) else {
-            continue;
-        };
-        if binding_has_terminal_action(semantic_source, &binding, &obligation.actions) {
-            continue;
-        }
-        let original_line = original_source.lines().nth(line).unwrap_or(text);
-        let character_start = original_line.find(&binding).unwrap_or(0);
-        return Some(ProtocolDiagnosticFact {
-            line,
-            character_start,
-            character_end: character_start + binding.len(),
-            code: "K0100",
-            source: "kobo",
-            fact_source: "source-fallback",
-            message: format!(
-                "unresolved liveness obligation `{binding}` requires {}",
-                obligation.actions.join(" | ")
-            ),
-        });
-    }
-    Some(ProtocolDiagnosticFact {
-        line: obligation.line,
-        character_start: obligation.character,
-        character_end: obligation.character + obligation.type_name.len(),
-        code: "K0100",
-        source: "kobo",
-        fact_source: "source-fallback",
-        message: format!(
-            "unresolved liveness obligation for `{}`",
-            obligation.type_name
-        ),
-    })
-}
-
-fn binding_constructed_on_line(line: &str, type_name: &str) -> Option<String> {
-    let rest = line.trim().strip_prefix("let ")?;
-    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
-    if !rest.contains(&format!("{type_name} {{")) {
-        return None;
-    }
-    let binding = rest
-        .split(|ch: char| ch == ':' || ch == '=' || ch.is_whitespace())
-        .next()?
-        .trim();
-    (!binding.is_empty()).then(|| binding.to_owned())
-}
-
-fn binding_has_terminal_action(source: &str, binding: &str, actions: &[String]) -> bool {
-    actions.iter().any(|action| {
-        let call = format!("{binding}.{action}(");
-        let spaced_call = format!("{binding}.{action} (");
-        source.contains(&call) || source.contains(&spaced_call)
-    })
-}
-
-fn protocol_source_facts(source: &str) -> ProtocolSourceFacts {
-    let semantic_source = source_without_text(source);
-    ProtocolSourceFacts {
-        has_liveness_obligation: semantic_source.contains("must_call")
-            || semantic_source.contains("obligation "),
-        has_terminal_action: [
-            ".ack()",
-            ".nack()",
-            ".requeue()",
-            ".reply()",
-            ".reject()",
-            ".cancel()",
-            ".close()",
-            ".commit()",
-            ".rollback()",
-        ]
-        .iter()
-        .any(|action| semantic_source.contains(action)),
-    }
-}
-
-fn fallback_hover_kind(source: &str) -> ProtocolHoverKind {
-    let semantic_source = source_without_text(source);
-    if ward_obligations(&semantic_source).is_empty() {
-        let facts = protocol_source_facts(&semantic_source);
-        if facts.has_liveness_obligation {
-            ProtocolHoverKind::MustCall
-        } else {
-            ProtocolHoverKind::RustShape
-        }
-    } else {
-        ProtocolHoverKind::Ward
-    }
-}
-
-fn source_without_text(source: &str) -> String {
-    let mut scrubbed = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-    let mut in_string = false;
-    let mut in_line_comment = false;
-    while let Some(ch) = chars.next() {
-        if in_line_comment {
-            if ch == '\n' {
-                in_line_comment = false;
-                scrubbed.push('\n');
-            } else {
-                scrubbed.push(' ');
-            }
-            continue;
-        }
-        if in_string {
-            if ch == '\\' {
-                scrubbed.push(' ');
-                if let Some(next) = chars.next() {
-                    scrubbed.push(if next == '\n' { '\n' } else { ' ' });
-                }
-            } else if ch == '"' {
-                in_string = false;
-                scrubbed.push(' ');
-            } else {
-                scrubbed.push(if ch == '\n' { '\n' } else { ' ' });
-            }
-            continue;
-        }
-        if ch == '/' && chars.peek() == Some(&'/') {
-            scrubbed.push(' ');
-            if let Some(next) = chars.next() {
-                scrubbed.push(if next == '\n' { '\n' } else { ' ' });
-            }
-            in_line_comment = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = true;
-            scrubbed.push(' ');
-            continue;
-        }
-        scrubbed.push(ch);
-    }
-    scrubbed
 }
 
 fn protocol_hover(kind: ProtocolHoverKind, navigation: Option<&ProtocolRustNavigation>) -> Value {

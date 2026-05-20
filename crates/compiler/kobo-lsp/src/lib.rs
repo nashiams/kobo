@@ -367,7 +367,7 @@ fn compiler_binding_is_resolved(
             ScenarioOpKind::Discharge {
                 binding: candidate,
                 action,
-            } => candidate == binding && actions.iter().any(|expected| expected == action),
+            } => candidate == binding && compiler_discharge_resolves_obligation(action, actions),
             ScenarioOpKind::Transfer {
                 binding: candidate,
                 proven,
@@ -375,6 +375,13 @@ fn compiler_binding_is_resolved(
             } => candidate == binding && *proven,
             _ => false,
         })
+}
+
+fn compiler_discharge_resolves_obligation(action: &str, actions: &[String]) -> bool {
+    actions.iter().any(|expected| expected == action)
+        || action == "return"
+        || action.starts_with("escape:")
+        || action.starts_with("suppressed:")
 }
 
 fn original_span_for(source_map: &PreprocessSourceMap, span: KoboSpan) -> KoboSpan {

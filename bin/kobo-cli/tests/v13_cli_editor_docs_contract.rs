@@ -382,6 +382,43 @@ fn run() {
 }
 
 #[test]
+fn lsp_external_boundary_escape_resolves_specific_obligation() {
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+impl Token {
+    fn close(self) {}
+}
+
+#[kobo::boundary(crate = "payments", policy = "opaque", reason = "outside replay")]
+use payments::Sink;
+
+#[kobo::scenario(profile = "sync")]
+fn run() {
+    let token = Token {};
+    Sink::store(token);
+}
+"#,
+        None,
+    );
+
+    let diagnostics = snapshot["diagnostics"].to_string();
+    assert_not_contains(
+        &diagnostics,
+        "K0100",
+        "same-binding external boundary escape should resolve token",
+    );
+    assert_not_contains(
+        &diagnostics,
+        "unresolved liveness obligation",
+        "boundary escape discharge should not leave a liveness diagnostic",
+    );
+}
+
+#[test]
 fn lsp_navigation_uses_compiler_source_map_ranges() {
     let snapshot = kobo_lsp::protocol_document_snapshot(
         "file:///workspace/src/main.kobo",

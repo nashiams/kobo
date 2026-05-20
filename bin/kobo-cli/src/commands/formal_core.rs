@@ -70,6 +70,7 @@ pub(super) fn formal_core_json(
     let core = lower_core_program(program);
     serde_json::json!({
         "source": core.source,
+        "cfg_source": core.cfg_source,
         "core_version": core.core_version,
         "functions": core
             .functions
@@ -298,7 +299,7 @@ fn analyze_function_liveness(
         let Some(block) = blocks.get(&block_id) else {
             continue;
         };
-        let mut active = in_states.remove(&block_id).unwrap_or_default();
+        let mut active = in_states.get(&block_id).cloned().unwrap_or_default();
         apply_block_liveness(
             source_path,
             source,
@@ -318,7 +319,6 @@ fn analyze_function_liveness(
             if successor == &block.id {
                 continue;
             }
-            let existed = in_states.contains_key(successor);
             let changed = merge_obligation_env(
                 source_path,
                 source,
@@ -326,7 +326,7 @@ fn analyze_function_liveness(
                 active.clone(),
                 analysis,
             );
-            if (!existed || changed) && !worklist.iter().any(|candidate| candidate == successor) {
+            if changed && !worklist.iter().any(|candidate| candidate == successor) {
                 worklist.push_back(successor.clone());
             }
         }
@@ -740,6 +740,8 @@ fn function_json(source_path: &str, source: &str, function: CoreFunction) -> Val
 fn block_json(source_path: &str, source: &str, block: CoreBlock) -> Value {
     serde_json::json!({
         "id": block.id,
+        "kir_cfg_block": block.kir_cfg_block,
+        "successor_source": block.successor_source,
         "statements": block
             .statements
             .into_iter()

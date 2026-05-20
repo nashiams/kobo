@@ -237,10 +237,32 @@ pub struct ScenarioCoverageFacts {
     pub opaque_boundaries: Vec<String>,
     #[serde(default)]
     pub call_graph_sccs: Vec<ScenarioCallGraphScc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_cfg: Option<ScenarioCoreCfgFacts>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScenarioCallGraphScc {
     pub functions: Vec<String>,
     pub is_recursive: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioCoreCfgFacts {
+    pub blocks: Vec<ScenarioCoreCfgBlock>,
+    pub edges: Vec<ScenarioCoreCfgEdge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioCoreCfgBlock {
+    pub id: u32,
+    pub kir_nodes: Vec<u32>,
+    pub span_start: usize,
+    pub span_end: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScenarioCoreCfgEdge {
+    pub from: u32,
+    pub to: u32,
 }

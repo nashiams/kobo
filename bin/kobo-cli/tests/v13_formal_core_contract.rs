@@ -501,6 +501,10 @@ fn compiler_owned_cfg_case() {
 
     let (_path, witness) = run_witness(&project, source, "compiler_owned_cfg_case");
     assert_eq!(witness["formal_core"]["source"], "compiler_core_ir");
+    assert_eq!(
+        witness["formal_core"]["cfg_source"], "kir_cfg",
+        "formal Core should record that successor shape came from KIR CFG facts"
+    );
     let blocks = witness["formal_core"]["functions"][0]["blocks"]
         .as_array()
         .expect("Core function should expose CFG blocks");
@@ -513,6 +517,13 @@ fn compiler_owned_cfg_case() {
             .iter()
             .any(|block| block["successors"].as_array().is_some()),
         "Core blocks should carry successor evidence: {blocks:?}"
+    );
+    assert!(
+        blocks.iter().any(|block| {
+            block["successor_source"].as_str() == Some("kir_cfg")
+                && block["kir_cfg_block"].as_u64().is_some()
+        }),
+        "Core blocks should retain their originating KIR CFG block IDs: {blocks:?}"
     );
 }
 

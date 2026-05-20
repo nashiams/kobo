@@ -1,8 +1,14 @@
-use crate::{KoboSpan, ScenarioCoreTerminatorKind, ScenarioOp, ScenarioOpKind, ScenarioProgram};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::{
+    KoboSpan, ScenarioCoreCfgFacts, ScenarioCoreTerminatorKind, ScenarioOp, ScenarioOpKind,
+    ScenarioProgram,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreProgram {
     pub source: &'static str,
+    pub cfg_source: &'static str,
     pub core_version: &'static str,
     pub functions: Vec<CoreFunction>,
 }
@@ -17,6 +23,8 @@ pub struct CoreFunction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoreBlock {
     pub id: String,
+    pub kir_cfg_block: Option<u32>,
+    pub successor_source: &'static str,
     pub statements: Vec<CoreStatement>,
     pub terminators: Vec<CoreTerminator>,
     pub successors: Vec<String>,
@@ -102,6 +110,8 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
         }
         blocks.push(CoreBlock {
             id: format!("bb{index}"),
+            kir_cfg_block: None,
+            successor_source: "scenario_linear",
             statements,
             terminators,
             successors,
@@ -111,14 +121,24 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
     if blocks.is_empty() {
         blocks.push(CoreBlock {
             id: "bb0".to_owned(),
+            kir_cfg_block: None,
+            successor_source: "scenario_linear",
             statements: Vec::new(),
             terminators: Vec::new(),
             successors: Vec::new(),
         });
     }
 
+    let cfg_source = if let Some(core_cfg) = program.coverage.core_cfg.as_ref() {
+        apply_kir_cfg_successors(&mut blocks, &modeled_ops, core_cfg);
+        "kir_cfg"
+    } else {
+        "scenario_linear"
+    };
+
     CoreProgram {
         source: "compiler_core_ir",
+        cfg_source,
         core_version: "core-1",
         functions: vec![CoreFunction {
             name: program.target.clone(),
@@ -126,6 +146,87 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
             blocks,
         }],
     }
+}
+
+fn apply_kir_cfg_successors(
+    blocks: &mut [CoreBlock],
+    modeled_ops: &[&ScenarioOp],
+    core_cfg: &ScenarioCoreCfgFacts,
+) {
+    let op_to_cfg_block = modeled_ops
+        .iter()
+        .map(|operation| cfg_block_for_span(operation.span, core_cfg))
+        .collect::<Vec<_>>();
+
+    let mut cfg_to_core_blocks: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (index, cfg_block) in op_to_cfg_block.iter().enumerate() {
+        if let Some(cfg_block) = cfg_block {
+            cfg_to_core_blocks
+                .entry(*cfg_block)
+                .or_default()
+                .push(index);
+            if let Some(block) = blocks.get_mut(index) {
+                block.kir_cfg_block = Some(*cfg_block);
+                block.successor_source = "kir_cfg";
+            }
+        }
+    }
+
+    let cfg_edges = core_cfg
+        .edges
+        .iter()
+        .map(|edge| (edge.from, edge.to))
+        .collect::<BTreeSet<_>>();
+
+    for (index, block) in blocks.iter_mut().enumerate() {
+        let Some(cfg_block) = op_to_cfg_block.get(index).and_then(|block| *block) else {
+            continue;
+        };
+        let mut successors = Vec::new();
+        for (from, to) in &cfg_edges {
+            if *from != cfg_block {
+                continue;
+            }
+            if let Some(core_indexes) = cfg_to_core_blocks.get(to) {
+                for core_index in core_indexes {
+                    let successor = format!("bb{core_index}");
+                    if successor != block.id && !successors.contains(&successor) {
+                        successors.push(successor);
+                    }
+                }
+            }
+        }
+        if !successors.is_empty() {
+            block.successors = successors;
+        }
+    }
+}
+
+fn cfg_block_for_span(span: KoboSpan, core_cfg: &ScenarioCoreCfgFacts) -> Option<u32> {
+    core_cfg
+        .blocks
+        .iter()
+        .filter(|block| {
+            ranges_overlap(
+                span.start as usize,
+                span.end as usize,
+                block.span_start,
+                block.span_end,
+            )
+        })
+        .min_by_key(|block| block.span_end.saturating_sub(block.span_start))
+        .map(|block| block.id)
+}
+
+fn ranges_overlap(
+    left_start: usize,
+    left_end: usize,
+    right_start: usize,
+    right_end: usize,
+) -> bool {
+    let left_end = left_end.max(left_start.saturating_add(1));
+    let right_end = right_end.max(right_start.saturating_add(1));
+    left_start < right_end && right_start < left_end
 }
 
 fn statement_from_operation(index: usize, operation: &ScenarioOp) -> Option<CoreStatement> {

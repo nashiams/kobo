@@ -959,12 +959,51 @@ impl<'a> ScenarioLowerer<'a> {
 
     fn execute_match(&mut self, expr_match: &'a ExprMatch, env: &mut BindingEnv) {
         let discriminant = self.eval_bool(expr_match.expr.as_ref(), env);
-        for arm in &expr_match.arms {
-            if matches_bool_pat(&arm.pat, discriminant) || discriminant.is_none() {
-                self.execute_expr(arm.body.as_ref(), env);
-                if discriminant.is_some() {
+        if discriminant.is_some() {
+            for arm in &expr_match.arms {
+                if matches_bool_pat(&arm.pat, discriminant) {
+                    self.execute_expr(arm.body.as_ref(), env);
                     break;
                 }
+            }
+            return;
+        }
+
+        self.operations.push(ScenarioOp {
+            span: self.span(expr_match),
+            kind: ScenarioOpKind::Select {
+                branch_count: expr_match.arms.len() as u32,
+            },
+        });
+        let before = env.clone();
+        let mut arm_envs = Vec::new();
+        for arm in &expr_match.arms {
+            let mut arm_env = before.clone();
+            self.execute_expr(arm.body.as_ref(), &mut arm_env);
+            arm_envs.push(arm_env);
+        }
+        self.record_multi_branch_unresolved(expr_match, &before, &arm_envs);
+        merge_branch_envs(env, arm_envs);
+    }
+
+    fn record_multi_branch_unresolved(
+        &mut self,
+        expr_match: &'a ExprMatch,
+        before: &BindingEnv,
+        branch_envs: &[BindingEnv],
+    ) {
+        for binding in before.active_obligations() {
+            let mut active_states = branch_envs
+                .iter()
+                .map(|branch_env| branch_env.has_active_obligation(&binding));
+            let Some(first) = active_states.next() else {
+                continue;
+            };
+            if active_states.any(|active| active != first) {
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_match),
+                    kind: ScenarioOpKind::BranchUnresolved { binding },
+                });
             }
         }
     }
@@ -1956,18 +1995,20 @@ fn lifecycle_template_from_shape(
 }
 
 fn merge_branch_env(env: &mut BindingEnv, then_env: BindingEnv, else_env: BindingEnv) {
+    merge_branch_envs(env, vec![then_env, else_env]);
+}
+
+fn merge_branch_envs(env: &mut BindingEnv, branch_envs: Vec<BindingEnv>) {
     let mut merged_actions = HashMap::new();
-    let bindings = then_env
-        .terminal_actions
-        .keys()
-        .chain(else_env.terminal_actions.keys())
+    let bindings = branch_envs
+        .iter()
+        .flat_map(|branch_env| branch_env.terminal_actions.keys())
         .cloned()
         .collect::<HashSet<_>>();
     for binding in bindings {
-        if let Some(actions) = then_env
-            .terminal_actions
-            .get(&binding)
-            .or_else(|| else_env.terminal_actions.get(&binding))
+        if let Some(actions) = branch_envs
+            .iter()
+            .find_map(|branch_env| branch_env.terminal_actions.get(&binding))
         {
             merged_actions.insert(binding, actions.clone());
         }

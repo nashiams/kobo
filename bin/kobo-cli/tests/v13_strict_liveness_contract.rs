@@ -319,6 +319,39 @@ fn conditional_branch_case() {
 }
 
 #[test]
+fn match_discharge_does_not_hide_leaking_arm() {
+    let project = TestProject::new("v13-strict-match-branch");
+    let source = delivery_source(
+        r#"
+fn runtime_flag(input: i32) -> bool { input > 0 }
+
+#[kobo::scenario(profile = "sync")]
+fn match_branch_case() {
+    let token = Delivery {};
+    match runtime_flag(1) {
+        true => token.ack(),
+        false => {
+            let _lost = token;
+        }
+    }
+}
+"#,
+    );
+
+    let (output, witness) = run_strict_witness(&project, &source, "match_branch_case");
+    assert_failure(
+        &output,
+        "strict liveness must reject the match arm that leaks the token",
+    );
+    assert_strict_error(&witness, "branch_exit", "token");
+    assert_contains(
+        &witness["formal_core"].to_string(),
+        "branch",
+        "ordinary match should lower into Core branch evidence",
+    );
+}
+
+#[test]
 fn helper_summary_proves_discharge_without_manual_annotation() {
     let project = TestProject::new("v13-strict-helper");
     let source = delivery_source(

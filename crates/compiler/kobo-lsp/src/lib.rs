@@ -1,5 +1,10 @@
+use std::path::Path;
+
+use kobo_codegen::{CodegenOptions, KoboSourceMap, RsSpan};
 use kobo_errors::{DiagnosticLspPayload, KDiagnostic, KErrorCode};
-use kobo_ir::{FileId, FileSet, KoboSpan, NodeIdGen, ScenarioOpKind, ScenarioProgram};
+use kobo_ir::{
+    FileId, FileSet, Kir, KoboSpan, NodeIdGen, ScenarioOpKind, ScenarioProgram, SolutionMap,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -49,10 +54,33 @@ struct ProtocolDiagnosticFact {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct ProtocolRange {
+    line: usize,
+    character_start: usize,
+    character_end: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProtocolNavigationSite {
+    binding: String,
+    span: KoboSpan,
+    source_range: ProtocolRange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProtocolRustNavigation {
+    generated_uri: String,
+    source_map_uri: String,
+    source_range: ProtocolRange,
+    generated_range: ProtocolRange,
+    mapping_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProtocolDocumentAnalysis {
     diagnostics: Vec<ProtocolDiagnosticFact>,
     hover: ProtocolHoverKind,
-    has_rust_navigation: bool,
+    rust_navigation: Option<ProtocolRustNavigation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,14 +164,15 @@ pub fn initialize_response(id: Value) -> Value {
 }
 
 pub fn protocol_document_snapshot(uri: &str, source: &str, witness_path: Option<&str>) -> Value {
-    let analysis = protocol_document_analysis(source);
+    let analysis = protocol_document_analysis(uri, source);
     json!({
         "uri": uri,
         "diagnostics": protocol_diagnostics(&analysis),
-        "hover": protocol_hover(analysis.hover),
-        "codeActions": protocol_code_actions(witness_path),
-        "documentLinks": protocol_document_links(uri, witness_path, analysis.has_rust_navigation),
-        "runnables": editor_capabilities()["runnables"].clone(),
+        "hover": protocol_hover(analysis.hover, analysis.rust_navigation.as_ref()),
+        "codeActions": protocol_code_actions(witness_path, analysis.rust_navigation.as_ref()),
+        "documentLinks": protocol_document_links(witness_path, analysis.rust_navigation.as_ref()),
+        "runnables": protocol_runnables(analysis.rust_navigation.as_ref()),
+        "definitions": protocol_definitions(analysis.rust_navigation.as_ref()),
         "definitionProvider": editor_capabilities()["definitionProvider"].clone(),
     })
 }
@@ -170,19 +199,19 @@ fn protocol_diagnostics(analysis: &ProtocolDocumentAnalysis) -> Vec<Value> {
         .collect()
 }
 
-fn protocol_document_analysis(source: &str) -> ProtocolDocumentAnalysis {
-    if let Some(analysis) = compiler_document_analysis(source) {
+fn protocol_document_analysis(uri: &str, source: &str) -> ProtocolDocumentAnalysis {
+    if let Some(analysis) = compiler_document_analysis(uri, source) {
         return analysis;
     }
     let diagnostic = unresolved_liveness_diagnostic(source);
     ProtocolDocumentAnalysis {
         diagnostics: diagnostic.into_iter().collect(),
         hover: fallback_hover_kind(source),
-        has_rust_navigation: false,
+        rust_navigation: None,
     }
 }
 
-fn compiler_document_analysis(source: &str) -> Option<ProtocolDocumentAnalysis> {
+fn compiler_document_analysis(uri: &str, source: &str) -> Option<ProtocolDocumentAnalysis> {
     let mut id_gen = NodeIdGen::new();
     let ast = kobo_parser::parse_file(source, FileId(0), &mut id_gen).ok()?;
     let kir = kobo_transform::build_kir(
@@ -200,11 +229,88 @@ fn compiler_document_analysis(source: &str) -> Option<ProtocolDocumentAnalysis> 
     } else {
         ProtocolHoverKind::RustShape
     };
+    let rust_navigation = compiler_rust_navigation(uri, source, &ast, &kir, &programs);
     Some(ProtocolDocumentAnalysis {
         diagnostics,
         hover,
-        has_rust_navigation: true,
+        rust_navigation,
     })
+}
+
+fn compiler_rust_navigation(
+    uri: &str,
+    source: &str,
+    ast: &kobo_parser::KoboFile,
+    kir: &Kir,
+    programs: &[ScenarioProgram],
+) -> Option<ProtocolRustNavigation> {
+    let navigation_site = first_navigation_site(source, programs)?;
+    let codegen_output = kobo_codegen::codegen_file(
+        kir,
+        ast,
+        &SolutionMap::new(),
+        Path::new("main.kobo"),
+        Path::new("main.rs"),
+        &CodegenOptions::default(),
+    );
+    let generated_range =
+        generated_range_from_source_map(&codegen_output.source_map, navigation_site.span)
+            .or_else(|| {
+                generated_binding_range(&codegen_output.rs_source, &navigation_site.binding)
+            })
+            .unwrap_or_else(|| navigation_site.source_range.clone());
+
+    Some(ProtocolRustNavigation {
+        generated_uri: generated_uri_for(uri),
+        source_map_uri: source_map_uri_for(uri),
+        source_range: navigation_site.source_range,
+        generated_range,
+        mapping_count: codegen_output.source_map.x_kobo_mappings.len(),
+    })
+}
+
+fn first_navigation_site(
+    source: &str,
+    programs: &[ScenarioProgram],
+) -> Option<ProtocolNavigationSite> {
+    programs.iter().find_map(|program| {
+        program
+            .operations
+            .iter()
+            .find_map(|operation| match &operation.kind {
+                ScenarioOpKind::CreateObligation { binding, .. } => Some(ProtocolNavigationSite {
+                    binding: binding.clone(),
+                    span: operation.span,
+                    source_range: protocol_range_from_span(source, operation.span),
+                }),
+                _ => None,
+            })
+    })
+}
+
+fn generated_range_from_source_map(
+    source_map: &KoboSourceMap,
+    source_span: KoboSpan,
+) -> Option<ProtocolRange> {
+    source_map
+        .lookup_rs_spans(source_span)
+        .into_iter()
+        .next()
+        .map(protocol_range_from_rs_span)
+}
+
+fn generated_binding_range(generated_source: &str, binding: &str) -> Option<ProtocolRange> {
+    generated_source
+        .lines()
+        .enumerate()
+        .find_map(|(line, text)| {
+            let character_start = text.find(binding)?;
+            Some(ProtocolRange {
+                line,
+                character_start,
+                character_end: character_start + binding.len(),
+            })
+        })
 }
 
 fn compiler_liveness_diagnostics(
@@ -267,6 +373,11 @@ fn program_has_obligation(program: &ScenarioProgram) -> bool {
 }
 
 fn line_range_from_span(source: &str, span: KoboSpan) -> (usize, usize, usize) {
+    let range = protocol_range_from_span(source, span);
+    (range.line, range.character_start, range.character_end)
+}
+
+fn protocol_range_from_span(source: &str, span: KoboSpan) -> ProtocolRange {
     let start = span.start as usize;
     let end = span.end.max(span.start + 1) as usize;
     let mut line = 0usize;
@@ -282,7 +393,19 @@ fn line_range_from_span(source: &str, span: KoboSpan) -> (usize, usize, usize) {
     }
     let character_start = start.saturating_sub(line_start);
     let character_end = end.saturating_sub(line_start).max(character_start + 1);
-    (line, character_start, character_end)
+    ProtocolRange {
+        line,
+        character_start,
+        character_end,
+    }
+}
+
+fn protocol_range_from_rs_span(rs_span: RsSpan) -> ProtocolRange {
+    ProtocolRange {
+        line: rs_span.line,
+        character_start: rs_span.column_start,
+        character_end: rs_span.column_end.max(rs_span.column_start + 1),
+    }
 }
 
 fn unresolved_liveness_diagnostic(source: &str) -> Option<ProtocolDiagnosticFact> {
@@ -477,7 +600,7 @@ fn source_without_text(source: &str) -> String {
     scrubbed
 }
 
-fn protocol_hover(kind: ProtocolHoverKind) -> Value {
+fn protocol_hover(kind: ProtocolHoverKind, navigation: Option<&ProtocolRustNavigation>) -> Value {
     let contents = match kind {
         ProtocolHoverKind::Ward => {
             "Kobo ward model: states, obligations, scenarios, ports, recordings, and debt."
@@ -489,46 +612,142 @@ fn protocol_hover(kind: ProtocolHoverKind) -> Value {
             "Kobo source: Rust-shaped code with gradual runtime guarantees."
         }
     };
-    json!({
+    let mut hover = json!({
         "contents": {
             "kind": "markdown",
             "value": contents,
         },
-    })
+    });
+    if let Some(navigation) = navigation {
+        hover["range"] = protocol_range_json(&navigation.source_range);
+        hover["data"] = source_map_metadata(navigation);
+    }
+    hover
 }
 
-fn protocol_code_actions(witness_path: Option<&str>) -> Vec<LspCodeAction> {
+fn protocol_code_actions(
+    witness_path: Option<&str>,
+    navigation: Option<&ProtocolRustNavigation>,
+) -> Vec<Value> {
     let replay_command = witness_path.map(|path| format!("kobo replay {path}"));
     code_actions_for_code_and_replay(KErrorCode::K0100, replay_command.as_deref())
+        .into_iter()
+        .map(|action| protocol_code_action_value(action, navigation))
+        .collect()
+}
+
+fn protocol_code_action_value(
+    action: LspCodeAction,
+    navigation: Option<&ProtocolRustNavigation>,
+) -> Value {
+    let mut value = serde_json::to_value(action).unwrap_or_else(|_| json!({}));
+    if let (Some(object), Some(navigation)) = (value.as_object_mut(), navigation) {
+        object.insert(
+            "range".to_owned(),
+            protocol_range_json(&navigation.source_range),
+        );
+        object.insert("data".to_owned(), source_map_metadata(navigation));
+    }
+    value
 }
 
 fn protocol_document_links(
-    uri: &str,
     witness_path: Option<&str>,
-    has_rust_navigation: bool,
+    navigation: Option<&ProtocolRustNavigation>,
 ) -> Vec<Value> {
     let mut links = Vec::new();
+    let link_range = navigation
+        .map(|navigation| protocol_range_json(&navigation.source_range))
+        .unwrap_or_else(default_document_range);
     if let Some(path) = witness_path {
-        links.push(json!({
-            "range": {
-                "start": {"line": 0, "character": 0},
-                "end": {"line": 0, "character": 1},
-            },
+        let mut link = json!({
+            "range": link_range.clone(),
             "target": path,
             "tooltip": "Replay Kobo witness",
-        }));
+        });
+        if let Some(navigation) = navigation {
+            link["data"] = source_map_metadata(navigation);
+        }
+        links.push(link);
     }
-    if has_rust_navigation {
+    if let Some(navigation) = navigation {
         links.push(json!({
-            "range": {
-                "start": {"line": 0, "character": 0},
-                "end": {"line": 0, "character": 1},
-            },
-            "target": format!("{uri}#generated-rust"),
+            "range": protocol_range_json(&navigation.source_range),
+            "target": navigation.generated_uri,
             "tooltip": "Open generated Rust through source map",
+            "data": source_map_metadata(navigation),
         }));
     }
     links
+}
+
+fn protocol_runnables(navigation: Option<&ProtocolRustNavigation>) -> Vec<Value> {
+    let mut runnables = editor_capabilities()["runnables"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(navigation) = navigation {
+        for runnable in &mut runnables {
+            runnable["range"] = protocol_range_json(&navigation.source_range);
+            runnable["data"] = source_map_metadata(navigation);
+        }
+    }
+    runnables
+}
+
+fn protocol_definitions(navigation: Option<&ProtocolRustNavigation>) -> Vec<Value> {
+    navigation
+        .map(|navigation| {
+            vec![json!({
+                "uri": navigation.generated_uri,
+                "range": protocol_range_json(&navigation.generated_range),
+                "data": {
+                    "delegate": "rust-analyzer",
+                    "source_map": navigation.source_map_uri,
+                    "source_range": protocol_range_json(&navigation.source_range),
+                    "generated_range": protocol_range_json(&navigation.generated_range),
+                    "mapping_count": navigation.mapping_count,
+                },
+            })]
+        })
+        .unwrap_or_default()
+}
+
+fn protocol_range_json(range: &ProtocolRange) -> Value {
+    json!({
+        "start": {"line": range.line, "character": range.character_start},
+        "end": {"line": range.line, "character": range.character_end},
+    })
+}
+
+fn default_document_range() -> Value {
+    json!({
+        "start": {"line": 0, "character": 0},
+        "end": {"line": 0, "character": 1},
+    })
+}
+
+fn source_map_metadata(navigation: &ProtocolRustNavigation) -> Value {
+    json!({
+        "delegate": "rust-analyzer",
+        "source_map": navigation.source_map_uri,
+        "generated_uri": navigation.generated_uri,
+        "source_range": protocol_range_json(&navigation.source_range),
+        "generated_range": protocol_range_json(&navigation.generated_range),
+        "mapping_count": navigation.mapping_count,
+    })
+}
+
+fn generated_uri_for(uri: &str) -> String {
+    uri.strip_suffix(".kobo")
+        .map(|stem| format!("{stem}.rs"))
+        .unwrap_or_else(|| format!("{uri}.rs"))
+}
+
+fn source_map_uri_for(uri: &str) -> String {
+    uri.strip_suffix(".kobo")
+        .map(|stem| format!("{stem}.kobo.map"))
+        .unwrap_or_else(|| format!("{uri}.kobo.map"))
 }
 
 pub fn code_actions_for(code: KErrorCode) -> Vec<LspCodeAction> {

@@ -160,26 +160,7 @@ fn definition_response(
     let uri = value["params"]["textDocument"]["uri"].as_str()?;
     let text = documents.get(uri).map(String::as_str).unwrap_or_default();
     let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
-    let range = snapshot["diagnostics"][0]["range"]
-        .clone()
-        .as_object()
-        .map(|_| snapshot["diagnostics"][0]["range"].clone())
-        .unwrap_or_else(|| {
-            serde_json::json!({
-                "start": {"line": 0, "character": 0},
-                "end": {"line": 0, "character": 1},
-            })
-        });
-    let result = serde_json::json!([{
-        "uri": uri,
-        "range": range,
-        "data": {
-            "delegate": snapshot["definitionProvider"]["delegate"].clone(),
-            "source_map": snapshot["definitionProvider"]["source_map"].clone(),
-            "target": format!("{uri}#generated-rust"),
-        }
-    }]);
-    Some(json_rpc_response(id, result))
+    Some(json_rpc_response(id, snapshot["definitions"].clone()))
 }
 
 fn json_rpc_response(id: serde_json::Value, result: serde_json::Value) -> serde_json::Value {

@@ -437,6 +437,7 @@ dependencies = [
 name = "kobo-lsp"
 version = "0.1.0"
 dependencies = [
+ "kobo-codegen",
  "kobo-errors",
  "kobo-ir",
  "kobo-parser",

@@ -243,8 +243,77 @@ fn run() {
     );
     assert_contains(
         &snapshot["documentLinks"].to_string(),
+        "main.rs",
+        "Rust navigation should point at the generated Rust document",
+    );
+    assert_not_contains(
+        &snapshot["documentLinks"].to_string(),
         "generated-rust",
-        "Rust navigation should be present for compiler-parsed documents",
+        "Rust navigation must not use a synthetic generated-rust fragment",
+    );
+}
+
+#[test]
+fn lsp_navigation_uses_compiler_source_map_ranges() {
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+impl Token {
+    fn close(self) {}
+}
+
+#[kobo::scenario(profile = "sync")]
+fn run() {
+    let token = Token {};
+}
+"#,
+        Some(".kobo/witnesses/run-1.kwit"),
+    );
+
+    let link_text = snapshot["documentLinks"].to_string();
+    assert_contains(
+        &link_text,
+        "file:///workspace/src/main.rs",
+        "document links should target generated Rust through the source map",
+    );
+    assert_contains(
+        &link_text,
+        "file:///workspace/src/main.kobo.map",
+        "document links should carry the generated source map location",
+    );
+    assert_not_contains(
+        &link_text,
+        "#generated-rust",
+        "document links must not use placeholder generated Rust fragments",
+    );
+    assert_eq!(
+        snapshot["documentLinks"][0]["range"]["start"]["line"],
+        Value::from(10),
+        "source-mapped links should use the compiler span for the unresolved binding"
+    );
+
+    assert_contains(
+        &snapshot["hover"].to_string(),
+        "source_map",
+        "hover should expose source-map metadata for editor delegation",
+    );
+    assert_eq!(
+        snapshot["hover"]["range"]["start"]["line"],
+        Value::from(10),
+        "hover should use the same compiler source range as diagnostics"
+    );
+    assert_contains(
+        &snapshot["definitions"].to_string(),
+        "rust-analyzer",
+        "definition response should preserve rust-analyzer delegation metadata",
+    );
+    assert_contains(
+        &snapshot["runnables"].to_string(),
+        "source_map",
+        "runnables should carry source-map context for scenario execution",
     );
 }
 
@@ -388,7 +457,7 @@ fn run() {
         "textDocument/publishDiagnostics",
         "must_call obligation",
         "kobo explain K0100",
-        "generated-rust",
+        "main.rs",
         "rust-analyzer",
         "kobo.testScenario",
     ] {
@@ -398,6 +467,11 @@ fn run() {
             "framed LSP response should include protocol feature",
         );
     }
+    assert_not_contains(
+        &lsp_output.stdout,
+        "#generated-rust",
+        "framed LSP navigation must not use a placeholder generated target",
+    );
 }
 
 #[test]

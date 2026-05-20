@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 kobo-errors = { path = "../kobo-errors" }
+kobo-codegen = { path = "../kobo-codegen" }
 kobo-ir     = { path = "../kobo-ir" }
 kobo-parser = { path = "../kobo-parser" }
 kobo-transform = { path = "../kobo-transform" }

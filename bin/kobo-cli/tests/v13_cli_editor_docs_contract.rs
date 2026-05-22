@@ -419,6 +419,49 @@ fn run() {
 }
 
 #[test]
+fn lsp_branch_sensitive_leak_reports_unresolved_obligation() {
+    let snapshot = kobo_lsp::protocol_document_snapshot(
+        "file:///workspace/src/main.kobo",
+        r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+impl Token {
+    fn close(self) {}
+}
+
+#[kobo::scenario(profile = "sync")]
+fn run(flag: bool) {
+    let token = Token {};
+    if flag {
+        token.close();
+    } else {
+        let _leaked = token;
+    }
+}
+"#,
+        None,
+    );
+
+    let diagnostics = snapshot["diagnostics"].to_string();
+    assert_contains(
+        &diagnostics,
+        "compiler-scenario-program",
+        "branch-sensitive leaks should come from compiler scenario facts",
+    );
+    assert_contains(
+        &diagnostics,
+        "K0100",
+        "one unresolved branch must keep the obligation diagnostic live",
+    );
+    assert_contains(
+        &diagnostics,
+        "token",
+        "diagnostic should name the leaked obligation binding",
+    );
+}
+
+#[test]
 fn lsp_navigation_uses_compiler_source_map_ranges() {
     let snapshot = kobo_lsp::protocol_document_snapshot(
         "file:///workspace/src/main.kobo",

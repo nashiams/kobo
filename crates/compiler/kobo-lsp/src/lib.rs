@@ -334,25 +334,68 @@ fn compiler_liveness_diagnostics(
             ScenarioOpKind::CreateObligation {
                 binding, actions, ..
             } if !compiler_binding_is_resolved(program, binding, actions) => {
-                let original_span = original_span_for(preprocess_source_map, operation.span);
-                let (line, character_start, character_end) =
-                    line_range_from_span(source, original_span);
-                Some(ProtocolDiagnosticFact {
-                    line,
-                    character_start,
-                    character_end,
-                    code: "K0100",
-                    source: "kobo-compiler",
-                    fact_source: "compiler-scenario-program",
-                    message: format!(
+                Some(compiler_liveness_diagnostic(
+                    source,
+                    preprocess_source_map,
+                    operation.span,
+                    &format!(
                         "unresolved liveness obligation `{binding}` requires {}",
                         actions.join(" | ")
                     ),
-                })
+                ))
+            }
+            ScenarioOpKind::BranchUnresolved { binding } => {
+                let required_actions = compiler_actions_for_binding(program, binding)
+                    .map(|actions| actions.join(" | "))
+                    .unwrap_or_else(|| "a terminal action".to_owned());
+                Some(compiler_liveness_diagnostic(
+                    source,
+                    preprocess_source_map,
+                    operation.span,
+                    &format!(
+                        "unresolved liveness obligation `{binding}` on at least one branch requires {required_actions}"
+                    ),
+                ))
             }
             _ => None,
         })
         .collect()
+}
+
+fn compiler_liveness_diagnostic(
+    source: &str,
+    preprocess_source_map: &PreprocessSourceMap,
+    span: KoboSpan,
+    message: &str,
+) -> ProtocolDiagnosticFact {
+    let original_span = original_span_for(preprocess_source_map, span);
+    let (line, character_start, character_end) = line_range_from_span(source, original_span);
+    ProtocolDiagnosticFact {
+        line,
+        character_start,
+        character_end,
+        code: "K0100",
+        source: "kobo-compiler",
+        fact_source: "compiler-scenario-program",
+        message: message.to_owned(),
+    }
+}
+
+fn compiler_actions_for_binding<'program>(
+    program: &'program ScenarioProgram,
+    binding: &str,
+) -> Option<&'program [String]> {
+    program
+        .operations
+        .iter()
+        .find_map(|operation| match &operation.kind {
+            ScenarioOpKind::CreateObligation {
+                binding: candidate,
+                actions,
+                ..
+            } if candidate == binding => Some(actions.as_slice()),
+            _ => None,
+        })
 }
 
 fn compiler_binding_is_resolved(

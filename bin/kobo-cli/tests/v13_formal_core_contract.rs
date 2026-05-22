@@ -478,6 +478,45 @@ fn downgrade_case() {
 }
 
 #[test]
+fn branch_terminator_records_distinct_core_targets() {
+    let project = TestProject::new("v13-core-branch-targets");
+    let source = r#"
+fn runtime_flag(input: i32) -> bool { input > 0 }
+
+#[kobo::scenario(profile = "sync")]
+fn branch_target_case() {
+    if runtime_flag(1) {
+        ward.task();
+    } else {
+        ward.random.u64();
+    }
+}
+"#;
+
+    let (_path, witness) = run_witness(&project, source, "branch_target_case");
+    let branch = terminator_by_kind(&witness, "branch");
+    let edges = branch["edges"]
+        .as_array()
+        .expect("branch terminator should carry Core edge names")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        edges.len(),
+        2,
+        "two-arm source branch should preserve two Core edges: {branch}"
+    );
+    assert_ne!(
+        edges[0], edges[1],
+        "branch arms should target distinct Core blocks instead of duplicating a linear next edge: {branch}"
+    );
+    assert!(
+        edges.iter().all(|edge| edge.starts_with("goto:bb")),
+        "branch edges should name Core block targets: {edges:?}"
+    );
+}
+
+#[test]
 fn formal_core_is_compiler_owned_cfg_not_cli_text_scan() {
     let project = TestProject::new("v13-core-compiler-owned-cfg");
     let source = r#"

@@ -86,7 +86,8 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
         let statements = statement_from_operation(index, operation)
             .into_iter()
             .collect();
-        let mut terminators = terminators_from_operation(index, operation, next.as_deref());
+        let mut terminators =
+            terminators_from_operation(index, operation, next.as_deref(), modeled_ops.len());
         let successors = if terminators.is_empty() {
             next.iter().cloned().collect::<Vec<_>>()
         } else {
@@ -198,6 +199,26 @@ fn apply_kir_cfg_successors(
         }
         if !successors.is_empty() {
             block.successors = successors;
+            sync_terminator_successor_edges(block);
+        }
+    }
+}
+
+fn sync_terminator_successor_edges(block: &mut CoreBlock) {
+    if block.successors.is_empty() {
+        return;
+    }
+    let successor_edges = block
+        .successors
+        .iter()
+        .map(|successor| format!("goto:{successor}"))
+        .collect::<Vec<_>>();
+    for terminator in &mut block.terminators {
+        if matches!(
+            terminator.kind,
+            CoreTerminatorKind::Branch | CoreTerminatorKind::Goto
+        ) {
+            terminator.edges = successor_edges.clone();
         }
     }
 }
@@ -323,6 +344,7 @@ fn terminators_from_operation(
     index: usize,
     operation: &ScenarioOp,
     next: Option<&str>,
+    block_count: usize,
 ) -> Vec<CoreTerminator> {
     match &operation.kind {
         ScenarioOpKind::CoreTerminator {
@@ -350,14 +372,7 @@ fn terminators_from_operation(
             }]
         }
         ScenarioOpKind::Select { branch_count } => {
-            let edges = next
-                .map(|next| {
-                    let count = (*branch_count).max(1);
-                    (0..count)
-                        .map(|_| format!("goto:{next}"))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let edges = select_branch_edges(index, *branch_count, block_count, next);
             vec![CoreTerminator {
                 id: format!("term-{index}"),
                 kind: CoreTerminatorKind::Branch,
@@ -377,6 +392,27 @@ fn terminators_from_operation(
         }],
         _ => Vec::new(),
     }
+}
+
+fn select_branch_edges(
+    index: usize,
+    branch_count: u32,
+    block_count: usize,
+    fallback_next: Option<&str>,
+) -> Vec<String> {
+    let branch_count = branch_count.max(1) as usize;
+    let mut edges = (1..=branch_count)
+        .filter_map(|offset| {
+            let target = index + offset;
+            (target < block_count).then(|| format!("goto:bb{target}"))
+        })
+        .collect::<Vec<_>>();
+    if edges.is_empty() {
+        if let Some(next) = fallback_next {
+            edges.push(format!("goto:{next}"));
+        }
+    }
+    edges
 }
 
 fn core_terminator_kind(kind: &ScenarioCoreTerminatorKind) -> CoreTerminatorKind {

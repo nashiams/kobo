@@ -1,10 +1,20 @@
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use kobo_driver::{load_config_for, run_check_pipeline, CompileSession};
 use kobo_errors::DiagnosticLspPayload;
 use kobo_ir::{GuaranteePolicy, GuaranteeProfile};
+
+type LspDocuments = BTreeMap<String, LspDocument>;
+
+#[derive(Clone, Debug)]
+struct LspDocument {
+    text: String,
+    witness_path: Option<String>,
+}
 
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -36,7 +46,7 @@ fn run_stdio() -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    let mut documents = std::collections::BTreeMap::<String, String>::new();
+    let mut documents = LspDocuments::new();
 
     if !line_is_content_length(&first_line) {
         let mut input = first_line;
@@ -74,7 +84,7 @@ fn run_stdio() -> anyhow::Result<()> {
 fn process_json_rpc_value(
     value: serde_json::Value,
     framed: bool,
-    documents: &mut std::collections::BTreeMap<String, String>,
+    documents: &mut LspDocuments,
 ) -> bool {
     match value["method"].as_str() {
         Some("initialize") => {
@@ -87,8 +97,8 @@ fn process_json_rpc_value(
         }
         Some("exit") => return true,
         Some("textDocument/didOpen") => {
-            if let Some((uri, text, notification)) = open_document_notification(&value) {
-                documents.insert(uri, text);
+            if let Some((uri, document, notification)) = open_document_notification(&value) {
+                documents.insert(uri, document);
                 emit_protocol_value(&notification, framed);
             }
         }
@@ -124,11 +134,12 @@ fn process_json_rpc_value(
 
 fn open_document_notification(
     value: &serde_json::Value,
-) -> Option<(String, String, serde_json::Value)> {
+) -> Option<(String, LspDocument, serde_json::Value)> {
     let document = &value["params"]["textDocument"];
     let uri = document["uri"].as_str()?;
     let text = document["text"].as_str()?;
-    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
+    let witness_path = discover_witness_for_uri(uri);
+    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, witness_path.as_deref());
     let notification = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "textDocument/publishDiagnostics",
@@ -137,30 +148,137 @@ fn open_document_notification(
             "diagnostics": snapshot["diagnostics"].clone(),
         },
     });
-    Some((uri.to_owned(), text.to_owned(), notification))
+    let document = LspDocument {
+        text: text.to_owned(),
+        witness_path,
+    };
+    Some((uri.to_owned(), document, notification))
 }
 
 fn document_feature_response(
     value: &serde_json::Value,
-    documents: &std::collections::BTreeMap<String, String>,
+    documents: &LspDocuments,
     key: &str,
 ) -> Option<serde_json::Value> {
     let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let uri = value["params"]["textDocument"]["uri"].as_str()?;
-    let text = documents.get(uri).map(String::as_str).unwrap_or_default();
-    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
+    let document = documents.get(uri);
+    let fallback_witness = document
+        .is_none()
+        .then(|| discover_witness_for_uri(uri))
+        .flatten();
+    let text = document
+        .map(|document| document.text.as_str())
+        .unwrap_or_default();
+    let witness_path = document
+        .and_then(|document| document.witness_path.as_deref())
+        .or(fallback_witness.as_deref());
+    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, witness_path);
     Some(json_rpc_response(id, snapshot[key].clone()))
 }
 
 fn definition_response(
     value: &serde_json::Value,
-    documents: &std::collections::BTreeMap<String, String>,
+    documents: &LspDocuments,
 ) -> Option<serde_json::Value> {
     let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let uri = value["params"]["textDocument"]["uri"].as_str()?;
-    let text = documents.get(uri).map(String::as_str).unwrap_or_default();
-    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, None);
+    let document = documents.get(uri);
+    let fallback_witness = document
+        .is_none()
+        .then(|| discover_witness_for_uri(uri))
+        .flatten();
+    let text = document
+        .map(|document| document.text.as_str())
+        .unwrap_or_default();
+    let witness_path = document
+        .and_then(|document| document.witness_path.as_deref())
+        .or(fallback_witness.as_deref());
+    let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, witness_path);
     Some(json_rpc_response(id, snapshot["definitions"].clone()))
+}
+
+fn discover_witness_for_uri(uri: &str) -> Option<String> {
+    let document_path = file_uri_to_path(uri)?;
+    latest_witness_for_document(&document_path).map(|path| path.to_string_lossy().to_string())
+}
+
+fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
+    let raw_path = uri.strip_prefix("file://")?;
+    let decoded = percent_decode_uri_path(raw_path)?;
+    let windows_drive_path =
+        decoded.starts_with('/') && decoded.as_bytes().get(2).is_some_and(|byte| *byte == b':');
+    let path = if windows_drive_path {
+        decoded.get(1..).unwrap_or(decoded.as_str())
+    } else {
+        decoded.as_str()
+    };
+    Some(PathBuf::from(path))
+}
+
+fn percent_decode_uri_path(path: &str) -> Option<String> {
+    let mut decoded = Vec::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex_value(*bytes.get(index + 1)?)?;
+            let low = hex_value(*bytes.get(index + 2)?)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn latest_witness_for_document(document_path: &Path) -> Option<PathBuf> {
+    let start = document_path.parent()?;
+    for ancestor in start.ancestors() {
+        let witness_dir = ancestor.join(".kobo").join("witnesses");
+        if let Some(witness_path) = latest_witness_in_dir(&witness_dir) {
+            return Some(witness_path);
+        }
+    }
+    None
+}
+
+fn latest_witness_in_dir(witness_dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(witness_dir).ok()?;
+    let mut latest: Option<(SystemTime, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("kwit") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(UNIX_EPOCH);
+        let should_replace = match latest.as_ref() {
+            Some((latest_modified, latest_path)) => {
+                modified > *latest_modified
+                    || (modified == *latest_modified
+                        && path.to_string_lossy() > latest_path.to_string_lossy())
+            }
+            None => true,
+        };
+        if should_replace {
+            latest = Some((modified, path));
+        }
+    }
+    latest.map(|(_, path)| path)
 }
 
 fn json_rpc_response(id: serde_json::Value, result: serde_json::Value) -> serde_json::Value {

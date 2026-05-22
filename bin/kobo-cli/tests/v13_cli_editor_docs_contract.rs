@@ -146,6 +146,15 @@ fn command_output(output: std::process::Output) -> CliOutput {
     }
 }
 
+fn file_uri(path: &Path) -> String {
+    format!(
+        "file:///{}",
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .replace(' ', "%20")
+    )
+}
+
 #[test]
 fn lsp_reports_diagnostics_hovers_runnables_and_witness_links() {
     let capabilities = kobo_lsp::editor_capabilities();
@@ -679,6 +688,83 @@ fn run() {
         &lsp_output.stdout,
         "#generated-rust",
         "framed LSP navigation must not use a placeholder generated target",
+    );
+}
+
+#[test]
+fn lsp_stdio_links_current_witness_artifact_for_opened_file() {
+    let project = TestProject::new("v13-lsp-live-witness-links");
+    let source = r#"
+#[kobo::must_call(close)]
+struct Token {}
+
+#[kobo::scenario(profile = "sync")]
+fn run() {
+    let token = Token {};
+}
+"#;
+    let file = project.main_file(source);
+    let witness_dir = project.root.join(".kobo/witnesses");
+    std::fs::create_dir_all(&witness_dir).expect("witness dir should create");
+    let witness_path = witness_dir.join("run-1.kwit");
+    std::fs::write(&witness_path, "{}").expect("witness should write");
+
+    let lsp = env!("CARGO_BIN_EXE_kobo-lsp");
+    let uri = file_uri(&file);
+    let requests = [
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {"uri": uri, "text": source}}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/documentLink",
+            "params": {"textDocument": {"uri": uri}}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/codeAction",
+            "params": {"textDocument": {"uri": uri}, "range": {"start": {"line": 6, "character": 8}, "end": {"line": 6, "character": 13}}}
+        }),
+    ];
+    let request = requests
+        .into_iter()
+        .map(|value| {
+            let body = value.to_string();
+            format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+        })
+        .collect::<String>();
+
+    let mut child = Command::new(lsp)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("kobo-lsp --stdio should launch");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(request.as_bytes())
+        .expect("framed requests should write");
+    let output = child
+        .wait_with_output()
+        .expect("kobo-lsp should finish bounded framed stdio request");
+    let lsp_output = command_output(output);
+    assert_success(&lsp_output, "kobo-lsp framed stdio witness session");
+    assert_contains(
+        &lsp_output.stdout,
+        "run-1.kwit",
+        "live document links should expose the current witness artifact",
+    );
+    assert_contains(
+        &lsp_output.stdout,
+        "kobo replay",
+        "live code actions should replay the current witness artifact",
     );
 }
 

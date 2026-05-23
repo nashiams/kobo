@@ -2,7 +2,9 @@ use std::collections::VecDeque;
 
 use kobo_errors::KErrorCode;
 
-use crate::core::{ModeledBoundary, ScenarioEvent, ScenarioFailure, ScenarioOptions};
+use crate::core::{
+    ModeledBoundary, ScenarioEvent, ScenarioFailure, ScenarioOptions, SchedulerPolicy,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TaskLifecycle {
@@ -57,12 +59,15 @@ pub(crate) fn schedule_failure(
     active_obligation: Option<(&str, (usize, usize))>,
     span: (usize, usize),
 ) -> Option<ScenarioFailure> {
-    if !matches!(options.sim_profile.as_str(), "deep" | "exhaustive")
-        || !matches!(
-            boundary,
-            ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal
-        )
-    {
+    if matches!(
+        options
+            .scheduler
+            .effective_for_profile(&options.sim_profile),
+        SchedulerPolicy::RoundRobin
+    ) || !matches!(
+        boundary,
+        ModeledBoundary::WardTask | ModeledBoundary::WardTaskLocal
+    ) {
         return None;
     }
     let (binding, obligation_span) = active_obligation?;
@@ -84,27 +89,35 @@ pub(crate) fn schedule_failure(
 
 pub(crate) fn portfolio_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {
     let budget = scheduler_budget(options);
+    let policy = options
+        .scheduler
+        .effective_for_profile(&options.sim_profile);
     let mut events = vec![ScenarioEvent {
         kind: "scheduler-portfolio".to_owned(),
-        label: Some(options.sim_profile.clone()),
+        label: Some(policy.as_str().to_owned()),
         value: Some(budget),
         io: None,
     }];
-    if options.sim_profile == "deep" {
-        events.push(ScenarioEvent {
+    match policy {
+        SchedulerPolicy::Pct => events.push(ScenarioEvent {
             kind: "scheduler-pct-seed".to_owned(),
-            label: Some("deep".to_owned()),
+            label: Some("pct".to_owned()),
             value: Some(options.seed.rotate_left(7)),
             io: None,
-        });
-    }
-    if options.sim_profile == "exhaustive" {
-        events.push(ScenarioEvent {
+        }),
+        SchedulerPolicy::SmallRandom => events.push(ScenarioEvent {
+            kind: "scheduler-small-random-seed".to_owned(),
+            label: Some("small-random".to_owned()),
+            value: Some(options.seed.rotate_left(11) ^ 0x51ed),
+            io: None,
+        }),
+        SchedulerPolicy::Exhaustive => events.push(ScenarioEvent {
             kind: "scheduler-exhaustive-cap".to_owned(),
             label: Some("tiny-ward".to_owned()),
             value: Some(budget),
             io: None,
-        });
+        }),
+        SchedulerPolicy::Default | SchedulerPolicy::RoundRobin => {}
     }
     events
 }
@@ -141,8 +154,15 @@ impl<'a> SchedulerModel<'a> {
         } else {
             self.complete_task(task_id);
         }
-        if self.options.sim_profile == "deep" {
-            self.record_pct_choice();
+        match self
+            .options
+            .scheduler
+            .effective_for_profile(&self.options.sim_profile)
+        {
+            SchedulerPolicy::Pct => self.record_pct_choice(),
+            SchedulerPolicy::SmallRandom => self.record_small_random_choice(),
+            SchedulerPolicy::Exhaustive => self.record_exhaustive_choice(),
+            SchedulerPolicy::Default | SchedulerPolicy::RoundRobin => {}
         }
     }
 
@@ -247,8 +267,26 @@ impl<'a> SchedulerModel<'a> {
     fn record_pct_choice(&mut self) {
         self.events.push(ScenarioEvent {
             kind: "scheduler-choice".to_owned(),
-            label: Some("deep:pct-preempt".to_owned()),
+            label: Some("pct-preempt".to_owned()),
             value: Some(self.options.seed.rotate_left(7)),
+            io: None,
+        });
+    }
+
+    fn record_small_random_choice(&mut self) {
+        self.events.push(ScenarioEvent {
+            kind: "scheduler-choice".to_owned(),
+            label: Some("small-random-poll".to_owned()),
+            value: Some(self.options.seed.rotate_left(11) ^ 0x51ed),
+            io: None,
+        });
+    }
+
+    fn record_exhaustive_choice(&mut self) {
+        self.events.push(ScenarioEvent {
+            kind: "scheduler-choice".to_owned(),
+            label: Some("exhaustive-state".to_owned()),
+            value: Some(scheduler_budget(self.options)),
             io: None,
         });
     }
@@ -263,7 +301,17 @@ impl<'a> SchedulerModel<'a> {
     }
 
     fn selected_branch(&self, branch_count: u32) -> u32 {
-        (self.options.seed % u64::from(branch_count)) as u32
+        let selector = match self
+            .options
+            .scheduler
+            .effective_for_profile(&self.options.sim_profile)
+        {
+            SchedulerPolicy::SmallRandom => self.options.seed.rotate_left(11) ^ 0x51ed,
+            SchedulerPolicy::Exhaustive => 0,
+            SchedulerPolicy::Pct => self.options.seed.rotate_left(7),
+            SchedulerPolicy::Default | SchedulerPolicy::RoundRobin => self.options.seed,
+        };
+        (selector % u64::from(branch_count)) as u32
     }
 
     fn has_cancel_injection(&self) -> bool {

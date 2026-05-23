@@ -94,7 +94,13 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         "witness version must not be placeholder text"
     );
     assert_eq!(json["failure"]["code"], "K0100");
-    assert_eq!(json["backend"], "shuttle");
+    assert_eq!(json["backend"], "generated-rust-process");
+    assert_eq!(
+        json["backend_controls"]["backend"],
+        "generated-rust-process"
+    );
+    assert_eq!(json["reserved_backend_fit"][0]["backend"], "shuttle");
+    assert_eq!(json["reserved_backend_fit"][0]["status"], "reserved");
     assert_contains(
         &witness,
         "Transaction",

@@ -725,6 +725,75 @@ fn configured_seed_portfolio_route() {
 }
 
 #[test]
+fn loom_scheduler_choice_changes_executed_trace() {
+    let project = TestProject::new("v10-loom-scheduler-policy");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn scheduled_sync_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let small_random = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--profile"),
+            s("sync"),
+            s("--backend"),
+            s("loom"),
+            s("--scheduler"),
+            s("small-random"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    let exhaustive = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--profile"),
+            s("sync"),
+            s("--backend"),
+            s("loom"),
+            s("--scheduler"),
+            s("exhaustive"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&small_random, "small-random scheduler run should pass");
+    assert_success(&exhaustive, "exhaustive scheduler run should pass");
+    let small_json: Value =
+        serde_json::from_str(&small_random.stdout).expect("small-random JSON should parse");
+    let exhaustive_json: Value =
+        serde_json::from_str(&exhaustive.stdout).expect("exhaustive JSON should parse");
+    let small_events = small_json["events"].to_string();
+    let exhaustive_events = exhaustive_json["events"].to_string();
+    assert_contains(
+        &small_events,
+        "scheduler-small-random-seed",
+        "small-random scheduler must affect executed trace events",
+    );
+    assert_contains(
+        &exhaustive_events,
+        "scheduler-exhaustive-cap",
+        "exhaustive scheduler must affect executed trace events",
+    );
+    assert_ne!(
+        small_json["events"], exhaustive_json["events"],
+        "scheduler policy should change the executed trace"
+    );
+}
+
+#[test]
 fn sim_backend_loom_max_branches_drives_exhaustive_budget() {
     let project = TestProject::new("v10-sim-config-max-branches");
     project.write(

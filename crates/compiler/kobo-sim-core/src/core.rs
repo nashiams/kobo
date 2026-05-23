@@ -20,6 +20,7 @@ pub struct ScenarioOptions {
     pub seed: u64,
     pub inject: Option<String>,
     pub event_budget: Option<u64>,
+    pub scheduler: SchedulerPolicy,
 }
 
 impl Default for ScenarioOptions {
@@ -30,6 +31,49 @@ impl Default for ScenarioOptions {
             seed: 0,
             inject: None,
             event_budget: None,
+            scheduler: SchedulerPolicy::Default,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchedulerPolicy {
+    Default,
+    RoundRobin,
+    Pct,
+    Exhaustive,
+    SmallRandom,
+}
+
+impl SchedulerPolicy {
+    pub fn from_name(name: Option<&str>) -> Self {
+        match name {
+            Some("round-robin") => Self::RoundRobin,
+            Some("pct") => Self::Pct,
+            Some("exhaustive") => Self::Exhaustive,
+            Some("small-random") => Self::SmallRandom,
+            _ => Self::Default,
+        }
+    }
+
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::RoundRobin => "round-robin",
+            Self::Pct => "pct",
+            Self::Exhaustive => "exhaustive",
+            Self::SmallRandom => "small-random",
+        }
+    }
+
+    pub fn effective_for_profile(&self, sim_profile: &str) -> Self {
+        match self {
+            Self::Default => match sim_profile {
+                "deep" => Self::Pct,
+                "exhaustive" => Self::Exhaustive,
+                _ => Self::RoundRobin,
+            },
+            explicit => explicit.clone(),
         }
     }
 }

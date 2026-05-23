@@ -420,6 +420,7 @@ fn generated_harness_inspection(
         seed: 0,
         inject: None,
         event_budget: Some(session.config.runtime_profile.scenario_event_budget),
+        scheduler: kobo_sim_core::SchedulerPolicy::Default,
     };
     let run = kobo_sim_core::run_full_depth_from_program(
         &scenario_program,

@@ -178,6 +178,9 @@ fn replay_v1(
         seed,
         inject,
         event_budget: witness["backend_controls"]["max_branches"].as_u64(),
+        scheduler: kobo_sim_core::SchedulerPolicy::from_name(
+            witness["backend_controls"]["scheduler"].as_str(),
+        ),
     };
     let run = kobo_sim_core::run_full_depth_from_program(
         &scenario_program,
@@ -1332,11 +1335,12 @@ fn replay_token(source_identity: &str, seed: u64, run: &kobo_sim_core::FullDepth
 fn backend_for_profile(profile: &str) -> &'static str {
     match profile {
         "sync" => "loom",
+        "async" => "generated-rust-process",
         "stateful-input" => "proptest",
         "failpoint" => "failpoints",
-        "network" | "network-design" => "turmoil",
-        "distributed" | "madsim" => "madsim",
-        _ => "shuttle",
+        "network" | "network-design" => "network-loopback",
+        "distributed" | "madsim" => "generated-rust-process",
+        _ => "unknown",
     }
 }
 

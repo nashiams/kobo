@@ -101,6 +101,11 @@ fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
             "unsupported backend option: backend_controls.max_branches must be a positive integer or null for --backend-native replay"
         );
     }
+    if controls["replay_token"].as_str() != Some("record") {
+        anyhow::bail!(
+            "unsupported backend option: backend_controls.replay_token must be `record` for --backend-native replay; mark unsupported knobs as scenario debt or replay without backend-native controls"
+        );
+    }
     let Some(token) = witness["backend_replay_token"].as_str() else {
         anyhow::bail!(
             "unsupported backend option: backend_replay_token is required for --backend-native replay"
@@ -195,6 +200,7 @@ fn replay_v1(
         error_format,
     )?;
     validate_removed_events_replay_safe(witness, &run.events, error_format)?;
+    validate_checkpoint_replay_metadata(witness, &run, error_format)?;
 
     let source_display = witness["source"]["path"].as_str().unwrap_or("<unknown>");
     let inferred_obligations = witness_evidence::inferred_obligations_json(
@@ -228,7 +234,21 @@ fn replay_v1(
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
     let expected = serde_json::json!({
         "backend": backend_for_profile(&run.profile),
-        "backend_replay": replay_token(&verified_source.hash, seed, &run),
+        "backend_version": backend_version_json(backend_for_profile(&run.profile)),
+        "backend_replay": backend_replay_token(
+            witness["backend_controls"]["replay_token"]
+                .as_str()
+                .unwrap_or("record"),
+            &verified_source.hash,
+            seed,
+            &run,
+        ),
+        "checkpoint_replay": checkpoint_replay_json(
+            witness["backend_controls"]["checkpoint_replay"]
+                .as_bool()
+                .unwrap_or(false),
+            &run,
+        ),
         "ecosystem_scope": ecosystem_scope(&run),
         "full_ecosystem_exploration": full_ecosystem_exploration(&run),
         "replay_contract": replay_contract_json(&run),
@@ -262,7 +282,9 @@ fn replay_v1(
     });
     let observed = serde_json::json!({
         "backend": witness["backend"].clone(),
+        "backend_version": witness["backend_version"].clone(),
         "backend_replay": witness["backend_replay"].clone(),
+        "checkpoint_replay": witness["checkpoint_replay"].clone(),
         "ecosystem_scope": witness["ecosystem_scope"].clone(),
         "full_ecosystem_exploration": witness["full_ecosystem_exploration"].clone(),
         "replay_contract": witness["replay_contract"].clone(),
@@ -352,6 +374,28 @@ fn validate_shrink_metadata(witness: &Value, error_format: ErrorFormat) -> anyho
         anyhow::bail!("K0106 witness shrink metadata is invalid");
     }
     Ok(())
+}
+
+fn validate_checkpoint_replay_metadata(
+    witness: &Value,
+    run: &kobo_sim_core::FullDepthRun,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    if witness["checkpoint_replay"]["enabled"].as_bool() != Some(true) {
+        return Ok(());
+    }
+    let expected = checkpoint_replay_json(true, run);
+    if witness["checkpoint_replay"] == expected {
+        return Ok(());
+    }
+    let payload = serde_json::json!({
+        "code": "K0106",
+        "message": "checkpoint_replay metadata does not match replayed trace",
+        "expected": expected,
+        "observed": witness["checkpoint_replay"].clone(),
+    });
+    emit_replay_issue(&payload, error_format)?;
+    anyhow::bail!("K0106 checkpoint_replay metadata is inconsistent");
 }
 
 fn verify_source_identity(
@@ -476,6 +520,45 @@ fn execution_digest_json(run: &kobo_sim_core::FullDepthRun, runtime_profile_hash
         "harness_exit_code": run.digest.harness_exit_code,
         "harness_event_count": run.digest.harness_event_count,
         "runtime_profile_hash": runtime_profile_hash,
+    })
+}
+
+fn backend_version_json(backend: &str) -> Value {
+    let capability = kobo_sim_core::backend::capabilities()
+        .iter()
+        .find(|capability| capability.name == backend);
+    serde_json::json!({
+        "backend": backend,
+        "adapter_source": "kobo-sim-core",
+        "adapter_version": env!("CARGO_PKG_VERSION"),
+        "integration_level": capability.map(|capability| capability.integration_level),
+        "scenario_execution": capability.map(|capability| capability.scenario_execution),
+    })
+}
+
+fn checkpoint_replay_json(enabled: bool, run: &kobo_sim_core::FullDepthRun) -> Value {
+    serde_json::json!({
+        "enabled": enabled,
+        "semantic_trace_hash": if enabled {
+            Some(run.digest.semantic_trace_hash.as_str())
+        } else {
+            None
+        },
+        "harness_trace_hash": if enabled {
+            Some(run.digest.harness_trace_hash.as_str())
+        } else {
+            None
+        },
+        "event_count": if enabled {
+            Some(run.events.len())
+        } else {
+            None
+        },
+        "source": if enabled {
+            Some("backend-controls")
+        } else {
+            None
+        },
     })
 }
 
@@ -1208,6 +1291,26 @@ fn witness_injections(witness: &Value) -> Option<String> {
         .filter(|hooks| !hooks.is_empty())
 }
 
+fn backend_replay_token(
+    mode: &str,
+    source_identity: &str,
+    seed: u64,
+    run: &kobo_sim_core::FullDepthRun,
+) -> String {
+    match mode {
+        "record" => replay_token(source_identity, seed, run),
+        "metadata" => kobo_sim_core::digest::stable_hash(&format!(
+            "metadata:{}:{}:{}:{}",
+            source_identity,
+            seed,
+            backend_for_profile(&run.profile),
+            run.digest.semantic_trace_hash
+        )),
+        "none" => "none".to_owned(),
+        _ => replay_token(source_identity, seed, run),
+    }
+}
+
 fn replay_token(source_identity: &str, seed: u64, run: &kobo_sim_core::FullDepthRun) -> String {
     let mut material = String::new();
     material.push_str(source_identity);
@@ -1420,6 +1523,10 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             &["seed"][..],
             &["backend_profile"][..],
             &["backend"][..],
+            &["backend_version"][..],
+            &["backend_version", "backend"][..],
+            &["backend_version", "adapter_source"][..],
+            &["backend_version", "adapter_version"][..],
             &["backend_replay"][..],
             &["backend_replay_token"][..],
             &["backend_controls"][..],
@@ -1427,6 +1534,10 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             &["backend_controls", "scheduler"][..],
             &["backend_controls", "max_branches"][..],
             &["backend_controls", "backend_native"][..],
+            &["backend_controls", "replay_token"][..],
+            &["backend_controls", "checkpoint_replay"][..],
+            &["checkpoint_replay"][..],
+            &["checkpoint_replay", "enabled"][..],
             &["sim_profile"][..],
             &["sim_config"][..],
             &["sim_config", "default_profile"][..],

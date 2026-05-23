@@ -18,13 +18,29 @@
   "seed": 1,
   "backend_profile": "async",
   "backend": "shuttle",
+  "backend_version": {
+    "backend": "shuttle",
+    "adapter_source": "kobo-sim-core",
+    "adapter_version": "0.1.0",
+    "integration_level": "metadata-only",
+    "scenario_execution": "unsupported-native-adapter"
+  },
   "backend_replay": "partial-boundary-fixture",
   "backend_replay_token": "partial-boundary-fixture",
   "backend_controls": {
     "backend": "shuttle",
     "scheduler": null,
     "max_branches": null,
-    "backend_native": false
+    "backend_native": false,
+    "replay_token": "metadata",
+    "checkpoint_replay": false
+  },
+  "checkpoint_replay": {
+    "enabled": false,
+    "semantic_trace_hash": null,
+    "harness_trace_hash": null,
+    "event_count": null,
+    "source": null
   },
   "sim_profile": "quick",
   "sim_config": {

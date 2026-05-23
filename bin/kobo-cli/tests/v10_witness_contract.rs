@@ -57,7 +57,11 @@ fn kwit_contains_v10_required_fields_and_shrink_metadata() {
     for path in [
         ["sim_profile"].as_slice(),
         ["backend_profile"].as_slice(),
+        ["backend_version", "backend"].as_slice(),
+        ["backend_version", "adapter_version"].as_slice(),
         ["backend_replay_token"].as_slice(),
+        ["backend_controls", "replay_token"].as_slice(),
+        ["checkpoint_replay", "enabled"].as_slice(),
         ["event_stream"].as_slice(),
         ["boundary_policies"].as_slice(),
         ["obligation_events"].as_slice(),
@@ -259,6 +263,68 @@ fn async_gateway() {
         &replay.combined(),
         r#""replay":"exact""#,
         "replay should keep exactness after shrink",
+    );
+}
+
+#[test]
+fn configured_shrink_off_preserves_deep_event_stream() {
+    let project = TestProject::new("v10-shrink-off-config");
+    project.write(
+        "Kobo.toml",
+        r#"[sim.profile.deep]
+shrink = "off"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(reply | reject | cancel)]
+struct ReplyToken {}
+
+#[kobo::scenario(profile = "async")]
+fn async_gateway() {
+    let reply = ReplyToken {};
+    ward.random.u64();
+    ward.task();
+    let _lost = reply;
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--seed"),
+            s("31"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&output, "deep async gateway should emit a witness");
+
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(&witness_path).expect("witness should read"))
+            .expect("witness should parse");
+
+    assert_eq!(witness["shrink"]["mode"], "off");
+    assert_eq!(
+        witness["shrink"]["original_event_count"], witness["shrink"]["shrunk_event_count"],
+        "shrink=off must preserve the full deep event stream"
+    );
+    assert!(
+        witness["shrink"]["removed_event_ids"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "shrink=off must not remove scheduler evidence: {witness}"
     );
 }
 

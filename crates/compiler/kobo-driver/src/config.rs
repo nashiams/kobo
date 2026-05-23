@@ -83,11 +83,24 @@ impl SimConfig {
             .and_then(|config| config.seed_count)
     }
 
+    pub fn shrink_for(&self, profile: &str) -> Option<&str> {
+        self.profiles
+            .get(profile)
+            .and_then(|config| config.shrink.as_deref())
+    }
+
     pub fn scheduler_for_backend(&self, backend: &str) -> Option<&str> {
         self.backends
             .get(backend)
             .filter(|config| config.enabled)
             .and_then(|config| config.scheduler.as_deref())
+    }
+
+    pub fn replay_token_for_backend(&self, backend: &str) -> Option<&str> {
+        self.backends
+            .get(backend)
+            .filter(|config| config.enabled)
+            .and_then(|config| config.replay_token.as_deref())
     }
 
     pub fn max_branches_for_backend(&self, backend: &str) -> Option<u64> {

@@ -543,6 +543,135 @@ fn configured_max_branches_route() {
 }
 
 #[test]
+fn sim_backend_replay_token_none_suppresses_recorded_token_and_keeps_backend_version() {
+    let project = TestProject::new("v10-sim-config-replay-token-none");
+    project.write(
+        "Kobo.toml",
+        r#"[sim.backend.loom]
+enabled = true
+replay_token = "none"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn configured_replay_token_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "passing sync route should still emit a witness");
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    assert_eq!(witness["backend_controls"]["replay_token"], "none");
+    assert_eq!(witness["backend_replay_token"], "none");
+    assert_eq!(witness["backend_replay"], "none");
+    assert_eq!(witness["backend_version"]["backend"], "loom");
+    assert_eq!(
+        witness["backend_version"]["adapter_source"],
+        "kobo-sim-core"
+    );
+    assert!(
+        witness["backend_version"]["adapter_version"]
+            .as_str()
+            .is_some_and(|version| !version.is_empty()),
+        "backend version metadata should include the linked adapter version: {witness}"
+    );
+}
+
+#[test]
+fn sim_backend_checkpoint_replay_is_validated_by_replay() {
+    let project = TestProject::new("v10-sim-config-checkpoint-replay");
+    project.write(
+        "Kobo.toml",
+        r#"[sim.backend.loom]
+enabled = true
+checkpoint_replay = true
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn configured_checkpoint_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "checkpoint replay witness should emit");
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let mut witness: Value =
+        serde_json::from_str(&fs::read_to_string(&witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    assert_eq!(witness["checkpoint_replay"]["enabled"], true);
+    assert_eq!(
+        witness["checkpoint_replay"]["semantic_trace_hash"],
+        witness["execution_digest"]["semantic_trace_hash"],
+        "checkpoint replay should bind the semantic trace digest"
+    );
+    witness["checkpoint_replay"]["semantic_trace_hash"] = Value::String("forged".to_owned());
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&witness).unwrap(),
+    )
+    .expect("mutated witness should write");
+
+    let replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &replay,
+        "replay must reject forged checkpoint replay metadata",
+    );
+    assert_contains(
+        &replay.combined(),
+        "checkpoint_replay",
+        "checkpoint replay validation should name the forged metadata",
+    );
+}
+
+#[test]
 fn sim_config_default_profile_runs_without_cli_sim_flag() {
     let project = TestProject::new("v10-sim-default-profile");
     project.write(

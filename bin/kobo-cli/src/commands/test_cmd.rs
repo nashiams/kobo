@@ -67,6 +67,23 @@ pub(super) fn cmd_test(
     let effective_max_branches = expert_options
         .max_branches
         .or_else(|| session.config.sim.max_branches_for_backend(&backend_name));
+    let effective_shrink = session
+        .config
+        .sim
+        .shrink_for(sim_profile)
+        .unwrap_or_else(|| default_shrink_mode(sim_profile))
+        .to_owned();
+    let effective_replay_token = session
+        .config
+        .sim
+        .replay_token_for_backend(&backend_name)
+        .unwrap_or("record")
+        .to_owned();
+    let effective_checkpoint_replay = session
+        .config
+        .sim
+        .checkpoint_replay_for_backend(&backend_name)
+        .unwrap_or(false);
     expert_options.validate(
         &execution_profile,
         sim_profile,
@@ -153,6 +170,9 @@ pub(super) fn cmd_test(
             &expert_options,
             effective_scheduler.as_deref(),
             effective_max_branches,
+            effective_shrink.as_str(),
+            effective_replay_token.as_str(),
+            effective_checkpoint_replay,
             &run,
         )?);
     }
@@ -165,6 +185,9 @@ pub(super) fn cmd_test(
             fuzz_plan.as_ref(),
             &expert_options,
             effective_max_branches,
+            effective_shrink.as_str(),
+            effective_replay_token.as_str(),
+            effective_checkpoint_replay,
             &session.config,
             effective_scheduler.as_deref(),
             &run,
@@ -452,6 +475,14 @@ fn default_budget(sim_profile: &str) -> Option<u64> {
         "replay" => Some(64),
         "exhaustive" => Some(16),
         _ => None,
+    }
+}
+
+fn default_shrink_mode(sim_profile: &str) -> &'static str {
+    if sim_profile == "deep" {
+        "best-effort"
+    } else {
+        "off"
     }
 }
 
@@ -842,6 +873,9 @@ fn print_events(
     fuzz_plan: Option<&FuzzPlan>,
     expert_options: &BackendExpertOptions,
     effective_max_branches: Option<u64>,
+    effective_shrink: &str,
+    effective_replay_token: &str,
+    effective_checkpoint_replay: bool,
     config: &kobo_driver::KoboConfig,
     effective_scheduler: Option<&str>,
     run: &FullDepthRun,
@@ -857,6 +891,9 @@ fn print_events(
             "scheduler": scheduler_json(sim_profile, seed, run, effective_scheduler),
             "backend_native": expert_options.backend_native,
             "max_branches": effective_max_branches,
+            "shrink": effective_shrink,
+            "replay_token": effective_replay_token,
+            "checkpoint_replay": effective_checkpoint_replay,
             "sim_config": sim_config_json(config),
             "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
@@ -881,6 +918,9 @@ fn write_run_witness(
     expert_options: &BackendExpertOptions,
     effective_scheduler: Option<&str>,
     effective_max_branches: Option<u64>,
+    effective_shrink: &str,
+    effective_replay_token: &str,
+    effective_checkpoint_replay: bool,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -895,9 +935,11 @@ fn write_run_witness(
             one_based_line_for_offset(&document.source, failure.primary_start)
         )
     });
-    let backend_replay_token = replay_token(&document.source_hash, seed, run);
+    let backend_name = expert_options.backend_name(&run.profile);
+    let backend_replay_token =
+        backend_replay_token(effective_replay_token, &document.source_hash, seed, run);
     let coverage = coverage_json(run);
-    let event_stream = shrink_event_stream(run, sim_profile);
+    let event_stream = shrink_event_stream(run, sim_profile, effective_shrink);
     let witness_events = events_json(&event_stream.events);
     let runtime_profile = runtime_profile_json(config, sim_profile, seed, run);
     let runtime_profile_hash =
@@ -937,71 +979,143 @@ fn write_run_witness(
     let model_vs_implementation =
         model_vs_implementation_json(&source_path, &document.source, seed, run);
     let flagship_demo = flagship_demo_json(scenario_program, run);
+    let backend_controls = serde_json::json!({
+        "backend": backend_name,
+        "scheduler": effective_scheduler,
+        "max_branches": effective_max_branches,
+        "backend_native": expert_options.backend_native,
+        "replay_token": effective_replay_token,
+        "checkpoint_replay": effective_checkpoint_replay,
+    });
+    let backend_version = backend_version_json(backend_name);
+    let checkpoint_replay = checkpoint_replay_json(effective_checkpoint_replay, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
         "target": format!("{}:{}", source_path, run.target),
-        "scenario": {
+        "sim_profile": sim_profile,
+        "guarantee_profile": guarantee_profile,
+        "seed": seed,
+        "backend_profile": run.profile,
+        "backend": backend_name,
+        "backend_replay": backend_replay_token.clone(),
+        "backend_replay_token": backend_replay_token,
+        "replay_guarantee": run.replay_guarantee.as_str(),
+        "exactness": exactness_json(run),
+    });
+    let object = witness
+        .as_object_mut()
+        .expect("witness json literal should be an object");
+    object.insert(
+        "scenario".to_owned(),
+        serde_json::json!({
             "name": run.target,
             "profile": run.profile,
-        },
-        "sim_profile": sim_profile,
-        "backend_controls": {
-            "backend": expert_options.backend_name(&run.profile),
-            "scheduler": effective_scheduler,
-            "max_branches": effective_max_branches,
-            "backend_native": expert_options.backend_native,
-            "checkpoint_replay": config
-                .sim
-                .checkpoint_replay_for_backend(expert_options.backend_name(&run.profile)),
-        },
-        "source": {
+        }),
+    );
+    object.insert("backend_controls".to_owned(), backend_controls);
+    object.insert("backend_version".to_owned(), backend_version);
+    object.insert(
+        "source".to_owned(),
+        serde_json::json!({
             "path": source_path,
             "hash": document.source_hash,
-        },
-        "guarantee_profile": guarantee_profile,
-        "expanded_policy": expanded_policy_json(guarantee_profile),
-        "seed": seed,
-        "fuzz": fuzz_plan_json(fuzz_plan),
-        "injections": injections_json(inject),
-        "backend_profile": run.profile,
-        "backend": expert_options.backend_name(&run.profile),
-        "backend_replay": backend_replay_token,
-        "backend_replay_token": backend_replay_token,
-        "ecosystem_scope": ecosystem_scope(run),
-        "full_ecosystem_exploration": full_ecosystem_exploration(run),
-        "replay_contract": replay_contract_json(run),
-        "scheduler": scheduler_json(
+        }),
+    );
+    object.insert(
+        "expanded_policy".to_owned(),
+        expanded_policy_json(guarantee_profile),
+    );
+    object.insert("fuzz".to_owned(), fuzz_plan_json(fuzz_plan));
+    object.insert("injections".to_owned(), injections_json(inject));
+    object.insert("checkpoint_replay".to_owned(), checkpoint_replay);
+    object.insert("ecosystem_scope".to_owned(), ecosystem_scope(run).into());
+    object.insert(
+        "full_ecosystem_exploration".to_owned(),
+        full_ecosystem_exploration(run).into(),
+    );
+    object.insert("replay_contract".to_owned(), replay_contract_json(run));
+    object.insert(
+        "scheduler".to_owned(),
+        scheduler_json(
             sim_profile,
             seed,
             run,
             effective_scheduler.or(Some(config.runtime_profile.scheduler.as_str())),
         ),
-        "harness_manifest": run.harness_manifest.clone(),
-        "coverage": coverage,
-        "operation_coverage": witness_evidence::operation_coverage_json(scenario_program, run),
-        "scenario_coverage": scenario_coverage_json(run),
-        "function_summaries": witness_evidence::function_summaries_json(scenario_program, run),
-        "replay_guarantee": run.replay_guarantee.as_str(),
-        "exactness": exactness_json(run),
-        "shrink": shrink_json(run, &event_stream),
-        "modeled_boundaries": modeled_boundaries_json(run),
-        "opaque_boundaries": run.opaque_boundaries.clone(),
-        "boundary_policies": boundary_policies_json(run),
-        "ecosystem_boundaries": ecosystem_boundaries_json(file, config, run),
-        "boundary_assumptions": boundary_assumptions_json(run),
-        "obligations": obligations_json(&source_path, &document.source, run),
-        "obligation_events": obligation_events_json(run),
-        "boundary_decisions": boundary_decisions_json(run),
-        "available_boundary_policies": ["typed", "model", "record", "activity", "stub", "outside", "opaque", "debt"],
-        "failure": failure_json(&source_path, &document.source, run, primary_span),
-        "source_spans": source_spans_json(&source_path, &document.source, run),
-        "events": witness_events.clone(),
-        "event_stream": witness_events,
-    });
-    let object = witness
-        .as_object_mut()
-        .expect("witness json literal should be an object");
+    );
+    object.insert(
+        "harness_manifest".to_owned(),
+        serde_json::to_value(run.harness_manifest.clone())?,
+    );
+    object.insert("coverage".to_owned(), coverage);
+    object.insert(
+        "operation_coverage".to_owned(),
+        witness_evidence::operation_coverage_json(scenario_program, run),
+    );
+    object.insert("scenario_coverage".to_owned(), scenario_coverage_json(run));
+    object.insert(
+        "function_summaries".to_owned(),
+        witness_evidence::function_summaries_json(scenario_program, run),
+    );
+    object.insert(
+        "shrink".to_owned(),
+        shrink_json(run, effective_shrink, &event_stream),
+    );
+    object.insert(
+        "modeled_boundaries".to_owned(),
+        serde_json::to_value(modeled_boundaries_json(run))?,
+    );
+    object.insert(
+        "opaque_boundaries".to_owned(),
+        serde_json::to_value(run.opaque_boundaries.clone())?,
+    );
+    object.insert(
+        "boundary_policies".to_owned(),
+        serde_json::Value::Array(boundary_policies_json(run)),
+    );
+    object.insert(
+        "ecosystem_boundaries".to_owned(),
+        serde_json::Value::Array(ecosystem_boundaries_json(file, config, run)),
+    );
+    object.insert(
+        "boundary_assumptions".to_owned(),
+        serde_json::Value::Array(boundary_assumptions_json(run)),
+    );
+    object.insert(
+        "obligations".to_owned(),
+        serde_json::Value::Array(obligations_json(&source_path, &document.source, run)),
+    );
+    object.insert(
+        "obligation_events".to_owned(),
+        serde_json::Value::Array(obligation_events_json(run)),
+    );
+    object.insert(
+        "boundary_decisions".to_owned(),
+        serde_json::Value::Array(boundary_decisions_json(run)),
+    );
+    object.insert(
+        "available_boundary_policies".to_owned(),
+        serde_json::json!([
+            "typed", "model", "record", "activity", "stub", "outside", "opaque", "debt"
+        ]),
+    );
+    object.insert(
+        "failure".to_owned(),
+        failure_json(&source_path, &document.source, run, primary_span),
+    );
+    object.insert(
+        "source_spans".to_owned(),
+        serde_json::Value::Array(source_spans_json(&source_path, &document.source, run)),
+    );
+    object.insert(
+        "events".to_owned(),
+        serde_json::Value::Array(witness_events.clone()),
+    );
+    object.insert(
+        "event_stream".to_owned(),
+        serde_json::Value::Array(witness_events),
+    );
     object.insert("runtime_profile".to_owned(), runtime_profile);
     object.insert("sim_config".to_owned(), sim_config_json(config));
     object.insert(
@@ -1472,6 +1586,45 @@ fn execution_digest_json(run: &FullDepthRun, runtime_profile_hash: &str) -> serd
     })
 }
 
+fn backend_version_json(backend: &str) -> serde_json::Value {
+    let capability = kobo_sim_core::backend::capabilities()
+        .iter()
+        .find(|capability| capability.name == backend);
+    serde_json::json!({
+        "backend": backend,
+        "adapter_source": "kobo-sim-core",
+        "adapter_version": env!("CARGO_PKG_VERSION"),
+        "integration_level": capability.map(|capability| capability.integration_level),
+        "scenario_execution": capability.map(|capability| capability.scenario_execution),
+    })
+}
+
+fn checkpoint_replay_json(enabled: bool, run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "enabled": enabled,
+        "semantic_trace_hash": if enabled {
+            Some(run.digest.semantic_trace_hash.as_str())
+        } else {
+            None
+        },
+        "harness_trace_hash": if enabled {
+            Some(run.digest.harness_trace_hash.as_str())
+        } else {
+            None
+        },
+        "event_count": if enabled {
+            Some(run.events.len())
+        } else {
+            None
+        },
+        "source": if enabled {
+            Some("backend-controls")
+        } else {
+            None
+        },
+    })
+}
+
 fn coverage_json(run: &FullDepthRun) -> serde_json::Value {
     let covered = run
         .obligations
@@ -1638,9 +1791,16 @@ struct ShrunkEventStream {
     removed_event_ids: Vec<usize>,
 }
 
-fn shrink_event_stream(run: &FullDepthRun, sim_profile: &str) -> ShrunkEventStream {
+fn shrink_event_stream(
+    run: &FullDepthRun,
+    sim_profile: &str,
+    shrink_mode: &str,
+) -> ShrunkEventStream {
     let mut removed_event_ids = Vec::new();
-    if run.replay_guarantee == ReplayGuarantee::Exact && sim_profile == "deep" {
+    if shrink_mode == "best-effort"
+        && run.replay_guarantee == ReplayGuarantee::Exact
+        && sim_profile == "deep"
+    {
         removed_event_ids.extend(run.events.iter().enumerate().filter_map(|(index, event)| {
             if is_replay_irrelevant_event(&event.kind) {
                 Some(index)
@@ -1662,7 +1822,11 @@ fn shrink_event_stream(run: &FullDepthRun, sim_profile: &str) -> ShrunkEventStre
     }
 }
 
-fn shrink_json(run: &FullDepthRun, event_stream: &ShrunkEventStream) -> serde_json::Value {
+fn shrink_json(
+    run: &FullDepthRun,
+    shrink_mode: &str,
+    event_stream: &ShrunkEventStream,
+) -> serde_json::Value {
     let mut shrink_passes = Vec::new();
     let scheduler_ids = removed_event_ids_for_kinds(run, event_stream, &["scheduler-pct-seed"]);
     if !scheduler_ids.is_empty() {
@@ -1704,6 +1868,7 @@ fn shrink_json(run: &FullDepthRun, event_stream: &ShrunkEventStream) -> serde_js
         }));
     }
     serde_json::json!({
+        "mode": shrink_mode,
         "original_event_count": run.events.len(),
         "shrunk_event_count": event_stream.events.len(),
         "removed_event_ids": event_stream.removed_event_ids.clone(),
@@ -4170,6 +4335,26 @@ fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> serde
         "request_hash": capture.request_hash.clone(),
         "response_hash": capture.response_hash.clone(),
     })
+}
+
+fn backend_replay_token(
+    mode: &str,
+    source_identity: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> String {
+    match mode {
+        "record" => replay_token(source_identity, seed, run),
+        "metadata" => kobo_sim_core::digest::stable_hash(&format!(
+            "metadata:{}:{}:{}:{}",
+            source_identity,
+            seed,
+            backend_for_profile(&run.profile),
+            run.digest.semantic_trace_hash
+        )),
+        "none" => "none".to_owned(),
+        _ => replay_token(source_identity, seed, run),
+    }
 }
 
 fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String {

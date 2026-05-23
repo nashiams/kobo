@@ -16,6 +16,12 @@ struct LspDocument {
     witness_path: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct WitnessCandidate {
+    modified: SystemTime,
+    path: PathBuf,
+}
+
 fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
@@ -138,7 +144,7 @@ fn open_document_notification(
     let document = &value["params"]["textDocument"];
     let uri = document["uri"].as_str()?;
     let text = document["text"].as_str()?;
-    let witness_path = discover_witness_for_uri(uri);
+    let witness_path = discover_witness_for_uri(uri, text);
     let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, witness_path.as_deref());
     let notification = serde_json::json!({
         "jsonrpc": "2.0",
@@ -163,16 +169,10 @@ fn document_feature_response(
     let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let uri = value["params"]["textDocument"]["uri"].as_str()?;
     let document = documents.get(uri);
-    let fallback_witness = document
-        .is_none()
-        .then(|| discover_witness_for_uri(uri))
-        .flatten();
     let text = document
         .map(|document| document.text.as_str())
         .unwrap_or_default();
-    let witness_path = document
-        .and_then(|document| document.witness_path.as_deref())
-        .or(fallback_witness.as_deref());
+    let witness_path = document.and_then(|document| document.witness_path.as_deref());
     let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, witness_path);
     Some(json_rpc_response(id, snapshot[key].clone()))
 }
@@ -184,23 +184,18 @@ fn definition_response(
     let id = value.get("id").cloned().unwrap_or(serde_json::Value::Null);
     let uri = value["params"]["textDocument"]["uri"].as_str()?;
     let document = documents.get(uri);
-    let fallback_witness = document
-        .is_none()
-        .then(|| discover_witness_for_uri(uri))
-        .flatten();
     let text = document
         .map(|document| document.text.as_str())
         .unwrap_or_default();
-    let witness_path = document
-        .and_then(|document| document.witness_path.as_deref())
-        .or(fallback_witness.as_deref());
+    let witness_path = document.and_then(|document| document.witness_path.as_deref());
     let snapshot = kobo_lsp::protocol_document_snapshot(uri, text, witness_path);
     Some(json_rpc_response(id, snapshot["definitions"].clone()))
 }
 
-fn discover_witness_for_uri(uri: &str) -> Option<String> {
+fn discover_witness_for_uri(uri: &str, source: &str) -> Option<String> {
     let document_path = file_uri_to_path(uri)?;
-    latest_witness_for_document(&document_path).map(|path| path.to_string_lossy().to_string())
+    latest_witness_for_document(&document_path, source)
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
@@ -243,23 +238,34 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn latest_witness_for_document(document_path: &Path) -> Option<PathBuf> {
+fn latest_witness_for_document(document_path: &Path, source: &str) -> Option<PathBuf> {
     let start = document_path.parent()?;
+    let source_hash = kobo_sim_core::digest::stable_hash(source);
     for ancestor in start.ancestors() {
         let witness_dir = ancestor.join(".kobo").join("witnesses");
-        if let Some(witness_path) = latest_witness_in_dir(&witness_dir) {
+        if let Some(witness_path) =
+            latest_witness_in_dir(&witness_dir, ancestor, document_path, &source_hash)
+        {
             return Some(witness_path);
         }
     }
     None
 }
 
-fn latest_witness_in_dir(witness_dir: &Path) -> Option<PathBuf> {
+fn latest_witness_in_dir(
+    witness_dir: &Path,
+    witness_root: &Path,
+    document_path: &Path,
+    source_hash: &str,
+) -> Option<PathBuf> {
     let entries = std::fs::read_dir(witness_dir).ok()?;
-    let mut latest: Option<(SystemTime, PathBuf)> = None;
+    let mut latest: Option<WitnessCandidate> = None;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|extension| extension.to_str()) != Some("kwit") {
+            continue;
+        }
+        if !witness_matches_document(&path, witness_root, document_path, source_hash) {
             continue;
         }
         let modified = entry
@@ -267,18 +273,82 @@ fn latest_witness_in_dir(witness_dir: &Path) -> Option<PathBuf> {
             .and_then(|metadata| metadata.modified())
             .unwrap_or(UNIX_EPOCH);
         let should_replace = match latest.as_ref() {
-            Some((latest_modified, latest_path)) => {
-                modified > *latest_modified
-                    || (modified == *latest_modified
-                        && path.to_string_lossy() > latest_path.to_string_lossy())
+            Some(latest) => {
+                modified > latest.modified
+                    || (modified == latest.modified
+                        && path.to_string_lossy() > latest.path.to_string_lossy())
             }
             None => true,
         };
         if should_replace {
-            latest = Some((modified, path));
+            latest = Some(WitnessCandidate { modified, path });
         }
     }
-    latest.map(|(_, path)| path)
+    latest.map(|candidate| candidate.path)
+}
+
+fn witness_matches_document(
+    path: &Path,
+    witness_root: &Path,
+    document_path: &Path,
+    source_hash: &str,
+) -> bool {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&source) else {
+        return false;
+    };
+    if value
+        .pointer("/source/hash")
+        .and_then(serde_json::Value::as_str)
+        != Some(source_hash)
+    {
+        return false;
+    }
+    let document = normalized_path_text(&document_path.to_string_lossy());
+    let relative_document = document_path
+        .strip_prefix(witness_root)
+        .ok()
+        .map(|path| normalized_path_text(&path.to_string_lossy()));
+    let source_path_matches = value
+        .pointer("/source/path")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|source_path| {
+            normalized_path_eq(&document, source_path)
+                || relative_document
+                    .as_deref()
+                    .is_some_and(|relative| normalized_path_eq(relative, source_path))
+        });
+    let target_path_matches = value
+        .get("target")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|target| {
+            normalized_target_starts_with(&document, target)
+                || relative_document
+                    .as_deref()
+                    .is_some_and(|relative| normalized_target_starts_with(relative, target))
+        });
+    source_path_matches || target_path_matches
+}
+
+fn normalized_path_eq(document: &str, candidate: &str) -> bool {
+    document.eq_ignore_ascii_case(&normalized_path_text(candidate))
+}
+
+fn normalized_target_starts_with(document: &str, target: &str) -> bool {
+    let normalized_target = normalized_path_text(target);
+    normalized_target
+        .get(..document.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(document))
+        && normalized_target
+            .as_bytes()
+            .get(document.len())
+            .is_some_and(|byte| *byte == b':')
+}
+
+fn normalized_path_text(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 fn json_rpc_response(id: serde_json::Value, result: serde_json::Value) -> serde_json::Value {

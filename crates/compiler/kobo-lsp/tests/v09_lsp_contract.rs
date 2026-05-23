@@ -65,6 +65,14 @@ fn k0107_payload_exposes_grouped_boundary_choices() {
         text.contains("boundary-policy"),
         "payload should group boundary actions: {text}"
     );
+    assert!(
+        !text.contains("\"command\":null"),
+        "K0107 boundary choices must not be inert code actions: {text}"
+    );
+    assert!(
+        text.contains("kobo explain K0107 --verbose"),
+        "K0107 boundary choices should route to the detailed policy explanation: {text}"
+    );
     for choice in ["model", "record", "stub", "outside", "opaque", "debt"] {
         assert!(
             text.contains(choice),

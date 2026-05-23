@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -116,6 +117,30 @@ pub fn run_kobo_with_env(args: &[String], cwd: &Path, envs: &[(&str, &str)]) -> 
         command.env(key, value);
     }
     run_command_with_timeout(command, Duration::from_secs(60))
+}
+
+pub fn run_kobo_lsp_stdio(input: &str, cwd: &Path) -> CliOutput {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kobo-lsp"));
+    command
+        .arg("--stdio")
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("kobo-lsp command should launch");
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .expect("kobo-lsp stdin should be available");
+        stdin
+            .write_all(input.as_bytes())
+            .expect("kobo-lsp stdin should be writable");
+    }
+    let output = child
+        .wait_with_output()
+        .expect("kobo-lsp command output should be readable");
+    output_to_cli(output)
 }
 
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> CliOutput {

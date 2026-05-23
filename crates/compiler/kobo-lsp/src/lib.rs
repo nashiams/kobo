@@ -725,7 +725,7 @@ fn code_actions_for_code_and_replay(
                 actions.push(LspCodeAction {
                     title: format!("Boundary policy: {choice}"),
                     group: "boundary-policy".to_owned(),
-                    command: None,
+                    command: Some("kobo explain K0107 --verbose".to_owned()),
                 });
             }
         }

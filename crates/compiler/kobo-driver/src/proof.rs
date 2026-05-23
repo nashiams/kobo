@@ -1537,8 +1537,16 @@ fn await_live_locals_in_stmt(
             .init
             .as_ref()
             .map(|init| {
-                await_live_locals_in_expr(init.expr.as_ref(), later_statement_uses, declared_before)
+                if is_unmodeled_awaited_method_initializer(init.expr.as_ref()) {
+                    Vec::new()
+                } else {
+                    await_live_locals_in_expr(
+                        init.expr.as_ref(),
+                        later_statement_uses,
+                        declared_before,
+                    )
                     .0
+                }
             })
             .unwrap_or_default(),
         syn::Stmt::Expr(expr, _) => {
@@ -1719,6 +1727,17 @@ fn live_declared_locals(
         .filter(|binding| live_uses.contains(*binding))
         .cloned()
         .collect()
+}
+
+fn is_unmodeled_awaited_method_initializer(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Await(await_expr) => {
+            matches!(await_expr.base.as_ref(), syn::Expr::MethodCall(_))
+        }
+        syn::Expr::Group(group) => is_unmodeled_awaited_method_initializer(group.expr.as_ref()),
+        syn::Expr::Paren(paren) => is_unmodeled_awaited_method_initializer(paren.expr.as_ref()),
+        _ => false,
+    }
 }
 
 fn await_live_locals_in_block(

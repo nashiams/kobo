@@ -261,6 +261,19 @@ async fn {scenario_name}() {{
     )
 }
 
+fn no_live_local_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    helper().await;
+}}
+"#
+    )
+}
+
 fn post_await_declared_local_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -1156,6 +1169,27 @@ fn removed_core_await_evidence_is_rejected_after_hash_recompute() {
         &project,
         &if_condition_await_source("removed_core_await_evidence_case"),
         "removed_core_await_evidence_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["core"]["async_model"]["suspension_states"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["cancel_edges"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["future_state_locals"] = Value::Array(Vec::new());
+        let edges = artifact["core"]["cfg_edges"]
+            .as_array_mut()
+            .expect("cfg edges should be mutable");
+        edges.retain(|edge| edge["kind"].as_str() != Some("await"));
+    });
+
+    verify_fails(&project, &artifact_path, "suspension_states");
+}
+
+#[test]
+fn removed_core_await_without_future_locals_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-source-await-empty-count-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &no_live_local_await_source("removed_empty_core_await_evidence_case"),
+        "removed_empty_core_await_evidence_case",
     );
     rewrite_valid_certificate(&artifact_path, |artifact| {
         artifact["core"]["async_model"]["suspension_states"] = Value::Array(Vec::new());

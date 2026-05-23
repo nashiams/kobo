@@ -28,6 +28,14 @@ pub enum VerificationError {
     OpaqueEdgeWithoutLedger { boundary: String },
     #[error("exact replay crosses disallowed boundary {boundary} with policy {policy}")]
     ExactReplayWithDebtBoundary { boundary: String, policy: String },
+    #[error("exact replay crosses adapter {adapter} with confidence {confidence}")]
+    ExactReplayWithAdapterConfidence { adapter: String, confidence: String },
+    #[error("metadata-only adapter {adapter} cannot claim replayable behavior")]
+    MetadataOnlyAdapterReplayable { adapter: String },
+    #[error("sampled adapter {adapter} must emit probing_pass evidence")]
+    SampledAdapterWithoutProbingPass { adapter: String },
+    #[error("stale adapter {adapter} requires debt or not_replayable replay grade")]
+    StaleAdapterReplayable { adapter: String },
     #[error("certificate material hash mismatch: expected {expected}, observed {observed}")]
     CertificateMaterialHashMismatch { expected: String, observed: String },
     #[error("obligation replay mismatch for {binding}: expected {expected}, observed {observed}")]

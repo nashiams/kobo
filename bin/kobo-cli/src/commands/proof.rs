@@ -41,7 +41,7 @@ pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
         },
     ) {
         Ok(report) => {
-            emit_verified(artifact, &report, json)?;
+            emit_verified(artifact, &certificate, &report, json)?;
             Ok(())
         }
         Err(error) => {
@@ -85,6 +85,7 @@ fn emit_certificate(
             source_path: file,
             source: &source,
             program,
+            adapter_policies: &session.config.ecosystem_policy.adapters,
             replay_grade: replay_grade.proof_grade(),
             artifact_kind,
         })?;
@@ -151,13 +152,20 @@ fn read_certificate_source(
         .with_context(|| format!("failed to read certificate source {}", resolved.display()))
 }
 
-fn emit_verified(artifact: &Path, report: &VerificationReport, json: bool) -> anyhow::Result<()> {
+fn emit_verified(
+    artifact: &Path,
+    certificate: &ProofCertificate,
+    report: &VerificationReport,
+    json: bool,
+) -> anyhow::Result<()> {
     if json {
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "status": "verified",
                 "artifact": artifact.display().to_string(),
+                "replay_grade": &certificate.replay_grade,
+                "adapter_confidence": &certificate.adapter_confidence,
                 "source_hash": report.source_hash,
                 "core_hash": report.core_hash,
                 "checked_obligation_events": report.checked_obligation_events,

@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::config::EcosystemAdapterPolicy;
 use kobo_ir::{
     lower_core_program, CoreBlock, CoreFunction, CoreStatement, CoreStatementKind,
     CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, stable_hash, AsyncModelEvidence,
-    BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence,
-    CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
-    HashEvidence, ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry,
-    ProofCertificate, SelectPathEvidence, SourceEvidence, SourceSpan,
-    SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateVersionEvidence,
+    certificate_material_hash, core_material_hash, stable_hash, AdapterConfidence, AdapterEvidence,
+    AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence, CoreCfgEdge,
+    CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
+    FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
+    ObligationState, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence, SourceEvidence,
+    SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateVersionEvidence,
     TimeoutCancelEdgeEvidence,
 };
 
@@ -21,6 +22,7 @@ pub struct ProofEmissionInput<'a> {
     pub source_path: &'a Path,
     pub source: &'a str,
     pub program: &'a ScenarioProgram,
+    pub adapter_policies: &'a [EcosystemAdapterPolicy],
     pub replay_grade: ReplayGrade,
     pub artifact_kind: ArtifactKind,
 }
@@ -52,6 +54,15 @@ pub fn emit_proof_certificate(
         &core_program.functions,
         &exit_env,
     );
+    let mut adapter_confidence = adapter_evidence(
+        input.program,
+        input.adapter_policies,
+        input.replay_grade.clone(),
+    );
+    let replay_grade = adapter_adjusted_replay_grade(input.replay_grade, &adapter_confidence);
+    for adapter in &mut adapter_confidence {
+        adapter.replay_grade = replay_grade.clone();
+    }
     let function_summaries = function_summaries(
         input.program,
         &entry_env,
@@ -78,12 +89,12 @@ pub fn emit_proof_certificate(
             cfg_edges,
             async_model,
         },
-        replay_grade: input.replay_grade,
+        replay_grade,
         template_hashes,
         template_versions,
         boundary_assumption_hashes,
         boundary_assumptions,
-        adapter_confidence: Vec::new(),
+        adapter_confidence,
         obligation_events,
         entry_env,
         exit_env,
@@ -246,6 +257,128 @@ fn boundary_evidence(
         assumptions.push(assumption);
     }
     Ok((hashes, assumptions, opaque_ledger))
+}
+
+pub fn adapter_evidence(
+    program: &ScenarioProgram,
+    adapter_policies: &[EcosystemAdapterPolicy],
+    requested_replay_grade: ReplayGrade,
+) -> Vec<AdapterEvidence> {
+    let mut evidence = Vec::new();
+    for operation in &program.operations {
+        let ScenarioOpKind::ExternalBoundary {
+            crate_name, policy, ..
+        } = &operation.kind
+        else {
+            continue;
+        };
+        let Some(adapter) = adapter_policies
+            .iter()
+            .find(|adapter| adapter.crate_name == *crate_name)
+        else {
+            continue;
+        };
+        let confidence = adapter_confidence(adapter, policy);
+        let outcome = adapter_outcome(adapter, &confidence);
+        evidence.push(AdapterEvidence {
+            boundary: crate_name.clone(),
+            adapter: adapter.package.clone(),
+            version: adapter.version.clone(),
+            confidence,
+            replay_grade: requested_replay_grade.clone(),
+            outcome,
+            reason: adapter
+                .reason
+                .clone()
+                .unwrap_or_else(|| "configured ecosystem adapter".to_owned()),
+        });
+    }
+    evidence.sort_by(|left, right| {
+        (&left.boundary, &left.adapter, &left.version).cmp(&(
+            &right.boundary,
+            &right.adapter,
+            &right.version,
+        ))
+    });
+    evidence.dedup_by(|left, right| {
+        left.boundary == right.boundary
+            && left.adapter == right.adapter
+            && left.version == right.version
+    });
+    evidence
+}
+
+pub fn adapter_adjusted_replay_grade(
+    requested_replay_grade: ReplayGrade,
+    adapters: &[AdapterEvidence],
+) -> ReplayGrade {
+    if matches!(
+        requested_replay_grade,
+        ReplayGrade::Debt | ReplayGrade::NotReplayable
+    ) {
+        return requested_replay_grade;
+    }
+    if adapters.iter().any(adapter_is_stale) {
+        return ReplayGrade::Debt;
+    }
+    if adapters.iter().any(|adapter| {
+        matches!(
+            adapter.confidence,
+            AdapterConfidence::Sampled | AdapterConfidence::MetadataOnly
+        )
+    }) {
+        return ReplayGrade::NotReplayable;
+    }
+    if requested_replay_grade == ReplayGrade::Exact
+        && adapters
+            .iter()
+            .any(|adapter| adapter.confidence == AdapterConfidence::Modeled)
+    {
+        return ReplayGrade::Partial;
+    }
+    requested_replay_grade
+}
+
+fn adapter_confidence(
+    adapter: &EcosystemAdapterPolicy,
+    policy: &kobo_ir::ScenarioBoundaryPolicy,
+) -> AdapterConfidence {
+    match adapter.confidence.as_deref() {
+        Some("exact") => AdapterConfidence::Exact,
+        Some("modeled") => AdapterConfidence::Modeled,
+        Some("sampled") => AdapterConfidence::Sampled,
+        Some("metadata-only") | Some("metadata_only") => AdapterConfidence::MetadataOnly,
+        _ if !adapter.validated => AdapterConfidence::MetadataOnly,
+        _ if adapter.capture.as_deref() == Some("boundary-io")
+            && matches!(policy, kobo_ir::ScenarioBoundaryPolicy::Record) =>
+        {
+            AdapterConfidence::Exact
+        }
+        _ if adapter.adapter_runtime.is_some() => AdapterConfidence::Modeled,
+        _ => AdapterConfidence::MetadataOnly,
+    }
+}
+
+fn adapter_outcome(adapter: &EcosystemAdapterPolicy, confidence: &AdapterConfidence) -> String {
+    if adapter_version_is_stale(adapter.version.as_deref()) {
+        return "debt".to_owned();
+    }
+    match confidence {
+        AdapterConfidence::Exact | AdapterConfidence::Modeled => "proof".to_owned(),
+        AdapterConfidence::Sampled => "probing_pass".to_owned(),
+        AdapterConfidence::MetadataOnly => "metadata_only".to_owned(),
+    }
+}
+
+fn adapter_is_stale(adapter: &AdapterEvidence) -> bool {
+    adapter_version_is_stale(adapter.version.as_deref()) || adapter.outcome == "debt"
+}
+
+fn adapter_version_is_stale(version: Option<&str>) -> bool {
+    let Some(version) = version else {
+        return true;
+    };
+    version == "0.0.0" || version.contains("stale")
 }
 
 fn obligation_evidence(

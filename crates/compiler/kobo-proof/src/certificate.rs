@@ -186,9 +186,12 @@ pub struct BoundaryAssumption {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdapterEvidence {
+    pub boundary: String,
     pub adapter: String,
+    pub version: Option<String>,
     pub confidence: AdapterConfidence,
     pub replay_grade: ReplayGrade,
+    pub outcome: String,
     pub reason: String,
 }
 

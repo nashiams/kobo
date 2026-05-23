@@ -69,11 +69,49 @@ fn validate_backend_native_replay(witness: &Value) -> anyhow::Result<()> {
         && guarantee == Some("exact")
         && harness_engine == Some("generated-rust-loom-process")
     {
+        validate_backend_native_controls(witness)?;
         return Ok(());
     }
     anyhow::bail!(
         "unsupported backend option: --backend-native replay is only supported for exact Loom witnesses; use normal `kobo replay`, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
     )
+}
+
+fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
+    let controls = &witness["backend_controls"];
+    if controls["backend"].as_str() != Some("loom") {
+        anyhow::bail!(
+            "unsupported backend option: backend_controls.backend must be `loom` for --backend-native replay; mark unsupported knobs as scenario debt or run the backend directly and import witness metadata later"
+        );
+    }
+    if controls["backend_native"].as_bool() != Some(true) {
+        anyhow::bail!(
+            "unsupported backend option: backend_controls.backend_native must be true for --backend-native replay; mark unsupported knobs as scenario debt or replay without backend-native controls"
+        );
+    }
+    if let Some(scheduler) = controls["scheduler"].as_str() {
+        if !matches!(scheduler, "exhaustive" | "small-random") {
+            anyhow::bail!(
+                "unsupported backend option: backend_controls.scheduler `{scheduler}` is not linked for Loom replay; mark unsupported knobs as scenario debt or run the backend directly and import witness metadata later"
+            );
+        }
+    }
+    if !(controls["max_branches"].is_null() || controls["max_branches"].as_u64().is_some()) {
+        anyhow::bail!(
+            "unsupported backend option: backend_controls.max_branches must be a positive integer or null for --backend-native replay"
+        );
+    }
+    let Some(token) = witness["backend_replay_token"].as_str() else {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_token is required for --backend-native replay"
+        );
+    };
+    if token.trim().is_empty() || witness["backend_replay"].as_str() != Some(token) {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_token must match backend_replay for --backend-native replay"
+        );
+    }
+    Ok(())
 }
 
 struct VerifiedSource {
@@ -134,7 +172,7 @@ fn replay_v1(
         profile: profile.to_owned(),
         seed,
         inject,
-        event_budget: None,
+        event_budget: witness["backend_controls"]["max_branches"].as_u64(),
     };
     let run = kobo_sim_core::run_full_depth_from_program(
         &scenario_program,

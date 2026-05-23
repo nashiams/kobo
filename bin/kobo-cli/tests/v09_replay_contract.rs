@@ -159,6 +159,69 @@ fn backend_native_replay_rejects_non_native_witness() {
 }
 
 #[test]
+fn backend_native_replay_validates_recorded_backend_controls() {
+    let project = TestProject::new("replay-backend-native-controls");
+    let file = project.main_file(
+        r#"#[kobo::scenario(profile = "sync")]
+fn replay_exact_sync() {
+    let value = 1;
+    let _copy = value;
+}
+"#,
+    );
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--profile"),
+            s("sync"),
+            s("--backend"),
+            s("loom"),
+            s("--scheduler"),
+            s("exhaustive"),
+            s("--backend-native"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &sim,
+        "exact Loom scenario should emit a backend-native witness",
+    );
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(!witnesses.is_empty(), "witness should exist before replay");
+    let witness = &witnesses[0];
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(witness).unwrap()).unwrap();
+    json["backend_controls"]["scheduler"] = serde_json::json!("pct");
+    std::fs::write(witness, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    let output = run_kobo(
+        &[s("replay"), path_arg(witness), s("--backend-native")],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "backend-native replay must reject mutated backend controls",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "backend_controls.scheduler",
+        "failure should name the mutated scheduler control",
+    );
+    assert_contains(
+        &text,
+        "scenario debt",
+        "failure should keep unsupported native controls explicit",
+    );
+}
+
+#[test]
 fn kwit_schema_records_dynamic_target_and_seed() {
     let project = TestProject::new("kwit-dynamic-target");
     let scenario = unique_symbol("transaction_leaks");

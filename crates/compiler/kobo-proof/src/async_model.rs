@@ -150,8 +150,8 @@ fn verify_future_state_locals(
     suspensions: &BTreeMap<&str, &SuspensionStateEvidence>,
 ) -> Result<(), VerificationError> {
     let expected_by_function = parsed_live_locals_by_function(source);
-    let skippable_empty_method_awaits =
-        skippable_empty_method_initializer_awaits_by_function(source);
+    let skippable_lifecycle_method_awaits =
+        skippable_lifecycle_method_initializer_awaits_by_function(source);
     let mut actual = BTreeSet::<(&str, &str)>::new();
     for local in &certificate.core.async_model.future_state_locals {
         if !actual.insert((local.suspension_state.as_str(), local.binding.as_str())) {
@@ -216,7 +216,7 @@ fn verify_future_state_locals(
             .get(function)
             .map(Vec::len)
             .unwrap_or_default();
-        let skippable_count = skippable_empty_method_awaits
+        let skippable_count = skippable_lifecycle_method_awaits
             .get(function)
             .copied()
             .unwrap_or_default();
@@ -518,16 +518,24 @@ fn parsed_live_locals_by_function(source: &str) -> BTreeMap<String, Vec<BTreeSet
         .collect()
 }
 
-fn skippable_empty_method_initializer_awaits_by_function(source: &str) -> BTreeMap<String, usize> {
+fn skippable_lifecycle_method_initializer_awaits_by_function(
+    source: &str,
+) -> BTreeMap<String, usize> {
     let Ok(file) = syn::parse_file(source) else {
         return BTreeMap::new();
     };
+    let lifecycle_types = lifecycle_like_types(&file);
+    let method_returns = method_return_types(&file);
     file.items
         .iter()
         .filter_map(|item| match item {
             syn::Item::Fn(function) => Some((
                 function.sig.ident.to_string(),
-                skippable_empty_method_initializer_awaits(function),
+                skippable_lifecycle_method_initializer_awaits(
+                    function,
+                    &method_returns,
+                    &lifecycle_types,
+                ),
             )),
             _ => None,
         })
@@ -535,7 +543,67 @@ fn skippable_empty_method_initializer_awaits_by_function(source: &str) -> BTreeM
         .collect()
 }
 
-fn skippable_empty_method_initializer_awaits(function: &syn::ItemFn) -> usize {
+fn lifecycle_like_types(file: &syn::File) -> BTreeSet<String> {
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item_impl) => type_path_last(item_impl.self_ty.as_ref()).map(|name| {
+                let has_lifecycle_action = item_impl.items.iter().any(|item| {
+                    matches!(
+                        item,
+                        syn::ImplItem::Fn(method)
+                            if matches!(
+                                method.sig.ident.to_string().as_str(),
+                                "ack" | "nack" | "requeue" | "close" | "commit" | "rollback"
+                            )
+                    )
+                });
+                (name, has_lifecycle_action)
+            }),
+            _ => None,
+        })
+        .filter_map(|(name, has_lifecycle_action)| has_lifecycle_action.then_some(name))
+        .collect()
+}
+
+fn method_return_types(file: &syn::File) -> BTreeMap<String, String> {
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Impl(item_impl) => Some(item_impl),
+            _ => None,
+        })
+        .flat_map(|item_impl| item_impl.items.iter())
+        .filter_map(|item| match item {
+            syn::ImplItem::Fn(method) => return_type_name(&method.sig.output)
+                .map(|return_type| (method.sig.ident.to_string(), return_type)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn return_type_name(output: &syn::ReturnType) -> Option<String> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return None;
+    };
+    type_path_last(ty.as_ref())
+}
+
+fn type_path_last(ty: &syn::Type) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+fn skippable_lifecycle_method_initializer_awaits(
+    function: &syn::ItemFn,
+    method_returns: &BTreeMap<String, String>,
+    lifecycle_types: &BTreeSet<String>,
+) -> usize {
     let mut locals_before_statement = Vec::<BTreeSet<String>>::new();
     let mut declared = BTreeSet::<String>::new();
     for statement in &function.block.stmts {
@@ -560,7 +628,9 @@ fn skippable_empty_method_initializer_awaits(function: &syn::ItemFn) -> usize {
                 return None;
             };
             let init = local.init.as_ref()?;
-            is_awaited_method_initializer(init.expr.as_ref()).then(|| {
+            let method = awaited_initializer_method(init.expr.as_ref())?;
+            let return_type = method_returns.get(&method)?;
+            lifecycle_types.contains(return_type).then(|| {
                 let declared_before = locals_before_statement
                     .get(index)
                     .cloned()
@@ -578,14 +648,15 @@ fn skippable_empty_method_initializer_awaits(function: &syn::ItemFn) -> usize {
         .sum()
 }
 
-fn is_awaited_method_initializer(expr: &syn::Expr) -> bool {
+fn awaited_initializer_method(expr: &syn::Expr) -> Option<String> {
     match expr {
-        syn::Expr::Await(await_expr) => {
-            matches!(await_expr.base.as_ref(), syn::Expr::MethodCall(_))
-        }
-        syn::Expr::Group(group) => is_awaited_method_initializer(group.expr.as_ref()),
-        syn::Expr::Paren(paren) => is_awaited_method_initializer(paren.expr.as_ref()),
-        _ => false,
+        syn::Expr::Await(await_expr) => match await_expr.base.as_ref() {
+            syn::Expr::MethodCall(call) => Some(call.method.to_string()),
+            _ => None,
+        },
+        syn::Expr::Group(group) => awaited_initializer_method(group.expr.as_ref()),
+        syn::Expr::Paren(paren) => awaited_initializer_method(paren.expr.as_ref()),
+        _ => None,
     }
 }
 

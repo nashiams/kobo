@@ -1273,6 +1273,27 @@ fn removed_function_summary_cannot_hide_removed_core_await_evidence() {
 }
 
 #[test]
+fn removed_method_initializer_await_evidence_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-method-await-count-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &method_call_await_initializer_source("removed_method_await_evidence_case"),
+        "removed_method_await_evidence_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["core"]["async_model"]["suspension_states"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["cancel_edges"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["future_state_locals"] = Value::Array(Vec::new());
+        let edges = artifact["core"]["cfg_edges"]
+            .as_array_mut()
+            .expect("cfg edges should be mutable");
+        edges.retain(|edge| edge["kind"].as_str() != Some("await"));
+    });
+
+    verify_fails(&project, &artifact_path, "suspension_states");
+}
+
+#[test]
 fn removed_loser_cancel_obligation_evidence_is_rejected_after_hash_recompute() {
     let project = TestProject::new("v14-select-cancel-tamper-model");
     let artifact_path = emit_artifact(

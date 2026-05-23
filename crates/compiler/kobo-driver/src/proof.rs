@@ -1520,7 +1520,7 @@ fn parsed_live_locals_by_await(source: &str, target: &str) -> Vec<Vec<String>> {
                 .get(index)
                 .cloned()
                 .unwrap_or_default();
-            collect_deep_pat_bindings_in_stmt(statement, &mut declared_before);
+            collect_pre_await_pat_bindings_in_stmt(statement, &mut declared_before);
             await_live_uses_in_stmt(statement, &later_statement_uses[index])
                 .into_iter()
                 .map(move |after_await_uses| {
@@ -1726,20 +1726,79 @@ fn collect_pat_bindings_in_stmt(statement: &syn::Stmt, bindings: &mut BTreeSet<S
     collect_pat_bindings(&local.pat, bindings);
 }
 
-fn collect_deep_pat_bindings_in_stmt(statement: &syn::Stmt, bindings: &mut BTreeSet<String>) {
-    struct BindingVisitor<'a> {
-        bindings: &'a mut BTreeSet<String>,
-    }
-
-    impl<'a, 'ast> syn::visit::Visit<'ast> for BindingVisitor<'a> {
-        fn visit_pat_ident(&mut self, pat: &'ast syn::PatIdent) {
-            self.bindings.insert(pat.ident.to_string());
-            syn::visit::visit_pat_ident(self, pat);
+fn collect_pre_await_pat_bindings_in_stmt(
+    statement: &syn::Stmt,
+    bindings: &mut BTreeSet<String>,
+) -> bool {
+    match statement {
+        syn::Stmt::Local(local) => {
+            if local.init.as_ref().is_some_and(|init| {
+                collect_pre_await_pat_bindings_in_expr(init.expr.as_ref(), bindings)
+            }) {
+                return true;
+            }
+            collect_pat_bindings(&local.pat, bindings);
+            false
         }
+        syn::Stmt::Expr(expr, _) => collect_pre_await_pat_bindings_in_expr(expr, bindings),
+        syn::Stmt::Macro(_) | syn::Stmt::Item(_) => false,
     }
+}
 
-    let mut visitor = BindingVisitor { bindings };
-    syn::visit::visit_stmt(&mut visitor, statement);
+fn collect_pre_await_pat_bindings_in_expr(
+    expr: &syn::Expr,
+    bindings: &mut BTreeSet<String>,
+) -> bool {
+    match expr {
+        syn::Expr::Await(_) => true,
+        syn::Expr::Block(block) => block
+            .block
+            .stmts
+            .iter()
+            .any(|statement| collect_pre_await_pat_bindings_in_stmt(statement, bindings)),
+        syn::Expr::If(expr_if) => {
+            collect_pre_await_pat_bindings_in_expr(expr_if.cond.as_ref(), bindings)
+                || expr_if
+                    .then_branch
+                    .stmts
+                    .iter()
+                    .any(|statement| collect_pre_await_pat_bindings_in_stmt(statement, bindings))
+                || expr_if.else_branch.as_ref().is_some_and(|(_, else_expr)| {
+                    collect_pre_await_pat_bindings_in_expr(else_expr.as_ref(), bindings)
+                })
+        }
+        syn::Expr::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .any(|expr| collect_pre_await_pat_bindings_in_expr(expr, bindings)),
+        syn::Expr::Array(array) => array
+            .elems
+            .iter()
+            .any(|expr| collect_pre_await_pat_bindings_in_expr(expr, bindings)),
+        syn::Expr::Call(call) => std::iter::once(call.func.as_ref())
+            .chain(call.args.iter())
+            .any(|expr| collect_pre_await_pat_bindings_in_expr(expr, bindings)),
+        syn::Expr::MethodCall(call) => std::iter::once(call.receiver.as_ref())
+            .chain(call.args.iter())
+            .any(|expr| collect_pre_await_pat_bindings_in_expr(expr, bindings)),
+        syn::Expr::Binary(binary) => {
+            collect_pre_await_pat_bindings_in_expr(binary.left.as_ref(), bindings)
+                || collect_pre_await_pat_bindings_in_expr(binary.right.as_ref(), bindings)
+        }
+        syn::Expr::Paren(paren) => {
+            collect_pre_await_pat_bindings_in_expr(paren.expr.as_ref(), bindings)
+        }
+        syn::Expr::Group(group) => {
+            collect_pre_await_pat_bindings_in_expr(group.expr.as_ref(), bindings)
+        }
+        syn::Expr::Reference(reference) => {
+            collect_pre_await_pat_bindings_in_expr(reference.expr.as_ref(), bindings)
+        }
+        syn::Expr::Unary(unary) => {
+            collect_pre_await_pat_bindings_in_expr(unary.expr.as_ref(), bindings)
+        }
+        _ => false,
+    }
 }
 
 fn collect_pat_bindings(pattern: &syn::Pat, bindings: &mut BTreeSet<String>) {

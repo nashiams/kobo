@@ -155,6 +155,23 @@ async fn {scenario_name}() {{
     )
 }
 
+fn post_await_declared_local_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let _block = {{
+        helper().await;
+        let later = 1;
+        later
+    }};
+}}
+"#
+    )
+}
+
 fn if_pre_await_only_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -647,6 +664,26 @@ fn pre_await_only_condition_local_is_not_future_state() {
             .iter()
             .any(|local| local["binding"].as_str() == Some("first")),
         "first is used only before the await and must not be overclaimed as future state: {locals:?}"
+    );
+}
+
+#[test]
+fn post_await_declared_block_local_is_not_future_state() {
+    let project = TestProject::new("v14-async-post-await-declared-local");
+    let artifact_path = emit_artifact(
+        &project,
+        &post_await_declared_local_source("post_await_declared_local_case"),
+        "post_await_declared_local_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+    assert!(
+        !locals
+            .iter()
+            .any(|local| local["binding"].as_str() == Some("later")),
+        "later is declared after the await and must not be future state: {locals:?}"
     );
 }
 

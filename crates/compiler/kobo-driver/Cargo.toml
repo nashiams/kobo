@@ -12,6 +12,7 @@ kobo-migrate   = { path = "../kobo-migrate" }
 kobo-codegen   = { path = "../kobo-codegen" }
 kobo-debt      = { path = "../kobo-debt" }
 kobo-errors    = { path = "../kobo-errors" }
+kobo-proof     = { path = "../kobo-proof" }
 thiserror      = { workspace = true }
 toml           = { workspace = true }
 serde          = { workspace = true }

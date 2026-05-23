@@ -762,7 +762,46 @@ fn write_run_witness(
     );
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
+    write_proof_artifact(file, document, scenario_program, run, &witness_path)?;
     Ok(witness_path)
+}
+
+fn write_proof_artifact(
+    file: &Path,
+    document: &ScenarioDocument,
+    scenario_program: &ScenarioProgram,
+    run: &FullDepthRun,
+    witness_path: &Path,
+) -> anyhow::Result<()> {
+    let certificate =
+        kobo_driver::proof::emit_proof_certificate(kobo_driver::proof::ProofEmissionInput {
+            source_path: file,
+            source: &document.source,
+            program: scenario_program,
+            replay_grade: proof_replay_grade(&run.replay_guarantee),
+            artifact_kind: kobo_driver::proof::ArtifactKind::KwitProofJson,
+        })?;
+    let proof_path = kwit_proof_path(witness_path);
+    std::fs::write(&proof_path, serde_json::to_string_pretty(&certificate)?)
+        .with_context(|| format!("failed to write {}", proof_path.display()))?;
+    Ok(())
+}
+
+fn proof_replay_grade(guarantee: &ReplayGuarantee) -> kobo_driver::proof::ReplayGrade {
+    match guarantee {
+        ReplayGuarantee::Exact => kobo_driver::proof::ReplayGrade::Exact,
+        ReplayGuarantee::Partial => kobo_driver::proof::ReplayGrade::Partial,
+        ReplayGuarantee::NotReplayable => kobo_driver::proof::ReplayGrade::NotReplayable,
+    }
+}
+
+fn kwit_proof_path(witness_path: &Path) -> PathBuf {
+    let proof_file_name = witness_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("{name}.proof.json"))
+        .unwrap_or_else(|| "witness.kwit.proof.json".to_owned());
+    witness_path.with_file_name(proof_file_name)
 }
 
 fn service_runtime_json(

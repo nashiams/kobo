@@ -16,6 +16,7 @@ members = [
     "crates/compiler/kobo-driver",
     "crates/compiler/kobo-lsp",
     "crates/compiler/kobo-sim-core",
+    "crates/compiler/kobo-proof",
     "crates/runtime/kobo-diag",
     "bin/kobo-cli",
 ]

@@ -74,6 +74,36 @@ async fn {scenario_name}() {{
     )
 }
 
+fn same_expression_live_after_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    let _both = (helper().await, first);
+}}
+"#
+    )
+}
+
+fn call_argument_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+fn consume(_value: ()) {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    consume(helper().await);
+    let _after = first;
+}}
+"#
+    )
+}
+
 fn select_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -376,6 +406,76 @@ fn same_statement_awaits_each_get_suspension_and_future_state() {
             "first should be live across each await expression: {locals:?}"
         );
     }
+}
+
+#[test]
+fn same_expression_post_await_use_becomes_future_state() {
+    let project = TestProject::new("v14-async-same-expression-post-await");
+    let artifact_path = emit_artifact(
+        &project,
+        &same_expression_live_after_await_source("same_expression_post_await_case"),
+        "same_expression_post_await_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let suspensions = async_model(&artifact)["suspension_states"]
+        .as_array()
+        .expect("suspension states should be an array");
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+
+    assert_eq!(suspensions.len(), 1, "one await should be modeled");
+    let suspension_id = suspensions[0]["id"]
+        .as_str()
+        .expect("suspension should have an id");
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("first")
+                && local["suspension_state"].as_str() == Some(suspension_id)
+        }),
+        "first is used later in the same expression after await and must be future state: {locals:?}"
+    );
+}
+
+#[test]
+fn await_inside_helper_call_argument_lowers_to_core_suspension() {
+    let project = TestProject::new("v14-async-helper-arg-await");
+    let artifact_path = emit_artifact(
+        &project,
+        &call_argument_await_source("call_argument_await_case"),
+        "call_argument_await_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let suspensions = async_model(&artifact)["suspension_states"]
+        .as_array()
+        .expect("suspension states should be an array");
+    let cancel_edges = async_model(&artifact)["cancel_edges"]
+        .as_array()
+        .expect("cancel edges should be an array");
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+
+    assert_eq!(
+        suspensions.len(),
+        1,
+        "await in helper-call argument should lower to a suspension: {suspensions:?}"
+    );
+    assert_eq!(
+        cancel_edges.len(),
+        1,
+        "await in helper-call argument should expose cancellation: {cancel_edges:?}"
+    );
+    let suspension_id = suspensions[0]["id"]
+        .as_str()
+        .expect("suspension should have an id");
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("first")
+                && local["suspension_state"].as_str() == Some(suspension_id)
+        }),
+        "continuation after helper-call argument await should retain first: {locals:?}"
+    );
 }
 
 #[test]

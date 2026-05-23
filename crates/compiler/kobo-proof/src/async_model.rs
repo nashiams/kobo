@@ -462,49 +462,144 @@ fn parsed_live_locals_by_function(source: &str) -> BTreeMap<String, Vec<BTreeSet
 fn parsed_live_locals_by_await(function: &syn::ItemFn) -> Vec<BTreeSet<String>> {
     let mut locals_before_statement = Vec::<BTreeSet<String>>::new();
     let mut declared = BTreeSet::<String>::new();
-    let mut await_statement_indexes = Vec::new();
-    for (index, statement) in function.block.stmts.iter().enumerate() {
+    for statement in &function.block.stmts {
         locals_before_statement.push(declared.clone());
-        for _ in 0..stmt_await_count(statement) {
-            await_statement_indexes.push(index);
-        }
         collect_pat_bindings_in_stmt(statement, &mut declared);
     }
 
-    await_statement_indexes
-        .into_iter()
-        .map(|await_index| {
-            let mut after_await_uses = BTreeSet::<String>::new();
-            for statement in function.block.stmts.iter().skip(await_index + 1) {
-                collect_ident_uses_in_stmt(statement, &mut after_await_uses);
-            }
-            locals_before_statement
-                .get(await_index)
+    let mut later_statement_uses = vec![BTreeSet::<String>::new(); function.block.stmts.len()];
+    let mut suffix_uses = BTreeSet::<String>::new();
+    for (index, statement) in function.block.stmts.iter().enumerate().rev() {
+        later_statement_uses[index] = suffix_uses.clone();
+        collect_ident_uses_in_stmt(statement, &mut suffix_uses);
+    }
+
+    function
+        .block
+        .stmts
+        .iter()
+        .enumerate()
+        .flat_map(|(index, statement)| {
+            let declared_before = locals_before_statement
+                .get(index)
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_default();
+            await_live_uses_in_stmt(statement, &later_statement_uses[index])
                 .into_iter()
-                .filter(|binding| !binding.starts_with('_'))
-                .filter(|binding| after_await_uses.contains(binding))
-                .collect::<BTreeSet<_>>()
+                .map(move |after_await_uses| {
+                    declared_before
+                        .iter()
+                        .filter(|binding| !binding.starts_with('_'))
+                        .filter(|binding| after_await_uses.contains(*binding))
+                        .cloned()
+                        .collect::<BTreeSet<_>>()
+                })
         })
         .collect()
 }
 
-fn stmt_await_count(statement: &syn::Stmt) -> usize {
-    struct AwaitVisitor {
-        count: usize,
+fn await_live_uses_in_stmt(
+    statement: &syn::Stmt,
+    later_statement_uses: &BTreeSet<String>,
+) -> Vec<BTreeSet<String>> {
+    match statement {
+        syn::Stmt::Local(local) => local
+            .init
+            .as_ref()
+            .map(|init| await_live_uses_in_expr(init.expr.as_ref(), later_statement_uses).0)
+            .unwrap_or_default(),
+        syn::Stmt::Expr(expr, _) => await_live_uses_in_expr(expr, later_statement_uses).0,
+        syn::Stmt::Macro(_) | syn::Stmt::Item(_) => Vec::new(),
     }
+}
 
-    impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
-        fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
-            self.count += 1;
-            syn::visit::visit_expr_await(self, expr);
+fn await_live_uses_in_expr(
+    expr: &syn::Expr,
+    later_uses: &BTreeSet<String>,
+) -> (Vec<BTreeSet<String>>, BTreeSet<String>) {
+    match expr {
+        syn::Expr::Await(await_expr) => {
+            let (mut awaits, uses) = await_live_uses_in_expr(await_expr.base.as_ref(), later_uses);
+            awaits.push(later_uses.clone());
+            (awaits, uses)
         }
+        syn::Expr::Array(array) => await_live_uses_in_expr_sequence(array.elems.iter(), later_uses),
+        syn::Expr::Assign(assign) => await_live_uses_in_expr_sequence(
+            [assign.left.as_ref(), assign.right.as_ref()].into_iter(),
+            later_uses,
+        ),
+        syn::Expr::Binary(binary) => await_live_uses_in_expr_sequence(
+            [binary.left.as_ref(), binary.right.as_ref()].into_iter(),
+            later_uses,
+        ),
+        syn::Expr::Call(call) => await_live_uses_in_expr_sequence(
+            std::iter::once(call.func.as_ref()).chain(call.args.iter()),
+            later_uses,
+        ),
+        syn::Expr::Cast(cast) => await_live_uses_in_expr(cast.expr.as_ref(), later_uses),
+        syn::Expr::Closure(closure) => await_live_uses_in_expr(closure.body.as_ref(), later_uses),
+        syn::Expr::Field(field) => await_live_uses_in_expr(field.base.as_ref(), later_uses),
+        syn::Expr::Group(group) => await_live_uses_in_expr(group.expr.as_ref(), later_uses),
+        syn::Expr::Index(index) => await_live_uses_in_expr_sequence(
+            [index.expr.as_ref(), index.index.as_ref()].into_iter(),
+            later_uses,
+        ),
+        syn::Expr::MethodCall(call) => await_live_uses_in_expr_sequence(
+            std::iter::once(call.receiver.as_ref()).chain(call.args.iter()),
+            later_uses,
+        ),
+        syn::Expr::Paren(paren) => await_live_uses_in_expr(paren.expr.as_ref(), later_uses),
+        syn::Expr::Range(range) => {
+            let children = range
+                .start
+                .iter()
+                .chain(range.end.iter())
+                .map(|expr| expr.as_ref());
+            await_live_uses_in_expr_sequence(children, later_uses)
+        }
+        syn::Expr::Reference(reference) => {
+            await_live_uses_in_expr(reference.expr.as_ref(), later_uses)
+        }
+        syn::Expr::Repeat(repeat) => await_live_uses_in_expr_sequence(
+            [repeat.expr.as_ref(), repeat.len.as_ref()].into_iter(),
+            later_uses,
+        ),
+        syn::Expr::Struct(expr_struct) => {
+            let children = expr_struct
+                .fields
+                .iter()
+                .map(|field| &field.expr)
+                .chain(expr_struct.rest.iter().map(|expr| expr.as_ref()));
+            await_live_uses_in_expr_sequence(children, later_uses)
+        }
+        syn::Expr::Tuple(tuple) => await_live_uses_in_expr_sequence(tuple.elems.iter(), later_uses),
+        syn::Expr::Unary(unary) => await_live_uses_in_expr(unary.expr.as_ref(), later_uses),
+        _ => (Vec::new(), ident_uses_in_expr(expr)),
     }
+}
 
-    let mut visitor = AwaitVisitor { count: 0 };
-    syn::visit::visit_stmt(&mut visitor, statement);
-    visitor.count
+fn await_live_uses_in_expr_sequence<'a>(
+    children: impl Iterator<Item = &'a syn::Expr>,
+    later_uses: &BTreeSet<String>,
+) -> (Vec<BTreeSet<String>>, BTreeSet<String>) {
+    let children = children.collect::<Vec<_>>();
+    let mut suffix = later_uses.clone();
+    let mut awaits_reversed = Vec::<BTreeSet<String>>::new();
+    let mut uses = BTreeSet::<String>::new();
+    for child in children.into_iter().rev() {
+        let (child_awaits, child_uses) = await_live_uses_in_expr(child, &suffix);
+        suffix.extend(child_uses.iter().cloned());
+        uses.extend(child_uses);
+        awaits_reversed.extend(child_awaits.into_iter().rev());
+    }
+    awaits_reversed.reverse();
+    (awaits_reversed, uses)
+}
+
+fn ident_uses_in_expr(expr: &syn::Expr) -> BTreeSet<String> {
+    let mut uses = BTreeSet::new();
+    collect_ident_uses_in_expr(expr, &mut uses);
+    uses
 }
 
 fn collect_pat_bindings_in_stmt(statement: &syn::Stmt, bindings: &mut BTreeSet<String>) {
@@ -568,4 +663,24 @@ fn collect_ident_uses_in_stmt(statement: &syn::Stmt, uses: &mut BTreeSet<String>
 
     let mut visitor = UseVisitor { uses };
     syn::visit::visit_stmt(&mut visitor, statement);
+}
+
+fn collect_ident_uses_in_expr(expr: &syn::Expr, uses: &mut BTreeSet<String>) {
+    struct UseVisitor<'a> {
+        uses: &'a mut BTreeSet<String>,
+    }
+
+    impl<'a, 'ast> syn::visit::Visit<'ast> for UseVisitor<'a> {
+        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+            if expr.qself.is_none() && expr.path.segments.len() == 1 {
+                if let Some(segment) = expr.path.segments.first() {
+                    self.uses.insert(segment.ident.to_string());
+                }
+            }
+            syn::visit::visit_expr_path(self, expr);
+        }
+    }
+
+    let mut visitor = UseVisitor { uses };
+    syn::visit::visit_expr(&mut visitor, expr);
 }

@@ -1529,6 +1529,10 @@ impl<'a> ScenarioLowerer<'a> {
             return true;
         }
 
+        for argument in &call.args {
+            self.execute_expr(argument, env);
+        }
+
         let mut helper_env = BindingEnv::with_imports(self.imports.clone());
         let mut transfer_ops = Vec::new();
         for (input, argument) in function.sig.inputs.iter().zip(call.args.iter()) {

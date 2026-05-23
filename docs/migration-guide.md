@@ -1,18 +1,49 @@
 # Migration Guide
 
-Kobo migration is scoped. Users can start with Script, add Checked evidence for
-selected stateful code, and use Strict where the team wants stronger liveness
-and replay gates.
+Kobo migration is scoped guarantee work. Users can start with the `dev` profile,
+add `checked` evidence for selected stateful code, and use `release` where the
+team wants stronger liveness, replay, and boundary gates.
 
-Script keeps friction low while surfacing warnings and debt. Checked adds more
-structured evidence, witness generation, and boundary policy. Strict turns
+`dev` keeps friction low while surfacing warnings and debt. `checked` adds more
+structured evidence, witness generation, and boundary policy. `release` turns
 unresolved lifecycle obligations and unsupported proof surfaces into blocking
 diagnostics when the active scope requires it.
 
-Scoped modes apply to diagnostics, evidence, harnesses, proof requirements, and
-rejection policy. These scoped modes do not fork runtime behavior. The mode invariant
-is: Script, Checked, and Strict preserve the same ordinary runtime behavior for
-accepted code.
+The guarantee policy applies to diagnostics, evidence, harnesses, proof
+requirements, and rejection policy. The source language remains one Kobo
+language, and accepted programs keep the same ordinary Rust-compatible runtime
+meaning across profiles.
+
+Example project policy:
+
+```toml
+[guarantees]
+ownership = "record"
+liveness = "checked"
+replay = "checked"
+boundaries = "record"
+errors = "typed"
+
+[ci.release]
+deny_new_debt = true
+strict_paths = ["src/payment/**", "src/auth/**"]
+deny_downgrade_without_reason = true
+```
+
+Simulation controls follow the same ladder. Start with stable Kobo profiles, and
+pin backend-native controls only when the adapter can represent the requested
+knob:
+
+```text
+kobo test --sim quick
+kobo test --sim deep --profile async
+kobo test --sim deep --backend shuttle --scheduler pct
+kobo inspect --sim --harness --backend shuttle
+```
+
+Unsupported backend knobs should remain visible as scenario debt or be run
+outside Kobo with imported witness metadata later; Kobo should not silently
+pretend unsupported controls were applied.
 
 Recommended migration path:
 

@@ -6,12 +6,15 @@ without changing the ordinary runtime meaning of accepted programs.
 
 ## Gradual Guarantees
 
-Kobo uses gradual guarantees. It is a Rust-shaped static language with scoped
-evidence levels, not a dynamic type migration system. Script, Checked, and
-Strict are scoped modes for diagnostics, evidence, harnesses, proof
-requirements, and rejection policy. The mode invariant is: Script, Checked, and
-Strict preserve the same ordinary runtime behavior for accepted code.
-Script, Checked, and Strict preserve the same ordinary runtime behavior for accepted code.
+Kobo is one language. Its gradual guarantees live in guarantee policy, CI
+gates, and scoped enforcement, not in separate source identities. Projects can
+use the `dev`, `checked`, and `release` profiles, or spell out `[guarantees]`
+directly for ownership, liveness, replay, boundary, and error policy.
+
+The ordinary runtime meaning of accepted programs stays Rust-compatible across
+profiles. Tightening a path changes diagnostics, evidence, harnesses, proof
+requirements, and rejection policy; it does not ask the user to rewrite normal
+Kobo source as a backend harness.
 
 ## Modeled Wards
 
@@ -36,8 +39,14 @@ The primary workflow is:
 - `kobo inspect --clean --cargo <dir>` for the clean Rust exit ramp.
 - `kobo debt --summary`, `kobo debt --json`, and `kobo debt --watch` for scoped
   migration and precursor tracking.
-- `kobo watch --plan <file>` for restartable scoped modes that persist and reload
-  a bounded watch plan.
+- `kobo watch --plan <file>` for restartable scoped guarantee work that persists
+  and reloads a bounded watch plan.
+
+Experts can stay on the Kobo workflow while inspecting or pinning simulation
+engines when needed: `kobo sim scout --why`, `kobo inspect --sim --harness
+--backend shuttle`, `kobo test --sim deep --backend shuttle --scheduler pct`,
+and backend-native controls when the adapter can represent them without
+changing normal source imports.
 
 ## Editor Workflow
 

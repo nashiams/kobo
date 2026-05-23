@@ -2,7 +2,14 @@
 # All fields are optional; defaults shown here.
 
 [kobo]
-mode = "script"
+profile = "dev"
+
+[guarantees]
+ownership = "record"
+liveness = "record"
+replay = "record"
+boundaries = "record"
+errors = "ergonomic"
 
 [diagnostics]
 hot_borrow_threshold = 10000

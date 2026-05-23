@@ -1006,15 +1006,38 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         "ports",
         "recordings",
         "opaque boundaries",
-        "scoped modes",
+        "one language",
+        "guarantee policy",
+        "dev",
+        "checked",
+        "release",
         "gradual guarantees",
-        "mode invariant",
-        "Script, Checked, and Strict preserve the same ordinary runtime behavior",
+        "backend-native controls",
     ] {
         assert_contains(&readme, expected, "README should document workflow claim");
     }
-    for forbidden in ["gradual typing", "formally proves arbitrary"] {
+    let root_config =
+        std::fs::read_to_string(repo_root.join("Kobo.toml")).expect("Kobo.toml should read");
+    for expected in ["[guarantees]", "ownership", "replay", "boundaries"] {
+        assert_contains(
+            &root_config,
+            expected,
+            "root config should show guarantee policy instead of mode identity",
+        );
+    }
+    for forbidden in [
+        "gradual typing",
+        "formally proves arbitrary",
+        "Script, Checked, and Strict",
+        "scoped modes",
+        "mode = \"script\"",
+    ] {
         assert_not_contains(&readme, forbidden, "README should avoid overclaim");
+        assert_not_contains(
+            &root_config,
+            forbidden,
+            "root config should avoid public mode identity",
+        );
     }
 
     let docs = [
@@ -1039,7 +1062,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
                 "transfer",
                 "proof failure",
                 "replay validation",
-                "mode invariant",
+                "guarantee profile",
             ],
         ),
         (
@@ -1070,12 +1093,12 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
             "docs/migration-guide.md",
             [
                 "Migration Guide",
-                "Script",
-                "Checked",
-                "Strict",
-                "scoped modes",
+                "dev",
+                "checked",
+                "release",
+                "strict_paths",
                 "debt",
-                "mode invariant",
+                "guarantee policy",
             ],
         ),
     ];
@@ -1103,6 +1126,8 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         "It is built around the Core CFG",
         "Rust navigation delegation from source-mapped compiler facts",
         "use rust-analyzer delegation and source maps",
+        "Script, Checked, and Strict",
+        "scoped modes",
     ] {
         assert_not_contains(
             &combined,

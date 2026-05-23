@@ -31,7 +31,8 @@ obligation states that were observed. `kobo replay <witness.kwit>` validates
 that evidence. When a recording or boundary is incomplete, Kobo downgrades the
 replay status instead of claiming more than the witness can support.
 
-The mode invariant is unchanged: Script, Checked, and Strict preserve the same
-ordinary runtime behavior for accepted code. Scoped modes change diagnostics,
-evidence requirements, harness generation, proof obligations, and rejection
-policy. They do not rewrite the accepted program's ordinary runtime meaning.
+The guarantee profile invariant is unchanged: accepted code keeps the same
+ordinary Rust-compatible runtime behavior across `dev`, `checked`, and
+`release`. Guarantee policy changes diagnostics, evidence requirements, harness
+generation, proof obligations, and rejection policy. It does not rewrite the
+accepted program's ordinary runtime meaning.

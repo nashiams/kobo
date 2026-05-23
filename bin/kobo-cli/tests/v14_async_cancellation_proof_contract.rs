@@ -293,6 +293,33 @@ async fn {scenario_name}() {{
     )
 }
 
+fn lifecycle_method_await_initializer_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Delivery {{}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+struct Queue {{}}
+
+impl Queue {{
+    async fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let queue = Queue {{}};
+    let delivery = queue.recv().await;
+    delivery.ack();
+}}
+"#
+    )
+}
+
 fn post_await_declared_local_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -910,6 +937,27 @@ fn method_call_await_initializer_lowers_to_core_suspension() {
 }
 
 #[test]
+fn lifecycle_method_await_initializer_records_coverage_loss() {
+    let project = TestProject::new("v14-async-lifecycle-method-await");
+    let artifact_path = emit_artifact(
+        &project,
+        &lifecycle_method_await_initializer_source("lifecycle_method_await_case"),
+        "lifecycle_method_await_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let coverage = artifact["coverage_loss"]
+        .as_array()
+        .expect("coverage loss should be an array");
+    assert!(
+        coverage.iter().any(|loss| {
+            loss["kind"].as_str() == Some("unsupported_construct")
+                && loss["label"].as_str() == Some("lifecycle_method_await_initializer")
+        }),
+        "lifecycle method await initializer must be explicit coverage loss: {coverage:?}"
+    );
+}
+
+#[test]
 fn pre_await_only_condition_local_is_not_future_state() {
     let project = TestProject::new("v14-async-pre-await-only");
     let artifact_path = emit_artifact(
@@ -1288,6 +1336,21 @@ fn removed_method_initializer_await_evidence_is_rejected_after_hash_recompute() 
             .as_array_mut()
             .expect("cfg edges should be mutable");
         edges.retain(|edge| edge["kind"].as_str() != Some("await"));
+    });
+
+    verify_fails(&project, &artifact_path, "suspension_states");
+}
+
+#[test]
+fn removed_lifecycle_method_initializer_coverage_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-lifecycle-method-await-coverage-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &lifecycle_method_await_initializer_source("removed_lifecycle_method_await_case"),
+        "removed_lifecycle_method_await_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["coverage_loss"] = Value::Array(Vec::new());
     });
 
     verify_fails(&project, &artifact_path, "suspension_states");

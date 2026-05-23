@@ -702,6 +702,9 @@ impl<'a> ScenarioLowerer<'a> {
             }
         }
         if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref(), env) {
+            if expr_contains_await(init.expr.as_ref()) {
+                self.record_unsupported_construct("lifecycle_method_await_initializer");
+            }
             env.bind_obligation(
                 creation.binding.clone(),
                 creation.binding.clone(),
@@ -2036,6 +2039,22 @@ fn expr_static_type_from_initializer(expr: &Expr) -> Option<String> {
         Expr::Paren(paren) => expr_static_type_from_initializer(paren.expr.as_ref()),
         _ => None,
     }
+}
+
+fn expr_contains_await(expr: &Expr) -> bool {
+    struct AwaitVisitor {
+        found: bool,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
+        fn visit_expr_await(&mut self, _expr: &'ast syn::ExprAwait) {
+            self.found = true;
+        }
+    }
+
+    let mut visitor = AwaitVisitor { found: false };
+    syn::visit::visit_expr(&mut visitor, expr);
+    visitor.found
 }
 
 fn obligation_container_shape(

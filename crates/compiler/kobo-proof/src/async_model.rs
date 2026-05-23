@@ -151,7 +151,11 @@ fn verify_future_state_locals(
 ) -> Result<(), VerificationError> {
     let expected_by_function = parsed_live_locals_by_function(source);
     let skippable_lifecycle_method_awaits =
-        skippable_lifecycle_method_initializer_awaits_by_function(source);
+        if has_coverage_loss(certificate, "lifecycle_method_await_initializer") {
+            skippable_lifecycle_method_initializer_awaits_by_function(source)
+        } else {
+            BTreeMap::new()
+        };
     let mut actual = BTreeSet::<(&str, &str)>::new();
     for local in &certificate.core.async_model.future_state_locals {
         if !actual.insert((local.suspension_state.as_str(), local.binding.as_str())) {
@@ -260,6 +264,13 @@ fn verify_future_state_locals(
         }
     }
     Ok(())
+}
+
+fn has_coverage_loss(certificate: &ProofCertificate, label: &str) -> bool {
+    certificate
+        .coverage_loss
+        .iter()
+        .any(|loss| loss.kind == "unsupported_construct" && loss.label == label)
 }
 
 fn verify_select_paths(certificate: &ProofCertificate) -> Result<(), VerificationError> {

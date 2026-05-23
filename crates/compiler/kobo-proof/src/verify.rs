@@ -26,7 +26,7 @@ pub fn verify_certificate(
     verify_source_hash(certificate, context)?;
     verify_core_hash(certificate)?;
     crate::async_model::verify_cancel_edges(certificate)?;
-    crate::async_model::verify_async_model(certificate)?;
+    crate::async_model::verify_async_model(certificate, &context.source)?;
     crate::boundary::verify_template_versions(certificate)?;
     crate::boundary::verify_template_hashes(certificate)?;
     crate::boundary::verify_boundary_policies(certificate)?;

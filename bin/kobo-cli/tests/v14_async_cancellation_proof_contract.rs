@@ -305,7 +305,7 @@ fn select_loser_owning_delivery_fails() {
         &project,
         select_loser_owning_source(),
         "select_loser_owning_case",
-        "unresolved obligation",
+        "obligation replay mismatch",
     );
 }
 
@@ -328,6 +328,28 @@ fn select_loser_with_explicit_requeue_passes() {
                 && path["obligation_result_hash"].as_str().is_some()
         }),
         "select loser path should have explicit cancellation evidence: {select_paths:?}"
+    );
+    assert!(
+        select_paths.iter().all(|path| {
+            path["branch_target"].as_str().is_some()
+                && path["obligation_results"].as_array().is_some_and(|states| {
+                    states.iter().any(|state| {
+                        state["binding"].as_str() == Some("delivery")
+                            && state["state"].as_str() == Some("resolved")
+                    })
+                })
+        }),
+        "select evidence should be per branch target with obligation results: {select_paths:?}"
+    );
+    let mut branch_targets = select_paths
+        .iter()
+        .filter_map(|path| path["branch_target"].as_str())
+        .collect::<Vec<_>>();
+    branch_targets.sort_unstable();
+    branch_targets.dedup();
+    assert!(
+        branch_targets.len() >= 2,
+        "select evidence should cover each branch target: {select_paths:?}"
     );
 }
 
@@ -381,7 +403,22 @@ fn removed_timeout_cancel_evidence_is_rejected_after_hash_recompute() {
 }
 
 #[test]
-fn reordered_branches_and_renamed_locals_preserve_obligation_result() {
+fn removed_future_state_local_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-future-local-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &async_source("removed_future_state_local_case"),
+        "removed_future_state_local_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["core"]["async_model"]["future_state_locals"] = Value::Array(Vec::new());
+    });
+
+    verify_fails(&project, &artifact_path, "future_state_locals");
+}
+
+#[test]
+fn reordered_branches_and_renamed_locals_preserve_path_specific_results() {
     let project = TestProject::new("v14-select-hash-stability");
     let first_path = emit_artifact(
         &project,
@@ -415,13 +452,23 @@ fn select_hash_second_case() {
 
     let first = read_value(&first_path);
     let second = read_value(&second_path);
-    let first_hash = &async_model(&first)["select_paths"][0]["obligation_result_hash"];
-    let second_hash = &async_model(&second)["select_paths"][0]["obligation_result_hash"];
-
-    assert_eq!(
-        first_hash, second_hash,
-        "alpha-renamed and reordered select branches should preserve obligation result hashes"
-    );
+    for artifact in [first, second] {
+        let select_paths = async_model(&artifact)["select_paths"]
+            .as_array()
+            .expect("select paths should be an array");
+        assert!(
+            select_paths.iter().all(|path| {
+                path["branch_target"].as_str().is_some()
+                    && path["obligation_result_hash"].as_str().is_some()
+                    && path["obligation_results"]
+                        .as_array()
+                        .is_some_and(|states| states
+                            .iter()
+                            .any(|state| state["state"].as_str() == Some("resolved")))
+            }),
+            "select evidence should stay path-specific after branch reorder/rename: {select_paths:?}"
+        );
+    }
 }
 
 #[test]

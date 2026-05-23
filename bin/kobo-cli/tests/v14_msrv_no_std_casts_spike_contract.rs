@@ -209,6 +209,40 @@ memory_budget = "static-4kb"
 }
 
 #[test]
+fn hidden_heap_with_capacity_blocks_graduated_no_std_candidate() {
+    let project = TestProject::new("v14-nostd-hidden-heap-capacity-fails");
+    write_config(
+        &project,
+        r#"
+[output]
+no_std = true
+memory_budget = "static-4kb"
+"#,
+    );
+
+    emit_failure(
+        &project,
+        &source(
+            "hidden_heap_capacity_case",
+            r#"#[kobo::candidate_track(
+    id = "S-49",
+    track = "no_std allocation budget",
+    status = "graduate",
+    inspect = "inspect shows allocation report",
+    manual_rust = "write no_std code with explicit buffers",
+    strict = "true",
+    whole_ecosystem = "false",
+    diagnostic_snapshot = "v14_nostd_snapshot",
+    replay_related = "false"
+)]"#,
+            "    let values = Vec::<u8>::with_capacity(4);\n    let _value = values.len();",
+        ),
+        "hidden_heap_capacity_case",
+        "hidden heap",
+    );
+}
+
+#[test]
 fn cast_policy_and_strict_cast_debt_are_admission_facts() {
     let project = TestProject::new("v14-cast-policy");
     write_config(

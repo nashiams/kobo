@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
 use crate::config::EcosystemAdapterPolicy;
@@ -52,7 +52,6 @@ pub fn emit_proof_certificate(
         input.source,
         input.program,
         &core_program.functions,
-        &exit_env,
     );
     let core_hash = core_material_hash(
         core_program.core_version,
@@ -734,6 +733,16 @@ fn file_hidden_heap_site_count(file: &syn::File) -> usize {
             syn::visit::visit_expr_call(self, call);
         }
 
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            if matches!(
+                call.method.to_string().as_str(),
+                "with_capacity" | "try_with_capacity" | "collect" | "to_vec" | "to_string"
+            ) {
+                self.count += 1;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
         fn visit_macro(&mut self, mac: &'ast syn::Macro) {
             if path_last_ident_is(&mac.path, "vec") || path_last_ident_is(&mac.path, "format") {
                 self.count += 1;
@@ -972,11 +981,13 @@ fn path_is_heap_constructor(path: &syn::Path) -> bool {
     let Some(last) = last else {
         return false;
     };
-    (last == "new" || last == "from")
-        && (path_has_segment(path, "Vec")
-            || path_has_segment(path, "Box")
-            || path_has_segment(path, "String")
-            || path_has_segment(path, "alloc"))
+    matches!(
+        last.as_str(),
+        "new" | "from" | "with_capacity" | "try_with_capacity"
+    ) && (path_has_segment(path, "Vec")
+        || path_has_segment(path, "Box")
+        || path_has_segment(path, "String")
+        || path_has_segment(path, "alloc"))
 }
 
 fn path_last_ident_is(path: &syn::Path, expected: &str) -> bool {
@@ -1023,11 +1034,17 @@ fn obligation_evidence(
     Vec<ObligationState>,
     Vec<ObligationEvent>,
 ) {
-    let mut current_env = BTreeMap::<String, ObligationStatus>::new();
-    let entry_env = env_states(&current_env);
+    let entry_env = env_states(&BTreeMap::new());
     let mut events = Vec::new();
+    let mut terminal_envs = Vec::new();
     for function in functions {
+        let replay = function_obligation_replay(function);
         for block in &function.blocks {
+            let mut current_env = replay
+                .block_entry_envs
+                .get(&block.id)
+                .cloned()
+                .unwrap_or_default();
             for statement in &block.statements {
                 let before = env_states(&current_env);
                 apply_obligation_statement(statement, &mut current_env);
@@ -1049,9 +1066,131 @@ fn obligation_evidence(
                 }
             }
         }
+        terminal_envs.extend(replay.terminal_envs);
     }
-    let exit_env = env_states(&current_env);
+    let exit_env = env_states(&merge_terminal_envs(&terminal_envs));
     (entry_env, exit_env, events)
+}
+
+struct FunctionObligationReplay {
+    block_entry_envs: BTreeMap<String, BTreeMap<String, ObligationStatus>>,
+    block_exit_envs: BTreeMap<String, BTreeMap<String, ObligationStatus>>,
+    terminal_envs: Vec<BTreeMap<String, ObligationStatus>>,
+}
+
+fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationReplay {
+    let blocks = function
+        .blocks
+        .iter()
+        .map(|block| (block.id.as_str(), block))
+        .collect::<BTreeMap<_, _>>();
+    let Some(entry_block) = function.blocks.first() else {
+        return FunctionObligationReplay {
+            block_entry_envs: BTreeMap::new(),
+            block_exit_envs: BTreeMap::new(),
+            terminal_envs: Vec::new(),
+        };
+    };
+
+    let mut block_entry_envs = BTreeMap::<String, BTreeMap<String, ObligationStatus>>::new();
+    let mut queued = VecDeque::new();
+    block_entry_envs.insert(entry_block.id.clone(), BTreeMap::new());
+    queued.push_back(entry_block.id.clone());
+
+    while let Some(block_id) = queued.pop_front() {
+        let Some(block) = blocks.get(block_id.as_str()).copied() else {
+            continue;
+        };
+        let entry_env = block_entry_envs.get(&block.id).cloned().unwrap_or_default();
+        let exit_env = apply_block_obligation_statements(block, entry_env);
+        for target in block_successor_targets(block) {
+            let Some(target_block) = blocks.get(target.as_str()) else {
+                continue;
+            };
+            let changed = merge_block_entry_env(
+                block_entry_envs
+                    .entry(target_block.id.clone())
+                    .or_insert_with(BTreeMap::new),
+                &exit_env,
+            );
+            if changed {
+                queued.push_back(target_block.id.clone());
+            }
+        }
+    }
+
+    let block_exit_envs = function
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            block_entry_envs.get(&block.id).cloned().map(|entry_env| {
+                (
+                    block.id.clone(),
+                    apply_block_obligation_statements(block, entry_env),
+                )
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    let terminal_envs = function
+        .blocks
+        .iter()
+        .filter(|block| block_successor_targets(block).is_empty())
+        .filter_map(|block| block_exit_envs.get(&block.id).cloned())
+        .collect::<Vec<_>>();
+
+    FunctionObligationReplay {
+        block_entry_envs,
+        block_exit_envs,
+        terminal_envs,
+    }
+}
+
+fn apply_block_obligation_statements(
+    block: &CoreBlock,
+    mut env: BTreeMap<String, ObligationStatus>,
+) -> BTreeMap<String, ObligationStatus> {
+    for statement in &block.statements {
+        apply_obligation_statement(statement, &mut env);
+    }
+    env
+}
+
+fn block_successor_targets(block: &CoreBlock) -> Vec<String> {
+    block
+        .terminators
+        .iter()
+        .flat_map(|terminator| terminator.edges.iter())
+        .filter_map(|edge| edge.strip_prefix("goto:").map(str::to_owned))
+        .collect()
+}
+
+fn merge_block_entry_env(
+    current: &mut BTreeMap<String, ObligationStatus>,
+    incoming: &BTreeMap<String, ObligationStatus>,
+) -> bool {
+    let before = current.clone();
+    for (binding, incoming_status) in incoming {
+        match current.get(binding) {
+            Some(current_status) if current_status == incoming_status => {}
+            Some(_) => {
+                current.insert(binding.clone(), ObligationStatus::BranchUnresolved);
+            }
+            None => {
+                current.insert(binding.clone(), incoming_status.clone());
+            }
+        }
+    }
+    *current != before
+}
+
+fn merge_terminal_envs(
+    terminal_envs: &[BTreeMap<String, ObligationStatus>],
+) -> BTreeMap<String, ObligationStatus> {
+    let mut merged = BTreeMap::new();
+    for env in terminal_envs {
+        merge_block_entry_env(&mut merged, env);
+    }
+    merged
 }
 
 fn async_model_evidence(
@@ -1059,18 +1198,18 @@ fn async_model_evidence(
     source: &str,
     program: &ScenarioProgram,
     functions: &[CoreFunction],
-    exit_env: &[ObligationState],
 ) -> AsyncModelEvidence {
-    let live_locals = live_locals_across_first_await(source, &program.target);
-    let select_result_hash = canonical_obligation_result_hash(exit_env);
+    let live_locals = parsed_live_locals_across_first_await(source, &program.target);
     let mut model = AsyncModelEvidence::default();
 
     for function in functions {
-        let mut current_env = BTreeMap::<String, ObligationStatus>::new();
+        let replay = function_obligation_replay(function);
         for block in &function.blocks {
-            for statement in &block.statements {
-                apply_obligation_statement(statement, &mut current_env);
-            }
+            let block_exit_env = replay
+                .block_exit_envs
+                .get(&block.id)
+                .cloned()
+                .unwrap_or_default();
             for terminator in &block.terminators {
                 match terminator.kind {
                     CoreTerminatorKind::Await => {
@@ -1115,7 +1254,7 @@ fn async_model_evidence(
                                 source_span: source_span_for_binding(source_path, source, local),
                             });
                         }
-                        for state in env_states(&current_env)
+                        for state in env_states(&block_exit_env)
                             .into_iter()
                             .filter(|state| state.state == ObligationStatus::Owned)
                         {
@@ -1142,18 +1281,35 @@ fn async_model_evidence(
                     CoreTerminatorKind::Branch => {
                         let source_span =
                             source_span_from_kobo(source_path, source, terminator.source_span);
-                        for path_kind in ["winner", "loser_cancel"] {
-                            model.select_paths.push(SelectPathEvidence {
-                                id: format!(
-                                    "{}:{}:{}:{path_kind}",
-                                    function.name, block.id, terminator.id
-                                ),
-                                function: function.name.clone(),
-                                branch_block: block.id.clone(),
-                                path_kind: path_kind.to_owned(),
-                                obligation_result_hash: select_result_hash.clone(),
-                                source_span: source_span.clone(),
-                            });
+                        for branch_target in terminator
+                            .edges
+                            .iter()
+                            .filter_map(|edge| edge.strip_prefix("goto:"))
+                        {
+                            let obligation_results = replay
+                                .block_exit_envs
+                                .get(branch_target)
+                                .map(env_states)
+                                .unwrap_or_default();
+                            for path_kind in ["winner", "loser_cancel"] {
+                                model.select_paths.push(SelectPathEvidence {
+                                    id: format!(
+                                        "{}:{}:{}:{branch_target}:{path_kind}",
+                                        function.name, block.id, terminator.id
+                                    ),
+                                    function: function.name.clone(),
+                                    branch_block: block.id.clone(),
+                                    branch_target: branch_target.to_owned(),
+                                    path_kind: path_kind.to_owned(),
+                                    obligation_results: obligation_results.clone(),
+                                    obligation_result_hash: canonical_select_result_hash(
+                                        branch_target,
+                                        path_kind,
+                                        &obligation_results,
+                                    ),
+                                    source_span: source_span.clone(),
+                                });
+                            }
                         }
                     }
                     CoreTerminatorKind::Goto
@@ -1293,85 +1449,132 @@ fn coverage_loss(program: &ScenarioProgram) -> Vec<CoverageLoss> {
     unsupported.chain(opaque).collect()
 }
 
-fn canonical_obligation_result_hash(exit_env: &[ObligationState]) -> String {
-    let mut states = exit_env
+fn canonical_select_result_hash(
+    branch_target: &str,
+    path_kind: &str,
+    results: &[ObligationState],
+) -> String {
+    let mut states = results
         .iter()
-        .map(|state| state.state.as_str())
+        .map(|state| format!("{}:{}", state.binding, state.state.as_str()))
         .collect::<Vec<_>>();
     states.sort_unstable();
-    stable_hash(&format!("obligation-result:{states:?}"))
+    stable_hash(&format!(
+        "select-result:{branch_target}:{path_kind}:{states:?}"
+    ))
 }
 
-fn live_locals_across_first_await(source: &str, target: &str) -> Vec<String> {
-    let Some((body_start, body_end)) = target_function_body_range(source, target) else {
+fn parsed_live_locals_across_first_await(source: &str, target: &str) -> Vec<String> {
+    let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
     };
-    let body = &source[body_start..body_end];
-    let Some(await_offset) = body.find(".await") else {
+    let Some(function) = file.items.iter().find_map(|item| match item {
+        syn::Item::Fn(function) if function.sig.ident == target => Some(function),
+        _ => None,
+    }) else {
         return Vec::new();
     };
-    let before_await = &body[..await_offset];
-    let after_await = &body[await_offset..];
-    let mut locals = extract_let_bindings(before_await)
+
+    let mut before_await = BTreeSet::<String>::new();
+    let mut after_await_uses = BTreeSet::<String>::new();
+    let mut seen_await = false;
+    for statement in &function.block.stmts {
+        if seen_await {
+            collect_ident_uses_in_stmt(statement, &mut after_await_uses);
+            continue;
+        }
+        if stmt_contains_await(statement) {
+            seen_await = true;
+            continue;
+        }
+        collect_pat_bindings_in_stmt(statement, &mut before_await);
+    }
+
+    before_await
         .into_iter()
         .filter(|binding| !binding.starts_with('_'))
-        .filter(|binding| identifier_occurs(after_await, binding))
-        .collect::<Vec<_>>();
-    locals.sort();
-    locals.dedup();
-    locals
-}
-
-fn target_function_body_range(source: &str, target: &str) -> Option<(usize, usize)> {
-    let needle = format!("fn {target}");
-    let function_start = source.find(&needle)?;
-    let body_start = source[function_start..].find('{')? + function_start + 1;
-    let mut depth = 1usize;
-    for (relative, ch) in source[body_start..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some((body_start, body_start + relative));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn extract_let_bindings(source: &str) -> Vec<String> {
-    source
-        .split(';')
-        .filter_map(|statement| {
-            let trimmed = statement.trim_start();
-            let rest = trimmed.strip_prefix("let ")?;
-            let rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
-            let binding = rest
-                .chars()
-                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                .collect::<String>();
-            (!binding.is_empty()).then_some(binding)
-        })
+        .filter(|binding| after_await_uses.contains(binding))
         .collect()
 }
 
-fn identifier_occurs(source: &str, identifier: &str) -> bool {
-    source
-        .match_indices(identifier)
-        .any(|(index, _)| identifier_boundary(source, index, identifier.len()))
+fn stmt_contains_await(statement: &syn::Stmt) -> bool {
+    struct AwaitVisitor {
+        found: bool,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
+        fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
+            self.found = true;
+            syn::visit::visit_expr_await(self, expr);
+        }
+    }
+
+    let mut visitor = AwaitVisitor { found: false };
+    syn::visit::visit_stmt(&mut visitor, statement);
+    visitor.found
 }
 
-fn identifier_boundary(source: &str, start: usize, len: usize) -> bool {
-    let before = source[..start].chars().next_back();
-    let after = source[start + len..].chars().next();
-    !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+fn collect_pat_bindings_in_stmt(statement: &syn::Stmt, bindings: &mut BTreeSet<String>) {
+    let syn::Stmt::Local(local) = statement else {
+        return;
+    };
+    collect_pat_bindings(&local.pat, bindings);
 }
 
-fn is_identifier_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || ch == '_'
+fn collect_pat_bindings(pattern: &syn::Pat, bindings: &mut BTreeSet<String>) {
+    match pattern {
+        syn::Pat::Ident(ident) => {
+            bindings.insert(ident.ident.to_string());
+        }
+        syn::Pat::Tuple(tuple) => {
+            for element in &tuple.elems {
+                collect_pat_bindings(element, bindings);
+            }
+        }
+        syn::Pat::Struct(pattern) => {
+            for field in &pattern.fields {
+                collect_pat_bindings(&field.pat, bindings);
+            }
+        }
+        syn::Pat::TupleStruct(pattern) => {
+            for element in &pattern.elems {
+                collect_pat_bindings(element, bindings);
+            }
+        }
+        syn::Pat::Slice(pattern) => {
+            for element in &pattern.elems {
+                collect_pat_bindings(element, bindings);
+            }
+        }
+        syn::Pat::Reference(pattern) => collect_pat_bindings(&pattern.pat, bindings),
+        syn::Pat::Type(pattern) => collect_pat_bindings(&pattern.pat, bindings),
+        syn::Pat::Or(pattern) => {
+            for case in &pattern.cases {
+                collect_pat_bindings(case, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_ident_uses_in_stmt(statement: &syn::Stmt, uses: &mut BTreeSet<String>) {
+    struct UseVisitor<'a> {
+        uses: &'a mut BTreeSet<String>,
+    }
+
+    impl<'a, 'ast> syn::visit::Visit<'ast> for UseVisitor<'a> {
+        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+            if expr.qself.is_none() && expr.path.segments.len() == 1 {
+                if let Some(segment) = expr.path.segments.first() {
+                    self.uses.insert(segment.ident.to_string());
+                }
+            }
+            syn::visit::visit_expr_path(self, expr);
+        }
+    }
+
+    let mut visitor = UseVisitor { uses };
+    syn::visit::visit_stmt(&mut visitor, statement);
 }
 
 fn boundary_policy(policy: &kobo_ir::ScenarioBoundaryPolicy) -> BoundaryPolicy {

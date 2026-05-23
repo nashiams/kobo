@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    stable_hash, BoundaryAssumption, BoundaryPolicy, ProofCertificate, ReplayGrade,
-    TemplateVersionEvidence, VerificationError,
+    stable_hash, template_version_hash, BoundaryAssumption, BoundaryPolicy, ProofCertificate,
+    ReplayGrade, TemplateVersionEvidence, VerificationError,
 };
 
 pub(crate) fn verify_template_versions(
@@ -28,9 +28,8 @@ pub(crate) fn verify_template_hashes(
         .map(|hash| (hash.id.as_str(), hash.hash.as_str()))
         .collect::<BTreeMap<_, _>>();
     for template in &certificate.template_versions {
-        let observed = serde_json::to_string(template)
-            .map(|material| stable_hash(&material))
-            .map_err(|error| VerificationError::Parse {
+        let observed =
+            template_version_hash(template).map_err(|error| VerificationError::Parse {
                 message: error.to_string(),
             })?;
         let expected = recorded_hashes
@@ -127,7 +126,10 @@ fn verify_exact_replay_boundaries(certificate: &ProofCertificate) -> Result<(), 
 fn exact_replay_disallows(policy: BoundaryPolicy) -> bool {
     matches!(
         policy,
-        BoundaryPolicy::Opaque | BoundaryPolicy::Outside | BoundaryPolicy::Debt
+        BoundaryPolicy::Opaque
+            | BoundaryPolicy::Outside
+            | BoundaryPolicy::Debt
+            | BoundaryPolicy::Stub
     )
 }
 

@@ -1,8 +1,11 @@
-use crate::{AdapterConfidence, ProofCertificate, ReplayGrade, VerificationError};
+use std::collections::BTreeSet;
+
+use crate::{AdapterConfidence, BoundaryPolicy, ProofCertificate, ReplayGrade, VerificationError};
 
 pub(crate) fn verify_adapter_confidence(
     certificate: &ProofCertificate,
 ) -> Result<(), VerificationError> {
+    verify_exact_replay_has_adapter_evidence(certificate)?;
     for adapter in &certificate.adapter_confidence {
         if certificate.replay_grade == ReplayGrade::Exact
             && adapter.confidence != AdapterConfidence::Exact
@@ -39,6 +42,39 @@ pub(crate) fn verify_adapter_confidence(
         }
     }
     Ok(())
+}
+
+fn verify_exact_replay_has_adapter_evidence(
+    certificate: &ProofCertificate,
+) -> Result<(), VerificationError> {
+    if certificate.replay_grade != ReplayGrade::Exact {
+        return Ok(());
+    }
+    let adapter_boundaries = certificate
+        .adapter_confidence
+        .iter()
+        .map(|adapter| adapter.boundary.as_str())
+        .collect::<BTreeSet<_>>();
+    for assumption in &certificate.boundary_assumptions {
+        if requires_adapter_evidence(&assumption.policy)
+            && !adapter_boundaries.contains(assumption.boundary.as_str())
+        {
+            return Err(VerificationError::ExactReplayMissingAdapterEvidence {
+                boundary: assumption.boundary.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn requires_adapter_evidence(policy: &BoundaryPolicy) -> bool {
+    matches!(
+        policy,
+        BoundaryPolicy::Record
+            | BoundaryPolicy::Activity
+            | BoundaryPolicy::Model
+            | BoundaryPolicy::Stub
+    )
 }
 
 fn adapter_confidence_name(confidence: &AdapterConfidence) -> &'static str {

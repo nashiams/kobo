@@ -802,6 +802,9 @@ fn write_proof_artifact(
     witness_path: &Path,
     config: &kobo_driver::KoboConfig,
 ) -> anyhow::Result<()> {
+    if run.failure.is_some() {
+        return Ok(());
+    }
     let certificate =
         kobo_driver::proof::emit_proof_certificate(kobo_driver::proof::ProofEmissionInput {
             source_path: file,

@@ -110,6 +110,20 @@ fn debt_boundary_case() {
 "#
 }
 
+fn unconfigured_boundary_source(policy: &str, target: &str) -> String {
+    format!(
+        r#"
+#[kobo::boundary(crate = "payments", policy = "{policy}", reason = "review fixture")]
+use payments::charge;
+
+#[kobo::scenario(profile = "sync")]
+fn {target}() {{
+    let _result = charge();
+}}
+"#
+    )
+}
+
 fn emit_artifact(project: &TestProject, source: &str, target: &str, replay_grade: &str) -> PathBuf {
     let file = project.main_file(source);
     let artifact_path = project.root.join(format!("{target}.kproof"));
@@ -317,6 +331,67 @@ fn exact_replay_rejected_through_policy_gap() {
             .combined()
             .contains("exact replay crosses disallowed boundary"),
         "failure should name the policy gap: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn exact_replay_rejected_through_stub_boundary() {
+    let project = TestProject::new("v14-exact-stub-boundary");
+    let file = project.main_file(&unconfigured_boundary_source("stub", "stub_boundary_case"));
+    let artifact_path = project.root.join("stub_boundary_case.kproof");
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&file),
+            s("--target"),
+            s("stub_boundary_case"),
+            s("--output"),
+            path_arg(&artifact_path),
+            s("--replay-grade"),
+            s("exact"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "exact proof over stub boundary should fail");
+    assert!(
+        output
+            .combined()
+            .contains("exact replay crosses disallowed boundary"),
+        "failure should name stub as a policy gap: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn exact_replay_rejected_when_record_boundary_lacks_adapter_evidence() {
+    let project = TestProject::new("v14-exact-unsupported-adapter");
+    let file = project.main_file(&unconfigured_boundary_source(
+        "record",
+        "unsupported_adapter_case",
+    ));
+    let artifact_path = project.root.join("unsupported_adapter_case.kproof");
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&file),
+            s("--target"),
+            s("unsupported_adapter_case"),
+            s("--output"),
+            path_arg(&artifact_path),
+            s("--replay-grade"),
+            s("exact"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "exact proof without adapter evidence should fail");
+    assert!(
+        output.combined().contains("unsupported adapter boundary"),
+        "failure should name missing adapter evidence: {}",
         output.combined()
     );
 }

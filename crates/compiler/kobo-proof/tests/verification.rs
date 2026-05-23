@@ -1,8 +1,8 @@
 use kobo_proof::{
     certificate_material_hash, core_material_hash, parse_certificate_json, stable_hash,
-    verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence,
-    FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind, ObligationState,
-    ObligationStatus, ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan,
+    template_version_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge,
+    CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind,
+    ObligationState, ObligationStatus, ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan,
     TemplateVersionEvidence, VerificationContext, VerificationError,
 };
 use serde_json::Value;
@@ -49,7 +49,7 @@ fn valid_certificate() -> ProofCertificate {
         source: "declaration".to_owned(),
         source_span: span(),
     };
-    let template_hash = stable_hash(&serde_json::to_string(&template_version).unwrap());
+    let template_hash = template_version_hash(&template_version).unwrap();
     let entry_env = Vec::new();
     let exit_env = vec![ObligationState {
         binding: "delivery".to_owned(),

@@ -7,14 +7,14 @@ use kobo_ir::{
     CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, stable_hash, AdapterConfidence, AdapterEvidence,
-    AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence,
-    CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence,
-    CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
-    HashEvidence, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
-    OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence, SourceEvidence, SourceSpan,
-    SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateVersionEvidence,
-    TimeoutCancelEdgeEvidence,
+    certificate_material_hash, core_material_hash, stable_hash, template_version_hash,
+    AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy,
+    CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
+    CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
+    FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
+    ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence,
+    SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence,
+    TemplateVersionEvidence, TimeoutCancelEdgeEvidence,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -212,7 +212,7 @@ fn template_evidence(
             source: template_source.to_owned(),
             source_span: source_span_from_kobo(source_path, source, operation.span),
         };
-        let hash = serde_json::to_string(&version).map(|material| stable_hash(&material))?;
+        let hash = template_version_hash(&version)?;
         hashes.push(HashEvidence {
             id: template.id.clone(),
             hash,

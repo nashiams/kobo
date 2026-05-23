@@ -18,7 +18,7 @@ pub use certificate::{
     SuspensionStateEvidence, TemplateVersionEvidence, TimeoutCancelEdgeEvidence,
 };
 pub use error::VerificationError;
-pub use hash::{certificate_material_hash, core_material_hash, stable_hash};
+pub use hash::{certificate_material_hash, core_material_hash, stable_hash, template_version_hash};
 pub use verify::{
     parse_certificate_json, verify_certificate, VerificationContext, VerificationReport,
 };

@@ -41,6 +41,8 @@ pub enum VerificationError {
     ExactReplayWithCoverageLoss { kind: String, label: String },
     #[error("exact replay crosses adapter {adapter} with confidence {confidence}")]
     ExactReplayWithAdapterConfidence { adapter: String, confidence: String },
+    #[error("exact replay crosses unsupported adapter boundary {boundary}")]
+    ExactReplayMissingAdapterEvidence { boundary: String },
     #[error("metadata-only adapter {adapter} cannot claim replayable behavior")]
     MetadataOnlyAdapterReplayable { adapter: String },
     #[error("sampled adapter {adapter} must emit probing_pass evidence")]

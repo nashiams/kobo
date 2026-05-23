@@ -222,6 +222,10 @@ pub(super) fn cmd_test(
             expert_options.backend_name(&run.profile).into(),
         );
         object.insert(
+            "reserved_backend_fit".to_owned(),
+            reserved_backend_fit_json(&run.profile),
+        );
+        object.insert(
             "scheduler".to_owned(),
             scheduler_json(
                 sim_profile,
@@ -835,10 +839,10 @@ fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
 }
 
 fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
-    if matches!(
-        backend,
-        "loom" | "shuttle" | "turmoil" | "madsim" | "proptest" | "failpoints"
-    ) {
+    if kobo_sim_core::backend::capabilities()
+        .iter()
+        .any(|capability| capability.name == backend)
+    {
         Ok(())
     } else {
         anyhow::bail!(
@@ -874,10 +878,9 @@ fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
         "madsim" => Ok("distributed"),
         "proptest" => Ok("stateful-input"),
         "failpoints" => Ok("failpoint"),
-        _ => {
-            validate_backend_name(backend)?;
-            unreachable!("validated backend must have a profile mapping")
-        }
+        _ => anyhow::bail!(
+            "unsupported backend option `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+        ),
     }
 }
 
@@ -1020,6 +1023,7 @@ fn write_run_witness(
     let flagship_demo = flagship_demo_json(scenario_program, run);
     let backend_controls = serde_json::json!({
         "backend": backend_name,
+        "reserved_backend_fit": reserved_backend_fit_json(&run.profile),
         "scheduler": effective_scheduler,
         "max_branches": effective_max_branches,
         "backend_native": expert_options.backend_native,
@@ -1037,6 +1041,7 @@ fn write_run_witness(
         "seed": seed,
         "backend_profile": run.profile,
         "backend": backend_name,
+        "reserved_backend_fit": reserved_backend_fit_json(&run.profile),
         "backend_replay": backend_replay_token.clone(),
         "backend_replay_token": backend_replay_token,
         "replay_guarantee": run.replay_guarantee.as_str(),
@@ -4414,13 +4419,41 @@ fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String 
 fn backend_for_profile(profile: &str) -> &'static str {
     match profile {
         "sync" => "loom",
-        "async" => "shuttle",
+        "async" => "generated-rust-process",
         "stateful-input" => "proptest",
         "failpoint" => "failpoints",
-        "network" => "turmoil",
-        "distributed" => "madsim",
+        "network" => "network-loopback",
+        "distributed" => "generated-rust-process",
         _ => "unknown",
     }
+}
+
+fn reserved_backend_fit_for_profile(profile: &str) -> &'static [&'static str] {
+    match profile {
+        "async" => &["shuttle"],
+        "network" => &["turmoil"],
+        "distributed" => &["madsim"],
+        _ => &[],
+    }
+}
+
+fn reserved_backend_fit_json(profile: &str) -> serde_json::Value {
+    serde_json::Value::Array(
+        reserved_backend_fit_for_profile(profile)
+            .iter()
+            .map(|backend| {
+                let capability = kobo_sim_core::backend::capabilities()
+                    .iter()
+                    .find(|capability| capability.name == *backend);
+                serde_json::json!({
+                    "backend": backend,
+                    "status": "reserved",
+                    "integration_level": capability.map(|capability| capability.integration_level).unwrap_or("metadata-only"),
+                    "scenario_execution": capability.map(|capability| capability.scenario_execution).unwrap_or("unsupported-native-adapter"),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn sanitize_name(value: &str) -> String {

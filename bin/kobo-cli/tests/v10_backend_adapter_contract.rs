@@ -102,7 +102,21 @@ fn ecosystem_backends_distinguish_native_execution_from_reserved_pins() {
     let project = TestProject::new("v10-backend-registry-executable");
     let output = run_kobo(&[s("sim"), s("backends"), s("--json")], &project.root);
     assert_success(&output, "backend registry should render");
+    assert_not_contains(
+        &output.stdout,
+        "v0.",
+        "backend registry should not expose roadmap-stage version wording",
+    );
+    assert_not_contains(
+        &output.stdout,
+        "executes_in_v10",
+        "backend registry should use stable product schema names",
+    );
     let value: Value = serde_json::from_str(&output.stdout).expect("backend JSON should parse");
+    assert!(
+        value.get("version").is_none(),
+        "backend registry should not publish roadmap version field: {value}"
+    );
     let backends = value["backends"]
         .as_array()
         .expect("backend list should be an array");
@@ -112,9 +126,10 @@ fn ecosystem_backends_distinguish_native_execution_from_reserved_pins() {
         .find(|backend| backend["name"] == "loom")
         .unwrap_or_else(|| panic!("backend `loom` should be listed: {value}"));
     assert_eq!(
-        loom["executes_in_v10"], true,
+        loom["executes_now"], true,
         "Loom is the native backend linked into the workspace: {loom}"
     );
+    assert_eq!(loom["execution_status"], "executable");
     assert_eq!(loom["integration_level"], "generated-user-rust");
 
     for name in ["shuttle", "turmoil", "madsim"] {
@@ -123,12 +138,74 @@ fn ecosystem_backends_distinguish_native_execution_from_reserved_pins() {
             .find(|backend| backend["name"] == name)
             .unwrap_or_else(|| panic!("backend `{name}` should be listed: {value}"));
         assert_eq!(
-            backend["executes_in_v10"], false,
+            backend["executes_now"], false,
             "{name} must not claim native execution until the adapter is linked: {backend}"
         );
+        assert_eq!(backend["execution_status"], "reserved");
         assert_eq!(backend["integration_level"], "metadata-only");
         assert_eq!(backend["scenario_execution"], "unsupported-native-adapter");
     }
+}
+
+#[test]
+fn async_witness_records_execution_backend_separately_from_reserved_fit() {
+    let project = TestProject::new("v10-async-execution-backend");
+    let file = project.main_file(
+        r#"
+#[kobo::must_call(reply | reject)]
+struct Response {}
+
+#[kobo::scenario(profile = "async")]
+async fn async_route() {
+    let response = Response {};
+    let _lost = response;
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--seed"),
+            s("5"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "async witness should be written for liveness failure",
+    );
+
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    assert_eq!(witness["backend_profile"], "async");
+    assert_eq!(witness["backend"], "generated-rust-process");
+    assert_eq!(
+        witness["backend_controls"]["backend"],
+        "generated-rust-process"
+    );
+    assert_eq!(
+        witness["backend_version"]["backend"],
+        "generated-rust-process"
+    );
+    assert_eq!(witness["reserved_backend_fit"][0]["backend"], "shuttle");
+    assert_eq!(witness["reserved_backend_fit"][0]["status"], "reserved");
+    assert_ne!(
+        witness["backend"], "shuttle",
+        "metadata-only Shuttle must not be recorded as the execution backend"
+    );
 }
 
 #[test]

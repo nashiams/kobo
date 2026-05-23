@@ -1093,10 +1093,9 @@ pub(super) fn cmd_sim_backends(json_output: bool) -> anyhow::Result<()> {
         .collect::<Vec<_>>();
     print_value(
         json!({
-            "version": "v0.10",
             "executed": true,
             "execution_surface": "generated-rust-process plus compiler-owned modeled facades",
-            "v085_metadata_registry": v085_metadata_registry_json(),
+            "reserved_metadata_registry": reserved_metadata_registry_json(),
             "backends": backends,
         }),
         json_output,
@@ -1108,7 +1107,8 @@ fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
         "name": capability.name,
         "display_name": capability.display_name,
         "role": capability.role,
-        "executes_in_v10": capability.executes_in_v10,
+        "executes_now": capability.executes_in_v10,
+        "execution_status": if capability.executes_in_v10 { "executable" } else { "reserved" },
         "integration_level": capability.integration_level,
         "scenario_execution": capability.scenario_execution,
         "ecosystem_scope": capability.ecosystem_scope,
@@ -1118,7 +1118,7 @@ fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
     })
 }
 
-fn v085_metadata_registry_json() -> Value {
+fn reserved_metadata_registry_json() -> Value {
     let backends = backend::v085_metadata_capabilities()
         .iter()
         .map(|capability| {
@@ -1131,7 +1131,6 @@ fn v085_metadata_registry_json() -> Value {
         })
         .collect::<Vec<_>>();
     json!({
-        "version": "v0.8.5",
         "executed": false,
         "metadata_only": true,
         "backends": backends,
@@ -1251,7 +1250,8 @@ fn backend_recommendation(name: &str, backend_fit: &str) -> serde_json::Value {
     json!({
         "name": capability.map(|capability| capability.display_name).unwrap_or(name),
         "backend_fit": backend_fit,
-        "executes_in_v10": capability.is_some_and(|capability| capability.executes_in_v10),
+        "executes_now": capability.is_some_and(|capability| capability.executes_in_v10),
+        "execution_status": if capability.is_some_and(|capability| capability.executes_in_v10) { "executable" } else { "reserved" },
         "integration_level": capability.map(|capability| capability.integration_level).unwrap_or("metadata-only"),
         "scenario_execution": capability.map(|capability| capability.scenario_execution).unwrap_or("unsupported-native-adapter"),
     })

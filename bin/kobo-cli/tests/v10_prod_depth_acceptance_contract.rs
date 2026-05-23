@@ -352,26 +352,33 @@ fn dropped_reply() {
 }
 
 #[test]
-fn public_backend_commands_report_v10_execution_truth() {
+fn public_backend_commands_report_stable_execution_truth() {
     let project = TestProject::new("v10-backend-truth");
     let output = run_kobo(&[s("sim"), s("backends"), s("--json")], &project.root);
     assert_success(&output, "sim backends --json should succeed");
     let value: Value = serde_json::from_str(&output.stdout).expect("backend JSON should parse");
 
-    assert_eq!(value["version"], "v0.10");
+    assert!(
+        value.get("version").is_none(),
+        "public backend output should not expose roadmap-stage version fields: {value}"
+    );
     assert_eq!(value["executed"], true);
     assert!(
-        value["backends"].as_array().is_some_and(|backends| backends
-            .iter()
-            .any(|backend| backend["name"] == "generated-rust-process"
-                && backend["executes_in_v10"] == true)),
-        "backend list should expose the actual v0.10 executed harness path: {value}"
+        value["backends"]
+            .as_array()
+            .is_some_and(|backends| backends
+                .iter()
+                .any(|backend| backend["name"] == "generated-rust-process"
+                    && backend["executes_now"] == true
+                    && backend["execution_status"] == "executable")),
+        "backend list should expose the actual executed harness path: {value}"
     );
     assert!(
         value["backends"].as_array().is_some_and(|backends| backends
             .iter()
             .any(|backend| backend["name"] == "loom"
-                && backend["executes_in_v10"] == true
+                && backend["executes_now"] == true
+                && backend["execution_status"] == "executable"
                 && backend["integration_level"] == "generated-user-rust"
                 && backend["scenario_execution"] == "generated-user-rust-loom")),
         "phase 09 Loom support must execute generated user Rust inside Loom, not a lowered scenario model: {value}"

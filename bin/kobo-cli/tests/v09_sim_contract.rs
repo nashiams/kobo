@@ -647,9 +647,10 @@ fn network_route() {
             .find(|item| item["name"] == name)
             .unwrap_or_else(|| panic!("{name} should appear in backend recommendations: {json}"));
         assert_eq!(
-            backend["executes_in_v10"], false,
+            backend["executes_now"], false,
             "{name} must not be reported as executable while its adapter is reserved"
         );
+        assert_eq!(backend["execution_status"], "reserved");
         assert_eq!(backend["integration_level"], "metadata-only");
         assert_eq!(backend["scenario_execution"], "unsupported-native-adapter");
     }
@@ -676,6 +677,11 @@ fn backend_recommendations_avoid_version_stage_language() {
         &text,
         "v0.",
         "backend recommendation output should not expose roadmap-stage product wording",
+    );
+    assert_not_contains(
+        &text,
+        "executes_in_v10",
+        "backend recommendation output should use stable product schema names",
     );
 }
 

@@ -806,10 +806,9 @@ fn validate_sim_backend_scheduler(
         return Ok(());
     };
     let supported = match backend {
-        "shuttle" => matches!(scheduler, "pct" | "pct-random-bounded" | "small-random"),
         "loom" => matches!(scheduler, "exhaustive" | "small-random"),
-        "turmoil" | "madsim" => matches!(scheduler, "deterministic" | "small-random"),
-        "proptest" | "failpoints" => scheduler == "small-random",
+        "shuttle" | "turmoil" | "madsim" => false,
+        "proptest" | "failpoints" => false,
         _ => false,
     };
     if supported {
@@ -1189,16 +1188,16 @@ schedule_budget = 7
 seed_count = 3
 shrink = "off"
 
-[sim.backend.shuttle]
+[sim.backend.loom]
 enabled = true
-scheduler = "pct"
+scheduler = "exhaustive"
 replay_token = "record"
 max_branches = 11
 checkpoint_replay = true
 "#;
         let config = parse_kobo_config(toml).unwrap();
         let profile = config.sim.profiles.get("quick").unwrap();
-        let backend = config.sim.backends.get("shuttle").unwrap();
+        let backend = config.sim.backends.get("loom").unwrap();
 
         assert_eq!(config.sim.default_profile, "quick");
         assert!(config.sim.show_backend_choices);
@@ -1206,7 +1205,7 @@ checkpoint_replay = true
         assert_eq!(profile.seed_count, Some(3));
         assert_eq!(profile.shrink.as_deref(), Some("off"));
         assert!(backend.enabled);
-        assert_eq!(backend.scheduler.as_deref(), Some("pct"));
+        assert_eq!(backend.scheduler.as_deref(), Some("exhaustive"));
         assert_eq!(backend.replay_token.as_deref(), Some("record"));
         assert_eq!(backend.max_branches, Some(11));
         assert_eq!(backend.checkpoint_replay, Some(true));
@@ -1238,6 +1237,19 @@ scheduler = "pct"
         assert!(
             backend_error.contains("unknown simulation backend"),
             "{backend_error}"
+        );
+
+        let scheduler_error = parse_kobo_config(
+            r#"
+[sim.backend.shuttle]
+scheduler = "pct"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            scheduler_error.contains("unsupported scheduler"),
+            "{scheduler_error}"
         );
     }
 

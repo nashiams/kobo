@@ -98,7 +98,7 @@ fn sync_transaction() {
 }
 
 #[test]
-fn ecosystem_backends_are_executable_v10_adapters_not_metadata_only() {
+fn ecosystem_backends_distinguish_native_execution_from_reserved_pins() {
     let project = TestProject::new("v10-backend-registry-executable");
     let output = run_kobo(&[s("sim"), s("backends"), s("--json")], &project.root);
     assert_success(&output, "backend registry should render");
@@ -107,24 +107,27 @@ fn ecosystem_backends_are_executable_v10_adapters_not_metadata_only() {
         .as_array()
         .expect("backend list should be an array");
 
-    for name in ["loom", "shuttle", "turmoil", "madsim"] {
+    let loom = backends
+        .iter()
+        .find(|backend| backend["name"] == "loom")
+        .unwrap_or_else(|| panic!("backend `loom` should be listed: {value}"));
+    assert_eq!(
+        loom["executes_in_v10"], true,
+        "Loom is the native backend linked into the workspace: {loom}"
+    );
+    assert_eq!(loom["integration_level"], "generated-user-rust");
+
+    for name in ["shuttle", "turmoil", "madsim"] {
         let backend = backends
             .iter()
             .find(|backend| backend["name"] == name)
             .unwrap_or_else(|| panic!("backend `{name}` should be listed: {value}"));
         assert_eq!(
-            backend["executes_in_v10"], true,
-            "{name} should no longer be metadata-only: {backend}"
+            backend["executes_in_v10"], false,
+            "{name} must not claim native execution until the adapter is linked: {backend}"
         );
-        assert_ne!(
-            backend["integration_level"], "metadata-only",
-            "{name} should report an executable adapter level: {backend}"
-        );
-        assert_ne!(
-            backend["scenario_execution"],
-            concat!("not", "-linked"),
-            "{name} should report the generated user Rust execution surface: {backend}"
-        );
+        assert_eq!(backend["integration_level"], "metadata-only");
+        assert_eq!(backend["scenario_execution"], "unsupported-native-adapter");
     }
 }
 
@@ -148,15 +151,53 @@ fn ecosystem_backend_registry_does_not_claim_full_external_crate_exploration() {
             "{name} adapter evidence must not claim arbitrary external crate exploration: {backend}"
         );
         assert_eq!(
-            backend["ecosystem_scope"], "generated-user-rust-adapter",
+            backend["ecosystem_scope"], "backend-native-unsupported",
             "{name} should report adapter scope explicitly: {backend}"
         );
     }
 }
 
 #[test]
-fn expert_backend_flags_drive_scheduler_output_without_source_imports() {
+fn expert_loom_backend_flags_drive_native_scheduler_output_without_source_imports() {
     let project = TestProject::new("v10-expert-backend-flags");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn expert_sync_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("exhaustive"),
+            s("--backend"),
+            s("loom"),
+            s("--scheduler"),
+            s("exhaustive"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "explicit Loom backend and scheduler should run");
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["backend"], "loom");
+    assert_eq!(json["backend_profile"], "sync");
+    assert_eq!(json["scheduler"]["strategy"], "exhaustive");
+
+    let source = project.read("src/main.kobo");
+    assert_not_contains(&source, "shuttle::", "user source must not import Shuttle");
+    assert_not_contains(&source, "loom::", "user source must not import Loom");
+}
+
+#[test]
+fn unsupported_native_backend_scheduler_reports_explicit_debt_path() {
+    let project = TestProject::new("v10-unsupported-native-backend-scheduler");
     let file = project.main_file(
         r#"
 #[kobo::scenario(profile = "async")]
@@ -175,21 +216,32 @@ fn expert_async_route() {
             s("shuttle"),
             s("--scheduler"),
             s("pct"),
-            s("--events=json"),
+            s("--error-format=json"),
             path_arg(&file),
         ],
         &project.root,
     );
 
-    assert_success(&output, "explicit backend and scheduler should run");
-    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
-    assert_eq!(json["backend"], "shuttle");
-    assert_eq!(json["backend_profile"], "async");
-    assert_eq!(json["scheduler"]["strategy"], "pct");
-
-    let source = project.read("src/main.kobo");
-    assert_not_contains(&source, "shuttle::", "user source must not import Shuttle");
-    assert_not_contains(&source, "loom::", "user source must not import Loom");
+    assert_failure(
+        &output,
+        "unsupported Shuttle scheduler should not be accepted as metadata",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "unsupported backend option",
+        "failure should name unsupported backend controls",
+    );
+    assert_contains(
+        &text,
+        "adapter is not linked",
+        "failure should be honest about missing native adapter",
+    );
+    assert_contains(
+        &text,
+        "scenario debt",
+        "failure should offer scenario debt as an explicit path",
+    );
 }
 
 #[test]
@@ -340,15 +392,15 @@ schedule_budget = 7
 seed_count = 3
 shrink = "off"
 
-[sim.backend.shuttle]
+[sim.backend.loom]
 enabled = true
-scheduler = "pct"
+scheduler = "exhaustive"
 replay_token = "record"
 "#,
     );
     let file = project.main_file(
         r#"
-#[kobo::scenario(profile = "async")]
+#[kobo::scenario(profile = "sync")]
 fn configured_sim_route() {
     ward.task();
 }
@@ -368,8 +420,8 @@ fn configured_sim_route() {
 
     assert_success(&output, "sim config should drive test output");
     let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
-    assert_eq!(json["backend"], "shuttle");
-    assert_eq!(json["scheduler"]["strategy"], "pct");
+    assert_eq!(json["backend"], "loom");
+    assert_eq!(json["scheduler"]["strategy"], "exhaustive");
     assert_eq!(
         json["scheduler"]["event_budget"], 7,
         "sim.profile.quick.schedule_budget should set the scheduler budget"
@@ -379,7 +431,7 @@ fn configured_sim_route() {
         "stable sim config should be serialized for audit"
     );
     assert_eq!(
-        json["sim_config"]["backends"]["shuttle"]["replay_token"],
+        json["sim_config"]["backends"]["loom"]["replay_token"],
         "record"
     );
 }

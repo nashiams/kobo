@@ -58,11 +58,12 @@ pub(super) fn cmd_test(
         file,
         Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
     )?;
+    let execution_profile = expert_options.execution_profile(&profile_roles.backend_profile)?;
     let effective_scheduler = expert_options
-        .effective_scheduler(&session.config, &profile_roles.backend_profile)
+        .effective_scheduler(&session.config, &execution_profile)
         .map(str::to_owned);
     expert_options.validate(
-        &profile_roles.backend_profile,
+        &execution_profile,
         sim_profile,
         effective_scheduler.as_deref(),
     )?;
@@ -72,11 +73,11 @@ pub(super) fn cmd_test(
         &artifacts,
         &target_name,
         document.source_hash.clone(),
-        &profile_roles.backend_profile,
+        &execution_profile,
     )?;
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
-        profile: profile_roles.backend_profile.clone(),
+        profile: execution_profile,
         seed,
         inject: inject.map(str::to_owned),
         event_budget: event_budget
@@ -213,6 +214,19 @@ impl BackendExpertOptions {
             .unwrap_or_else(|| backend_for_profile(backend_profile))
     }
 
+    fn execution_profile(&self, scenario_profile: &str) -> anyhow::Result<String> {
+        let Some(backend) = self.backend.as_deref() else {
+            return Ok(scenario_profile.to_owned());
+        };
+        let expected_profile = profile_for_backend(backend)?;
+        if expected_profile != scenario_profile {
+            anyhow::bail!(
+                "unsupported backend option: backend `{backend}` requires simulation profile `{expected_profile}`, but the scenario resolved to `{scenario_profile}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            );
+        }
+        Ok(expected_profile.to_owned())
+    }
+
     fn effective_scheduler<'a>(
         &'a self,
         config: &'a kobo_driver::KoboConfig,
@@ -238,6 +252,11 @@ impl BackendExpertOptions {
         if self.backend_native && self.backend.is_none() {
             anyhow::bail!(
                 "unsupported backend option: --backend-native requires --backend; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            );
+        }
+        if self.backend_native && backend_name != "loom" {
+            anyhow::bail!(
+                "unsupported backend option: --backend-native is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
             );
         }
         if self.max_branches.is_some() && sim_profile != "exhaustive" {
@@ -679,15 +698,30 @@ fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
     }
 }
 
+fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
+    match backend {
+        "loom" => Ok("sync"),
+        "shuttle" => Ok("async"),
+        "turmoil" => Ok("network"),
+        "madsim" => Ok("distributed"),
+        "proptest" => Ok("stateful-input"),
+        "failpoints" => Ok("failpoint"),
+        _ => {
+            validate_backend_name(backend)?;
+            unreachable!("validated backend must have a profile mapping")
+        }
+    }
+}
+
 fn validate_scheduler_control(backend: &str, scheduler: Option<&str>) -> anyhow::Result<()> {
     let Some(scheduler) = scheduler else {
         return Ok(());
     };
     match (backend, scheduler) {
-        ("shuttle", "pct" | "pct-random-bounded" | "small-random") => Ok(()),
         ("loom", "exhaustive" | "small-random") => Ok(()),
-        ("turmoil" | "madsim", "deterministic" | "small-random") => Ok(()),
-        (_, "small-random") => Ok(()),
+        ("shuttle" | "turmoil" | "madsim", _) => anyhow::bail!(
+            "unsupported backend option: scheduler `{scheduler}` requires native backend `{backend}`, but that adapter is not linked; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+        ),
         _ => anyhow::bail!(
             "unsupported backend option: scheduler `{scheduler}` is not supported by backend `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
         ),

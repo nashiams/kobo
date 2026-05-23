@@ -8,6 +8,8 @@ pub enum VerificationError {
     CoreHashMismatch { expected: String, observed: String },
     #[error("missing cancel edge for suspension block {block}")]
     MissingCancelEdge { block: String },
+    #[error("missing async cancel evidence for suspension block {block}")]
+    MissingAsyncCancelEvidence { block: String },
     #[error("template {id} has stale version {version}")]
     StaleTemplateVersion { id: String, version: String },
     #[error("template hash mismatch for {id}: expected {expected}, observed {observed}")]

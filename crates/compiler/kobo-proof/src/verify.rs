@@ -30,6 +30,7 @@ pub fn verify_certificate(
     verify_source_hash(certificate, context)?;
     verify_core_hash(certificate)?;
     verify_cancel_edges(certificate)?;
+    verify_async_model(certificate)?;
     verify_template_versions(certificate)?;
     verify_template_hashes(certificate)?;
     verify_boundary_policies(certificate)?;
@@ -115,6 +116,43 @@ fn verify_cancel_edges(certificate: &ProofCertificate) -> Result<(), Verificatio
             return Err(VerificationError::MissingCancelEdge { block });
         }
     }
+    Ok(())
+}
+
+fn verify_async_model(certificate: &ProofCertificate) -> Result<(), VerificationError> {
+    let cancel_evidence = certificate
+        .core
+        .async_model
+        .cancel_edges
+        .iter()
+        .map(|edge| (edge.from.as_str(), edge.to.as_str()))
+        .collect::<BTreeSet<_>>();
+    for edge in &certificate.core.cfg_edges {
+        if edge.kind == "await"
+            && edge.to == "await_cancel"
+            && !cancel_evidence.contains(&(edge.from.as_str(), "await_cancel"))
+        {
+            return Err(VerificationError::MissingAsyncCancelEvidence {
+                block: edge.from.clone(),
+            });
+        }
+    }
+
+    let suspension_blocks = certificate
+        .core
+        .async_model
+        .suspension_states
+        .iter()
+        .map(|state| state.block.as_str())
+        .collect::<BTreeSet<_>>();
+    for edge in &certificate.core.cfg_edges {
+        if edge.kind == "await" && !suspension_blocks.contains(edge.from.as_str()) {
+            return Err(VerificationError::MissingAsyncCancelEvidence {
+                block: edge.from.clone(),
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -329,7 +367,7 @@ fn verify_exit_env(
 
 fn reject_unresolved_exit(env: &BTreeMap<String, String>) -> Result<(), VerificationError> {
     for (binding, state) in env {
-        if matches!(state.as_str(), "owned" | "branch_unresolved") {
+        if matches!(state.as_str(), "owned" | "moved" | "branch_unresolved") {
             return Err(VerificationError::UnresolvedExitObligation {
                 binding: binding.clone(),
             });

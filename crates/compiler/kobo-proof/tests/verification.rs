@@ -1,9 +1,9 @@
 use kobo_proof::{
     certificate_material_hash, core_material_hash, parse_certificate_json, stable_hash,
-    verify_certificate, ArtifactKind, CoreCfgEdge, CoreCfgNode, CoreEvidence, FunctionSummary,
-    HashEvidence, ObligationEvent, ObligationEventKind, ObligationState, ProofCertificate,
-    ReplayGrade, SourceEvidence, SourceSpan, TemplateVersionEvidence, VerificationContext,
-    VerificationError,
+    verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence,
+    FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind, ObligationState,
+    ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan, TemplateVersionEvidence,
+    VerificationContext, VerificationError,
 };
 use serde_json::Value;
 
@@ -97,6 +97,7 @@ fn valid_certificate() -> ProofCertificate {
             version: "core-1".to_owned(),
             cfg_nodes,
             cfg_edges,
+            async_model: AsyncModelEvidence::default(),
         },
         replay_grade: ReplayGrade::Partial,
         template_hashes: vec![HashEvidence {

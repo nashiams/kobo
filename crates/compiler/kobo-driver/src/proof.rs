@@ -2,14 +2,17 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use kobo_ir::{
-    lower_core_program, CoreBlock, CoreFunction, CoreStatement, CoreStatementKind, KoboSpan,
-    ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
+    lower_core_program, CoreBlock, CoreFunction, CoreStatement, CoreStatementKind,
+    CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, stable_hash, BoundaryAssumption, BoundaryPolicy,
-    CoreCfgEdge, CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, HashEvidence,
-    ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry, ProofCertificate,
-    SourceEvidence, SourceSpan, TemplateVersionEvidence,
+    certificate_material_hash, core_material_hash, stable_hash, AsyncModelEvidence,
+    BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence,
+    CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
+    HashEvidence, ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry,
+    ProofCertificate, SelectPathEvidence, SourceEvidence, SourceSpan,
+    SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateVersionEvidence,
+    TimeoutCancelEdgeEvidence,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -42,6 +45,13 @@ pub fn emit_proof_certificate(
         boundary_evidence(&source_path, input.source, input.program)?;
     let (entry_env, exit_env, obligation_events) =
         obligation_evidence(&source_path, input.source, &core_program.functions);
+    let async_model = async_model_evidence(
+        &source_path,
+        input.source,
+        input.program,
+        &core_program.functions,
+        &exit_env,
+    );
     let function_summaries = function_summaries(
         input.program,
         &entry_env,
@@ -66,6 +76,7 @@ pub fn emit_proof_certificate(
             version: core_program.core_version.to_owned(),
             cfg_nodes,
             cfg_edges,
+            async_model,
         },
         replay_grade: input.replay_grade,
         template_hashes,
@@ -277,6 +288,147 @@ fn obligation_evidence(
     (entry_env, exit_env, events)
 }
 
+fn async_model_evidence(
+    source_path: &str,
+    source: &str,
+    program: &ScenarioProgram,
+    functions: &[CoreFunction],
+    exit_env: &[ObligationState],
+) -> AsyncModelEvidence {
+    let live_locals = live_locals_across_first_await(source, &program.target);
+    let select_result_hash = canonical_obligation_result_hash(exit_env);
+    let mut model = AsyncModelEvidence::default();
+
+    for function in functions {
+        let mut current_env = BTreeMap::<String, String>::new();
+        for block in &function.blocks {
+            for statement in &block.statements {
+                apply_obligation_statement(statement, &mut current_env);
+            }
+            for terminator in &block.terminators {
+                match terminator.kind {
+                    CoreTerminatorKind::Await => {
+                        let suspension_id =
+                            format!("{}:{}:{}", function.name, block.id, terminator.id);
+                        let resume_edge = terminator
+                            .edges
+                            .iter()
+                            .find(|edge| edge.as_str() == "await_resume")
+                            .cloned()
+                            .unwrap_or_else(|| "await_resume".to_owned());
+                        let cancel_edge = terminator
+                            .edges
+                            .iter()
+                            .find(|edge| edge.as_str() == "await_cancel")
+                            .cloned()
+                            .unwrap_or_else(|| "await_cancel".to_owned());
+                        let source_span =
+                            source_span_from_kobo(source_path, source, terminator.source_span);
+                        model.suspension_states.push(SuspensionStateEvidence {
+                            id: suspension_id.clone(),
+                            function: function.name.clone(),
+                            block: block.id.clone(),
+                            terminator_kind: "await".to_owned(),
+                            resume_edge,
+                            cancel_edge: cancel_edge.clone(),
+                            source_span: source_span.clone(),
+                        });
+                        model.cancel_edges.push(CancelEdgeEvidence {
+                            id: format!("{suspension_id}:future-drop"),
+                            function: function.name.clone(),
+                            from: block.id.clone(),
+                            to: cancel_edge.clone(),
+                            reason: "future_drop".to_owned(),
+                            source_span: source_span.clone(),
+                        });
+                        for local in &live_locals {
+                            model.future_state_locals.push(FutureStateLocalEvidence {
+                                binding: local.clone(),
+                                suspension_state: suspension_id.clone(),
+                                source_span: source_span_for_binding(source_path, source, local),
+                            });
+                        }
+                        for state in env_states(&current_env)
+                            .into_iter()
+                            .filter(|state| state.state == "owned")
+                        {
+                            model
+                                .future_state_obligations
+                                .push(FutureStateObligationEvidence {
+                                    binding: state.binding,
+                                    state: state.state,
+                                    suspension_state: suspension_id.clone(),
+                                    source_span: source_span.clone(),
+                                });
+                        }
+                        if source_span.snippet.contains("timeout")
+                            || source.contains("tokio::time::timeout")
+                        {
+                            model.timeout_cancel_edges.push(TimeoutCancelEdgeEvidence {
+                                id: format!("{suspension_id}:timeout"),
+                                function: function.name.clone(),
+                                suspension_state: suspension_id,
+                                source: "tokio::time::timeout".to_owned(),
+                                cancel_edge,
+                                source_span,
+                            });
+                        }
+                    }
+                    CoreTerminatorKind::Branch => {
+                        let source_span =
+                            source_span_from_kobo(source_path, source, terminator.source_span);
+                        for path_kind in ["winner", "loser_cancel"] {
+                            model.select_paths.push(SelectPathEvidence {
+                                id: format!(
+                                    "{}:{}:{}:{path_kind}",
+                                    function.name, block.id, terminator.id
+                                ),
+                                function: function.name.clone(),
+                                branch_block: block.id.clone(),
+                                path_kind: path_kind.to_owned(),
+                                obligation_result_hash: select_result_hash.clone(),
+                                source_span: source_span.clone(),
+                            });
+                        }
+                    }
+                    CoreTerminatorKind::Goto
+                    | CoreTerminatorKind::Return
+                    | CoreTerminatorKind::ErrorExit
+                    | CoreTerminatorKind::Panic
+                    | CoreTerminatorKind::OpaqueBoundary => {}
+                }
+            }
+        }
+    }
+
+    for operation in &program.operations {
+        let ScenarioOpKind::CreateObligation {
+            binding,
+            type_name,
+            actions,
+            template,
+        } = &operation.kind
+        else {
+            continue;
+        };
+        let is_spawned_task = type_name == "SpawnedTask"
+            || template
+                .as_ref()
+                .is_some_and(|template| template.kind == "spawned_task");
+        if is_spawned_task {
+            model
+                .spawned_task_obligations
+                .push(SpawnedTaskObligationEvidence {
+                    binding: binding.clone(),
+                    required_resolution: actions.clone(),
+                    source_span: source_span_from_kobo(source_path, source, operation.span),
+                });
+        }
+    }
+
+    model
+}
+
 fn apply_obligation_statement(
     statement: &CoreStatement,
     current_env: &mut BTreeMap<String, String>,
@@ -376,6 +528,87 @@ fn coverage_loss(program: &ScenarioProgram) -> Vec<CoverageLoss> {
     unsupported.chain(opaque).collect()
 }
 
+fn canonical_obligation_result_hash(exit_env: &[ObligationState]) -> String {
+    let mut states = exit_env
+        .iter()
+        .map(|state| state.state.as_str())
+        .collect::<Vec<_>>();
+    states.sort_unstable();
+    stable_hash(&format!("obligation-result:{states:?}"))
+}
+
+fn live_locals_across_first_await(source: &str, target: &str) -> Vec<String> {
+    let Some((body_start, body_end)) = target_function_body_range(source, target) else {
+        return Vec::new();
+    };
+    let body = &source[body_start..body_end];
+    let Some(await_offset) = body.find(".await") else {
+        return Vec::new();
+    };
+    let before_await = &body[..await_offset];
+    let after_await = &body[await_offset..];
+    let mut locals = extract_let_bindings(before_await)
+        .into_iter()
+        .filter(|binding| !binding.starts_with('_'))
+        .filter(|binding| identifier_occurs(after_await, binding))
+        .collect::<Vec<_>>();
+    locals.sort();
+    locals.dedup();
+    locals
+}
+
+fn target_function_body_range(source: &str, target: &str) -> Option<(usize, usize)> {
+    let needle = format!("fn {target}");
+    let function_start = source.find(&needle)?;
+    let body_start = source[function_start..].find('{')? + function_start + 1;
+    let mut depth = 1usize;
+    for (relative, ch) in source[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some((body_start, body_start + relative));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn extract_let_bindings(source: &str) -> Vec<String> {
+    source
+        .split(';')
+        .filter_map(|statement| {
+            let trimmed = statement.trim_start();
+            let rest = trimmed.strip_prefix("let ")?;
+            let rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
+            let binding = rest
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                .collect::<String>();
+            (!binding.is_empty()).then_some(binding)
+        })
+        .collect()
+}
+
+fn identifier_occurs(source: &str, identifier: &str) -> bool {
+    source
+        .match_indices(identifier)
+        .any(|(index, _)| identifier_boundary(source, index, identifier.len()))
+}
+
+fn identifier_boundary(source: &str, start: usize, len: usize) -> bool {
+    let before = source[..start].chars().next_back();
+    let after = source[start + len..].chars().next();
+    !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
+}
+
+fn is_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
+}
+
 fn boundary_policy(policy: &kobo_ir::ScenarioBoundaryPolicy) -> BoundaryPolicy {
     match policy {
         kobo_ir::ScenarioBoundaryPolicy::Typed => BoundaryPolicy::Typed,
@@ -392,6 +625,21 @@ fn boundary_policy(policy: &kobo_ir::ScenarioBoundaryPolicy) -> BoundaryPolicy {
 
 fn source_span_from_kobo(source_path: &str, source: &str, span: KoboSpan) -> SourceSpan {
     source_span_from_range(source_path, source, span.start as usize, span.end as usize)
+}
+
+fn source_span_for_binding(source_path: &str, source: &str, binding: &str) -> SourceSpan {
+    let let_binding = format!("let {binding}");
+    let let_mut_binding = format!("let mut {binding}");
+    let start = source
+        .find(&let_binding)
+        .or_else(|| source.find(&let_mut_binding))
+        .unwrap_or(0);
+    source_span_from_range(
+        source_path,
+        source,
+        start,
+        start.saturating_add(binding.len()),
+    )
 }
 
 fn source_span_from_range(source_path: &str, source: &str, start: usize, end: usize) -> SourceSpan {

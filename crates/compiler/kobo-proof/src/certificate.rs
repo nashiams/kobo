@@ -40,6 +40,89 @@ pub struct CoreEvidence {
     pub version: String,
     pub cfg_nodes: Vec<CoreCfgNode>,
     pub cfg_edges: Vec<CoreCfgEdge>,
+    pub async_model: AsyncModelEvidence,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AsyncModelEvidence {
+    pub suspension_states: Vec<SuspensionStateEvidence>,
+    pub future_state_locals: Vec<FutureStateLocalEvidence>,
+    pub future_state_obligations: Vec<FutureStateObligationEvidence>,
+    pub cancel_edges: Vec<CancelEdgeEvidence>,
+    pub select_paths: Vec<SelectPathEvidence>,
+    pub timeout_cancel_edges: Vec<TimeoutCancelEdgeEvidence>,
+    pub spawned_task_obligations: Vec<SpawnedTaskObligationEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuspensionStateEvidence {
+    pub id: String,
+    pub function: String,
+    pub block: String,
+    pub terminator_kind: String,
+    pub resume_edge: String,
+    pub cancel_edge: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FutureStateLocalEvidence {
+    pub binding: String,
+    pub suspension_state: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FutureStateObligationEvidence {
+    pub binding: String,
+    pub state: String,
+    pub suspension_state: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelEdgeEvidence {
+    pub id: String,
+    pub function: String,
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectPathEvidence {
+    pub id: String,
+    pub function: String,
+    pub branch_block: String,
+    pub path_kind: String,
+    pub obligation_result_hash: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimeoutCancelEdgeEvidence {
+    pub id: String,
+    pub function: String,
+    pub suspension_state: String,
+    pub source: String,
+    pub cancel_edge: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnedTaskObligationEvidence {
+    pub binding: String,
+    pub required_resolution: Vec<String>,
+    pub source_span: SourceSpan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

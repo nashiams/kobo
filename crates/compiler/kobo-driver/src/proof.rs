@@ -1501,7 +1501,7 @@ fn parsed_live_locals_by_await(source: &str, target: &str) -> Vec<Vec<String>> {
     let mut await_statement_indexes = Vec::new();
     for (index, statement) in function.block.stmts.iter().enumerate() {
         locals_before_statement.push(declared.clone());
-        if stmt_contains_await(statement) {
+        for _ in 0..stmt_await_count(statement) {
             await_statement_indexes.push(index);
         }
         collect_pat_bindings_in_stmt(statement, &mut declared);
@@ -1526,21 +1526,21 @@ fn parsed_live_locals_by_await(source: &str, target: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-fn stmt_contains_await(statement: &syn::Stmt) -> bool {
+fn stmt_await_count(statement: &syn::Stmt) -> usize {
     struct AwaitVisitor {
-        found: bool,
+        count: usize,
     }
 
     impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
         fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
-            self.found = true;
+            self.count += 1;
             syn::visit::visit_expr_await(self, expr);
         }
     }
 
-    let mut visitor = AwaitVisitor { found: false };
+    let mut visitor = AwaitVisitor { count: 0 };
     syn::visit::visit_stmt(&mut visitor, statement);
-    visitor.found
+    visitor.count
 }
 
 fn collect_pat_bindings_in_stmt(statement: &syn::Stmt, bindings: &mut BTreeSet<String>) {

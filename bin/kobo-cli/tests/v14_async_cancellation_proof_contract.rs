@@ -59,6 +59,21 @@ async fn {scenario_name}() {{
     )
 }
 
+fn same_statement_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    let _both = (helper().await, helper().await);
+    let _after = first;
+}}
+"#
+    )
+}
+
 fn select_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -318,6 +333,49 @@ fn locals_live_across_each_await_attach_to_the_matching_suspension() {
         }),
         "second must not be attached to suspensions before it exists: {locals:?}"
     );
+}
+
+#[test]
+fn same_statement_awaits_each_get_suspension_and_future_state() {
+    let project = TestProject::new("v14-async-same-statement-awaits");
+    let artifact_path = emit_artifact(
+        &project,
+        &same_statement_await_source("same_statement_await_case"),
+        "same_statement_await_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let suspensions = async_model(&artifact)["suspension_states"]
+        .as_array()
+        .expect("suspension states should be an array");
+    let cancel_edges = async_model(&artifact)["cancel_edges"]
+        .as_array()
+        .expect("cancel edges should be an array");
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+
+    assert_eq!(
+        suspensions.len(),
+        2,
+        "each await expression should lower to a suspension: {suspensions:?}"
+    );
+    assert_eq!(
+        cancel_edges.len(),
+        2,
+        "each await expression should have a cancel edge: {cancel_edges:?}"
+    );
+    for suspension in suspensions {
+        let suspension_id = suspension["id"]
+            .as_str()
+            .expect("suspension should have an id");
+        assert!(
+            locals.iter().any(|local| {
+                local["binding"].as_str() == Some("first")
+                    && local["suspension_state"].as_str() == Some(suspension_id)
+            }),
+            "first should be live across each await expression: {locals:?}"
+        );
+    }
 }
 
 #[test]

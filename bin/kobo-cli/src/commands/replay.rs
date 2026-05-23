@@ -182,6 +182,9 @@ fn replay_v1(
             witness["backend_controls"]["scheduler"].as_str(),
         ),
         loom_max_branches: witness["backend_controls"]["max_branches"].as_u64(),
+        loom_checkpoint_replay: witness["backend_controls"]["checkpoint_replay"]
+            .as_bool()
+            .unwrap_or(false),
     };
     let run = kobo_sim_core::run_full_depth_from_program(
         &scenario_program,
@@ -558,8 +561,15 @@ fn checkpoint_replay_json(enabled: bool, run: &kobo_sim_core::FullDepthRun) -> V
         } else {
             None
         },
+        "checkpoint_path": if enabled {
+            run.harness_manifest
+                .as_ref()
+                .and_then(|manifest| manifest.checkpoint_path.as_deref())
+        } else {
+            None
+        },
         "source": if enabled {
-            Some("backend-controls")
+            Some("loom-builder-checkpoint")
         } else {
             None
         },

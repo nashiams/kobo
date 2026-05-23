@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use kobo_errors::KErrorCode;
@@ -205,7 +205,9 @@ fn run_generated_harness(
     let harness_dir = harness_dir(&program.source_hash, &program.target, &generated_rust_hash)?;
     std::fs::create_dir_all(&harness_dir)
         .map_err(|source| SimCoreError::io("create harness directory", source))?;
-    let harness_source = harness_source(program, generated_rust, options)?;
+    let checkpoint_path = loom_checkpoint_path(options, &harness_dir);
+    let harness_source =
+        harness_source(program, generated_rust, options, checkpoint_path.as_deref())?;
     let uses_loom = options.profile == "sync";
     let harness_rs_path = if uses_loom {
         harness_dir.join("src").join("main.rs")
@@ -244,6 +246,7 @@ fn run_generated_harness(
         stderr_hash: crate::digest::stable_hash(&process.stderr),
         event_count: events.len(),
         service_hook_events,
+        checkpoint_path: checkpoint_path.map(|path| path.display().to_string()),
     };
     let manifest_path = harness_dir.join("manifest.json");
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -412,12 +415,13 @@ fn harness_source(
     program: &ScenarioProgram,
     generated_rust: &str,
     options: &ScenarioOptions,
+    loom_checkpoint_path: Option<&Path>,
 ) -> Result<String> {
     if has_event_marker(generated_rust) {
         return Ok(generated_rust.to_owned());
     }
 
-    instrument_generated_rust(program, generated_rust, options)
+    instrument_generated_rust(program, generated_rust, options, loom_checkpoint_path)
 }
 
 fn has_event_marker(source: &str) -> bool {
@@ -432,6 +436,7 @@ fn instrument_generated_rust(
     program: &ScenarioProgram,
     generated_rust: &str,
     options: &ScenarioOptions,
+    loom_checkpoint_path: Option<&Path>,
 ) -> Result<String> {
     let mut source = String::new();
     source.push_str(&harness_support_source(program, generated_rust, options)?);
@@ -452,6 +457,7 @@ fn instrument_generated_rust(
         &program.target,
         &final_events,
         options,
+        loom_checkpoint_path,
         target_is_async(generated_rust, &program.target),
     )?);
     Ok(source)
@@ -1751,6 +1757,7 @@ fn main_wrapper_source(
     target: &str,
     final_events: &[ScenarioEvent],
     options: &ScenarioOptions,
+    loom_checkpoint_path: Option<&Path>,
     target_is_async: bool,
 ) -> Result<String> {
     let mut source = if options.profile == "sync" {
@@ -1760,6 +1767,17 @@ fn main_wrapper_source(
             source.push_str(&format!(
                 "    __kobo_loom.max_branches = {max_branches}_usize;\n"
             ));
+            if let Some(checkpoint_path) = loom_checkpoint_path {
+                source.push_str("    __kobo_loom.checkpoint_file(");
+                source.push_str(&format!("{:?}", checkpoint_path.display().to_string()));
+                source.push_str(");\n");
+            }
+            source.push_str("    __kobo_loom.check(|| {\n");
+        } else if let Some(checkpoint_path) = loom_checkpoint_path {
+            source.push_str("    let mut __kobo_loom = loom::model::Builder::new();\n");
+            source.push_str("    __kobo_loom.checkpoint_file(");
+            source.push_str(&format!("{:?}", checkpoint_path.display().to_string()));
+            source.push_str(");\n");
             source.push_str("    __kobo_loom.check(|| {\n");
         } else {
             source.push_str("    loom::model(|| {\n");
@@ -1793,6 +1811,11 @@ fn main_wrapper_source(
     }
     source.push_str("}\n");
     Ok(source)
+}
+
+fn loom_checkpoint_path(options: &ScenarioOptions, harness_dir: &Path) -> Option<PathBuf> {
+    (options.profile == "sync" && options.loom_checkpoint_replay)
+        .then(|| harness_dir.join("loom-checkpoint.json"))
 }
 
 fn target_is_async(source: &str, target: &str) -> bool {

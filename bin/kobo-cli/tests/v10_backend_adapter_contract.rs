@@ -963,6 +963,22 @@ fn configured_checkpoint_route() {
         witness["execution_digest"]["semantic_trace_hash"],
         "checkpoint replay should bind the semantic trace digest"
     );
+    let checkpoint_path = witness["checkpoint_replay"]["checkpoint_path"]
+        .as_str()
+        .expect("checkpoint replay should record a checkpoint artifact path");
+    assert!(
+        !checkpoint_path.is_empty(),
+        "checkpoint artifact path should not be empty"
+    );
+    let harness_path = witness["harness_manifest"]["harness_rs_path"]
+        .as_str()
+        .expect("witness should include generated harness source path");
+    let harness_source = fs::read_to_string(harness_path).expect("harness source should read");
+    assert_contains(
+        &harness_source,
+        "checkpoint_file",
+        "checkpoint replay should use Loom's native checkpoint API",
+    );
     witness["checkpoint_replay"]["semantic_trace_hash"] = Value::String("forged".to_owned());
     fs::write(
         &witness_path,

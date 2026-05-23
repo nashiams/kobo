@@ -20,4 +20,6 @@ pub struct HarnessManifest {
     pub stderr_hash: String,
     pub event_count: usize,
     pub service_hook_events: Vec<ServiceHookEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_path: Option<String>,
 }

@@ -109,6 +109,7 @@ pub(super) fn cmd_test(
             .or_else(|| default_budget(sim_profile)),
         scheduler: kobo_sim_core::SchedulerPolicy::from_name(effective_scheduler.as_deref()),
         loom_max_branches: effective_max_branches,
+        loom_checkpoint_replay: effective_checkpoint_replay,
     };
     let configured_seed_count = session.config.sim.seed_count_for(sim_profile);
     let fuzz_plan = if fuzz {
@@ -1663,8 +1664,15 @@ fn checkpoint_replay_json(enabled: bool, run: &FullDepthRun) -> serde_json::Valu
         } else {
             None
         },
+        "checkpoint_path": if enabled {
+            run.harness_manifest
+                .as_ref()
+                .and_then(|manifest| manifest.checkpoint_path.as_deref())
+        } else {
+            None
+        },
         "source": if enabled {
-            Some("backend-controls")
+            Some("loom-builder-checkpoint")
         } else {
             None
         },

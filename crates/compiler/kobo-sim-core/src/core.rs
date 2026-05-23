@@ -22,6 +22,7 @@ pub struct ScenarioOptions {
     pub event_budget: Option<u64>,
     pub scheduler: SchedulerPolicy,
     pub loom_max_branches: Option<u64>,
+    pub loom_checkpoint_replay: bool,
 }
 
 impl Default for ScenarioOptions {
@@ -34,6 +35,7 @@ impl Default for ScenarioOptions {
             event_budget: None,
             scheduler: SchedulerPolicy::Default,
             loom_max_branches: None,
+            loom_checkpoint_replay: false,
         }
     }
 }

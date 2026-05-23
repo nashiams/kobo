@@ -422,6 +422,11 @@ fn generated_harness_inspection(
         event_budget: Some(session.config.runtime_profile.scenario_event_budget),
         scheduler: kobo_sim_core::SchedulerPolicy::Default,
         loom_max_branches: session.config.sim.max_branches_for_backend("loom"),
+        loom_checkpoint_replay: session
+            .config
+            .sim
+            .checkpoint_replay_for_backend("loom")
+            .unwrap_or(false),
     };
     let run = kobo_sim_core::run_full_depth_from_program(
         &scenario_program,

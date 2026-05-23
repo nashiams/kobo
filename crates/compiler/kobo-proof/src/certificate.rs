@@ -106,6 +106,7 @@ pub struct SelectPathEvidence {
     pub branch_target: String,
     pub path_kind: String,
     pub obligation_results: Vec<ObligationState>,
+    pub cancelled_obligations: Vec<ObligationState>,
     pub obligation_result_hash: String,
     pub source_span: SourceSpan,
 }

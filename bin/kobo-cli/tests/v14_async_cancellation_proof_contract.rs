@@ -42,6 +42,23 @@ async fn {scenario_name}() {{
     )
 }
 
+fn multi_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    helper().await;
+    let second = first + 1;
+    helper().await;
+    let _after = first + second;
+}}
+"#
+    )
+}
+
 fn select_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -254,6 +271,56 @@ fn locals_live_across_await_become_future_state() {
 }
 
 #[test]
+fn locals_live_across_each_await_attach_to_the_matching_suspension() {
+    let project = TestProject::new("v14-async-multi-await-future-locals");
+    let artifact_path = emit_artifact(
+        &project,
+        &multi_await_source("multi_await_future_locals_case"),
+        "multi_await_future_locals_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+
+    let first_suspension = async_model(&artifact)["suspension_states"][0]["id"]
+        .as_str()
+        .expect("first suspension should have an id");
+    let second_suspension = async_model(&artifact)["suspension_states"][1]["id"]
+        .as_str()
+        .expect("second suspension should have an id");
+
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("first")
+                && local["suspension_state"].as_str() == Some(first_suspension)
+        }),
+        "first should live across the first await: {locals:?}"
+    );
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("first")
+                && local["suspension_state"].as_str() == Some(second_suspension)
+        }),
+        "first should also live across the second await: {locals:?}"
+    );
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("second")
+                && local["suspension_state"].as_str() == Some(second_suspension)
+        }),
+        "second is introduced after the first await and must live across the second await: {locals:?}"
+    );
+    assert!(
+        !locals.iter().any(|local| {
+            local["binding"].as_str() == Some("second")
+                && local["suspension_state"].as_str() == Some(first_suspension)
+        }),
+        "second must not be attached to suspensions before it exists: {locals:?}"
+    );
+}
+
+#[test]
 fn obligations_live_across_await_attach_to_future_state() {
     let project = TestProject::new("v14-async-future-obligations");
     let artifact_path = emit_artifact(
@@ -341,6 +408,18 @@ fn select_loser_with_explicit_requeue_passes() {
         }),
         "select evidence should be per branch target with obligation results: {select_paths:?}"
     );
+    assert!(
+        select_paths.iter().any(|path| {
+            path["path_kind"].as_str() == Some("loser_cancel")
+                && path["cancelled_obligations"]
+                    .as_array()
+                    .is_some_and(|states| states
+                        .iter()
+                        .any(|state| state["binding"].as_str() == Some("delivery")
+                            && state["state"].as_str() == Some("owned")))
+        }),
+        "loser-cancel paths should carry the obligations canceled from the losing branch: {select_paths:?}"
+    );
     let mut branch_targets = select_paths
         .iter()
         .filter_map(|path| path["branch_target"].as_str())
@@ -415,6 +494,32 @@ fn removed_future_state_local_is_rejected_after_hash_recompute() {
     });
 
     verify_fails(&project, &artifact_path, "future_state_locals");
+}
+
+#[test]
+fn removed_loser_cancel_obligation_evidence_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-select-cancel-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &select_source("removed_loser_cancel_evidence_case"),
+        "removed_loser_cancel_evidence_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        let paths = artifact["core"]["async_model"]["select_paths"]
+            .as_array_mut()
+            .expect("select paths should be mutable");
+        for path in paths {
+            if path["path_kind"].as_str() == Some("loser_cancel") {
+                path["cancelled_obligations"] = Value::Array(Vec::new());
+            }
+        }
+    });
+
+    verify_fails(
+        &project,
+        &artifact_path,
+        "select_paths.cancelled_obligations",
+    );
 }
 
 #[test]

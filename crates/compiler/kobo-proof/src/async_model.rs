@@ -158,16 +158,45 @@ fn verify_future_state_locals(
         .map(|local| (local.suspension_state.as_str(), local.binding.as_str()))
         .collect::<BTreeSet<_>>();
 
+    let mut suspensions_by_function = BTreeMap::<&str, Vec<&SuspensionStateEvidence>>::new();
     for suspension in suspensions.values() {
-        let Some(expected_locals) = expected_by_function.get(suspension.function.as_str()) else {
+        suspensions_by_function
+            .entry(suspension.function.as_str())
+            .or_default()
+            .push(*suspension);
+    }
+    for suspensions in suspensions_by_function.values_mut() {
+        suspensions.sort_by(|left, right| {
+            (
+                left.source_span.line,
+                left.source_span.start,
+                left.block.as_str(),
+                left.id.as_str(),
+            )
+                .cmp(&(
+                    right.source_span.line,
+                    right.source_span.start,
+                    right.block.as_str(),
+                    right.id.as_str(),
+                ))
+        });
+    }
+
+    for (function, suspensions) in suspensions_by_function {
+        let Some(expected_by_await) = expected_by_function.get(function) else {
             continue;
         };
-        for binding in expected_locals {
-            if !actual.contains(&(suspension.id.as_str(), binding.as_str())) {
-                return Err(VerificationError::AsyncEvidenceMismatch {
-                    field: "future_state_locals".to_owned(),
-                    id: binding.clone(),
-                });
+        for (index, suspension) in suspensions.iter().enumerate() {
+            let Some(expected_locals) = expected_by_await.get(index) else {
+                continue;
+            };
+            for binding in expected_locals {
+                if !actual.contains(&(suspension.id.as_str(), binding.as_str())) {
+                    return Err(VerificationError::AsyncEvidenceMismatch {
+                        field: "future_state_locals".to_owned(),
+                        id: binding.clone(),
+                    });
+                }
             }
         }
     }
@@ -207,7 +236,23 @@ fn verify_select_paths(certificate: &ProofCertificate) -> Result<(), Verificatio
                     id: path.id.clone(),
                 });
             };
-            verify_select_path_results(path, expected_results)?;
+            let expected_cancelled = if path_kind == "loser_cancel" {
+                block_envs
+                    .get(block)
+                    .map(|env| {
+                        env.iter()
+                            .filter(|(_, state)| **state == ObligationStatus::Owned)
+                            .map(|(binding, state)| crate::ObligationState {
+                                binding: binding.clone(),
+                                state: state.clone(),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            verify_select_path_results(path, expected_results, &expected_cancelled)?;
         }
     }
     Ok(())
@@ -317,6 +362,7 @@ fn verify_spawned_task_obligations(
 fn verify_select_path_results(
     path: &SelectPathEvidence,
     expected_results: &BTreeMap<String, ObligationStatus>,
+    expected_cancelled: &[crate::ObligationState],
 ) -> Result<(), VerificationError> {
     if event_state_map(&path.obligation_results) != *expected_results {
         return Err(VerificationError::AsyncEvidenceMismatch {
@@ -324,10 +370,17 @@ fn verify_select_path_results(
             id: path.id.clone(),
         });
     }
+    if path.cancelled_obligations != expected_cancelled {
+        return Err(VerificationError::AsyncEvidenceMismatch {
+            field: "select_paths.cancelled_obligations".to_owned(),
+            id: path.id.clone(),
+        });
+    }
     let observed = canonical_select_result_hash(
         &path.branch_target,
         &path.path_kind,
         &path.obligation_results,
+        &path.cancelled_obligations,
     );
     if observed != path.obligation_result_hash {
         return Err(VerificationError::AsyncEvidenceMismatch {
@@ -342,14 +395,20 @@ fn canonical_select_result_hash(
     branch_target: &str,
     path_kind: &str,
     states: &[crate::ObligationState],
+    cancelled_obligations: &[crate::ObligationState],
 ) -> String {
     let mut statuses = states
         .iter()
         .map(|state| format!("{}:{}", state.binding, state.state.as_str()))
         .collect::<Vec<_>>();
     statuses.sort_unstable();
+    let mut cancelled = cancelled_obligations
+        .iter()
+        .map(|state| format!("{}:{}", state.binding, state.state.as_str()))
+        .collect::<Vec<_>>();
+    cancelled.sort_unstable();
     stable_hash(&format!(
-        "select-result:{branch_target}:{path_kind}:{statuses:?}"
+        "select-result:{branch_target}:{path_kind}:{statuses:?}:cancelled:{cancelled:?}"
     ))
 }
 
@@ -383,7 +442,7 @@ fn cancel_edge_key(edge: &CancelEdgeEvidence) -> (&str, &str, &str) {
     (edge.function.as_str(), edge.from.as_str(), edge.to.as_str())
 }
 
-fn parsed_live_locals_by_function(source: &str) -> BTreeMap<String, BTreeSet<String>> {
+fn parsed_live_locals_by_function(source: &str) -> BTreeMap<String, Vec<BTreeSet<String>>> {
     let Ok(file) = syn::parse_file(source) else {
         return BTreeMap::new();
     };
@@ -392,34 +451,42 @@ fn parsed_live_locals_by_function(source: &str) -> BTreeMap<String, BTreeSet<Str
         .filter_map(|item| match item {
             syn::Item::Fn(function) => Some((
                 function.sig.ident.to_string(),
-                parsed_live_locals_across_first_await(function),
+                parsed_live_locals_by_await(function),
             )),
             _ => None,
         })
-        .filter(|(_, locals)| !locals.is_empty())
+        .filter(|(_, locals_by_await)| !locals_by_await.is_empty())
         .collect()
 }
 
-fn parsed_live_locals_across_first_await(function: &syn::ItemFn) -> BTreeSet<String> {
-    let mut before_await = BTreeSet::<String>::new();
-    let mut after_await_uses = BTreeSet::<String>::new();
-    let mut seen_await = false;
-    for statement in &function.block.stmts {
-        if seen_await {
-            collect_ident_uses_in_stmt(statement, &mut after_await_uses);
-            continue;
-        }
+fn parsed_live_locals_by_await(function: &syn::ItemFn) -> Vec<BTreeSet<String>> {
+    let mut locals_before_statement = Vec::<BTreeSet<String>>::new();
+    let mut declared = BTreeSet::<String>::new();
+    let mut await_statement_indexes = Vec::new();
+    for (index, statement) in function.block.stmts.iter().enumerate() {
+        locals_before_statement.push(declared.clone());
         if stmt_contains_await(statement) {
-            seen_await = true;
-            continue;
+            await_statement_indexes.push(index);
         }
-        collect_pat_bindings_in_stmt(statement, &mut before_await);
+        collect_pat_bindings_in_stmt(statement, &mut declared);
     }
 
-    before_await
+    await_statement_indexes
         .into_iter()
-        .filter(|binding| !binding.starts_with('_'))
-        .filter(|binding| after_await_uses.contains(binding))
+        .map(|await_index| {
+            let mut after_await_uses = BTreeSet::<String>::new();
+            for statement in function.block.stmts.iter().skip(await_index + 1) {
+                collect_ident_uses_in_stmt(statement, &mut after_await_uses);
+            }
+            locals_before_statement
+                .get(await_index)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|binding| !binding.starts_with('_'))
+                .filter(|binding| after_await_uses.contains(binding))
+                .collect::<BTreeSet<_>>()
+        })
         .collect()
 }
 

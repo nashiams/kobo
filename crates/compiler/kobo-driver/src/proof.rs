@@ -1199,11 +1199,12 @@ fn async_model_evidence(
     program: &ScenarioProgram,
     functions: &[CoreFunction],
 ) -> AsyncModelEvidence {
-    let live_locals = parsed_live_locals_across_first_await(source, &program.target);
+    let live_locals_by_await = parsed_live_locals_by_await(source, &program.target);
     let mut model = AsyncModelEvidence::default();
 
     for function in functions {
         let replay = function_obligation_replay(function);
+        let mut await_index = 0usize;
         for block in &function.blocks {
             let block_exit_env = replay
                 .block_exit_envs
@@ -1247,6 +1248,11 @@ fn async_model_evidence(
                             reason: "future_drop".to_owned(),
                             source_span: source_span.clone(),
                         });
+                        let live_locals = live_locals_by_await
+                            .get(await_index)
+                            .cloned()
+                            .unwrap_or_default();
+                        await_index += 1;
                         for local in &live_locals {
                             model.future_state_locals.push(FutureStateLocalEvidence {
                                 binding: local.clone(),
@@ -1281,6 +1287,10 @@ fn async_model_evidence(
                     CoreTerminatorKind::Branch => {
                         let source_span =
                             source_span_from_kobo(source_path, source, terminator.source_span);
+                        let cancelled_obligations = env_states(&block_exit_env)
+                            .into_iter()
+                            .filter(|state| state.state == ObligationStatus::Owned)
+                            .collect::<Vec<_>>();
                         for branch_target in terminator
                             .edges
                             .iter()
@@ -1292,6 +1302,9 @@ fn async_model_evidence(
                                 .map(env_states)
                                 .unwrap_or_default();
                             for path_kind in ["winner", "loser_cancel"] {
+                                let cancelled_obligations = (path_kind == "loser_cancel")
+                                    .then(|| cancelled_obligations.clone())
+                                    .unwrap_or_default();
                                 model.select_paths.push(SelectPathEvidence {
                                     id: format!(
                                         "{}:{}:{}:{branch_target}:{path_kind}",
@@ -1302,10 +1315,12 @@ fn async_model_evidence(
                                     branch_target: branch_target.to_owned(),
                                     path_kind: path_kind.to_owned(),
                                     obligation_results: obligation_results.clone(),
+                                    cancelled_obligations: cancelled_obligations.clone(),
                                     obligation_result_hash: canonical_select_result_hash(
                                         branch_target,
                                         path_kind,
                                         &obligation_results,
+                                        &cancelled_obligations,
                                     ),
                                     source_span: source_span.clone(),
                                 });
@@ -1453,18 +1468,24 @@ fn canonical_select_result_hash(
     branch_target: &str,
     path_kind: &str,
     results: &[ObligationState],
+    cancelled_obligations: &[ObligationState],
 ) -> String {
     let mut states = results
         .iter()
         .map(|state| format!("{}:{}", state.binding, state.state.as_str()))
         .collect::<Vec<_>>();
     states.sort_unstable();
+    let mut cancelled = cancelled_obligations
+        .iter()
+        .map(|state| format!("{}:{}", state.binding, state.state.as_str()))
+        .collect::<Vec<_>>();
+    cancelled.sort_unstable();
     stable_hash(&format!(
-        "select-result:{branch_target}:{path_kind}:{states:?}"
+        "select-result:{branch_target}:{path_kind}:{states:?}:cancelled:{cancelled:?}"
     ))
 }
 
-fn parsed_live_locals_across_first_await(source: &str, target: &str) -> Vec<String> {
+fn parsed_live_locals_by_await(source: &str, target: &str) -> Vec<Vec<String>> {
     let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
     };
@@ -1475,25 +1496,33 @@ fn parsed_live_locals_across_first_await(source: &str, target: &str) -> Vec<Stri
         return Vec::new();
     };
 
-    let mut before_await = BTreeSet::<String>::new();
-    let mut after_await_uses = BTreeSet::<String>::new();
-    let mut seen_await = false;
-    for statement in &function.block.stmts {
-        if seen_await {
-            collect_ident_uses_in_stmt(statement, &mut after_await_uses);
-            continue;
-        }
+    let mut locals_before_statement = Vec::<BTreeSet<String>>::new();
+    let mut declared = BTreeSet::<String>::new();
+    let mut await_statement_indexes = Vec::new();
+    for (index, statement) in function.block.stmts.iter().enumerate() {
+        locals_before_statement.push(declared.clone());
         if stmt_contains_await(statement) {
-            seen_await = true;
-            continue;
+            await_statement_indexes.push(index);
         }
-        collect_pat_bindings_in_stmt(statement, &mut before_await);
+        collect_pat_bindings_in_stmt(statement, &mut declared);
     }
 
-    before_await
+    await_statement_indexes
         .into_iter()
-        .filter(|binding| !binding.starts_with('_'))
-        .filter(|binding| after_await_uses.contains(binding))
+        .map(|await_index| {
+            let mut after_await_uses = BTreeSet::<String>::new();
+            for statement in function.block.stmts.iter().skip(await_index + 1) {
+                collect_ident_uses_in_stmt(statement, &mut after_await_uses);
+            }
+            locals_before_statement
+                .get(await_index)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|binding| !binding.starts_with('_'))
+                .filter(|binding| after_await_uses.contains(binding))
+                .collect::<Vec<_>>()
+        })
         .collect()
 }
 

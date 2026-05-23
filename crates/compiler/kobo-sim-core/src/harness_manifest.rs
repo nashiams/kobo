@@ -22,4 +22,6 @@ pub struct HarnessManifest {
     pub service_hook_events: Vec<ServiceHookEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_artifact_hash: Option<String>,
 }

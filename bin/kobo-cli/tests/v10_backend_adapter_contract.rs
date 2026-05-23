@@ -549,6 +549,24 @@ fn inspect_backend_route() {
         "unsupported-native-adapter",
         "inspect failure should disclose that the adapter is metadata-only",
     );
+    assert_contains(
+        &text,
+        ".kobo",
+        "inspect failure should point at the scenario debt artifact",
+    );
+    let debt_dir = project.root.join(".kobo").join("scenario-debt");
+    let debt_file = fs::read_dir(&debt_dir)
+        .expect("inspect should create a scenario debt directory")
+        .next()
+        .expect("inspect should create a scenario debt file")
+        .expect("scenario debt file should be readable")
+        .path();
+    let debt: Value =
+        serde_json::from_str(&fs::read_to_string(debt_file).expect("debt file should read"))
+            .expect("debt file should parse");
+    assert_eq!(debt["backend"], "shuttle");
+    assert_eq!(debt["status"], "scenario-debt");
+    assert_eq!(debt["control_source"], "inspect --sim --harness");
 }
 
 #[test]
@@ -599,6 +617,66 @@ fn inspect_generated_harness_route() {
         "fn inspect_generated_harness_route()",
         "inspect should report a real generated harness that contains the target",
     );
+}
+
+#[test]
+fn configured_reserved_backend_scheduler_reports_scenario_debt() {
+    let project = TestProject::new("v10-reserved-backend-config-debt");
+    project.write(
+        "Kobo.toml",
+        r#"[sim.backend.shuttle]
+enabled = true
+scheduler = "pct"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn configured_reserved_async_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "configured reserved Shuttle controls should not be silently ignored",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "scenario debt",
+        "failure should route configured reserved controls into scenario debt",
+    );
+    assert_contains(
+        &text,
+        ".kobo",
+        "failure should point at the durable debt artifact",
+    );
+    let debt_dir = project.root.join(".kobo").join("scenario-debt");
+    let debt_file = fs::read_dir(&debt_dir)
+        .expect("scenario debt directory should exist")
+        .next()
+        .expect("scenario debt file should exist")
+        .expect("scenario debt file should be readable")
+        .path();
+    let debt: Value =
+        serde_json::from_str(&fs::read_to_string(debt_file).expect("debt file should read"))
+            .expect("debt file should parse");
+    assert_eq!(debt["backend"], "shuttle");
+    assert_eq!(debt["scheduler"], "pct");
+    assert_eq!(debt["control_source"], "Kobo.toml");
 }
 
 #[test]
@@ -996,9 +1074,20 @@ fn configured_checkpoint_route() {
     let checkpoint_path = witness["checkpoint_replay"]["checkpoint_path"]
         .as_str()
         .expect("checkpoint replay should record a checkpoint artifact path");
+    let checkpoint_path = checkpoint_path.to_owned();
     assert!(
         !checkpoint_path.is_empty(),
         "checkpoint artifact path should not be empty"
+    );
+    assert!(
+        std::path::Path::new(&checkpoint_path).is_file(),
+        "checkpoint replay should bind an existing Loom checkpoint artifact: {checkpoint_path}"
+    );
+    assert!(
+        witness["checkpoint_replay"]["checkpoint_artifact_hash"]
+            .as_str()
+            .is_some_and(|hash| !hash.is_empty()),
+        "checkpoint replay should bind the checkpoint artifact hash: {witness}"
     );
     let harness_path = witness["harness_manifest"]["harness_rs_path"]
         .as_str()
@@ -1033,6 +1122,37 @@ fn configured_checkpoint_route() {
         &replay.combined(),
         "checkpoint_replay",
         "checkpoint replay validation should name the forged metadata",
+    );
+
+    let mut restored: Value =
+        serde_json::from_str(&fs::read_to_string(&witness_path).expect("witness should reread"))
+            .expect("witness should parse");
+    restored["checkpoint_replay"]["semantic_trace_hash"] =
+        witness["execution_digest"]["semantic_trace_hash"].clone();
+    fs::write(
+        &witness_path,
+        serde_json::to_string_pretty(&restored).unwrap(),
+    )
+    .expect("restored witness should write");
+    fs::remove_file(&checkpoint_path).expect("checkpoint artifact should be removable");
+
+    let missing_artifact_replay = run_kobo(
+        &[
+            s("replay"),
+            path_arg(&witness_path),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &missing_artifact_replay,
+        "replay must reject missing checkpoint artifacts",
+    );
+    assert_contains(
+        &missing_artifact_replay.combined(),
+        "checkpoint artifact",
+        "failure should identify the missing checkpoint artifact",
     );
 }
 

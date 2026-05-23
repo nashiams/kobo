@@ -118,7 +118,7 @@ pub(super) fn boundary_ledger_json(
             "boundary": boundary.as_str(),
             "status": "modeled",
             "policy": "model",
-            "reason": "modeled v0.10 facade",
+            "reason": "modeled compiler facade",
             "source": "scenario_program",
         }));
     }

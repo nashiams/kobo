@@ -23,7 +23,10 @@ use crate::ErrorFormat;
 use super::formal_core;
 use super::sim_model::{self, ScenarioDocument};
 use super::witness_evidence;
-use super::{declarations, summary_validation};
+use super::{
+    backend_debt::{self, DebtControlSource},
+    declarations, summary_validation,
+};
 
 pub(super) fn cmd_test(
     file: &Path,
@@ -84,21 +87,35 @@ pub(super) fn cmd_test(
         .sim
         .checkpoint_replay_for_backend(&backend_name)
         .unwrap_or(false);
-    if let Some(capability) = unsupported_backend_capability(&backend_name) {
-        let debt_path = write_unsupported_backend_debt(
+    if let Some(capability) = backend_debt::unsupported_backend_capability(&backend_name) {
+        let debt_path = backend_debt::write_unsupported_backend_debt(
             file,
             &target_name,
             capability,
             effective_scheduler.as_deref(),
+            DebtControlSource::TestCommand,
         )?;
-        let debt_path = sim_model::cli_relative_path(&debt_path)?;
         anyhow::bail!(
-            "unsupported backend option `{}`: {} (adapter is not linked; {}, {}); use a stable Kobo profile, keep the inspected backend-native harness, or keep the unsupported knob as scenario debt recorded at {debt_path}",
-            capability.name,
-            capability.role,
-            capability.integration_level,
-            capability.scenario_execution
+            "{}",
+            backend_debt::unsupported_backend_debt_message(capability, &debt_path)?
         );
+    }
+    if expert_options.backend.is_none() {
+        if let Some(intent) =
+            configured_reserved_backend_intent(&session.config, &execution_profile)
+        {
+            let debt_path = backend_debt::write_unsupported_backend_debt(
+                file,
+                &target_name,
+                intent.capability,
+                intent.scheduler,
+                DebtControlSource::Config,
+            )?;
+            anyhow::bail!(
+                "{}",
+                backend_debt::unsupported_backend_debt_message(intent.capability, &debt_path)?
+            );
+        }
     }
     expert_options.validate(
         &execution_profile,
@@ -336,7 +353,7 @@ impl BackendExpertOptions {
         if self.backend.is_some() {
             validate_backend_executes(backend_name)?;
         }
-        validate_scheduler_control(backend_name, effective_scheduler)?;
+        validate_scheduler_control(backend_name, effective_scheduler, self.backend_native)?;
         validate_max_branches_control(backend_name, effective_max_branches)?;
         if self.backend_native && self.backend.is_none() {
             anyhow::bail!(
@@ -858,10 +875,7 @@ fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
 }
 
 fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
-    if kobo_sim_core::backend::capabilities()
-        .iter()
-        .any(|capability| capability.name == backend)
-    {
+    if backend_debt::backend_capability(backend).is_some() {
         Ok(())
     } else {
         anyhow::bail!(
@@ -871,11 +885,11 @@ fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
 }
 
 fn validate_backend_executes(backend: &str) -> anyhow::Result<()> {
-    let Some(capability) = backend_capability(backend) else {
+    let Some(capability) = backend_debt::backend_capability(backend) else {
         validate_backend_name(backend)?;
         return Ok(());
     };
-    if capability.executes_in_v10 {
+    if capability.executes_now {
         return Ok(());
     }
     anyhow::bail!(
@@ -886,56 +900,36 @@ fn validate_backend_executes(backend: &str) -> anyhow::Result<()> {
     )
 }
 
-fn backend_capability(backend: &str) -> Option<&'static kobo_sim_core::backend::BackendCapability> {
-    kobo_sim_core::backend::capabilities()
+struct ReservedBackendIntent<'a> {
+    capability: &'static kobo_sim_core::backend::BackendCapability,
+    scheduler: Option<&'a str>,
+}
+
+fn configured_reserved_backend_intent<'a>(
+    config: &'a kobo_driver::KoboConfig,
+    profile: &str,
+) -> Option<ReservedBackendIntent<'a>> {
+    reserved_backend_fit_for_profile(profile)
         .iter()
-        .find(|capability| capability.name == backend)
+        .filter_map(|backend| {
+            let backend_config = config.sim.backends.get(*backend)?;
+            if !backend_config.enabled || !configured_backend_has_controls(backend_config) {
+                return None;
+            }
+            let capability = backend_debt::unsupported_backend_capability(backend)?;
+            Some(ReservedBackendIntent {
+                capability,
+                scheduler: backend_config.scheduler.as_deref(),
+            })
+        })
+        .next()
 }
 
-fn unsupported_backend_capability(
-    backend: &str,
-) -> Option<&'static kobo_sim_core::backend::BackendCapability> {
-    backend_capability(backend).filter(|capability| !capability.executes_in_v10)
-}
-
-fn write_unsupported_backend_debt(
-    file: &Path,
-    target_name: &str,
-    capability: &kobo_sim_core::backend::BackendCapability,
-    scheduler: Option<&str>,
-) -> anyhow::Result<PathBuf> {
-    let debt_dir = std::env::current_dir()
-        .context("failed to determine current directory")?
-        .join(".kobo")
-        .join("scenario-debt");
-    std::fs::create_dir_all(&debt_dir)
-        .with_context(|| format!("failed to create {}", debt_dir.display()))?;
-    let debt_path = debt_dir.join(format!(
-        "{}-{}-backend.json",
-        sanitize_name(target_name),
-        sanitize_name(capability.name)
-    ));
-    let source_path = sim_model::cli_relative_path(file)?;
-    let debt = serde_json::json!({
-        "schema_version": 1,
-        "status": "scenario-debt",
-        "kind": "unsupported-backend-native-control",
-        "target": format!("{source_path}:{target_name}"),
-        "backend": capability.name,
-        "display_name": capability.display_name,
-        "scheduler": scheduler,
-        "integration_level": capability.integration_level,
-        "scenario_execution": capability.scenario_execution,
-        "role": capability.role,
-        "available_paths": [
-            "use a stable Kobo profile",
-            "keep the inspected backend-native harness",
-            "keep this unsupported knob as scenario debt"
-        ],
-    });
-    std::fs::write(&debt_path, serde_json::to_string_pretty(&debt)?)
-        .with_context(|| format!("failed to write {}", debt_path.display()))?;
-    Ok(debt_path)
+fn configured_backend_has_controls(config: &kobo_driver::SimBackendConfig) -> bool {
+    config.scheduler.is_some()
+        || config.replay_token.is_some()
+        || config.max_branches.is_some()
+        || config.checkpoint_replay.is_some()
 }
 
 fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
@@ -952,12 +946,20 @@ fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
     }
 }
 
-fn validate_scheduler_control(backend: &str, scheduler: Option<&str>) -> anyhow::Result<()> {
+fn validate_scheduler_control(
+    backend: &str,
+    scheduler: Option<&str>,
+    backend_native: bool,
+) -> anyhow::Result<()> {
     let Some(scheduler) = scheduler else {
         return Ok(());
     };
     match (backend, scheduler) {
-        ("loom", "exhaustive" | "small-random") => Ok(()),
+        ("loom", "exhaustive") => Ok(()),
+        ("loom", "small-random") if !backend_native => Ok(()),
+        ("loom", "small-random") => anyhow::bail!(
+            "unsupported backend option: scheduler `small-random` is semantic-only for backend `loom`; use scheduler `exhaustive` for backend-native replay or mark unsupported knobs as scenario debt"
+        ),
         ("shuttle" | "turmoil" | "madsim", _) => anyhow::bail!(
             "unsupported backend option: scheduler `{scheduler}` requires native backend `{backend}`, but that adapter is not linked; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
         ),
@@ -1736,6 +1738,13 @@ fn checkpoint_replay_json(enabled: bool, run: &FullDepthRun) -> serde_json::Valu
         } else {
             None
         },
+        "checkpoint_artifact_hash": if enabled {
+            run.harness_manifest
+                .as_ref()
+                .and_then(|manifest| manifest.checkpoint_artifact_hash.as_deref())
+        } else {
+            None
+        },
         "source": if enabled {
             Some("loom-builder-checkpoint")
         } else {
@@ -2320,7 +2329,7 @@ fn boundary_policies_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
         policies.push(serde_json::json!({
             "boundary": boundary,
             "policy": "model",
-            "reason": "modeled v0.10 facade",
+            "reason": "modeled compiler facade",
         }));
     }
     policies

@@ -11,6 +11,7 @@ use kobo_ir::{FileId, GuaranteePolicy, MustCallObligation};
 use kobo_parser::{parse_ward_syntax, WardItem};
 
 use super::{
+    backend_debt::{self, DebtControlSource},
     boundary_projection, ownership_analysis, policy,
     session::{build_session, line_number_for_offset, render_diagnostics},
     sim_model, summary_validation,
@@ -107,7 +108,7 @@ pub(super) fn cmd_inspect(
         let output = if harness {
             simulation_harness_output(file, &source, backend, &mut session)?
         } else {
-            simulation_transparency_output(&source, false, backend)?
+            simulation_transparency_output(file, &source, false, backend)?
         };
         eprintln!(
             "// effective guarantee profile: {}",
@@ -268,11 +269,12 @@ fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
 }
 
 fn simulation_transparency_output(
+    file: &Path,
     source: &str,
     harness: bool,
     backend: Option<&str>,
 ) -> anyhow::Result<String> {
-    validate_backend_pin(backend)?;
+    validate_backend_pin(file, source, backend)?;
     let command = if harness {
         "inspect --sim --harness"
     } else {
@@ -332,7 +334,7 @@ fn simulation_harness_output(
     backend: Option<&str>,
     session: &mut kobo_driver::CompileSession,
 ) -> anyhow::Result<String> {
-    let mut output = simulation_transparency_output(source, true, backend)?;
+    let mut output = simulation_transparency_output(file, source, true, backend)?;
     match generated_harness_inspection(file, source, backend, session) {
         Ok(Some(inspection)) => {
             output.push_str(&format!(
@@ -462,34 +464,48 @@ fn generated_harness_inspection(
 
 fn inspect_profile_for_backend(backend: &str) -> Option<&'static str> {
     match backend {
+        "generated-rust-process" => Some("async"),
         "loom" => Some("sync"),
         "proptest" => Some("stateful-input"),
         "failpoints" => Some("failpoint"),
+        "network-loopback" => Some("network"),
+        "storage-filesystem" => Some("sync"),
         _ => None,
     }
 }
 
-fn validate_backend_pin(backend: Option<&str>) -> anyhow::Result<()> {
+fn validate_backend_pin(file: &Path, source: &str, backend: Option<&str>) -> anyhow::Result<()> {
     let Some(backend) = backend else {
         return Ok(());
     };
-    let Some(capability) = kobo_sim_core::backend::capabilities()
-        .iter()
-        .find(|capability| capability.name == backend)
-    else {
+    let Some(capability) = backend_debt::backend_capability(backend) else {
         anyhow::bail!(
             "unsupported backend option `{backend}`; use a stable Kobo profile, inspect the generated backend-native harness, or mark unsupported knobs as scenario debt"
         );
     };
-    if !capability.executes_in_v10 {
+    if !capability.executes_now {
+        let target_name = inspect_target_name(source);
+        let debt_path = backend_debt::write_unsupported_backend_debt(
+            file,
+            &target_name,
+            capability,
+            None,
+            DebtControlSource::InspectHarness,
+        )?;
         anyhow::bail!(
-            "unsupported backend option `{backend}`: {} ({}, {}); use a stable Kobo profile, inspect the generated backend-native harness, or mark unsupported knobs as scenario debt",
-            capability.role,
-            capability.integration_level,
-            capability.scenario_execution
+            "{}",
+            backend_debt::unsupported_backend_debt_message(capability, &debt_path)?
         );
     }
     Ok(())
+}
+
+fn inspect_target_name(source: &str) -> String {
+    sim_model::parse_document(source.to_owned())
+        .scenarios
+        .first()
+        .map(|scenario| scenario.name.clone())
+        .unwrap_or_else(|| "inspect-target".to_owned())
 }
 
 fn append_scenario_metadata(mut output: String, source: &str) -> String {

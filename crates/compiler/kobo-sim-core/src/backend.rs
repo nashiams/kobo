@@ -4,7 +4,7 @@ use crate::core::ScenarioEvent;
 pub struct BackendCapability {
     pub name: &'static str,
     pub display_name: &'static str,
-    pub executes_in_v10: bool,
+    pub executes_now: bool,
     pub integration_level: &'static str,
     pub scenario_execution: &'static str,
     pub ecosystem_scope: &'static str,
@@ -34,7 +34,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "generated-rust-process",
             display_name: "generated-rust-process",
-            executes_in_v10: true,
+            executes_now: true,
             integration_level: "generated-user-rust",
             scenario_execution: "compiler-owned-generated-rust",
             ecosystem_scope: "generated-user-rust",
@@ -46,7 +46,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "proptest",
             display_name: "proptest",
-            executes_in_v10: true,
+            executes_now: true,
             integration_level: "input-generation",
             scenario_execution: "stateful-generated-inputs",
             ecosystem_scope: "generated-inputs",
@@ -58,7 +58,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "loom",
             display_name: "Loom",
-            executes_in_v10: true,
+            executes_now: true,
             integration_level: "generated-user-rust",
             scenario_execution: "generated-user-rust-loom",
             ecosystem_scope: "real-loom-generated-user-rust",
@@ -70,7 +70,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "shuttle",
             display_name: "Shuttle",
-            executes_in_v10: false,
+            executes_now: false,
             integration_level: "metadata-only",
             scenario_execution: "unsupported-native-adapter",
             ecosystem_scope: "backend-native-unsupported",
@@ -82,7 +82,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "turmoil",
             display_name: "Turmoil",
-            executes_in_v10: false,
+            executes_now: false,
             integration_level: "metadata-only",
             scenario_execution: "unsupported-native-adapter",
             ecosystem_scope: "backend-native-unsupported",
@@ -94,7 +94,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "madsim",
             display_name: "Madsim",
-            executes_in_v10: false,
+            executes_now: false,
             integration_level: "metadata-only",
             scenario_execution: "unsupported-native-adapter",
             ecosystem_scope: "backend-native-unsupported",
@@ -106,7 +106,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "storage-filesystem",
             display_name: "storage-filesystem",
-            executes_in_v10: true,
+            executes_now: true,
             integration_level: "generated-user-rust",
             scenario_execution: "generated-user-rust-filesystem",
             ecosystem_scope: "generated-user-rust-os-facade",
@@ -118,7 +118,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "network-loopback",
             display_name: "network-loopback",
-            executes_in_v10: true,
+            executes_now: true,
             integration_level: "generated-user-rust",
             scenario_execution: "generated-user-rust-loopback-network",
             ecosystem_scope: "generated-user-rust-os-facade",
@@ -130,7 +130,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
         BackendCapability {
             name: "failpoints",
             display_name: "failpoints",
-            executes_in_v10: true,
+            executes_now: true,
             integration_level: "generated-user-rust-adapter",
             scenario_execution: "compiler-owned-failure-hooks",
             ecosystem_scope: "generated-user-rust-adapter",

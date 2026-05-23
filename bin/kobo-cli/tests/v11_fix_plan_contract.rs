@@ -52,6 +52,11 @@ async fn replay_gap() {
     );
 
     assert_success(&output, "sim scout --fix-plan should produce suggestions");
+    assert!(
+        !output.stdout.contains("\"version\":\"v0."),
+        "fix-plan JSON should not expose roadmap-stage version branding: {}",
+        output.stdout
+    );
     for expected in [
         "wall-clock",
         "random",
@@ -92,6 +97,10 @@ async fn replay_gap() {
     );
     let parsed: serde_json::Value =
         serde_json::from_str(&output.stdout).expect("fix plan should be JSON");
+    assert_eq!(
+        parsed["schema_version"], 1,
+        "fix-plan JSON should publish a stable schema version"
+    );
     let http_item = parsed["fix_plan"]
         .as_array()
         .expect("fix plan should be an array")

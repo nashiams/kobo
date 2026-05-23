@@ -90,7 +90,7 @@ fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
         );
     }
     if let Some(scheduler) = controls["scheduler"].as_str() {
-        if !matches!(scheduler, "exhaustive" | "small-random") {
+        if scheduler != "exhaustive" {
             anyhow::bail!(
                 "unsupported backend option: backend_controls.scheduler `{scheduler}` is not linked for Loom replay; replay without backend-native controls or mark unsupported knobs as scenario debt"
             );
@@ -151,6 +151,7 @@ fn replay_v1(
 
     validate_shrink_metadata(witness, error_format)?;
     validate_exact_witness_contract(witness, error_format)?;
+    validate_checkpoint_artifact_available(witness, error_format)?;
     let verified_source = verify_source_identity(witness, witness_path, error_format)?;
     let target = witness_target_scenario(witness)?;
     let seed = witness["seed"].as_u64().unwrap_or(0);
@@ -405,6 +406,51 @@ fn validate_checkpoint_replay_metadata(
     anyhow::bail!("K0106 checkpoint_replay metadata is inconsistent");
 }
 
+fn validate_checkpoint_artifact_available(
+    witness: &Value,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    if witness["checkpoint_replay"]["enabled"].as_bool() != Some(true) {
+        return Ok(());
+    }
+    let Some(path) = witness["checkpoint_replay"]["checkpoint_path"].as_str() else {
+        let payload = serde_json::json!({
+            "code": "K0106",
+            "message": "checkpoint replay is missing checkpoint artifact path",
+            "checkpoint_replay": witness["checkpoint_replay"].clone(),
+        });
+        emit_replay_issue(&payload, error_format)?;
+        anyhow::bail!("K0106 checkpoint artifact is missing");
+    };
+    let expected_hash = witness["checkpoint_replay"]["checkpoint_artifact_hash"].as_str();
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            let payload = serde_json::json!({
+                "code": "K0106",
+                "message": "checkpoint artifact is missing or unreadable",
+                "checkpoint_path": path,
+                "error": error.to_string(),
+            });
+            emit_replay_issue(&payload, error_format)?;
+            anyhow::bail!("K0106 checkpoint artifact is missing");
+        }
+    };
+    let observed_hash = kobo_sim_core::digest::stable_hash(&contents);
+    if expected_hash == Some(observed_hash.as_str()) {
+        return Ok(());
+    }
+    let payload = serde_json::json!({
+        "code": "K0106",
+        "message": "checkpoint artifact hash does not match witness",
+        "checkpoint_path": path,
+        "expected": expected_hash,
+        "observed": observed_hash,
+    });
+    emit_replay_issue(&payload, error_format)?;
+    anyhow::bail!("K0106 checkpoint artifact hash is inconsistent");
+}
+
 fn verify_source_identity(
     witness: &Value,
     witness_path: &Path,
@@ -565,6 +611,13 @@ fn checkpoint_replay_json(enabled: bool, run: &kobo_sim_core::FullDepthRun) -> V
             run.harness_manifest
                 .as_ref()
                 .and_then(|manifest| manifest.checkpoint_path.as_deref())
+        } else {
+            None
+        },
+        "checkpoint_artifact_hash": if enabled {
+            run.harness_manifest
+                .as_ref()
+                .and_then(|manifest| manifest.checkpoint_artifact_hash.as_deref())
         } else {
             None
         },

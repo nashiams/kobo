@@ -225,6 +225,7 @@ fn run_generated_harness(
     } else {
         run_rustc_harness(&harness_dir, &harness_rs_path)?
     };
+    let checkpoint_artifact_hash = checkpoint_artifact_hash(checkpoint_path.as_deref())?;
     let events = parse_harness_events(&process.stdout)?;
     let service_hook_events = parse_harness_service_hook_events(&process.stdout)?;
     let engine = if uses_loom {
@@ -247,6 +248,7 @@ fn run_generated_harness(
         event_count: events.len(),
         service_hook_events,
         checkpoint_path: checkpoint_path.map(|path| path.display().to_string()),
+        checkpoint_artifact_hash,
     };
     let manifest_path = harness_dir.join("manifest.json");
     let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -334,6 +336,10 @@ fn run_rustc_harness(harness_dir: &PathBuf, harness_rs_path: &PathBuf) -> Result
     let run_output = Command::new(&harness_bin_path)
         .output()
         .map_err(|source| SimCoreError::io("run generated harness", source))?;
+    if harness_bin_path.exists() {
+        std::fs::remove_file(&harness_bin_path)
+            .map_err(|source| SimCoreError::io("remove generated harness binary", source))?;
+    }
     Ok(HarnessProcess {
         command: vec![harness_bin_path.display().to_string()],
         exit_code: run_output.status.code().unwrap_or(-1),
@@ -385,6 +391,15 @@ fn run_loom_cargo_harness(harness_dir: &PathBuf) -> Result<HarnessProcess> {
     })
 }
 
+fn checkpoint_artifact_hash(checkpoint_path: Option<&Path>) -> Result<Option<String>> {
+    let Some(path) = checkpoint_path else {
+        return Ok(None);
+    };
+    let contents = std::fs::read_to_string(path)
+        .map_err(|source| SimCoreError::io("read loom checkpoint artifact", source))?;
+    Ok(Some(crate::digest::stable_hash(&contents)))
+}
+
 fn loom_cargo_manifest() -> &'static str {
     r#"[workspace]
 
@@ -394,7 +409,7 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-loom = "0.7"
+loom = { version = "0.7", features = ["checkpoint"] }
 "#
 }
 
@@ -1762,22 +1777,22 @@ fn main_wrapper_source(
 ) -> Result<String> {
     let mut source = if options.profile == "sync" {
         let mut source = String::from("\nfn main() {\n");
-        if let Some(max_branches) = options.loom_max_branches {
+        if options.scheduler == crate::SchedulerPolicy::Exhaustive
+            || options.loom_max_branches.is_some()
+            || loom_checkpoint_path.is_some()
+        {
             source.push_str("    let mut __kobo_loom = loom::model::Builder::new();\n");
-            source.push_str(&format!(
-                "    __kobo_loom.max_branches = {max_branches}_usize;\n"
-            ));
+            if let Some(max_branches) = options.loom_max_branches {
+                source.push_str(&format!(
+                    "    __kobo_loom.max_branches = {max_branches}_usize;\n"
+                ));
+            }
             if let Some(checkpoint_path) = loom_checkpoint_path {
                 source.push_str("    __kobo_loom.checkpoint_file(");
                 source.push_str(&format!("{:?}", checkpoint_path.display().to_string()));
                 source.push_str(");\n");
+                source.push_str("    __kobo_loom.checkpoint_interval = 1;\n");
             }
-            source.push_str("    __kobo_loom.check(|| {\n");
-        } else if let Some(checkpoint_path) = loom_checkpoint_path {
-            source.push_str("    let mut __kobo_loom = loom::model::Builder::new();\n");
-            source.push_str("    __kobo_loom.checkpoint_file(");
-            source.push_str(&format!("{:?}", checkpoint_path.display().to_string()));
-            source.push_str(");\n");
             source.push_str("    __kobo_loom.check(|| {\n");
         } else {
             source.push_str("    loom::model(|| {\n");

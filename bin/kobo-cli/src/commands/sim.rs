@@ -300,7 +300,7 @@ fn fix_plan_source(
     );
 
     serde_json::json!({
-        "version": "v0.11",
+        "schema_version": 1,
         "target": file.display().to_string(),
         "fix_plan": items,
     })
@@ -1107,8 +1107,8 @@ fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
         "name": capability.name,
         "display_name": capability.display_name,
         "role": capability.role,
-        "executes_now": capability.executes_in_v10,
-        "execution_status": if capability.executes_in_v10 { "executable" } else { "reserved" },
+        "executes_now": capability.executes_now,
+        "execution_status": if capability.executes_now { "executable" } else { "reserved" },
         "integration_level": capability.integration_level,
         "scenario_execution": capability.scenario_execution,
         "ecosystem_scope": capability.ecosystem_scope,
@@ -1250,8 +1250,8 @@ fn backend_recommendation(name: &str, backend_fit: &str) -> serde_json::Value {
     json!({
         "name": capability.map(|capability| capability.display_name).unwrap_or(name),
         "backend_fit": backend_fit,
-        "executes_now": capability.is_some_and(|capability| capability.executes_in_v10),
-        "execution_status": if capability.is_some_and(|capability| capability.executes_in_v10) { "executable" } else { "reserved" },
+        "executes_now": capability.is_some_and(|capability| capability.executes_now),
+        "execution_status": if capability.is_some_and(|capability| capability.executes_now) { "executable" } else { "reserved" },
         "integration_level": capability.map(|capability| capability.integration_level).unwrap_or("metadata-only"),
         "scenario_execution": capability.map(|capability| capability.scenario_execution).unwrap_or("unsupported-native-adapter"),
     })

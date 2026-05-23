@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    stable_hash, CancelEdgeEvidence, ObligationStatus, ProofCertificate, SelectPathEvidence,
-    SuspensionStateEvidence, VerificationError,
+    stable_hash, CancelEdgeEvidence, ObligationEventKind, ObligationStatus, ProofCertificate,
+    SelectPathEvidence, SuspensionStateEvidence, VerificationError,
 };
 
 use crate::obligation::{block_obligation_envs, event_state_map};
@@ -175,6 +175,24 @@ fn verify_timeout_cancel_edges(
     certificate: &ProofCertificate,
     suspensions: &BTreeMap<&str, &SuspensionStateEvidence>,
 ) -> Result<(), VerificationError> {
+    let timeout_by_suspension = certificate
+        .core
+        .async_model
+        .timeout_cancel_edges
+        .iter()
+        .map(|edge| edge.suspension_state.as_str())
+        .collect::<BTreeSet<_>>();
+    for suspension in suspensions.values() {
+        if suspension.boundary.as_deref() == Some("tokio::time::timeout")
+            && !timeout_by_suspension.contains(suspension.id.as_str())
+        {
+            return Err(VerificationError::AsyncEvidenceMismatch {
+                field: "timeout_cancel_edges".to_owned(),
+                id: suspension.id.clone(),
+            });
+        }
+    }
+
     let cancel_evidence = certificate
         .core
         .async_model
@@ -220,6 +238,25 @@ fn verify_spawned_task_obligations(
         if !has_resolution_policy {
             return Err(VerificationError::AsyncEvidenceMismatch {
                 field: "spawned_task_obligations".to_owned(),
+                id: task.binding.clone(),
+            });
+        }
+        let has_resolution_event = certificate.obligation_events.iter().any(|event| {
+            event.binding.as_deref() == Some(task.binding.as_str())
+                && matches!(
+                    event.kind,
+                    ObligationEventKind::Discharge | ObligationEventKind::Transfer
+                )
+                && event.action.as_deref().is_some_and(|action| {
+                    matches!(
+                        action,
+                        "await" | "join" | "abort" | "detach" | "detach-with-policy" | "transfer"
+                    )
+                })
+        });
+        if !has_resolution_event {
+            return Err(VerificationError::AsyncEvidenceMismatch {
+                field: "spawned_task_obligations.resolution_event".to_owned(),
                 id: task.binding.clone(),
             });
         }

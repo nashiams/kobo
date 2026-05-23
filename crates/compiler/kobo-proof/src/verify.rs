@@ -33,6 +33,7 @@ pub fn verify_certificate(
     crate::adapter::verify_adapter_confidence(certificate)?;
     crate::candidate::verify_candidate_admission(certificate)?;
     crate::boundary::verify_boundary_hashes(certificate)?;
+    crate::obligation::verify_cfg_edge_transitions(certificate)?;
     let checked_obligation_events = crate::obligation::replay_obligation_events(certificate)?;
     let certificate_hash = verify_certificate_hash(certificate)?;
     Ok(VerificationReport {

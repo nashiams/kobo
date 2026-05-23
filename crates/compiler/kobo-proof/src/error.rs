@@ -59,6 +59,8 @@ pub enum VerificationError {
         expected: String,
         observed: String,
     },
+    #[error("CFG edge transition mismatch for {edge}: {reason}")]
+    CfgEdgeTransitionMismatch { edge: String, reason: String },
     #[error("removed discharge for {binding}")]
     RemovedDischarge { binding: String },
     #[error("unresolved obligation {binding} reaches a modeled exit")]

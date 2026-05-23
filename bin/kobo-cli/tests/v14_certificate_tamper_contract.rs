@@ -157,6 +157,22 @@ fn missing_cancel_edge_rejected() {
 }
 
 #[test]
+fn cfg_edge_to_unknown_block_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-tamper-cfg-transition");
+    let artifact_path = emit_artifact(
+        &project,
+        &sync_source("cfg_transition_case"),
+        "cfg_transition_case",
+    );
+
+    rewrite_valid_certificate(&artifact_path, |value| {
+        value["core"]["cfg_edges"][0]["to"] = Value::String("bb999".to_owned());
+    });
+
+    verify_fails(&project, &artifact_path, "CFG edge transition mismatch");
+}
+
+#[test]
 fn async_model_material_changes_require_core_hash_update() {
     let project = TestProject::new("v14-tamper-async-core-hash");
     let artifact_path = emit_artifact(&project, async_source(), "async_cancel_case");

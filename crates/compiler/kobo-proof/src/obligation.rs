@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, ProofCertificate,
@@ -19,6 +19,38 @@ pub(crate) fn replay_obligation_events(
     verify_exit_env(certificate, &env)?;
     reject_unresolved_exit(&env)?;
     Ok(certificate.obligation_events.len())
+}
+
+pub(crate) fn verify_cfg_edge_transitions(
+    certificate: &ProofCertificate,
+) -> Result<(), VerificationError> {
+    let node_ids = certificate
+        .core
+        .cfg_nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let block_envs = block_obligation_envs(certificate);
+    for edge in &certificate.core.cfg_edges {
+        if !node_ids.contains(edge.from.as_str()) {
+            return Err(VerificationError::CfgEdgeTransitionMismatch {
+                edge: edge.id.clone(),
+                reason: format!("unknown source block {}", edge.from),
+            });
+        }
+        if edge.to.starts_with("bb") && !node_ids.contains(edge.to.as_str()) {
+            return Err(VerificationError::CfgEdgeTransitionMismatch {
+                edge: edge.id.clone(),
+                reason: format!("unknown target block {}", edge.to),
+            });
+        }
+        if modeled_exit_target(edge.to.as_str()) {
+            if let Some(env) = block_envs.get(&edge.from) {
+                reject_unresolved_exit_on_edge(&edge.id, env)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn block_obligation_envs(
@@ -126,6 +158,25 @@ fn reject_unresolved_exit(env: &ObligationEnv) -> Result<(), VerificationError> 
         }
     }
     Ok(())
+}
+
+fn reject_unresolved_exit_on_edge(
+    edge_id: &str,
+    env: &ObligationEnv,
+) -> Result<(), VerificationError> {
+    for (binding, state) in env {
+        if state.is_unresolved_exit() {
+            return Err(VerificationError::CfgEdgeTransitionMismatch {
+                edge: edge_id.to_owned(),
+                reason: format!("unresolved obligation {binding} reaches modeled edge exit"),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn modeled_exit_target(target: &str) -> bool {
+    matches!(target, "return" | "error_exit" | "panic")
 }
 
 fn statement_index(id: &str) -> Option<usize> {

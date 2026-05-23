@@ -826,6 +826,7 @@ fn async_model_evidence(
                             function: function.name.clone(),
                             block: block.id.clone(),
                             terminator_kind: "await".to_owned(),
+                            boundary: terminator.boundary.clone(),
                             resume_edge,
                             cancel_edge: cancel_edge.clone(),
                             source_span: source_span.clone(),

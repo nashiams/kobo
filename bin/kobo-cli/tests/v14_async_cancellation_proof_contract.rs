@@ -339,7 +339,7 @@ fn spawned_task_owning_delivery_requires_join_abort_detach_or_transfer() {
         &project,
         spawned_task_source(),
         "spawned_task_requires_policy_case",
-        "unresolved obligation",
+        "spawned_task_obligations.resolution_event",
     );
 }
 
@@ -363,6 +363,21 @@ fn timeout_branch_models_cancellation() {
         }),
         "timeout await should expose timeout cancellation evidence: {timeout_edges:?}"
     );
+}
+
+#[test]
+fn removed_timeout_cancel_evidence_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-timeout-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &timeout_source("removed_timeout_cancel_evidence_case"),
+        "removed_timeout_cancel_evidence_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["core"]["async_model"]["timeout_cancel_edges"] = Value::Array(Vec::new());
+    });
+
+    verify_fails(&project, &artifact_path, "timeout_cancel_edges");
 }
 
 #[test]

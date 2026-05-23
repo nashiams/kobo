@@ -63,6 +63,7 @@ pub struct SuspensionStateEvidence {
     pub function: String,
     pub block: String,
     pub terminator_kind: String,
+    pub boundary: Option<String>,
     pub resume_edge: String,
     pub cancel_edge: String,
     pub source_span: SourceSpan,

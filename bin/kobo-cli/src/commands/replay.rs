@@ -19,16 +19,15 @@ pub(super) fn cmd_replay(
     roundtrip_metadata: bool,
     backend_native: bool,
 ) -> anyhow::Result<()> {
-    if backend_native {
-        eprintln!(
-            "backend-native replay requested; Kobo will validate witness metadata before any backend-specific replay claim"
-        );
-    }
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read {}", file.display()))?;
     let witness: Value = serde_json::from_str(&source)
         .with_context(|| format!("failed to parse witness {}", file.display()))?;
     validate_witness(&witness)?;
+    if backend_native {
+        validate_backend_native_replay(&witness)?;
+        eprintln!("backend-native replay validated for Loom witness");
+    }
 
     if roundtrip_metadata {
         println!(
@@ -58,6 +57,23 @@ pub(super) fn cmd_replay(
         "metadata-only: legacy schema_version 0 witnesses do not carry v0.9 exact replay data"
     );
     Ok(())
+}
+
+fn validate_backend_native_replay(witness: &Value) -> anyhow::Result<()> {
+    let backend = witness["backend"].as_str();
+    let profile = witness["backend_profile"].as_str();
+    let guarantee = witness["replay_guarantee"].as_str();
+    let harness_engine = witness["execution_digest"]["harness_engine"].as_str();
+    if backend == Some("loom")
+        && profile == Some("sync")
+        && guarantee == Some("exact")
+        && harness_engine == Some("generated-rust-loom-process")
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "unsupported backend option: --backend-native replay is only supported for exact Loom witnesses; use normal `kobo replay`, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+    )
 }
 
 struct VerifiedSource {

@@ -131,6 +131,34 @@ fn replay_rejects_v1_witness_missing_sim_backend_schema() {
 }
 
 #[test]
+fn backend_native_replay_rejects_non_native_witness() {
+    let project = TestProject::new("replay-backend-native-non-native");
+    let witnesses = emit_witness(&project);
+    assert!(!witnesses.is_empty(), "witness should exist before replay");
+
+    let output = run_kobo(
+        &[s("replay"), path_arg(&witnesses[0]), s("--backend-native")],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "backend-native replay must reject non-native witnesses",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "unsupported backend option",
+        "failure should name unsupported backend-native replay",
+    );
+    assert_contains(
+        &text,
+        "exact Loom",
+        "failure should explain the required native replay witness",
+    );
+}
+
+#[test]
 fn kwit_schema_records_dynamic_target_and_seed() {
     let project = TestProject::new("kwit-dynamic-target");
     let scenario = unique_symbol("transaction_leaks");

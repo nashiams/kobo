@@ -333,7 +333,7 @@ fn simulation_harness_output(
     session: &mut kobo_driver::CompileSession,
 ) -> anyhow::Result<String> {
     let mut output = simulation_transparency_output(source, true, backend)?;
-    match generated_harness_inspection(file, source, session) {
+    match generated_harness_inspection(file, source, backend, session) {
         Ok(Some(inspection)) => {
             output.push_str(&format!(
                 "// kobo: generated harness manifest: {}\n",
@@ -386,6 +386,7 @@ struct HarnessInspection {
 fn generated_harness_inspection(
     file: &Path,
     source: &str,
+    backend: Option<&str>,
     session: &mut kobo_driver::CompileSession,
 ) -> anyhow::Result<Option<HarnessInspection>> {
     let document = sim_model::parse_document(source.to_owned());
@@ -396,11 +397,15 @@ fn generated_harness_inspection(
     else {
         return Ok(None);
     };
-    let backend_profile = document
+    let inferred_backend_profile = document
         .scenarios
         .first()
         .map(|scenario| scenario.profile.clone())
         .unwrap_or_else(|| sim_model::target_profile(&document, &target_name, None));
+    let backend_profile = backend
+        .and_then(inspect_profile_for_backend)
+        .map(str::to_owned)
+        .unwrap_or(inferred_backend_profile);
     let artifacts = run_codegen_pipeline(session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(
@@ -446,6 +451,15 @@ fn generated_harness_inspection(
         execution_scope: manifest.execution_scope,
         event_count: manifest.event_count,
     }))
+}
+
+fn inspect_profile_for_backend(backend: &str) -> Option<&'static str> {
+    match backend {
+        "loom" => Some("sync"),
+        "proptest" => Some("stateful-input"),
+        "failpoints" => Some("failpoint"),
+        _ => None,
+    }
 }
 
 fn validate_backend_pin(backend: Option<&str>) -> anyhow::Result<()> {

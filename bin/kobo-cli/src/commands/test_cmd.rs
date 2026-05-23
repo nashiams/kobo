@@ -206,22 +206,32 @@ pub(super) fn cmd_test(
         anyhow::bail!("{}", failure.message)
     }
 
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "scenario": run.target,
-            "seed": executed_seed,
-            "backend_profile": run.profile,
-            "backend": expert_options.backend_name(&run.profile),
-            "scheduler": scheduler_json(
+    let mut response = serde_json::json!({
+        "scenario": run.target,
+        "seed": executed_seed,
+        "sim_profile": sim_profile,
+        "status": "passed",
+    });
+    if session.config.sim.show_backend_choices || expert_options.has_explicit_backend_controls() {
+        let object = response
+            .as_object_mut()
+            .expect("success response should be an object");
+        object.insert("backend_profile".to_owned(), run.profile.clone().into());
+        object.insert(
+            "backend".to_owned(),
+            expert_options.backend_name(&run.profile).into(),
+        );
+        object.insert(
+            "scheduler".to_owned(),
+            scheduler_json(
                 sim_profile,
                 executed_seed,
                 &run,
                 effective_scheduler.as_deref(),
             ),
-            "status": "passed",
-        }))?
-    );
+        );
+    }
+    println!("{}", serde_json::to_string(&response)?);
     Ok(())
 }
 
@@ -259,6 +269,13 @@ impl BackendExpertOptions {
             .unwrap_or_else(|| backend_for_profile(backend_profile))
     }
 
+    fn has_explicit_backend_controls(&self) -> bool {
+        self.backend.is_some()
+            || self.scheduler.is_some()
+            || self.max_branches.is_some()
+            || self.backend_native
+    }
+
     fn execution_profile(&self, scenario_profile: &str) -> anyhow::Result<String> {
         let Some(backend) = self.backend.as_deref() else {
             return Ok(scenario_profile.to_owned());
@@ -293,6 +310,9 @@ impl BackendExpertOptions {
     ) -> anyhow::Result<()> {
         let backend_name = self.backend_name(backend_profile);
         validate_backend_name(backend_name)?;
+        if self.backend.is_some() {
+            validate_backend_executes(backend_name)?;
+        }
         validate_scheduler_control(backend_name, effective_scheduler)?;
         validate_max_branches_control(backend_name, effective_max_branches)?;
         if self.backend_native && self.backend.is_none() {
@@ -825,6 +845,25 @@ fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
             "unsupported backend option `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
         )
     }
+}
+
+fn validate_backend_executes(backend: &str) -> anyhow::Result<()> {
+    let Some(capability) = kobo_sim_core::backend::capabilities()
+        .iter()
+        .find(|capability| capability.name == backend)
+    else {
+        validate_backend_name(backend)?;
+        return Ok(());
+    };
+    if capability.executes_in_v10 {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "unsupported backend option `{backend}`: {} (adapter is not linked; {}, {}); use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later",
+        capability.role,
+        capability.integration_level,
+        capability.scenario_execution
+    )
 }
 
 fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
@@ -1793,14 +1832,11 @@ struct ShrunkEventStream {
 
 fn shrink_event_stream(
     run: &FullDepthRun,
-    sim_profile: &str,
+    _sim_profile: &str,
     shrink_mode: &str,
 ) -> ShrunkEventStream {
     let mut removed_event_ids = Vec::new();
-    if shrink_mode == "best-effort"
-        && run.replay_guarantee == ReplayGuarantee::Exact
-        && sim_profile == "deep"
-    {
+    if shrink_mode == "best-effort" && run.replay_guarantee == ReplayGuarantee::Exact {
         removed_event_ids.extend(run.events.iter().enumerate().filter_map(|(index, event)| {
             if is_replay_irrelevant_event(&event.kind) {
                 Some(index)

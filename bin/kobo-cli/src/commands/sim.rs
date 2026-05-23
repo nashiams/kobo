@@ -193,11 +193,10 @@ pub(super) fn cmd_sim_scout(
         let recommendations = backend_recommendations_for(&source);
         print_value(
             json!({
-            "version": "v0.10",
             "backend_fit": recommendations,
             "executed": true,
             "execution_surface": "generated user Rust process adapters plus compiler-owned semantic agreement",
-            "note": "v0.10 executes generated user Rust through Loom/scheduler/network/filesystem adapter surfaces while preserving semantic and harness trace agreement",
+            "note": "Kobo reports which adapters are executable now and which backend-native engines are reserved metadata until an adapter is linked.",
             }),
             json_output,
         )?;
@@ -1170,10 +1169,10 @@ fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
     json!({
         "kobo_contract": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
         "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
-        "profile_recommendation_scope": "v0.9 stable profile recommendation; generated harness execution stays in later transparency surfaces.",
-        "backend_choice": "v0.10 executes compiler-owned generated user Rust harnesses through scheduler, filesystem, network, and Loom adapter surfaces.",
+        "profile_recommendation_scope": "stable profile recommendation; generated harness execution is visible through inspect surfaces.",
+        "backend_choice": "Kobo executes compiler-owned generated user Rust harnesses through linked scheduler, filesystem, network, and Loom adapter surfaces.",
         "backend_fit": recommendations,
-        "inspect_transparency": "use kobo inspect --sim for v0.10 facade and generated-harness transparency.",
+        "inspect_transparency": "use kobo inspect --sim for facade and generated-harness transparency.",
         "executed": true,
         "scout": scout,
     })
@@ -1205,46 +1204,57 @@ fn scout_reasons(source: &str) -> Vec<&'static str> {
 fn backend_recommendations_for(source: &str) -> serde_json::Value {
     match sim_model::profile_shape_for_source(source) {
         sim_model::TargetProfileShape::Network => json!([
-            {
-                "name": "network",
-                "backend_fit": "generated Rust loopback network harness",
-                "executes_in_v10": true
-            },
-            {
-                "name": "Loom",
-                "backend_fit": "sync concurrency interleavings around network-facing state",
-                "executes_in_v10": true
-            },
-            {
-                "name": "Shuttle",
-                "backend_fit": "async spawn/select schedule exploration around network-facing tasks",
-                "executes_in_v10": true
-            },
-            {
-                "name": "Turmoil",
-                "backend_fit": "network schedule exploration through generated Rust loopback adapter",
-                "executes_in_v10": true
-            },
-            {
-                "name": "Madsim",
-                "backend_fit": "distributed schedule exploration through generated Rust adapter",
-                "executes_in_v10": true
-            }
+            backend_recommendation(
+                "network-loopback",
+                "generated Rust loopback network harness"
+            ),
+            backend_recommendation(
+                "loom",
+                "sync concurrency interleavings around network-facing state"
+            ),
+            backend_recommendation(
+                "shuttle",
+                "async spawn/select schedule exploration around network-facing tasks"
+            ),
+            backend_recommendation(
+                "turmoil",
+                "network schedule exploration through reserved native adapter metadata"
+            ),
+            backend_recommendation(
+                "madsim",
+                "distributed schedule exploration through reserved native adapter metadata"
+            )
         ]),
         sim_model::TargetProfileShape::Async => json!([
-            {"name": "Loom", "backend_fit": "sync concurrency interleavings"},
-            {"name": "Shuttle", "backend_fit": "async spawn/select schedule exploration"}
+            backend_recommendation("loom", "sync concurrency interleavings"),
+            backend_recommendation("shuttle", "async spawn/select schedule exploration")
         ]),
-        sim_model::TargetProfileShape::StatefulInput => json!([
-            {"name": "proptest", "backend_fit": "input and property exploration"}
-        ]),
-        sim_model::TargetProfileShape::Failpoint => json!([
-            {"name": "failpoints", "backend_fit": "manual failure injection points"}
-        ]),
-        sim_model::TargetProfileShape::Sync => json!([
-            {"name": "Loom", "backend_fit": "sync concurrency interleavings"}
-        ]),
+        sim_model::TargetProfileShape::StatefulInput => json!([backend_recommendation(
+            "proptest",
+            "input and property exploration"
+        )]),
+        sim_model::TargetProfileShape::Failpoint => json!([backend_recommendation(
+            "failpoints",
+            "manual failure injection points"
+        )]),
+        sim_model::TargetProfileShape::Sync => json!([backend_recommendation(
+            "loom",
+            "sync concurrency interleavings"
+        )]),
     }
+}
+
+fn backend_recommendation(name: &str, backend_fit: &str) -> serde_json::Value {
+    let capability = backend::capabilities()
+        .iter()
+        .find(|capability| capability.name == name);
+    json!({
+        "name": capability.map(|capability| capability.display_name).unwrap_or(name),
+        "backend_fit": backend_fit,
+        "executes_in_v10": capability.is_some_and(|capability| capability.executes_in_v10),
+        "integration_level": capability.map(|capability| capability.integration_level).unwrap_or("metadata-only"),
+        "scenario_execution": capability.map(|capability| capability.scenario_execution).unwrap_or("unsupported-native-adapter"),
+    })
 }
 
 fn scenario_or_function_name(source: &str) -> Option<String> {

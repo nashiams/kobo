@@ -503,7 +503,10 @@ fn target_function_source(source: &str, target: &str) -> Option<String> {
 }
 
 fn has_network_shape(lower: &str) -> bool {
-    lower.contains("reqwest::")
+    lower.contains("profile = \"network\"")
+        || lower.contains("profile=\"network\"")
+        || lower.contains("ward.network")
+        || lower.contains("reqwest::")
         || lower.contains("hyper::")
         || lower.contains("std::net::")
         || lower.contains("::client::new")

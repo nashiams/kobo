@@ -196,6 +196,71 @@ fn expert_sync_route() {
 }
 
 #[test]
+fn default_sim_success_output_hides_backend_choices() {
+    let project = TestProject::new("v10-default-output-kobo-first");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn default_output_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("test"), s("--sim"), s("quick"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_success(&output, "default sim success output should succeed");
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["status"], "passed");
+    assert_eq!(json["sim_profile"], "quick");
+    assert!(
+        json.get("backend").is_none(),
+        "default output should not show backend internals: {json}"
+    );
+    assert!(
+        json.get("backend_profile").is_none(),
+        "default output should not show backend profile internals: {json}"
+    );
+    assert!(
+        json.get("scheduler").is_none(),
+        "default output should not show scheduler internals: {json}"
+    );
+}
+
+#[test]
+fn show_backend_choices_opts_into_success_backend_details() {
+    let project = TestProject::new("v10-show-backend-choices");
+    project.write(
+        "Kobo.toml",
+        r#"[sim]
+show_backend_choices = true
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn visible_backend_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("test"), s("--sim"), s("quick"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_success(&output, "sim output should succeed");
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["backend"], "loom");
+    assert_eq!(json["backend_profile"], "sync");
+    assert_eq!(json["scheduler"]["profile"], "quick");
+}
+
+#[test]
 fn unsupported_native_backend_scheduler_reports_explicit_debt_path() {
     let project = TestProject::new("v10-unsupported-native-backend-scheduler");
     let file = project.main_file(
@@ -242,6 +307,49 @@ fn expert_async_route() {
         "scenario debt",
         "failure should offer scenario debt as an explicit path",
     );
+}
+
+#[test]
+fn unsupported_native_backend_pin_reports_explicit_debt_path_without_scheduler() {
+    let project = TestProject::new("v10-unsupported-native-backend-pin");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn reserved_backend_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--backend"),
+            s("shuttle"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "unsupported native backend pin should fail without requiring a scheduler knob",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "unsupported backend option",
+        "failure should name unsupported backend",
+    );
+    assert_contains(
+        &text,
+        "unsupported-native-adapter",
+        "failure should disclose adapter status",
+    );
+    assert_contains(&text, "scenario debt", "failure should offer scenario debt");
 }
 
 #[test]
@@ -383,6 +491,47 @@ fn inspect_generated_harness_route() {
         &harness_source,
         "fn inspect_generated_harness_route()",
         "inspect should report a real generated harness that contains the target",
+    );
+}
+
+#[test]
+fn inspect_harness_backend_pin_drives_generated_profile() {
+    let project = TestProject::new("v10-inspect-backend-pin-drives-profile");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn inspect_pinned_loom_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("inspect"),
+            s("--sim"),
+            s("--harness"),
+            s("--backend"),
+            s("loom"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "supported backend pin should inspect generated harness",
+    );
+    let text = output.combined();
+    let harness_path = text
+        .lines()
+        .find_map(|line| line.strip_prefix("// kobo: harness_rs_path: "))
+        .expect("inspect output should contain a harness source path");
+    let harness_source = fs::read_to_string(harness_path).expect("harness source should exist");
+    assert_contains(
+        &harness_source,
+        "loom::model",
+        "supported Loom backend pin should drive the generated harness profile",
     );
 }
 

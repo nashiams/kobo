@@ -35,7 +35,7 @@ fn sync_profile_explain() -> &'static str {
      What happened\n\
      Kobo selected the stable sync simulation profile.\n\n\
      Why this matters\n\
-     In v0.9 this is a recommendation for lock, atomic, and small shared-state code. Kobo records Loom as backend metadata, but ordinary Kobo source does not gain Loom imports.\n\n\
+     This is a stable recommendation for lock, atomic, and small shared-state code. Kobo records Loom as backend evidence when the linked adapter runs, but ordinary Kobo source does not gain Loom imports.\n\n\
      How to fix\n\
      Option 1: Keep this profile for sync shared-state islands.\n\
      Option 2: Pin `--profile sync` when you want stable metadata.\n\
@@ -50,7 +50,7 @@ fn async_profile_explain() -> &'static str {
      What happened\n\
      Kobo selected the stable async simulation profile.\n\n\
      Why this matters\n\
-     In v0.9 this is a recommendation for async functions, `tokio::spawn`, `tokio::select!`, cancellation, and request-handler shapes. Kobo records `shuttle` as backend metadata, but the v0.9 quick runner stays Kobo-level and does not rewrite user source into Shuttle code.\n\n\
+     This is a stable recommendation for async functions, `tokio::spawn`, `tokio::select!`, cancellation, and request-handler shapes. Kobo may record shuttle as reserved backend metadata while keeping the quick runner Kobo-level and avoiding user-source rewrites into Shuttle code.\n\n\
      How to fix\n\
      Option 1: Keep this profile for async spawn/select/cancellation islands.\n\
      Option 2: Pin `--profile async` when the target shape is intentionally async.\n\
@@ -65,7 +65,7 @@ fn stateful_input_profile_explain() -> &'static str {
      What happened\n\
      Kobo selected the stable stateful-input simulation profile.\n\n\
      Why this matters\n\
-     In v0.9 this is a recommendation for parser, reducer, and operation-stream targets. Kobo records proptest as backend metadata without exposing backend-native controls in ordinary source.\n\n\
+     This is a stable recommendation for parser, reducer, and operation-stream targets. Kobo can use generated input evidence without exposing backend-native controls in ordinary source.\n\n\
      How to fix\n\
      Option 1: Keep this profile for input/state transition islands.\n\
      Option 2: Add explicit scenario inputs when generated fixtures are not enough.\n\
@@ -80,7 +80,7 @@ fn failpoint_profile_explain() -> &'static str {
      What happened\n\
      Kobo selected the stable failpoint simulation profile.\n\n\
      Why this matters\n\
-     In v0.9 this is a recommendation for explicit failure branches and retry paths. Failure hooks remain sim-only and must not alter normal build/run behavior.\n\n\
+     This is a stable recommendation for explicit failure branches and retry paths. Failure hooks remain sim-only and must not alter normal build/run behavior.\n\n\
      How to fix\n\
      Option 1: Keep this profile when the target already marks failure points.\n\
      Option 2: Use `--inject cancel,preempt,time-jump,crash` for quick modeled hook evidence.\n\
@@ -95,9 +95,9 @@ fn network_profile_explain() -> &'static str {
      What happened\n\
      Kobo selected the stable network simulation profile.\n\n\
      Why this matters\n\
-     In v0.9 network is design-only. Kobo records the boundary and recommendation, but does not claim executable network replay.\n\n\
+     Network profile evidence is boundary-first. Kobo records the boundary and recommendation, but does not claim arbitrary external network replay.\n\n\
      How to fix\n\
-     Option 1: Treat this as a boundary-design prompt in v0.9.\n\
+     Option 1: Treat this as a boundary-design prompt.\n\
      Option 2: Choose typed, model, record, activity, stub, outside, opaque, or debt for replay-critical calls.\n\
      Option 3: Wait for later scheduler/network backend work before claiming exact network replay.\n\n\
      Example\n\

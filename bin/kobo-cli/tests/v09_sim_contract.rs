@@ -589,7 +589,7 @@ fn inspect_sim_uses_policy_transparency_wording() {
 }
 
 #[test]
-fn sim_scout_why_uses_v09_backend_recommendation_wording() {
+fn sim_scout_why_uses_stable_backend_recommendation_wording() {
     let project = TestProject::new("sim-scout-wording");
     let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
 
@@ -600,7 +600,6 @@ fn sim_scout_why_uses_v09_backend_recommendation_wording() {
 
     assert_success(&output, "sim scout --why should succeed");
     let text = output.combined();
-    assert_contains(&text, "v0.9", "scout should name v0.9 scope");
     assert_contains(
         &text,
         "recommendation",
@@ -608,8 +607,75 @@ fn sim_scout_why_uses_v09_backend_recommendation_wording() {
     );
     assert_not_contains(
         &text,
-        "v0.8.5",
-        "sim scout must not expose stale v0.8.5 wording",
+        "v0.",
+        "sim scout should not expose roadmap-stage product wording",
+    );
+}
+
+#[test]
+fn sim_scout_why_does_not_overclaim_reserved_backend_execution() {
+    let project = TestProject::new("sim-scout-network-honesty");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "network")]
+fn network_route() {
+    ward.network.drop();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            s("--why"),
+            s("--json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "sim scout --why --json should succeed");
+    let json: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("scout output should be JSON");
+    let recommendations = json["backend_fit"]
+        .as_array()
+        .expect("backend_fit should be an array");
+    for name in ["Shuttle", "Turmoil", "Madsim"] {
+        let backend = recommendations
+            .iter()
+            .find(|item| item["name"] == name)
+            .unwrap_or_else(|| panic!("{name} should appear in backend recommendations: {json}"));
+        assert_eq!(
+            backend["executes_in_v10"], false,
+            "{name} must not be reported as executable while its adapter is reserved"
+        );
+        assert_eq!(backend["integration_level"], "metadata-only");
+        assert_eq!(backend["scenario_execution"], "unsupported-native-adapter");
+    }
+}
+
+#[test]
+fn backend_recommendations_avoid_version_stage_language() {
+    let project = TestProject::new("sim-backend-recommendation-wording");
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("scout"),
+            s("--backend-recommendations"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "backend recommendations should succeed");
+    let text = output.combined();
+    assert_not_contains(
+        &text,
+        "v0.",
+        "backend recommendation output should not expose roadmap-stage product wording",
     );
 }
 
@@ -637,8 +703,13 @@ fn explain_reports_backend_profile_rationale() {
     );
     assert_contains(
         &text,
-        "v0.9",
-        "profile explain must be honest about v0.9 recommendation scope",
+        "stable",
+        "profile explain should use stable product wording",
+    );
+    assert_not_contains(
+        &text,
+        "v0.",
+        "profile explain should avoid roadmap-stage product wording",
     );
 }
 

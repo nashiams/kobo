@@ -275,3 +275,61 @@ fn inspect_backend_route() {
         "inspect output should disclose the expert backend pin",
     );
 }
+
+#[test]
+fn sim_config_profiles_and_backend_knobs_drive_test_output() {
+    let project = TestProject::new("v10-sim-config-schema");
+    project.write(
+        "Kobo.toml",
+        r#"[sim]
+default_profile = "quick"
+show_backend_choices = true
+
+[sim.profile.quick]
+schedule_budget = 7
+seed_count = 3
+shrink = "off"
+
+[sim.backend.shuttle]
+enabled = true
+scheduler = "pct"
+replay_token = "record"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn configured_sim_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "sim config should drive test output");
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["backend"], "shuttle");
+    assert_eq!(json["scheduler"]["strategy"], "pct");
+    assert_eq!(
+        json["scheduler"]["event_budget"], 7,
+        "sim.profile.quick.schedule_budget should set the scheduler budget"
+    );
+    assert_eq!(
+        json["sim_config"]["profiles"]["quick"]["seed_count"], 3,
+        "stable sim config should be serialized for audit"
+    );
+    assert_eq!(
+        json["sim_config"]["backends"]["shuttle"]["replay_token"],
+        "record"
+    );
+}

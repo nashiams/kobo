@@ -30,6 +30,7 @@ pub struct KoboConfig {
     pub mutating_methods: Vec<String>,
     pub ecosystem_policy: EcosystemPolicyConfig,
     pub runtime_profile: RuntimeProfileConfig,
+    pub sim: SimConfig,
     pub src_dir: PathBuf,
     pub enable_parse_recovery: bool,
 }
@@ -43,6 +44,44 @@ pub struct RuntimeProfileConfig {
     pub activity: String,
     pub cancellation: String,
     pub scenario_event_budget: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimConfig {
+    pub default_profile: String,
+    pub show_backend_choices: bool,
+    pub profiles: HashMap<String, SimProfileConfig>,
+    pub backends: HashMap<String, SimBackendConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SimProfileConfig {
+    pub schedule_budget: Option<u64>,
+    pub seed_count: Option<u64>,
+    pub shrink: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimBackendConfig {
+    pub enabled: bool,
+    pub scheduler: Option<String>,
+    pub replay_token: Option<String>,
+    pub max_branches: Option<u64>,
+    pub checkpoint_replay: Option<bool>,
+}
+
+impl SimConfig {
+    pub fn schedule_budget_for(&self, profile: &str) -> Option<u64> {
+        self.profiles
+            .get(profile)
+            .and_then(|config| config.schedule_budget)
+    }
+
+    pub fn scheduler_for_backend(&self, backend: &str) -> Option<&str> {
+        self.backends
+            .get(backend)
+            .and_then(|config| config.scheduler.as_deref())
+    }
 }
 
 impl RuntimeProfileConfig {
@@ -155,6 +194,8 @@ struct RawKoboConfig {
     #[serde(default)]
     runtime: RawRuntimeSection,
     #[serde(default)]
+    sim: RawSimSection,
+    #[serde(default)]
     profiles: HashMap<String, RawProfileSection>,
     mode: Option<LegacyMode>,
     profile: Option<GuaranteeProfile>,
@@ -252,6 +293,16 @@ struct RawRuntimeSection {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct RawSimSection {
+    default_profile: Option<String>,
+    show_backend_choices: Option<bool>,
+    #[serde(default)]
+    profile: HashMap<String, RawSimProfileSection>,
+    #[serde(default)]
+    backend: HashMap<String, RawSimBackendSection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct RawRuntimeProfileSection {
     service_buffer: Option<usize>,
     service_backpressure: Option<String>,
@@ -260,6 +311,22 @@ struct RawRuntimeProfileSection {
     activity: Option<String>,
     cancellation: Option<String>,
     scenario_event_budget: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSimProfileSection {
+    schedule_budget: Option<u64>,
+    seed_count: Option<u64>,
+    shrink: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSimBackendSection {
+    enabled: Option<bool>,
+    scheduler: Option<String>,
+    replay_token: Option<String>,
+    max_branches: Option<u64>,
+    checkpoint_replay: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -359,8 +426,32 @@ impl Default for KoboConfig {
             mutating_methods: Vec::new(),
             ecosystem_policy: EcosystemPolicyConfig::default(),
             runtime_profile: RuntimeProfileConfig::default(),
+            sim: SimConfig::default(),
             src_dir: PathBuf::from("src"),
             enable_parse_recovery: false,
+        }
+    }
+}
+
+impl Default for SimConfig {
+    fn default() -> Self {
+        Self {
+            default_profile: "quick".to_owned(),
+            show_backend_choices: false,
+            profiles: HashMap::new(),
+            backends: HashMap::new(),
+        }
+    }
+}
+
+impl Default for SimBackendConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scheduler: None,
+            replay_token: None,
+            max_branches: None,
+            checkpoint_replay: None,
         }
     }
 }
@@ -631,7 +722,41 @@ impl RawKoboConfig {
         self.ecosystem
             .apply_to(&mut config.ecosystem_policy, config_dir)?;
         self.runtime.profile.apply_to(&mut config.runtime_profile);
+        self.sim.apply_to(&mut config.sim);
         Ok(())
+    }
+}
+
+impl RawSimSection {
+    fn apply_to(self, sim: &mut SimConfig) {
+        if let Some(default_profile) = self.default_profile {
+            sim.default_profile = default_profile;
+        }
+        if let Some(show_backend_choices) = self.show_backend_choices {
+            sim.show_backend_choices = show_backend_choices;
+        }
+        for (name, profile) in self.profile {
+            sim.profiles.insert(
+                name,
+                SimProfileConfig {
+                    schedule_budget: profile.schedule_budget,
+                    seed_count: profile.seed_count,
+                    shrink: profile.shrink,
+                },
+            );
+        }
+        for (name, backend) in self.backend {
+            sim.backends.insert(
+                name,
+                SimBackendConfig {
+                    enabled: backend.enabled.unwrap_or(true),
+                    scheduler: backend.scheduler,
+                    replay_token: backend.replay_token,
+                    max_branches: backend.max_branches,
+                    checkpoint_replay: backend.checkpoint_replay,
+                },
+            );
+        }
     }
 }
 
@@ -961,6 +1086,41 @@ methods = ["push", "insert", "remove"]
 "#;
         let config = parse_kobo_config(toml).unwrap();
         assert_eq!(config.mutating_methods, vec!["push", "insert", "remove"]);
+    }
+
+    #[test]
+    fn parse_config_loads_sim_profiles_and_backends() {
+        let toml = r#"
+[sim]
+default_profile = "quick"
+show_backend_choices = true
+
+[sim.profile.quick]
+schedule_budget = 7
+seed_count = 3
+shrink = "off"
+
+[sim.backend.shuttle]
+enabled = true
+scheduler = "pct"
+replay_token = "record"
+max_branches = 11
+checkpoint_replay = true
+"#;
+        let config = parse_kobo_config(toml).unwrap();
+        let profile = config.sim.profiles.get("quick").unwrap();
+        let backend = config.sim.backends.get("shuttle").unwrap();
+
+        assert_eq!(config.sim.default_profile, "quick");
+        assert!(config.sim.show_backend_choices);
+        assert_eq!(profile.schedule_budget, Some(7));
+        assert_eq!(profile.seed_count, Some(3));
+        assert_eq!(profile.shrink.as_deref(), Some("off"));
+        assert!(backend.enabled);
+        assert_eq!(backend.scheduler.as_deref(), Some("pct"));
+        assert_eq!(backend.replay_token.as_deref(), Some("record"));
+        assert_eq!(backend.max_branches, Some(11));
+        assert_eq!(backend.checkpoint_replay, Some(true));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -53,10 +54,17 @@ pub(super) fn cmd_test(
         })
         .unwrap_or_else(|| "<missing>".to_owned());
     let profile_roles = resolve_profile_roles(profile, &document, &target_name);
-    expert_options.validate(&profile_roles.backend_profile, sim_profile)?;
     let mut session = super::session::build_session(
         file,
         Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
+    let effective_scheduler = expert_options
+        .effective_scheduler(&session.config, &profile_roles.backend_profile)
+        .map(str::to_owned);
+    expert_options.validate(
+        &profile_roles.backend_profile,
+        sim_profile,
+        effective_scheduler.as_deref(),
     )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
@@ -73,6 +81,7 @@ pub(super) fn cmd_test(
         inject: inject.map(str::to_owned),
         event_budget: event_budget
             .or(expert_options.max_branches)
+            .or_else(|| session.config.sim.schedule_budget_for(sim_profile))
             .or_else(|| default_budget(sim_profile)),
     };
     let fuzz_plan = if fuzz {
@@ -121,6 +130,7 @@ pub(super) fn cmd_test(
             &session.config,
             &artifacts.runtime_evidence,
             &expert_options,
+            effective_scheduler.as_deref(),
             &run,
         )?);
     }
@@ -132,6 +142,8 @@ pub(super) fn cmd_test(
             seed,
             fuzz_plan.as_ref(),
             &expert_options,
+            &session.config,
+            effective_scheduler.as_deref(),
             &run,
         )?;
         return Ok(());
@@ -159,7 +171,7 @@ pub(super) fn cmd_test(
                 sim_profile,
                 seed,
                 &run,
-                expert_options.scheduler.as_deref(),
+                effective_scheduler.as_deref(),
             ),
             "status": "passed",
         }))?
@@ -201,10 +213,27 @@ impl BackendExpertOptions {
             .unwrap_or_else(|| backend_for_profile(backend_profile))
     }
 
-    fn validate(&self, backend_profile: &str, sim_profile: &str) -> anyhow::Result<()> {
+    fn effective_scheduler<'a>(
+        &'a self,
+        config: &'a kobo_driver::KoboConfig,
+        backend_profile: &'a str,
+    ) -> Option<&'a str> {
+        self.scheduler.as_deref().or_else(|| {
+            config
+                .sim
+                .scheduler_for_backend(self.backend_name(backend_profile))
+        })
+    }
+
+    fn validate(
+        &self,
+        backend_profile: &str,
+        sim_profile: &str,
+        effective_scheduler: Option<&str>,
+    ) -> anyhow::Result<()> {
         let backend_name = self.backend_name(backend_profile);
         validate_backend_name(backend_name)?;
-        validate_scheduler_control(backend_name, self.scheduler.as_deref())?;
+        validate_scheduler_control(backend_name, effective_scheduler)?;
         validate_max_branches_control(backend_name, self.max_branches)?;
         if self.backend_native && self.backend.is_none() {
             anyhow::bail!(
@@ -658,6 +687,8 @@ fn print_events(
     seed: u64,
     fuzz_plan: Option<&FuzzPlan>,
     expert_options: &BackendExpertOptions,
+    config: &kobo_driver::KoboConfig,
+    effective_scheduler: Option<&str>,
     run: &FullDepthRun,
 ) -> anyhow::Result<()> {
     println!(
@@ -668,9 +699,10 @@ fn print_events(
             "sim_profile": sim_profile,
             "backend_profile": run.profile,
             "backend": expert_options.backend_name(&run.profile),
-            "scheduler": scheduler_json(sim_profile, seed, run, expert_options.scheduler.as_deref()),
+            "scheduler": scheduler_json(sim_profile, seed, run, effective_scheduler),
             "backend_native": expert_options.backend_native,
             "max_branches": expert_options.max_branches,
+            "sim_config": sim_config_json(config),
             "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
             "events": events_json(&run.events),
@@ -692,6 +724,7 @@ fn write_run_witness(
     config: &kobo_driver::KoboConfig,
     runtime_evidence: &kobo_codegen::RuntimeEvidence,
     expert_options: &BackendExpertOptions,
+    effective_scheduler: Option<&str>,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -759,7 +792,7 @@ fn write_run_witness(
         "sim_profile": sim_profile,
         "backend_controls": {
             "backend": expert_options.backend_name(&run.profile),
-            "scheduler": expert_options.scheduler.as_deref(),
+            "scheduler": effective_scheduler,
             "max_branches": expert_options.max_branches,
             "backend_native": expert_options.backend_native,
         },
@@ -783,7 +816,7 @@ fn write_run_witness(
             sim_profile,
             seed,
             run,
-            Some(config.runtime_profile.scheduler.as_str()),
+            effective_scheduler.or(Some(config.runtime_profile.scheduler.as_str())),
         ),
         "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage,
@@ -811,6 +844,7 @@ fn write_run_witness(
         .as_object_mut()
         .expect("witness json literal should be an object");
     object.insert("runtime_profile".to_owned(), runtime_profile);
+    object.insert("sim_config".to_owned(), sim_config_json(config));
     object.insert(
         "execution_digest".to_owned(),
         execution_digest_json(run, &runtime_profile_hash),
@@ -1306,6 +1340,47 @@ fn coverage_json(run: &FullDepthRun) -> serde_json::Value {
 
 fn scenario_coverage_json(run: &FullDepthRun) -> serde_json::Value {
     coverage_json(run)
+}
+
+fn sim_config_json(config: &kobo_driver::KoboConfig) -> serde_json::Value {
+    let profiles = config
+        .sim
+        .profiles
+        .iter()
+        .map(|(name, profile)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "schedule_budget": profile.schedule_budget,
+                    "seed_count": profile.seed_count,
+                    "shrink": profile.shrink.as_deref(),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let backends = config
+        .sim
+        .backends
+        .iter()
+        .map(|(name, backend)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "enabled": backend.enabled,
+                    "scheduler": backend.scheduler.as_deref(),
+                    "replay_token": backend.replay_token.as_deref(),
+                    "max_branches": backend.max_branches,
+                    "checkpoint_replay": backend.checkpoint_replay,
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    serde_json::json!({
+        "default_profile": config.sim.default_profile.as_str(),
+        "show_backend_choices": config.sim.show_backend_choices,
+        "profiles": profiles,
+        "backends": backends,
+    })
 }
 
 fn scheduler_json(

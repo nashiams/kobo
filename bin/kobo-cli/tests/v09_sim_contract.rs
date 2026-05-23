@@ -87,6 +87,42 @@ fn sim_init_generates_one_tiny_island_and_records_profile() {
 }
 
 #[test]
+fn sim_init_rejects_unknown_profile_without_backend_default() {
+    let project = TestProject::new("sim-init-unknown-profile");
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
+
+    let output = run_kobo(
+        &[
+            s("sim"),
+            s("init"),
+            s("--target"),
+            format!("{}:handle_request", path_arg(&file)),
+            s("--profile"),
+            s("shuttle-ish"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "unknown sim profile should fail");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "unsupported simulation profile",
+        "failure should name profile validation",
+    );
+    assert_contains(
+        &text,
+        "sync, async, stateful-input, failpoint, network, distributed",
+        "failure should list stable profiles",
+    );
+    assert_not_contains(
+        &text,
+        "shuttle",
+        "unknown profiles must not silently map to Shuttle",
+    );
+}
+
+#[test]
 fn sim_init_target_mutation_changes_generated_metadata() {
     let project = TestProject::new("sim-init-mutation");
     let file = project.write(

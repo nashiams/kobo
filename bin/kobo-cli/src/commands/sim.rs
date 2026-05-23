@@ -8,11 +8,21 @@ use syn::{spanned::Spanned, visit::Visit};
 
 use super::sim_model;
 
+const SUPPORTED_SIM_INIT_PROFILES: &[&str] = &[
+    "sync",
+    "async",
+    "stateful-input",
+    "failpoint",
+    "network",
+    "distributed",
+];
+
 pub(super) fn cmd_sim_init(
     target: &str,
     minimal: bool,
     profile: Option<&str>,
 ) -> anyhow::Result<()> {
+    validate_sim_init_profile(profile)?;
     let (file, symbol) = target
         .rsplit_once(':')
         .ok_or_else(|| anyhow::anyhow!("--target must use FILE:SYMBOL"))?;
@@ -59,6 +69,19 @@ pub(super) fn cmd_sim_init(
     });
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+fn validate_sim_init_profile(profile: Option<&str>) -> anyhow::Result<()> {
+    let Some(profile) = profile else {
+        return Ok(());
+    };
+    if SUPPORTED_SIM_INIT_PROFILES.contains(&profile) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "unsupported simulation profile; expected {}",
+        SUPPORTED_SIM_INIT_PROFILES.join(", ")
+    )
 }
 
 struct SimArtifacts {
@@ -1147,6 +1170,7 @@ fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
     json!({
         "kobo_contract": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
         "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
+        "profile_recommendation_scope": "v0.9 stable profile recommendation; generated harness execution stays in later transparency surfaces.",
         "backend_choice": "v0.10 executes compiler-owned generated user Rust harnesses through scheduler, filesystem, network, and Loom adapter surfaces.",
         "backend_fit": recommendations,
         "inspect_transparency": "use kobo inspect --sim for v0.10 facade and generated-harness transparency.",

@@ -82,6 +82,7 @@ pub(super) struct ExecutionDigest {
 pub(super) enum Backend {
     Loom,
     Shuttle,
+    Madsim,
     Proptest,
     Failpoints,
     DesignOnlyNetwork,
@@ -147,6 +148,7 @@ impl Backend {
         match self {
             Self::Loom => "loom",
             Self::Shuttle => "shuttle",
+            Self::Madsim => "madsim",
             Self::Proptest => "proptest",
             Self::Failpoints => "failpoints",
             Self::DesignOnlyNetwork => "network-design",
@@ -1770,6 +1772,7 @@ fn ident_prefix(input: &str) -> Option<String> {
 pub(super) fn backend_for_profile(profile: &str) -> Backend {
     match profile {
         "sync" => Backend::Loom,
+        "distributed" => Backend::Madsim,
         "stateful-input" => Backend::Proptest,
         "failpoint" => Backend::Failpoints,
         "network" | "network-design" => Backend::DesignOnlyNetwork,

@@ -11,6 +11,7 @@ use crate::{ErrorFormat, GuaranteeProfileArg};
 
 #[derive(Clone, Debug)]
 struct ReleasePolicy {
+    is_configured: bool,
     deny_new_debt: bool,
     strict_paths: Vec<String>,
     deny_downgrade_without_reason: bool,
@@ -26,6 +27,7 @@ pub(super) struct EffectiveGuaranteePolicy {
 impl ReleasePolicy {
     const fn default() -> Self {
         Self {
+            is_configured: false,
             deny_new_debt: true,
             strict_paths: Vec::new(),
             deny_downgrade_without_reason: true,
@@ -33,6 +35,7 @@ impl ReleasePolicy {
     }
 
     fn apply_table(&mut self, table: &toml::map::Map<String, TomlValue>) {
+        self.is_configured = true;
         if let Some(value) = table.get("deny_new_debt").and_then(TomlValue::as_bool) {
             self.deny_new_debt = value;
         }
@@ -63,6 +66,14 @@ impl EffectiveGuaranteePolicy {
 
     pub(super) fn error_policy_name(&self) -> &'static str {
         self.policy.guarantees().errors().as_str()
+    }
+
+    pub(super) const fn has_configured_release_policy(&self) -> bool {
+        self.release.is_configured
+    }
+
+    pub(super) const fn denies_new_debt(&self) -> bool {
+        self.release.is_configured && self.release.deny_new_debt
     }
 }
 
@@ -122,6 +133,27 @@ pub(super) fn load_effective_policy(
         release,
         downgrade,
     })
+}
+
+pub(super) fn load_configured_release_policy(
+    file: Option<&Path>,
+    base_policy: &GuaranteePolicy,
+) -> anyhow::Result<Option<EffectiveGuaranteePolicy>> {
+    let profile = profile_arg_for(base_policy.profile());
+    let loaded = load_effective_policy(file, profile)?;
+    if loaded.has_configured_release_policy() {
+        Ok(Some(loaded))
+    } else {
+        Ok(None)
+    }
+}
+
+const fn profile_arg_for(profile: GuaranteeProfile) -> GuaranteeProfileArg {
+    match profile {
+        GuaranteeProfile::Dev => GuaranteeProfileArg::Dev,
+        GuaranteeProfile::Checked => GuaranteeProfileArg::Checked,
+        GuaranteeProfile::Release => GuaranteeProfileArg::Release,
+    }
 }
 
 fn raise_policy_to_release_floor(policy: &mut GuaranteePolicy) {

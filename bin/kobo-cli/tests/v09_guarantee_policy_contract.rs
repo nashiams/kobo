@@ -315,6 +315,40 @@ deny_downgrade_without_reason = true
 }
 
 #[test]
+fn normal_check_enforces_configured_deny_new_debt() {
+    let project = TestProject::new("deny-new-debt-normal-check");
+    let file = project.main_file(
+        r#"#[kobo::relax]
+fn relaxed_fn() {
+    let value = String::from("ci");
+    println!("{}", value);
+}
+
+fn main() {
+    relaxed_fn();
+}
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ci.release]
+deny_new_debt = true
+"#,
+    );
+
+    let output = run_kobo(&[s("check"), path_arg(&file)], &project.root);
+
+    assert_failure(&output, "configured deny_new_debt must gate normal check");
+    let text = output.combined();
+    assert_contains(&text, "deny_new_debt", "failure should name the CI gate");
+    assert_contains(
+        &text,
+        "K0026",
+        "failure should point at the new debt diagnostic",
+    );
+}
+
+#[test]
 fn docs_and_cli_do_not_expose_script_strict_as_language_identities() {
     let project = TestProject::new("no-mode-identity");
     let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");

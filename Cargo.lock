@@ -351,6 +351,7 @@ dependencies = [
  "kobo-lsp",
  "kobo-migrate",
  "kobo-parser",
+ "kobo-proof",
  "kobo-sim-core",
  "proc-macro2",
  "proptest",

@@ -1,4 +1,4 @@
-use crate::ProofCertificate;
+use crate::{CoreCfgEdge, CoreCfgNode, ProofCertificate};
 
 pub fn stable_hash(material: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -14,5 +14,18 @@ pub fn certificate_material_hash(
 ) -> Result<String, serde_json::Error> {
     let mut material = certificate.clone();
     material.certificate_material_hash.clear();
+    serde_json::to_string(&material).map(|source| stable_hash(&source))
+}
+
+pub fn core_material_hash(
+    core_version: &str,
+    cfg_nodes: &[CoreCfgNode],
+    cfg_edges: &[CoreCfgEdge],
+) -> Result<String, serde_json::Error> {
+    let material = serde_json::json!({
+        "version": core_version,
+        "cfg_nodes": cfg_nodes,
+        "cfg_edges": cfg_edges,
+    });
     serde_json::to_string(&material).map(|source| stable_hash(&source))
 }

@@ -6,10 +6,10 @@ use kobo_ir::{
     ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, stable_hash, BoundaryAssumption, BoundaryPolicy, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, HashEvidence, ObligationEvent,
-    ObligationEventKind, ObligationState, OpaqueLedgerEntry, ProofCertificate, SourceEvidence,
-    SourceSpan, TemplateVersionEvidence,
+    certificate_material_hash, core_material_hash, stable_hash, BoundaryAssumption, BoundaryPolicy,
+    CoreCfgEdge, CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, HashEvidence,
+    ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry, ProofCertificate,
+    SourceEvidence, SourceSpan, TemplateVersionEvidence,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -35,7 +35,7 @@ pub fn emit_proof_certificate(
     let core_program = lower_core_program(input.program);
     let cfg_nodes = core_cfg_nodes(&source_path, input.source, &core_program.functions);
     let cfg_edges = core_cfg_edges(&source_path, input.source, &core_program.functions);
-    let core_hash = core_hash(core_program.core_version, &cfg_nodes, &cfg_edges)?;
+    let core_hash = core_material_hash(core_program.core_version, &cfg_nodes, &cfg_edges)?;
     let (template_hashes, template_versions) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
@@ -148,19 +148,6 @@ fn block_span(block: &CoreBlock) -> KoboSpan {
             start: 0,
             end: 0,
         })
-}
-
-fn core_hash(
-    core_version: &str,
-    cfg_nodes: &[CoreCfgNode],
-    cfg_edges: &[CoreCfgEdge],
-) -> Result<String, serde_json::Error> {
-    let material = serde_json::json!({
-        "version": core_version,
-        "cfg_nodes": cfg_nodes,
-        "cfg_edges": cfg_edges,
-    });
-    serde_json::to_string(&material).map(|source| stable_hash(&source))
 }
 
 fn template_evidence(

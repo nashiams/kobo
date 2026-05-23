@@ -33,4 +33,5 @@ proptest    = { workspace = true }
 
 [dev-dependencies]
 insta       = { workspace = true }
+kobo-proof  = { path = "../../crates/compiler/kobo-proof" }
 serde_json  = { workspace = true }

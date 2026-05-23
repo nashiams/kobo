@@ -1,0 +1,8 @@
+struct AsyncGateway {}
+
+// kobo:invariant no_orphan_tasks { never scheduler-task-enqueued }
+#[kobo::scenario(profile = "async")]
+fn orphan_task_failure() {
+    let _gateway = AsyncGateway {};
+    ward.task();
+}

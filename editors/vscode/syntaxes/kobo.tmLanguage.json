@@ -1,0 +1,28 @@
+{
+  "scopeName": "source.kobo",
+  "patterns": [
+    {
+      "name": "keyword.control.kobo",
+      "match": "\\b(ward|state|obligation|scenario|invariant|temporal|port|recording|debt|model)\\b"
+    },
+    {
+      "name": "keyword.other.kobo",
+      "match": "\\b(fn|struct|impl|async|await|let|return|if|else|match|use|mod)\\b"
+    },
+    {
+      "name": "comment.line.double-slash.kobo",
+      "match": "//.*$"
+    },
+    {
+      "name": "string.quoted.double.kobo",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.kobo",
+          "match": "\\\\."
+        }
+      ]
+    }
+  ]
+}

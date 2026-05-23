@@ -1,0 +1,14 @@
+struct DurableQueue {}
+
+// kobo:temporal never storage-crash-after-write
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {}
+
+#[kobo::scenario(profile = "async")]
+fn crash_after_ack() {
+    let _queue = DurableQueue {};
+    let delivery = Delivery {};
+    delivery.ack();
+    ward.storage.write("pending");
+    ward.storage.crash_after_write();
+}

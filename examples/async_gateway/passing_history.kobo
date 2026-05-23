@@ -1,0 +1,20 @@
+struct AsyncGateway {}
+struct RequestToken {}
+
+impl RequestToken {
+    fn reply(self) {}
+    fn reject(self) {}
+    fn cancel(self) {}
+}
+
+#[kobo::handler]
+async fn gateway_handler(token: RequestToken) {
+    token.reject();
+}
+
+#[kobo::scenario(profile = "async")]
+async fn gateway_success() {
+    let _gateway = AsyncGateway {};
+    gateway_handler(RequestToken {}).await;
+    ward.task();
+}

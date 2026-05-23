@@ -23,6 +23,7 @@ pub(crate) mod select;
 pub mod source_map;
 pub(crate) mod spawn;
 mod validate;
+mod ward;
 
 pub use bridge_blocks::{
     preprocess_bridge_blocks, preprocess_bridge_blocks_mapped, BridgeBlockInfo, BridgeKind,
@@ -46,6 +47,10 @@ pub use spawn::{
     SpawnBlockInfo, SpawnContextError,
 };
 pub use validate::preprocess_strict_reject_invalid;
+pub use ward::{
+    parse_ward_syntax, preprocess_ward_syntax_mapped, WardBlock, WardItem, WardLineFact,
+    WardNamedBlock, WardObligation, WardScenario, WardScenarioProfile, WardState, WardSyntaxModel,
+};
 
 /// Allowed positions for a Kobo keyword.
 #[derive(Debug, Clone, PartialEq)]

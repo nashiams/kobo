@@ -19,6 +19,7 @@ fn compiler_semantics_tracks_scenario_operations_and_obligation() {
                     binding: "delivery".to_owned(),
                     type_name: "Delivery".to_owned(),
                     actions: vec!["ack".to_owned(), "nack".to_owned()],
+                    template: None,
                 },
             },
             ScenarioOp {

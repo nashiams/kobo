@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use kobo_errors::KErrorCode;
-use kobo_ir::ScenarioExternalCallShape;
+use kobo_ir::{FileId, ScenarioExternalCallShape};
+use kobo_parser::{parse_ward_syntax, WardItem};
 
 use kobo_sim_core as sim_core;
 
@@ -236,6 +237,18 @@ pub(super) enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    BranchUnresolved {
+        binding: String,
+        span_start: usize,
+        span_end: usize,
+    },
+    UnsupportedContainer {
+        binding: String,
+        type_name: String,
+        container: String,
+        span_start: usize,
+        span_end: usize,
+    },
     ModeledEffect {
         boundary: ModeledBoundary,
         span_start: usize,
@@ -308,6 +321,7 @@ struct SimulationRuntime<'a> {
     budget_failure: Option<ScenarioFailure>,
     raw_failure: Option<ScenarioFailure>,
     uncontrolled_failure: Option<ScenarioFailure>,
+    unsupported_container_failure: Option<ScenarioFailure>,
     cancel_failure: Option<ScenarioFailure>,
     injection_failure: Option<ScenarioFailure>,
     boundary_failure: Option<ScenarioFailure>,
@@ -574,6 +588,7 @@ fn parse_must_call_types(source: &str) -> Vec<MustCallType> {
             }
         }
     }
+    types.extend(ward_must_call_types(source));
     types
 }
 
@@ -610,7 +625,40 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
             }
         }
     }
+    scenarios.extend(ward_scenarios(source));
     scenarios
+}
+
+fn ward_must_call_types(source: &str) -> Vec<MustCallType> {
+    parse_ward_syntax(source, FileId(0))
+        .wards
+        .into_iter()
+        .flat_map(|ward| ward.items)
+        .filter_map(|item| match item {
+            WardItem::Obligation(obligation) => Some(MustCallType {
+                type_name: obligation.type_name,
+                actions: obligation.actions,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn ward_scenarios(source: &str) -> Vec<Scenario> {
+    parse_ward_syntax(source, FileId(0))
+        .wards
+        .into_iter()
+        .flat_map(|ward| ward.items)
+        .filter_map(|item| match item {
+            WardItem::Scenario(scenario) => Some(Scenario {
+                name: scenario.name,
+                profile: scenario.profile.as_str().to_owned(),
+                body: scenario.body,
+                body_start: scenario.body_span.start as usize,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 impl ScenarioProgram {
@@ -694,6 +742,28 @@ fn convert_core_operation(operation: sim_core::ScenarioOperation) -> ScenarioOpe
             span_end,
         } => ScenarioOperation::MoveBinding {
             binding,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::BranchUnresolved {
+            binding,
+            span_start,
+            span_end,
+        } => ScenarioOperation::BranchUnresolved {
+            binding,
+            span_start,
+            span_end,
+        },
+        sim_core::ScenarioOperation::UnsupportedContainer {
+            binding,
+            type_name,
+            container,
+            span_start,
+            span_end,
+        } => ScenarioOperation::UnsupportedContainer {
+            binding,
+            type_name,
+            container,
             span_start,
             span_end,
         },
@@ -861,6 +931,36 @@ impl ScenarioOperation {
                 output.push(':');
                 output.push_str(&span_end.to_string());
             }
+            Self::BranchUnresolved {
+                binding,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("branch-unresolved:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
+            Self::UnsupportedContainer {
+                binding,
+                type_name,
+                container,
+                span_start,
+                span_end,
+            } => {
+                output.push_str("unsupported-container:");
+                output.push_str(binding);
+                output.push(':');
+                output.push_str(type_name);
+                output.push(':');
+                output.push_str(container);
+                output.push(':');
+                output.push_str(&span_start.to_string());
+                output.push(':');
+                output.push_str(&span_end.to_string());
+            }
             Self::ModeledEffect {
                 boundary,
                 span_start,
@@ -981,6 +1081,7 @@ impl<'a> SimulationRuntime<'a> {
             budget_failure: None,
             raw_failure: None,
             uncontrolled_failure: None,
+            unsupported_container_failure: None,
             cancel_failure: None,
             injection_failure: None,
             boundary_failure: None,
@@ -1020,6 +1121,23 @@ impl<'a> SimulationRuntime<'a> {
                     span_start,
                     span_end,
                 } => self.mark_binding_moved(binding, (*span_start, *span_end)),
+                ScenarioOperation::BranchUnresolved {
+                    binding,
+                    span_start,
+                    span_end,
+                } => self.record_branch_unresolved_failure(binding, (*span_start, *span_end)),
+                ScenarioOperation::UnsupportedContainer {
+                    binding,
+                    type_name,
+                    container,
+                    span_start,
+                    span_end,
+                } => self.record_unsupported_container_failure(
+                    binding,
+                    type_name,
+                    container,
+                    (*span_start, *span_end),
+                ),
                 ScenarioOperation::ModeledEffect {
                     boundary,
                     span_start,
@@ -1096,6 +1214,7 @@ impl<'a> SimulationRuntime<'a> {
             .budget_failure
             .or(self.raw_failure)
             .or(self.uncontrolled_failure)
+            .or(self.unsupported_container_failure)
             .or(self.injection_failure)
             .or(self.cancel_failure)
             .or(liveness_failure)
@@ -1415,6 +1534,50 @@ impl<'a> SimulationRuntime<'a> {
             events: vec![SimEvent {
                 kind: "uncontrolled-effect".to_owned(),
                 label: Some(operation.to_owned()),
+                value: None,
+            }],
+        });
+    }
+
+    fn record_unsupported_container_failure(
+        &mut self,
+        binding: &str,
+        type_name: &str,
+        container: &str,
+        span: (usize, usize),
+    ) {
+        if self.unsupported_container_failure.is_some() {
+            return;
+        }
+        self.unsupported_container_failure = Some(ScenarioFailure {
+            code: KErrorCode::K0100,
+            message: format!(
+                "strict liveness: {container} containing {type_name} `{binding}` needs an obligation-aware wrapper or declaration"
+            ),
+            primary_start: span.0,
+            primary_end: span.1,
+            events: vec![SimEvent {
+                kind: "unsupported-container".to_owned(),
+                label: Some(format!("{binding}:{container}:{type_name}")),
+                value: None,
+            }],
+        });
+    }
+
+    fn record_branch_unresolved_failure(&mut self, binding: &str, span: (usize, usize)) {
+        if self.unsupported_container_failure.is_some() {
+            return;
+        }
+        self.unsupported_container_failure = Some(ScenarioFailure {
+            code: KErrorCode::K0100,
+            message: format!(
+                "strict liveness: unresolved obligation `{binding}` reaches one branch exit"
+            ),
+            primary_start: span.0,
+            primary_end: span.1,
+            events: vec![SimEvent {
+                kind: "branch-unresolved".to_owned(),
+                label: Some(binding.to_owned()),
                 value: None,
             }],
         });

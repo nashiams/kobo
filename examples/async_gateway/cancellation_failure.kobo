@@ -1,0 +1,12 @@
+struct AsyncGateway {}
+
+#[kobo::must_call(reply | reject | cancel)]
+struct RequestToken {}
+
+#[kobo::scenario(profile = "async")]
+fn cancellation_failure() {
+    let _gateway = AsyncGateway {};
+    let token = RequestToken {};
+    ward.task();
+    token.reply();
+}

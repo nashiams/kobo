@@ -10,8 +10,9 @@ use kobo_parser::{
     mode_parse::{parse_legacy_mode_directive, LegacyModeDirective},
     parse_file_recovering, postprocess_strict_markers, preprocess_bridge_blocks_mapped,
     preprocess_concurrent_sugar_mapped, preprocess_kobo_keywords_mapped,
-    preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid, v05_keyword_configs,
-    KoboFile, PreprocessSourceMap, RecoveryMode,
+    preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid,
+    preprocess_ward_syntax_mapped, v05_keyword_configs, KoboFile, PreprocessSourceMap,
+    RecoveryMode,
 };
 use kobo_transform::{build_kir, TransformOptions};
 
@@ -46,9 +47,15 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
 
     // v0.5 preprocessing: rewrite @strict → marker attributes before syn parse.
     // v0.10 preprocessing: rewrite concurrent-state sugar to Kobo attributes.
-    let concurrent_mapped = preprocess_concurrent_sugar_mapped(&source, file_id);
-    let mut rewritten = concurrent_mapped.rewritten;
-    let mut preprocess_source_map = concurrent_mapped.source_map;
+    let ward_mapped = preprocess_ward_syntax_mapped(&source, file_id);
+    let mut rewritten = ward_mapped.rewritten;
+    let mut preprocess_source_map = ward_mapped.source_map;
+
+    let concurrent_mapped = preprocess_concurrent_sugar_mapped(&rewritten, file_id);
+    rewritten = concurrent_mapped.rewritten;
+    preprocess_source_map = concurrent_mapped
+        .source_map
+        .compose_with(&preprocess_source_map);
 
     let configs = v05_keyword_configs();
     if let Err(e) = preprocess_strict_reject_invalid(&rewritten, &configs) {

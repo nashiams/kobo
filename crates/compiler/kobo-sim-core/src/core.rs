@@ -231,6 +231,18 @@ pub enum ScenarioOperation {
         span_start: usize,
         span_end: usize,
     },
+    BranchUnresolved {
+        binding: String,
+        span_start: usize,
+        span_end: usize,
+    },
+    UnsupportedContainer {
+        binding: String,
+        type_name: String,
+        container: String,
+        span_start: usize,
+        span_end: usize,
+    },
     ModeledEffect {
         boundary: ModeledBoundary,
         span_start: usize,
@@ -444,6 +456,44 @@ impl<'a> Runtime<'a> {
                         obligation.drop_span = Some((*span_start, *span_end));
                     }
                 }
+                ScenarioOperation::BranchUnresolved {
+                    binding,
+                    span_start,
+                    span_end,
+                } => self.set_failure_once(ScenarioFailure {
+                    code: KErrorCode::K0100,
+                    message: format!(
+                        "strict liveness: unresolved obligation `{binding}` reaches one branch exit"
+                    ),
+                    primary_start: *span_start,
+                    primary_end: *span_end,
+                    events: vec![ScenarioEvent {
+                        kind: "branch-unresolved".to_owned(),
+                        label: Some(binding.clone()),
+                        value: None,
+                        io: None,
+                    }],
+                }),
+                ScenarioOperation::UnsupportedContainer {
+                    binding,
+                    type_name,
+                    container,
+                    span_start,
+                    span_end,
+                } => self.set_failure_once(ScenarioFailure {
+                    code: KErrorCode::K0100,
+                    message: format!(
+                        "strict liveness: {container} containing {type_name} `{binding}` needs an obligation-aware wrapper or declaration"
+                    ),
+                    primary_start: *span_start,
+                    primary_end: *span_end,
+                    events: vec![ScenarioEvent {
+                        kind: "unsupported-container".to_owned(),
+                        label: Some(format!("{binding}:{container}:{type_name}")),
+                        value: None,
+                        io: None,
+                    }],
+                }),
                 ScenarioOperation::ModeledEffect {
                     boundary,
                     span_start,
@@ -552,10 +602,13 @@ impl<'a> Runtime<'a> {
             .rev()
             .find(|obligation| obligation.binding == binding && !obligation.is_discharged)
         {
-            if obligation
-                .actions
-                .iter()
-                .any(|candidate| candidate == action)
+            if action == "return"
+                || action.starts_with("escape:")
+                || action.starts_with("suppressed:")
+                || obligation
+                    .actions
+                    .iter()
+                    .any(|candidate| candidate == action)
             {
                 obligation.is_discharged = true;
             }
@@ -713,6 +766,19 @@ impl<'a> Runtime<'a> {
             self.opaque_boundaries.push(crate_name.clone());
         }
         let event_label = boundary_event_label(&crate_name, call_path.as_deref(), span);
+        let activity_capture = if policy == BoundaryPolicyChoice::Activity {
+            Some(activity_result_capture(
+                &crate_name,
+                call_path.as_deref(),
+                &call_arguments,
+                &call_shape,
+                reason.as_deref(),
+                span,
+                self.options.seed,
+            ))
+        } else {
+            None
+        };
         if !self.boundary_decisions.iter().any(|decision| {
             decision.crate_name == crate_name
                 && decision.call_path == call_path
@@ -732,7 +798,7 @@ impl<'a> Runtime<'a> {
                 reason: reason.clone(),
                 span_start: span.0,
                 span_end: span.1,
-                recorded_io: None,
+                recorded_io: activity_capture.clone(),
             });
         }
         if is_replay_owned_boundary(&policy) {
@@ -749,7 +815,7 @@ impl<'a> Runtime<'a> {
                 kind: format!("boundary-{}", policy.as_str()),
                 label: Some(event_label),
                 value: Some(self.options.seed),
-                io: None,
+                io: activity_capture,
             });
             return;
         }
@@ -904,6 +970,117 @@ fn is_explicit_partial_boundary(policy: &BoundaryPolicyChoice) -> bool {
 
 fn boundary_event_label(crate_name: &str, call_path: Option<&str>, span: (usize, usize)) -> String {
     format!("{}@{}..{}", call_path.unwrap_or(crate_name), span.0, span.1)
+}
+
+fn activity_result_capture(
+    crate_name: &str,
+    call_path: Option<&str>,
+    call_arguments: &[ScenarioBoundaryCallArgument],
+    call_shape: &ScenarioExternalCallShape,
+    reason: Option<&str>,
+    span: (usize, usize),
+    seed: u64,
+) -> BoundaryIoCapture {
+    let call_path = call_path.unwrap_or(crate_name);
+    let replay_key = crate::digest::stable_hash(&format!(
+        "activity:{crate_name}:{call_path}:{}:{}:{seed}",
+        span.0, span.1
+    ));
+    let mut request_fields = vec![
+        BoundaryIoField {
+            key: "capture_source".to_owned(),
+            value: "semantic-activity-boundary".to_owned(),
+        },
+        BoundaryIoField {
+            key: "crate".to_owned(),
+            value: crate_name.to_owned(),
+        },
+        BoundaryIoField {
+            key: "call_path".to_owned(),
+            value: call_path.to_owned(),
+        },
+        BoundaryIoField {
+            key: "call_shape".to_owned(),
+            value: call_shape.as_str().to_owned(),
+        },
+        BoundaryIoField {
+            key: "policy".to_owned(),
+            value: "activity".to_owned(),
+        },
+        BoundaryIoField {
+            key: "reason".to_owned(),
+            value: reason.unwrap_or("").to_owned(),
+        },
+        BoundaryIoField {
+            key: "source_span_start".to_owned(),
+            value: span.0.to_string(),
+        },
+        BoundaryIoField {
+            key: "source_span_end".to_owned(),
+            value: span.1.to_string(),
+        },
+        BoundaryIoField {
+            key: "argument_count".to_owned(),
+            value: call_arguments.len().to_string(),
+        },
+    ];
+    for argument in call_arguments {
+        request_fields.push(BoundaryIoField {
+            key: format!("argument_{}_source", argument.index),
+            value: argument.source.clone(),
+        });
+    }
+    let request_hash = crate::digest::stable_hash(&boundary_fields_material(
+        "kobo-activity-request",
+        &request_fields,
+    ));
+    let response_fields = vec![
+        BoundaryIoField {
+            key: "capture_source".to_owned(),
+            value: "semantic-activity-boundary".to_owned(),
+        },
+        BoundaryIoField {
+            key: "status".to_owned(),
+            value: "activity-result-recorded".to_owned(),
+        },
+        BoundaryIoField {
+            key: "result_mode".to_owned(),
+            value: "metadata-only-outside-deterministic-replay".to_owned(),
+        },
+        BoundaryIoField {
+            key: "external_internals_replayed".to_owned(),
+            value: "false".to_owned(),
+        },
+    ];
+    let response_hash = crate::digest::stable_hash(&boundary_fields_material(
+        "kobo-activity-response",
+        &response_fields,
+    ));
+    BoundaryIoCapture {
+        mode: "activity-result-metadata".to_owned(),
+        replay_key,
+        request: BoundaryIoPayload {
+            kind: "kobo-activity-request".to_owned(),
+            fields: request_fields,
+        },
+        response: BoundaryIoPayload {
+            kind: "kobo-activity-response".to_owned(),
+            fields: response_fields,
+        },
+        request_hash,
+        response_hash,
+    }
+}
+
+fn boundary_fields_material(kind: &str, fields: &[BoundaryIoField]) -> String {
+    let mut material = kind.to_owned();
+    for field in fields {
+        material.push('|');
+        material.push_str(&field.key);
+        material.push('=');
+        material.push_str(&field.value);
+    }
+    material
 }
 
 pub(crate) fn scheduler_events(options: &ScenarioOptions) -> Vec<ScenarioEvent> {

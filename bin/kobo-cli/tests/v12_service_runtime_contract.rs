@@ -1,10 +1,12 @@
 mod v09_common;
 
 use std::fs;
+use std::process::Command;
 
 use serde_json::Value;
 use v09_common::{
-    assert_contains, assert_not_contains, assert_success, path_arg, run_kobo, s, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg, run_kobo, s,
+    TestProject,
 };
 
 fn service_fixture(buffer: usize) -> (TestProject, std::path::PathBuf) {
@@ -42,6 +44,34 @@ fn inspect_service(buffer: usize) -> String {
     let output = run_kobo(&[s("inspect"), path_arg(&file)], &project.root);
     assert_success(&output, "service fixture should inspect");
     output.combined()
+}
+
+fn mutable_service_fixture() -> (TestProject, std::path::PathBuf) {
+    let project = TestProject::new("service-runtime-mutable-state");
+    let file = project.main_file(
+        r#"
+struct Counter {
+    value: u64,
+}
+
+#[kobo::service(buffer=4)]
+impl Counter {
+    async fn increment(&mut self, amount: u64) -> u64 {
+        self.value = self.value + amount;
+        self.value
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let (client, worker) = CounterService::start(Counter { value: 0 });
+    let _first = client.increment(1).await.expect("first increment");
+    let _second = client.increment(2).await.expect("second increment");
+    client.shutdown_and_wait(worker).await.expect("shutdown should run");
+}
+"#,
+    );
+    (project, file)
 }
 
 fn first_witness(project: &TestProject) -> Value {
@@ -118,6 +148,82 @@ fn service_backpressure_default_is_block_on_full() {
 }
 
 #[test]
+fn service_try_send_reports_full_backpressure_separately() {
+    let project = TestProject::new("service-runtime-try-send-full");
+    project.write(
+        "Kobo.toml",
+        r#"[runtime.profile]
+service_buffer = 1
+service_backpressure = "try-send"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+struct Gateway {}
+
+#[kobo::service]
+impl Gateway {
+    async fn submit(&self, request: String) -> String {
+        request
+    }
+}
+"#,
+    );
+    let output = run_kobo(&[s("inspect"), path_arg(&file)], &project.root);
+    assert_success(&output, "try-send service fixture should inspect");
+    let generated = output.combined();
+
+    for expected in [
+        "pub enum GatewayServiceError",
+        "SendFull",
+        "TrySendError::Full",
+        "TrySendError::Closed",
+        "GatewayServiceError::SendFull",
+        "GatewayServiceError::SendClosed",
+    ] {
+        assert_contains(
+            &generated,
+            expected,
+            "try-send backpressure should distinguish full channels from closed services",
+        );
+    }
+}
+
+#[test]
+fn service_rejects_unsupported_generic_or_borrowed_signatures() {
+    let project = TestProject::new("service-runtime-signature-diagnostic");
+    let source = r#"
+struct Cache<T> {
+    value: T,
+}
+
+#[kobo::service(buffer=2)]
+impl<T> Cache<T> {
+    async fn lookup<'a>(&self, key: &'a str) -> &'a str {
+        key
+    }
+}
+"#;
+    let file = project.main_file(source);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "unsupported service generics and borrowed message types should fail before codegen",
+    );
+    for expected in ["service signature", "generic", "borrowed", "lookup"] {
+        assert_contains(
+            &output.combined(),
+            expected,
+            "service signature diagnostic should be source-mapped and actionable",
+        );
+    }
+}
+
+#[test]
 fn service_shutdown_path_is_source_mapped_and_inspect_visible() {
     let generated = inspect_service(64);
 
@@ -132,6 +238,77 @@ fn service_shutdown_path_is_source_mapped_and_inspect_visible() {
             "shutdown and generated service artifacts should stay inspect-visible and source-mapped",
         );
     }
+}
+
+#[test]
+fn service_runtime_source_map_carries_generated_support_evidence() {
+    let (project, file) = service_fixture(64);
+    let output = run_kobo(&[s("inspect"), path_arg(&file)], &project.root);
+    assert_success(&output, "service fixture should inspect");
+    let source_map_path = file.with_extension("kobo.map");
+    let source_map: Value = serde_json::from_str(
+        &fs::read_to_string(&source_map_path).expect("service source map should read"),
+    )
+    .expect("service source map should parse");
+
+    assert_eq!(
+        source_map["runtime_evidence"]["services"][0]["name"], "Gateway",
+        "source map should carry generated service support evidence, not only doc comments"
+    );
+    assert_eq!(
+        source_map["runtime_evidence"]["services"][0]["source_line"], 13,
+        "service support evidence should preserve the source line in the source map"
+    );
+}
+
+#[test]
+fn service_generated_cargo_supports_mutable_state_and_public_api() {
+    let (project, file) = mutable_service_fixture();
+    let cargo_dir = project.root.join("target").join("mutable-service-cargo");
+    let output = run_kobo(
+        &[
+            s("inspect"),
+            s("--cargo"),
+            path_arg(&cargo_dir),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "mutable service fixture should generate Cargo output",
+    );
+    let generated = fs::read_to_string(cargo_dir.join("src").join("main.rs"))
+        .expect("generated mutable service source should read");
+    for expected in [
+        "pub enum CounterMessage",
+        "pub struct CounterService",
+        "pub enum CounterServiceError",
+        "mut service: Counter",
+        "service.increment(amount).await",
+        "CounterMessage::Shutdown",
+        "KoboServiceScenarioHook::shutdown",
+    ] {
+        assert_contains(
+            &generated,
+            expected,
+            "mutable generated service should be production-shaped Rust",
+        );
+    }
+
+    let check = Command::new("cargo")
+        .arg("check")
+        .arg("--manifest-path")
+        .arg(cargo_dir.join("Cargo.toml"))
+        .current_dir(&project.root)
+        .output()
+        .expect("cargo check should run for generated mutable service fixture");
+    assert!(
+        check.status.success(),
+        "generated mutable service Cargo fixture should compile\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
 }
 
 #[test]
@@ -170,7 +347,7 @@ fn service_cancellation_token_is_wired_into_shutdown() {
 
     for expected in [
         "KoboServiceCancellationToken::new()",
-        "self.cancellation.cancel();",
+        "self.sender.send(GatewayMessage::Shutdown).await",
         "fn is_shutdown_requested",
         "self.cancellation.is_cancelled()",
     ] {
@@ -246,6 +423,11 @@ fn service_sim_quick_runs_one_critical_path_without_manual_runtime_plumbing() {
         &witness["events"].to_string(),
         "deterministic-task",
         "service scenario should still drive the modeled task path",
+    );
+    assert_contains(
+        &witness["events"].to_string(),
+        "service-scheduler-hook",
+        "service scenario hooks should enter the deterministic harness event stream",
     );
 }
 

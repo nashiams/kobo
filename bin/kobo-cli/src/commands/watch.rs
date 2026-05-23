@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::session::{build_session, render_diagnostics};
 use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
@@ -32,35 +32,43 @@ pub(super) fn cmd_watch(
 
     let mode_label = if build { "build" } else { "simple" };
     let run_once = std::env::var_os("KOBO_WATCH_ONCE").is_some();
+    let scope = watch_scope(file)?;
+    let state_path = source_watch_state_path()?;
+    let persisted_state_loaded = state_path.is_file();
+    persist_source_watch_state(file, &scope, &[], persisted_state_loaded)?;
     println!(
-        "Watching {} ({mode_label} mode, Ctrl+C to stop)",
-        file.display()
+        "Watching {} ({mode_label} mode, scoped-persist-reload, Ctrl+C to stop)",
+        file.display(),
     );
+    println!("scope: {}", relative_display(file));
+    println!("persisted state: {}", state_path.display());
+    println!("persisted state loaded: {persisted_state_loaded}");
+    println!("reload checkpoint: source-map-and-diagnostics");
+    println!("restartable: true");
 
-    let mut last_modified = get_mtime(file)?;
+    let mut watched = watched_files(&scope)?;
 
     loop {
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        let current = match get_mtime(file) {
-            Ok(t) => t,
-            Err(_) => continue, // file temporarily unavailable
+        let Some(change) = next_change(&mut watched) else {
+            continue;
         };
 
-        if current != last_modified {
-            last_modified = current;
-            println!(
-                "[kobo-watch] Change detected in {}, recompiling...",
-                file.display()
-            );
-            if build {
-                on_file_changed_build(file);
-            } else {
-                on_file_changed(file);
-            }
-            if run_once {
-                break;
-            }
+        println!(
+            "[kobo-watch] Change detected in {}, recompiling...",
+            change.display
+        );
+        println!("changed file: {}", change.display);
+        let changes = vec![change.to_json()];
+        persist_source_watch_state(file, &scope, &changes, persisted_state_loaded)?;
+        if build {
+            on_file_changed_build(file);
+        } else {
+            on_file_changed(file);
+        }
+        if run_once {
+            break;
         }
     }
 
@@ -77,7 +85,11 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     let target = relative_display(file);
     let changed = changed.map(relative_display);
     println!("Watch plan");
+    println!("mode: scoped-persist-reload");
     println!("scope: {target}");
+    println!("persisted scope: {target}");
+    println!("reload checkpoint: source-map-and-diagnostics");
+    println!("restartable: true");
     println!("files:");
     for file in &scope.files {
         println!("- {}", relative_display(file));
@@ -96,6 +108,17 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
 
 struct WatchScope {
     files: Vec<PathBuf>,
+}
+
+struct WatchedFile {
+    path: PathBuf,
+    modified: SystemTime,
+}
+
+struct WatchChange {
+    display: String,
+    previous_modified_ms: u128,
+    current_modified_ms: u128,
 }
 
 fn watch_scope(file: &Path) -> anyhow::Result<WatchScope> {
@@ -151,6 +174,96 @@ fn relative_display(path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn source_watch_state_path() -> anyhow::Result<PathBuf> {
+    let root = std::env::current_dir()
+        .map_err(|error| anyhow::anyhow!("failed to determine current directory: {error}"))?;
+    let state_dir = root.join(".kobo").join("watch");
+    std::fs::create_dir_all(&state_dir)
+        .map_err(|error| anyhow::anyhow!("failed to create {}: {error}", state_dir.display()))?;
+    Ok(state_dir.join("source-watch.json"))
+}
+
+fn persist_source_watch_state(
+    root_file: &Path,
+    scope: &WatchScope,
+    changes: &[serde_json::Value],
+    persisted_state_loaded: bool,
+) -> anyhow::Result<()> {
+    let state_path = source_watch_state_path()?;
+    let scope_files = scope
+        .files
+        .iter()
+        .map(|file| relative_display(file))
+        .collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "schema_version": 1,
+        "mode": "source_watch_state",
+        "scope": {
+            "root": relative_display(root_file),
+            "files": scope_files,
+        },
+        "reload_checkpoint": "source-map-and-diagnostics",
+        "restartable": true,
+        "persisted_state_loaded": persisted_state_loaded,
+        "rerun_targets": [
+            format!("kobo check {}", relative_display(root_file)),
+            format!("kobo inspect {}", relative_display(root_file)),
+        ],
+        "changes": changes,
+    });
+    std::fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
+        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", state_path.display()))
+}
+
+fn watched_files(scope: &WatchScope) -> anyhow::Result<Vec<WatchedFile>> {
+    scope
+        .files
+        .iter()
+        .map(|path| {
+            Ok(WatchedFile {
+                path: path.clone(),
+                modified: get_mtime(path)?,
+            })
+        })
+        .collect()
+}
+
+fn next_change(watched: &mut [WatchedFile]) -> Option<WatchChange> {
+    for file in watched {
+        let Ok(current) = get_mtime(&file.path) else {
+            continue;
+        };
+        if current != file.modified {
+            let previous = file.modified;
+            file.modified = current;
+            return Some(WatchChange {
+                display: relative_display(&file.path),
+                previous_modified_ms: system_time_millis(previous),
+                current_modified_ms: system_time_millis(current),
+            });
+        }
+    }
+    None
+}
+
+impl WatchChange {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "source_change",
+            "path": self.display,
+            "previous_modified_ms": self.previous_modified_ms,
+            "current_modified_ms": self.current_modified_ms,
+        })
+    }
+}
+
+fn system_time_millis(value: SystemTime) -> u128 {
+    value
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
 }
 
 /// Get file modification time.

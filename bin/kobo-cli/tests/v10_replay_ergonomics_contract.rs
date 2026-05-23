@@ -114,7 +114,7 @@ fn renamed_delivery_flow() {
     let obligation = &inferred[0];
     assert_eq!(obligation["kind"], "queue_delivery");
     assert_eq!(obligation["template_id"], "queue_delivery");
-    assert_eq!(obligation["template_version"], "v0.10.1");
+    assert_eq!(obligation["template_version"], "v0.13.0");
     assert_eq!(obligation["binding"], "renamed_delivery");
     assert_eq!(obligation["state"], "discharged");
     assert_eq!(obligation["confidence"], "exact_template");

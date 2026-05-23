@@ -55,8 +55,12 @@ pub fn check_harness_agreement(
     }
 
     let harness = run_generated_harness(program, generated_rust, options)?;
-    if events_match_with_harness_recording(&semantic.events, &harness.events) {
-        merge_harness_recordings(&mut semantic, &harness.events);
+    let comparable_harness_events = comparable_harness_events(&harness.events);
+    if events_match_with_harness_recording(&semantic.events, &comparable_harness_events) {
+        merge_harness_recordings(&mut semantic, &comparable_harness_events);
+        if comparable_harness_events.len() != harness.events.len() {
+            semantic.events = harness.events.clone();
+        }
         semantic.digest.semantic_trace_hash = crate::digest::events_hash(&semantic.events);
     }
     let mut harness_hash = crate::digest::events_hash(&harness.events);
@@ -123,6 +127,14 @@ fn events_match_with_harness_recording(
                             && semantic.io.is_none()
                             && harness.io.is_some()))
             })
+}
+
+fn comparable_harness_events(events: &[ScenarioEvent]) -> Vec<ScenarioEvent> {
+    events
+        .iter()
+        .filter(|event| event.kind != "service-scheduler-hook")
+        .cloned()
+        .collect()
 }
 
 fn merge_harness_recordings(run: &mut FullDepthRun, harness_events: &[ScenarioEvent]) {
@@ -409,7 +421,7 @@ fn harness_source(
 }
 
 fn has_event_marker(source: &str) -> bool {
-    source.contains(&event_marker())
+    source.contains(&event_marker()) && source.contains("struct __KoboWard")
 }
 
 fn event_marker() -> String {
@@ -456,7 +468,7 @@ fn strip_harness_only_attrs(source: &str) -> String {
             }
             continue;
         }
-        if trimmed.starts_with("#[kobo::boundary") {
+        if is_harness_only_kobo_attr(trimmed) {
             skipping_kobo_attr = !trimmed.ends_with(']');
             continue;
         }
@@ -464,6 +476,12 @@ fn strip_harness_only_attrs(source: &str) -> String {
         output.push('\n');
     }
     output
+}
+
+fn is_harness_only_kobo_attr(trimmed_line: &str) -> bool {
+    trimmed_line.starts_with("#[kobo::boundary")
+        || trimmed_line.starts_with("#[kobo::record")
+        || trimmed_line.starts_with("#[kobo::activity")
 }
 
 fn harness_support_source(
@@ -581,7 +599,10 @@ fn generated_rust_defines_type(source: &str, type_name: &str) -> bool {
 }
 
 fn rust_method_name(action: &str) -> String {
-    action.replace('-', "_")
+    match action {
+        "await" => "r#await".to_owned(),
+        _ => action.replace('-', "_"),
+    }
 }
 
 fn external_boundary_support_source(
@@ -1295,8 +1316,7 @@ fn __kobo_emit_record_boundary_event(
 "#
 }
 
-fn tokio_support_source(_program: &ScenarioProgram, options: &ScenarioOptions) -> Result<String> {
-    let local_events = modeled_boundary_events(&ScenarioModeledBoundary::WardTaskLocal, options);
+fn tokio_support_source(_program: &ScenarioProgram, _options: &ScenarioOptions) -> Result<String> {
     let mut source = String::from(
         r#"
 mod tokio {
@@ -1446,6 +1466,22 @@ mod tokio {
 
     pub mod runtime {
         pub struct Handle;
+        pub struct Runtime;
+        #[derive(Debug)]
+        pub struct BuildError;
+        pub struct Builder;
+
+        impl Builder {
+            pub fn new_current_thread() -> Self { Self }
+            pub fn enable_all(self) -> Self { self }
+            pub fn build(self) -> Result<Runtime, BuildError> { Ok(Runtime) }
+        }
+
+        impl Runtime {
+            pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+                crate::__kobo_block_on(future)
+            }
+        }
 
         impl Handle {
             pub fn current() -> Self { Self }
@@ -1478,16 +1514,17 @@ mod tokio {
             }
         }
 
-        pub fn spawn_local<F>(_future: F) -> JoinHandle<()>
+        pub fn spawn_local<F>(future: F) -> JoinHandle<F::Output>
         where
-            F: std::future::Future<Output = ()> + 'static,
+            F: std::future::Future + 'static,
+            F::Output: 'static,
         {
 "#,
     );
-    source.push_str(&event_print_statements(&local_events)?);
     source.push_str(
         r#"
-            super::JoinHandle::from_value(())
+            let output = crate::__kobo_block_on(future);
+            super::JoinHandle::from_value(output)
         }
     }
 
@@ -1677,7 +1714,21 @@ fn inject_modeled_boundary_event(
         }
     }
     if boundary == &ScenarioModeledBoundary::WardTask {
-        for needle in ["tokio::spawn(async move {", "tokio :: spawn(async move {"] {
+        for needle in ["tokio::spawn(async {})", "tokio :: spawn(async {})"] {
+            if source.contains(needle) {
+                return Ok(source.replacen(
+                    needle,
+                    &format!("{{\n        {print}\n        {needle}\n    }}"),
+                    1,
+                ));
+            }
+        }
+        for needle in [
+            "tokio::spawn(async move {",
+            "tokio :: spawn(async move {",
+            "tokio::spawn(async {",
+            "tokio :: spawn(async {",
+        ] {
             if source.contains(needle) {
                 return Ok(source.replacen(needle, &format!("{print}\n    {needle}"), 1));
             }
@@ -1791,12 +1842,38 @@ fn terminal_failure_events(
                     }
                 }
             }
-            ScenarioOpKind::Transfer { binding, callee } => events.push(ScenarioEvent {
+            ScenarioOpKind::Transfer {
+                binding, callee, ..
+            } => events.push(ScenarioEvent {
                 kind: "obligation-transfer".to_owned(),
                 label: Some(format!("{binding}->{callee}")),
                 value: None,
                 io: None,
             }),
+            ScenarioOpKind::UnsupportedContainer {
+                binding,
+                type_name,
+                container,
+            } => {
+                if failure_events.is_none() {
+                    failure_events = Some(vec![ScenarioEvent {
+                        kind: "unsupported-container".to_owned(),
+                        label: Some(format!("{binding}:{container}:{type_name}")),
+                        value: None,
+                        io: None,
+                    }]);
+                }
+            }
+            ScenarioOpKind::BranchUnresolved { binding } => {
+                if failure_events.is_none() {
+                    failure_events = Some(vec![ScenarioEvent {
+                        kind: "branch-unresolved".to_owned(),
+                        label: Some(binding.clone()),
+                        value: None,
+                        io: None,
+                    }]);
+                }
+            }
             ScenarioOpKind::ModeledEffect { boundary } => {
                 if failure_events.is_none() {
                     let active_obligation = obligations
@@ -1836,6 +1913,7 @@ fn terminal_failure_events(
             ScenarioOpKind::RawNondeterminism { .. }
             | ScenarioOpKind::UncontrolledEffect { .. }
             | ScenarioOpKind::ExternalBoundary { .. }
+            | ScenarioOpKind::CoreTerminator { .. }
             | ScenarioOpKind::Loop => {}
             ScenarioOpKind::MoveBinding { .. } | ScenarioOpKind::Return => {}
         }

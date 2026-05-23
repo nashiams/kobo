@@ -556,6 +556,9 @@ impl<'a> Lowerer<'a> {
                     match parallel::lower_for_loop(for_loop, safety_gate.accepted) {
                         parallel::ParallelLowering::Parallel => {
                             self.needs_rayon = true;
+                            if has_explicit_policy {
+                                parallel::mark_boundary_policy(for_loop, &policy);
+                            }
                             self.lower_expr(for_loop.expr.as_mut(), scopes);
                             self.lower_nested_block(&mut for_loop.body, scopes);
                             self.parallel_evidence.push(self.parallel_loop_evidence(
@@ -828,6 +831,9 @@ impl<'a> Lowerer<'a> {
             .iter()
             .map(|binding| binding.name.as_str())
             .collect::<Vec<_>>();
+        let iterator_source = iterator_source_ident(for_loop.expr.as_ref())
+            .map(|ident| ident.to_string())
+            .unwrap_or_default();
         let mut blockers = Vec::new();
 
         for binding in &captured {
@@ -847,7 +853,8 @@ impl<'a> Lowerer<'a> {
                 kobo_analysis::ParallelWarningKind::NonSendCapture { binding_name, .. }
                     if captured_names
                         .iter()
-                        .any(|name| *name == binding_name.as_str()) =>
+                        .any(|name| *name == binding_name.as_str())
+                        || binding_name == iterator_source =>
                 {
                     blockers.push(format!("non-send-capture:{binding_name}"));
                 }
@@ -1137,6 +1144,16 @@ impl<'ast> syn::visit::Visit<'ast> for MutationVisitor {
         }
         syn::visit::visit_expr_assign(self, node);
     }
+
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        if is_compound_assignment(&node.op)
+            && receiver_matches_source(node.left.as_ref(), &self.source)
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_binary(self, node);
+    }
 }
 
 fn receiver_matches_source(expr: &syn::Expr, source: &str) -> bool {
@@ -1167,6 +1184,22 @@ fn mutating_collection_method(method: &syn::Ident) -> bool {
             | "resize"
             | "truncate"
             | "swap_remove"
+    )
+}
+
+fn is_compound_assignment(op: &syn::BinOp) -> bool {
+    matches!(
+        op,
+        syn::BinOp::AddAssign(_)
+            | syn::BinOp::SubAssign(_)
+            | syn::BinOp::MulAssign(_)
+            | syn::BinOp::DivAssign(_)
+            | syn::BinOp::RemAssign(_)
+            | syn::BinOp::BitXorAssign(_)
+            | syn::BinOp::BitAndAssign(_)
+            | syn::BinOp::BitOrAssign(_)
+            | syn::BinOp::ShlAssign(_)
+            | syn::BinOp::ShrAssign(_)
     )
 }
 

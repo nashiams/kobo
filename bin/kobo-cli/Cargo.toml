@@ -20,6 +20,7 @@ kobo-debt    = { path = "../../crates/compiler/kobo-debt" }
 kobo-ir      = { path = "../../crates/compiler/kobo-ir" }
 kobo-sim-core = { path = "../../crates/compiler/kobo-sim-core" }
 kobo-migrate = { path = "../../crates/compiler/kobo-migrate" }
+kobo-parser  = { path = "../../crates/compiler/kobo-parser" }
 clap        = { workspace = true }
 anyhow      = { workspace = true }
 proc-macro2 = { workspace = true }

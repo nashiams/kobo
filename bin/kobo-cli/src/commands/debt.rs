@@ -8,6 +8,7 @@ use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
 use kobo_debt::patterns::{detect_migration_patterns, format_patterns};
 use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_driver::{lifetime_erasure_debt_report, run_kir_phase};
+use kobo_ir::debt::{DebtReport, WarnEarlyPattern};
 use kobo_ir::MustCallObligation;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 use syn::visit::Visit;
@@ -28,6 +29,22 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
             serde_json::to_value(&report).context("failed to serialize debt report to JSON")?;
         if let Some(object) = value.as_object_mut() {
             object.insert(
+                "tiered_summary".to_owned(),
+                serde_json::json!({
+                    "tier1": report.complexity.tier1,
+                    "tier2": report.complexity.tier2,
+                    "tier3": report.complexity.tier3,
+                }),
+            );
+            object.insert(
+                "migration_estimate".to_owned(),
+                migration_estimate_json(&report),
+            );
+            object.insert(
+                "precursor_warnings".to_owned(),
+                serde_json::Value::Array(precursor_warning_json(&report)),
+            );
+            object.insert(
                 "boundary_policies".to_owned(),
                 serde_json::Value::Array(
                     boundary_policies
@@ -45,7 +62,7 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
 
     if summary {
         println!(
-            "{} file(s), {} line(s) — {} RcMutShared site(s) [T1:{} T2:{} T3:{}] — {} warning(s)",
+            "{} file(s), {} line(s) - {} RcMutShared site(s) [T1:{} T2:{} T3:{}] - {} warning(s) - migration estimate: {}",
             report.file_count,
             report.line_count,
             report.inventory.rc_mut_shared,
@@ -53,6 +70,7 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
             report.complexity.tier2,
             report.complexity.tier3,
             report.warn_early.len(),
+            migration_estimate_label(&report),
         );
         return Ok(());
     }
@@ -72,6 +90,206 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
     }
 
     Ok(())
+}
+
+pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
+    let ticks = debt_watch_ticks();
+    let mut observations = Vec::new();
+    let mut latest_scan = None;
+    for tick in 0..ticks {
+        let scan = debt_watch_scan(file)?;
+        observations.push(debt_watch_snapshot(file, &scan.report, &scan.codes, tick));
+        latest_scan = Some(scan);
+        if tick + 1 < ticks {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+    let latest_scan = latest_scan.expect("debt watch should run at least one scan");
+    let report = latest_scan.report;
+    let codes = latest_scan.codes;
+    let persisted_state = persist_debt_watch_state(file, &observations, &codes)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "mode": "debt_watch",
+                "watch": {
+                    "strategy": "scoped-persist-reload",
+                    "scope": file.display().to_string(),
+                    "restartable": true,
+                    "rerun_target": format!("kobo debt {} --watch", file.display()),
+                    "actual_scan": true,
+                    "observation_count": observations.len(),
+                    "reload_checkpoint": "debt-precursor-snapshot",
+                    "persisted_state": persisted_state.display().to_string(),
+                    "persisted_state_loaded": persisted_state.is_file(),
+                },
+                "observations": observations,
+                "precursor_warning_count": report.warn_early.len(),
+                "precursor_codes": codes,
+                "migration_estimate": migration_estimate_json(&report),
+            }))?
+        );
+        return Ok(());
+    }
+
+    let code_list = if codes.is_empty() {
+        "none".to_owned()
+    } else {
+        codes.join(", ")
+    };
+    if summary {
+        println!(
+            "debt watch scoped-persist-reload: actual scan observations={}; precursor warning changes={} [{}]; migration estimate: {}; persisted state: {}; rerun target: kobo debt {} --watch",
+            observations.len(),
+            report.warn_early.len(),
+            code_list,
+            migration_estimate_label(&report),
+            persisted_state.display(),
+            file.display(),
+        );
+        return Ok(());
+    }
+
+    println!("debt watch");
+    println!("strategy: scoped-persist-reload");
+    println!("scope: {}", file.display());
+    println!("actual scan observations: {}", observations.len());
+    println!(
+        "precursor warning changes: {} [{}]",
+        report.warn_early.len(),
+        code_list
+    );
+    println!("migration estimate: {}", migration_estimate_label(&report));
+    println!("persisted state: {}", persisted_state.display());
+    println!("reload checkpoint: debt-precursor-snapshot");
+    println!("rerun target: kobo debt {} --watch", file.display());
+    Ok(())
+}
+
+struct DebtWatchScan {
+    report: DebtReport,
+    codes: Vec<&'static str>,
+}
+
+fn debt_watch_scan(file: &Path) -> anyhow::Result<DebtWatchScan> {
+    let mut session = build_session(file, None)?;
+    let (_, kir) = run_kir_phase(&mut session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
+
+    let (file_count, line_count) = count_files_and_lines(session.file_set());
+    let report = build_debt_report(&kir, file_count, line_count);
+    let codes = precursor_codes(&report);
+    Ok(DebtWatchScan { report, codes })
+}
+
+fn debt_watch_ticks() -> usize {
+    std::env::var("KOBO_DEBT_WATCH_TICKS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|ticks| *ticks > 0)
+        .unwrap_or(1)
+}
+
+fn persist_debt_watch_state(
+    file: &Path,
+    observations: &[serde_json::Value],
+    codes: &[&str],
+) -> anyhow::Result<PathBuf> {
+    let root = std::env::current_dir().context("failed to determine current directory")?;
+    let state_dir = root.join(".kobo").join("watch");
+    fs::create_dir_all(&state_dir)
+        .with_context(|| format!("failed to create {}", state_dir.display()))?;
+    let state_path = state_dir.join("debt-watch.json");
+    let value = serde_json::json!({
+        "schema_version": 1,
+        "mode": "debt_watch_state",
+        "scope": file.display().to_string(),
+        "reload_checkpoint": "debt-precursor-snapshot",
+        "restartable": true,
+        "precursor_codes": codes,
+        "observation_count": observations.len(),
+        "observations": observations,
+    });
+    fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
+        .with_context(|| format!("failed to write {}", state_path.display()))?;
+    Ok(state_path)
+}
+
+fn debt_watch_snapshot(
+    file: &Path,
+    report: &DebtReport,
+    codes: &[&str],
+    tick: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": if tick == 0 { "initial_scan" } else { "rescan" },
+        "tick": tick,
+        "scope": file.display().to_string(),
+        "file_count": report.file_count,
+        "line_count": report.line_count,
+        "precursor_warning_count": report.warn_early.len(),
+        "precursor_codes": codes,
+        "migration_estimate": migration_estimate_json(report),
+    })
+}
+
+fn migration_estimate_json(report: &DebtReport) -> serde_json::Value {
+    serde_json::json!({
+        "label": migration_estimate_label(report),
+        "estimated_site_count": report.inventory.rc_mut_shared,
+        "tier1": report.complexity.tier1,
+        "tier2": report.complexity.tier2,
+        "tier3": report.complexity.tier3,
+        "precursor_warning_count": report.warn_early.len(),
+    })
+}
+
+fn migration_estimate_label(report: &DebtReport) -> &'static str {
+    if report.complexity.tier3 > 0 {
+        "estimated-high"
+    } else if report.complexity.tier2 > 0 || !report.warn_early.is_empty() {
+        "estimated-medium"
+    } else {
+        "estimated-low"
+    }
+}
+
+fn precursor_warning_json(report: &DebtReport) -> Vec<serde_json::Value> {
+    report
+        .warn_early
+        .iter()
+        .map(|fact| {
+            serde_json::json!({
+                "code": warn_early_code(&fact.pattern),
+                "pattern": fact.pattern.clone(),
+                "struct_name": fact.struct_name.clone(),
+                "suppressed": fact.suppressed,
+            })
+        })
+        .collect()
+}
+
+fn precursor_codes(report: &DebtReport) -> Vec<&'static str> {
+    let mut codes = report
+        .warn_early
+        .iter()
+        .map(|fact| warn_early_code(&fact.pattern))
+        .collect::<Vec<_>>();
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+}
+
+fn warn_early_code(pattern: &WarnEarlyPattern) -> &'static str {
+    match pattern {
+        WarnEarlyPattern::BidirectionalRcLinks { .. } => "K0080-P1",
+        WarnEarlyPattern::ParentChildBackPointer { .. } => "K0080-P2",
+        WarnEarlyPattern::SharedMutableAt3PlusSites { .. } => "K0080-P3",
+        WarnEarlyPattern::SelfReferentialStruct { .. } => "K0080-P4",
+    }
 }
 
 pub(super) fn cmd_debt_cargo(root: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
@@ -490,37 +708,83 @@ fn collect_liveness_candidates(
     ast_facts: &StandaloneRustAstFacts,
     findings: &mut Vec<StandaloneRustDebtFinding>,
 ) {
-    if !ast_facts.calls_spawn {
+    if !ast_facts.calls_spawn && !source.contains("spawn") {
         return;
     }
 
-    for (line_index, line) in source.lines().enumerate() {
-        let spawn_needle = if line.contains("std::thread::spawn") {
-            Some("std::thread::spawn")
-        } else if line.contains("tokio::spawn") {
-            Some("tokio::spawn")
-        } else {
-            None
-        };
+    let lines = source.lines().collect::<Vec<_>>();
+    for (line_index, line) in lines.iter().enumerate() {
+        let spawn_needle = ast_facts
+            .spawn_patterns
+            .iter()
+            .find(|pattern| line_contains_call(line, pattern))
+            .cloned()
+            .or_else(|| inferred_spawn_call_name(line));
         let Some(spawn_needle) = spawn_needle else {
             continue;
         };
-        let binding = extract_let_binding(line).unwrap_or_else(|| "<unbound>".to_owned());
-        if binding != "<unbound>" && spawn_handle_is_observed(source, &binding) {
+        let binding =
+            extract_spawn_binding(&lines, line_index).unwrap_or_else(|| "<unbound>".to_owned());
+        let observation = (binding != "<unbound>")
+            .then(|| spawn_handle_observation(source, &binding))
+            .flatten();
+        if observation == Some(SpawnHandleObservation::Direct) {
             continue;
         }
+        let evidence = observation
+            .map(|observation| format!("{spawn_needle};{}", observation.as_str()))
+            .unwrap_or_else(|| spawn_needle.to_owned());
+        let message = if observation == Some(SpawnHandleObservation::Helper) {
+            "spawned work handle is observed by a helper; review helper liveness semantics"
+                .to_owned()
+        } else {
+            "spawned work handle is not visibly joined or awaited".to_owned()
+        };
         findings.push(standalone_finding(
             "liveness-candidate",
             "liveness-candidate",
             path,
             source,
             line_index + 1,
-            spawn_needle,
+            &spawn_needle,
             binding,
-            spawn_needle.to_owned(),
-            "spawned work handle is not visibly joined or awaited".to_owned(),
+            evidence,
+            message,
         ));
     }
+}
+
+fn inferred_spawn_call_name(line: &str) -> Option<String> {
+    for (open, _) in line.match_indices('(') {
+        let mut start = open;
+        let bytes = line.as_bytes();
+        while start > 0 {
+            let byte = bytes[start - 1];
+            if byte == b'_' || byte == b':' || byte == b'.' || byte.is_ascii_alphanumeric() {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        let name = line[start..open].trim_matches('.').trim_matches(':').trim();
+        if name.contains("spawn") {
+            return Some(name.to_owned());
+        }
+    }
+    None
+}
+
+fn extract_spawn_binding(lines: &[&str], spawn_line_index: usize) -> Option<String> {
+    extract_let_binding(lines[spawn_line_index]).or_else(|| {
+        lines[..spawn_line_index]
+            .iter()
+            .rev()
+            .take(4)
+            .find_map(|line| {
+                let binding = extract_let_binding(line)?;
+                line.contains('=').then_some(binding)
+            })
+    })
 }
 
 fn collect_nondeterminism_candidates(
@@ -530,6 +794,7 @@ fn collect_nondeterminism_candidates(
     findings: &mut Vec<StandaloneRustDebtFinding>,
 ) {
     let mut seen = BTreeSet::new();
+    let dependency_aliases = dependency_call_aliases(source, dependencies);
     for (line_index, line) in source.lines().enumerate() {
         for needle in [
             "SystemTime::now",
@@ -572,6 +837,27 @@ fn collect_nondeterminism_candidates(
                 "third-party crate call should be reviewed as a replay boundary".to_owned(),
             ));
         }
+        for (alias, dependency) in &dependency_aliases {
+            let needle = format!("{alias}(");
+            if !line.contains(&needle)
+                || !seen.insert((line_index + 1, format!("dependency-alias:{alias}")))
+            {
+                continue;
+            }
+            findings.push(standalone_finding(
+                "nondeterminism-boundary-candidate",
+                "external-boundary-candidate",
+                path,
+                source,
+                line_index + 1,
+                &needle,
+                alias.clone(),
+                alias.clone(),
+                format!(
+                    "aliased third-party crate call from `{dependency}` should be reviewed as a replay boundary"
+                ),
+            ));
+        }
     }
 }
 
@@ -600,10 +886,39 @@ fn standalone_finding(
     }
 }
 
-fn spawn_handle_is_observed(source: &str, binding: &str) -> bool {
-    source.contains(&format!("{binding}.join("))
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SpawnHandleObservation {
+    Direct,
+    Helper,
+}
+
+impl SpawnHandleObservation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "observed-directly",
+            Self::Helper => "observed-by-helper",
+        }
+    }
+}
+
+fn spawn_handle_observation(source: &str, binding: &str) -> Option<SpawnHandleObservation> {
+    if helper_observes_spawn_handle(source, binding) {
+        return Some(SpawnHandleObservation::Helper);
+    }
+    if source.contains(&format!("{binding}.join("))
         || source.contains(&format!("{binding}.await"))
         || source.contains(&format!("{binding}.abort("))
+    {
+        return Some(SpawnHandleObservation::Direct);
+    }
+    None
+}
+
+fn helper_observes_spawn_handle(source: &str, binding: &str) -> bool {
+    let passed_to_helper = source.contains(&format!("({binding})"))
+        || source.contains(&format!("({binding},"))
+        || source.contains(&format!(", {binding})"));
+    passed_to_helper && source.contains(".join(")
 }
 
 fn extract_let_binding(line: &str) -> Option<String> {
@@ -642,19 +957,29 @@ fn line_needle_span(source: &str, target_line: usize, needle: &str) -> SourceByt
 struct StandaloneRustAstFacts {
     references_ownership_candidates: bool,
     calls_spawn: bool,
+    spawn_patterns: Vec<String>,
 }
 
 impl StandaloneRustAstFacts {
     fn from_source(source: &str) -> Self {
+        let spawn_patterns = standalone_spawn_patterns(source);
         let Ok(file) = syn::parse_file(source) else {
             return Self {
                 references_ownership_candidates: source.contains("Rc")
                     || source.contains("RefCell"),
                 calls_spawn: source.contains("spawn("),
+                spawn_patterns,
             };
         };
-        let mut facts = Self::default();
+        let mut facts = Self {
+            spawn_patterns,
+            ..Self::default()
+        };
         facts.visit_file(&file);
+        facts.calls_spawn |= facts
+            .spawn_patterns
+            .iter()
+            .any(|pattern| source.lines().any(|line| line_contains_call(line, pattern)));
         facts
     }
 }
@@ -691,6 +1016,67 @@ impl<'ast> Visit<'ast> for StandaloneRustAstFacts {
     }
 }
 
+fn standalone_spawn_patterns(source: &str) -> Vec<String> {
+    let mut patterns = vec!["std::thread::spawn".to_owned(), "tokio::spawn".to_owned()];
+    for line in source.lines().map(str::trim) {
+        if line == "use std::thread;" || line == "use std::thread::{self};" {
+            patterns.push("thread::spawn".to_owned());
+        }
+        if line == "use std::thread::spawn;" {
+            patterns.push("spawn".to_owned());
+        }
+        if line == "use tokio::spawn;" {
+            patterns.push("spawn".to_owned());
+        }
+        if let Some(alias) = use_alias(line, "std::thread::spawn") {
+            patterns.push(alias);
+        }
+        if let Some(alias) = use_alias(line, "tokio::spawn") {
+            patterns.push(alias);
+        }
+    }
+    sort_and_dedup(&mut patterns);
+    patterns
+}
+
+fn dependency_call_aliases(source: &str, dependencies: &[String]) -> Vec<(String, String)> {
+    let mut aliases = Vec::new();
+    for line in source.lines().map(str::trim) {
+        for dependency in dependencies {
+            let crate_name = dependency.replace('-', "_");
+            let Some(rest) = line
+                .strip_prefix("use ")
+                .and_then(|line| line.strip_suffix(';'))
+                .map(str::trim)
+            else {
+                continue;
+            };
+            if !rest.starts_with(&format!("{crate_name}::")) {
+                continue;
+            }
+            if let Some(alias) = use_alias(line, rest.split(" as ").next().unwrap_or(rest)) {
+                aliases.push((alias, dependency.clone()));
+            }
+        }
+    }
+    sort_and_dedup_pairs(&mut aliases);
+    aliases
+}
+
+fn use_alias(line: &str, path: &str) -> Option<String> {
+    let rest = line.strip_prefix("use ")?.strip_suffix(';')?.trim();
+    let alias = rest.strip_prefix(path)?.trim();
+    alias
+        .strip_prefix("as ")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn line_contains_call(line: &str, pattern: &str) -> bool {
+    line.contains(&format!("{pattern}(")) || line.contains(&format!("{pattern} ("))
+}
+
 fn relative_slash_path(root: &Path, file: &Path) -> String {
     file.strip_prefix(root)
         .unwrap_or(file)
@@ -699,6 +1085,11 @@ fn relative_slash_path(root: &Path, file: &Path) -> String {
 }
 
 fn sort_and_dedup(values: &mut Vec<String>) {
+    values.sort();
+    values.dedup();
+}
+
+fn sort_and_dedup_pairs(values: &mut Vec<(String, String)>) {
     values.sort();
     values.dedup();
 }
@@ -1152,21 +1543,26 @@ fn build_liveness_findings(
                             reason: None,
                         });
                     }
-                    _ if has_unresolved_exit(&function.body, &binding, &actions) => {
-                        findings.push(LivenessFinding {
-                            code: "K0100",
-                            owner_type: obligation.owner_type.clone(),
-                            actions: actions.clone(),
-                            function: function.name.clone(),
-                            binding: Some(binding),
-                            applicable_types: vec![obligation.owner_type.clone()],
-                            applicable_functions: vec![function.name.clone()],
-                            applicability_source: "local-declaration".to_owned(),
-                            message: "may leave without a required call".to_owned(),
-                            reason: None,
-                        });
+                    _ => {
+                        if let Some(finding) =
+                            binding_escape_finding(function, obligation, &actions, &binding)
+                        {
+                            findings.push(finding);
+                        } else if has_unresolved_exit(&function.body, &binding, &actions) {
+                            findings.push(LivenessFinding {
+                                code: "K0100",
+                                owner_type: obligation.owner_type.clone(),
+                                actions: actions.clone(),
+                                function: function.name.clone(),
+                                binding: Some(binding),
+                                applicable_types: vec![obligation.owner_type.clone()],
+                                applicable_functions: vec![function.name.clone()],
+                                applicability_source: "local-declaration".to_owned(),
+                                message: "may leave without a required call".to_owned(),
+                                reason: None,
+                            });
+                        }
                     }
-                    _ => {}
                 }
             }
         }
@@ -1211,6 +1607,77 @@ fn escape_finding(
         message: "obligation escapes local analysis through a return value".to_owned(),
         reason: None,
     })
+}
+
+fn binding_escape_finding(
+    function: &SourceFunction,
+    obligation: &MustCallObligation,
+    actions: &[String],
+    binding: &str,
+) -> Option<LivenessFinding> {
+    let escape_kind = binding_escape_kind(&function.body, binding, actions)?;
+    Some(LivenessFinding {
+        code: "K0101",
+        owner_type: obligation.owner_type.clone(),
+        actions: actions.to_vec(),
+        function: function.name.clone(),
+        binding: Some(binding.to_owned()),
+        applicable_types: vec![obligation.owner_type.clone()],
+        applicable_functions: vec![function.name.clone()],
+        applicability_source: "local-declaration".to_owned(),
+        message: format!("obligation escapes local analysis through {escape_kind}"),
+        reason: None,
+    })
+}
+
+fn binding_escape_kind(body: &str, binding: &str, actions: &[String]) -> Option<&'static str> {
+    let mut seen_binding = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("let {binding} "))
+            || trimmed.starts_with(&format!("let {binding} ="))
+            || trimmed.starts_with(&format!("let mut {binding} "))
+            || trimmed.starts_with(&format!("let mut {binding} ="))
+        {
+            seen_binding = true;
+            continue;
+        }
+
+        if !seen_binding {
+            continue;
+        }
+
+        if actions
+            .iter()
+            .any(|action| trimmed.contains(&format!("{binding}.{action}(")))
+        {
+            return None;
+        }
+
+        if trimmed.starts_with("return") && contains_binding_value(trimmed, binding) {
+            return Some("a return value");
+        }
+        if trimmed.contains("spawn(") && contains_binding_value(trimmed, binding) {
+            return Some("a spawned task");
+        }
+        if line_moves_binding_to_unknown_call(trimmed, binding) {
+            return Some("an external call");
+        }
+    }
+    None
+}
+
+fn line_moves_binding_to_unknown_call(line: &str, binding: &str) -> bool {
+    !line.starts_with(&format!("{binding}."))
+        && (line.contains(&format!("({binding})"))
+            || line.contains(&format!("({binding},"))
+            || line.contains(&format!(", {binding})"))
+            || line.contains(&format!(", {binding},")))
+}
+
+fn contains_binding_value(line: &str, binding: &str) -> bool {
+    line.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .any(|token| token == binding)
 }
 
 fn declared_obligation_bindings(

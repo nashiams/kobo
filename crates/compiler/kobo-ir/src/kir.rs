@@ -4,7 +4,7 @@ use crate::debt::{KirStructDef, WarnEarlyFact};
 use crate::node_id::{CfgBlockId, KirNodeId, KoboAstNodeId};
 use crate::ownership::{OwnershipTier, TierDecision, TransformFacts};
 use crate::resource::ResourceKind;
-use crate::scenario::ScenarioProgram;
+use crate::scenario::{ScenarioCoreCfgFacts, ScenarioProgram};
 use crate::span::KoboSpan;
 use crate::strict::{CaptureSet, StrictBoundaryFact, StrictFnMode};
 
@@ -160,6 +160,8 @@ pub struct Kir {
     engine_ceiling_nodes: HashSet<KirNodeId>,
     /// Compiler-owned replay scenario facts produced while KIR is built.
     scenario_programs: Vec<ScenarioProgram>,
+    /// Compiler-owned CFG facts retained from the KIR control-flow pass.
+    core_cfg_facts: Option<ScenarioCoreCfgFacts>,
 }
 
 // --- Public read API ---
@@ -191,6 +193,7 @@ impl Kir {
             method_mutability: HashMap::new(),
             engine_ceiling_nodes: HashSet::new(),
             scenario_programs: Vec::new(),
+            core_cfg_facts: None,
         }
     }
 
@@ -360,5 +363,13 @@ impl Kir {
 
     pub fn set_scenario_programs(&mut self, programs: Vec<ScenarioProgram>) {
         self.scenario_programs = programs;
+    }
+
+    pub fn core_cfg_facts(&self) -> Option<&ScenarioCoreCfgFacts> {
+        self.core_cfg_facts.as_ref()
+    }
+
+    pub fn set_core_cfg_facts(&mut self, facts: ScenarioCoreCfgFacts) {
+        self.core_cfg_facts = Some(facts);
     }
 }

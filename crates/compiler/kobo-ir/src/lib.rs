@@ -1,3 +1,4 @@
+pub mod core;
 pub mod debt;
 mod guarantee_policy;
 mod kir;
@@ -12,6 +13,10 @@ pub mod strict;
 #[cfg(test)]
 mod strict_tests;
 
+pub use core::{
+    lower_program as lower_core_program, CoreBlock, CoreFunction, CoreProgram, CoreStatement,
+    CoreStatementKind, CoreTerminator, CoreTerminatorKind,
+};
 pub use debt::{
     AcknowledgedDebtRecord, ComplexityBreakdown, DebtComplexityTier, DebtReport, DebtSiteRecord,
     FieldTypeShape, KirStructDef, KirStructFieldDef, WarnEarlyFact, WarnEarlyPattern,
@@ -39,8 +44,10 @@ pub use ownership::{
 pub use resource::ResourceKind;
 pub use scenario::{
     ScenarioBoundary, ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
-    ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioModeledBoundary, ScenarioOp,
-    ScenarioOpKind, ScenarioProgram,
+    ScenarioCoreCfgBlock, ScenarioCoreCfgEdge, ScenarioCoreCfgFacts, ScenarioCoreTerminatorKind,
+    ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioLifecycleTemplate,
+    ScenarioLifecycleTemplateSource, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind,
+    ScenarioProgram,
 };
 pub use solution_map::SolutionMap;
 pub use span::KoboSpan;

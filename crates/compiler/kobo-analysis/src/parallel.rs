@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use quote::ToTokens;
 use syn::visit::Visit;
 
@@ -37,6 +39,7 @@ pub fn scan_source_parallel_warnings(source: &str) -> Vec<ParallelWarning> {
         let mut scanner = ParallelAstScanner {
             source,
             bindings: Vec::new(),
+            non_send_types: HashMap::new(),
             warnings: Vec::new(),
         };
         scanner.visit_file(&file);
@@ -71,12 +74,37 @@ pub fn scan_source_parallel_warnings(source: &str) -> Vec<ParallelWarning> {
 struct ParallelAstScanner<'a> {
     source: &'a str,
     bindings: Vec<BindingFact>,
+    non_send_types: HashMap<String, String>,
     warnings: Vec<ParallelWarning>,
 }
 
 impl<'ast> Visit<'ast> for ParallelAstScanner<'_> {
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        let old_len = self.bindings.len();
+        self.bindings
+            .extend(item.sig.inputs.iter().filter_map(binding_from_fn_arg));
+        syn::visit::visit_block(self, &item.block);
+        self.bindings.truncate(old_len);
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        let old_len = self.bindings.len();
+        self.bindings
+            .extend(item.sig.inputs.iter().filter_map(binding_from_fn_arg));
+        syn::visit::visit_block(self, &item.block);
+        self.bindings.truncate(old_len);
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+        if struct_has_non_send_field(item) {
+            self.non_send_types
+                .insert(item.ident.to_string(), item.ident.to_string());
+        }
+        syn::visit::visit_item_struct(self, item);
+    }
+
     fn visit_local(&mut self, local: &'ast syn::Local) {
-        if let Some(binding) = binding_from_local(local) {
+        if let Some(binding) = binding_from_local(local, &self.non_send_types) {
             self.bindings.push(binding);
         }
         syn::visit::visit_local(self, local);
@@ -94,6 +122,7 @@ impl<'ast> Visit<'ast> for ParallelAstScanner<'_> {
 
         let has_policy = attr_has_key(attr, "policy");
         let body_source = node.body.to_token_stream().to_string();
+        let iterator_source = iterator_source_ident(node.expr.as_ref());
         if !has_policy && body_source.contains("ward") {
             self.warnings.push(ParallelWarning {
                 kind: ParallelWarningKind::MissingBoundaryPolicy,
@@ -102,16 +131,14 @@ impl<'ast> Visit<'ast> for ParallelAstScanner<'_> {
         }
 
         for binding in &self.bindings {
-            if binding
-                .type_name
-                .as_deref()
-                .is_some_and(|type_name| type_name == "Rc")
-                && contains_ident(&body_source, &binding.name)
+            if binding.type_name.is_some()
+                && (contains_ident(&body_source, &binding.name)
+                    || iterator_source.as_deref() == Some(binding.name.as_str()))
             {
                 self.warnings.push(ParallelWarning {
                     kind: ParallelWarningKind::NonSendCapture {
                         binding_name: binding.name.clone(),
-                        type_name: "Rc".to_owned(),
+                        type_name: binding.type_name.clone().unwrap_or_default(),
                     },
                     source_offset: token_offset(self.source, &binding.name).unwrap_or(0),
                 });
@@ -155,6 +182,16 @@ impl<'ast> Visit<'ast> for BodyMutationVisitor<'_> {
         }
         syn::visit::visit_expr_assign(self, node);
     }
+
+    fn visit_expr_binary(&mut self, node: &'ast syn::ExprBinary) {
+        if is_compound_assignment(&node.op)
+            && receiver_matches_binding(node.left.as_ref(), self.binding)
+        {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_expr_binary(self, node);
+    }
 }
 
 fn block_mutates_binding(block: &syn::Block, binding: &str) -> bool {
@@ -185,6 +222,22 @@ fn mutating_method(method: &syn::Ident) -> bool {
     matches!(
         method.to_string().as_str(),
         "push" | "insert" | "extend" | "remove" | "pop" | "clear" | "retain" | "truncate"
+    )
+}
+
+fn is_compound_assignment(op: &syn::BinOp) -> bool {
+    matches!(
+        op,
+        syn::BinOp::AddAssign(_)
+            | syn::BinOp::SubAssign(_)
+            | syn::BinOp::MulAssign(_)
+            | syn::BinOp::DivAssign(_)
+            | syn::BinOp::RemAssign(_)
+            | syn::BinOp::BitXorAssign(_)
+            | syn::BinOp::BitAndAssign(_)
+            | syn::BinOp::BitOrAssign(_)
+            | syn::BinOp::ShlAssign(_)
+            | syn::BinOp::ShrAssign(_)
     )
 }
 
@@ -222,7 +275,17 @@ fn attr_value(attr: &syn::Attribute, key: &str) -> Option<String> {
     None
 }
 
-fn binding_from_local(local: &syn::Local) -> Option<BindingFact> {
+fn struct_has_non_send_field(item: &syn::ItemStruct) -> bool {
+    item.fields.iter().any(|field| {
+        let tokens = field.ty.to_token_stream().to_string();
+        is_non_send_type_tokens(&tokens)
+    })
+}
+
+fn binding_from_local(
+    local: &syn::Local,
+    non_send_types: &HashMap<String, String>,
+) -> Option<BindingFact> {
     let (name, is_mutable, type_hint) = binding_name_from_pat(&local.pat)?;
     let init_tokens = local
         .init
@@ -230,13 +293,15 @@ fn binding_from_local(local: &syn::Local) -> Option<BindingFact> {
         .map(|init| init.expr.to_token_stream().to_string())
         .unwrap_or_default();
     let type_tokens = type_hint.unwrap_or_default();
-    let type_name = if type_tokens.contains("Rc")
+    let type_name = if is_non_send_type_tokens(&type_tokens)
         || init_tokens.contains("Rc :: new")
         || init_tokens.contains("std :: rc :: Rc")
     {
         Some("Rc".to_owned())
-    } else if type_tokens.contains("Arc") || init_tokens.contains("Arc :: new") {
-        Some("Arc".to_owned())
+    } else if let Some(type_name) =
+        constructed_non_send_type(&type_tokens, &init_tokens, non_send_types)
+    {
+        Some(type_name)
     } else {
         None
     };
@@ -244,6 +309,30 @@ fn binding_from_local(local: &syn::Local) -> Option<BindingFact> {
         name,
         type_name,
         is_mutable,
+    })
+}
+
+fn binding_from_fn_arg(arg: &syn::FnArg) -> Option<BindingFact> {
+    let syn::FnArg::Typed(argument) = arg else {
+        return None;
+    };
+    let syn::Pat::Ident(ident) = argument.pat.as_ref() else {
+        return None;
+    };
+    let type_tokens = argument.ty.to_token_stream().to_string();
+    let type_name = is_non_send_type_tokens(&type_tokens).then(|| {
+        if type_tokens.contains("Rc") {
+            "Rc".to_owned()
+        } else if type_tokens.contains("RefCell") {
+            "RefCell".to_owned()
+        } else {
+            "Cell".to_owned()
+        }
+    });
+    Some(BindingFact {
+        name: ident.ident.to_string(),
+        type_name,
+        is_mutable: ident.mutability.is_some(),
     })
 }
 
@@ -264,8 +353,60 @@ fn binding_name_from_pat(pat: &syn::Pat) -> Option<(String, bool, Option<String>
     }
 }
 
+fn is_non_send_type_tokens(tokens: &str) -> bool {
+    tokens.contains("Rc")
+        || tokens.contains("std :: rc :: Rc")
+        || tokens.contains("RefCell")
+        || tokens.contains("Cell")
+}
+
+fn constructed_non_send_type(
+    type_tokens: &str,
+    init_tokens: &str,
+    non_send_types: &HashMap<String, String>,
+) -> Option<String> {
+    for type_name in non_send_types.keys() {
+        if contains_type_token(type_tokens, type_name)
+            || init_tokens.starts_with(&format!("{type_name} ::"))
+            || init_tokens.starts_with(&format!("{type_name} {{"))
+        {
+            return Some(type_name.clone());
+        }
+    }
+    None
+}
+
+fn contains_type_token(tokens: &str, type_name: &str) -> bool {
+    tokens
+        .split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+        .any(|part| part == type_name)
+}
+
 fn token_offset(source: &str, token: &str) -> Option<usize> {
     ident_offset(source, token)
+}
+
+fn iterator_source_ident(expr: &syn::Expr) -> Option<String> {
+    match expr {
+        syn::Expr::MethodCall(method_call) => {
+            if method_call.method == "iter" && method_call.args.is_empty() {
+                let syn::Expr::Path(path) = method_call.receiver.as_ref() else {
+                    return None;
+                };
+                if path.qself.is_none() && path.path.segments.len() == 1 {
+                    return path
+                        .path
+                        .segments
+                        .first()
+                        .map(|segment| segment.ident.to_string());
+                }
+            }
+            iterator_source_ident(method_call.receiver.as_ref())
+        }
+        syn::Expr::Paren(paren) => iterator_source_ident(paren.expr.as_ref()),
+        syn::Expr::Group(group) => iterator_source_ident(group.expr.as_ref()),
+        _ => None,
+    }
 }
 
 fn loop_warnings(
@@ -382,14 +523,16 @@ fn loop_extent(lines: &[LineInfo<'_>], start_index: usize) -> Option<(usize, usi
 }
 
 fn mutation_offset(source: &str, binding: &str) -> Option<usize> {
-    [".push(", ".insert(", ".extend(", ".remove("]
-        .iter()
-        .filter_map(|method| {
-            source
-                .find(&format!("{binding}{method}"))
-                .or_else(|| source.find(&format!("{binding}{}", spaced_method(method))))
-        })
-        .min()
+    [
+        ".push(", ".insert(", ".extend(", ".remove(", " += ", " -= ", " *= ", " /= ", " %= ",
+    ]
+    .iter()
+    .filter_map(|method| {
+        source
+            .find(&format!("{binding}{method}"))
+            .or_else(|| source.find(&format!("{binding}{}", spaced_method(method))))
+    })
+    .min()
 }
 
 fn spaced_method(method: &str) -> String {

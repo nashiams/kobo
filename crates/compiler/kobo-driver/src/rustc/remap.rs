@@ -386,6 +386,7 @@ mod tests {
                     solver_node_id: None,
                 },
             ],
+            runtime_evidence: None,
             solver_evidence: None,
         }
     }

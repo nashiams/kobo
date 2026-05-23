@@ -7,7 +7,8 @@ use kobo_driver::{
     load_config, run_and_compile, run_and_compile_with_lifetime_erasure, run_codegen_pipeline,
     run_kir_phase, CodegenArtifacts,
 };
-use kobo_ir::{GuaranteePolicy, MustCallObligation};
+use kobo_ir::{FileId, GuaranteePolicy, MustCallObligation};
+use kobo_parser::{parse_ward_syntax, WardItem};
 
 use super::{
     boundary_projection, ownership_analysis, policy,
@@ -112,6 +113,18 @@ pub(super) fn cmd_inspect(
         return Ok(());
     }
 
+    if scenario_metadata && !clean && cargo_dir.is_none() {
+        let source = std::fs::read_to_string(file)
+            .with_context(|| format!("failed to read {}", file.display()))?;
+        eprintln!(
+            "// effective guarantee profile: {}",
+            session.guarantee_profile().as_str()
+        );
+        emit_boundary_policy_comments(&boundary_policies);
+        print!("{}", scenario_metadata_output_for_file(file, &source)?);
+        return Ok(());
+    }
+
     if let Some(dir) = cargo_dir {
         let InspectCargoOutput {
             project_config,
@@ -152,7 +165,7 @@ pub(super) fn cmd_inspect(
     let output = if scenario_metadata {
         let source = std::fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
-        scenario_metadata_output(&source)
+        scenario_metadata_output_for_file(file, &source)?
     } else if clean {
         kobo_codegen::clean::strip_kobo_wrappers(&rs_source)
     } else {
@@ -309,7 +322,121 @@ fn append_scenario_metadata(mut output: String, source: &str) -> String {
 }
 
 fn scenario_metadata_output(source: &str) -> String {
-    append_scenario_metadata(String::new(), source)
+    append_ward_metadata(append_scenario_metadata(String::new(), source), source)
+}
+
+fn scenario_metadata_output_for_file(file: &Path, source: &str) -> anyhow::Result<String> {
+    let mut output = scenario_metadata_output(source);
+    for module in sibling_kobo_modules(file, source) {
+        let module_source = fs::read_to_string(&module)
+            .with_context(|| format!("failed to read module {}", module.display()))?;
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(&format!("// kobo: module {}\n", relative_display(&module)));
+        output.push_str(&scenario_metadata_output(&module_source));
+    }
+    Ok(output)
+}
+
+fn sibling_kobo_modules(file: &Path, source: &str) -> Vec<PathBuf> {
+    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+    let mut modules = source
+        .lines()
+        .filter_map(module_name_from_line)
+        .map(|name| base_dir.join(format!("{name}.kobo")))
+        .filter(|path| path.is_file())
+        .collect::<Vec<_>>();
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
+fn module_name_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("mod ")?;
+    let name = rest.strip_suffix(';')?.trim();
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+    .then(|| name.to_owned())
+}
+
+fn relative_display(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    absolute
+        .strip_prefix(&cwd)
+        .unwrap_or(&absolute)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn append_ward_metadata(mut output: String, source: &str) -> String {
+    let model = parse_ward_syntax(source, FileId(0));
+    if model.wards.is_empty() {
+        return output;
+    }
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    for ward in model.wards {
+        output.push_str(&format!("// kobo: ward {}\n", ward.name));
+        for item in ward.items {
+            append_ward_item_metadata(&mut output, item);
+        }
+    }
+    output
+}
+
+fn append_ward_item_metadata(output: &mut String, item: WardItem) {
+    match item {
+        WardItem::State(state) => {
+            output.push_str(&format!("// kobo: state {}\n", state.name));
+        }
+        WardItem::Obligation(obligation) => {
+            output.push_str(&format!(
+                "// kobo: obligation {} must {}\n",
+                obligation.type_name,
+                obligation.actions.join(" | ")
+            ));
+        }
+        WardItem::Invariant(block) => {
+            output.push_str(&format!("// kobo: invariant {}\n", block.name));
+        }
+        WardItem::Temporal(block) => {
+            if block.name.is_empty() {
+                output.push_str(&format!("// kobo: temporal {}\n", block.body));
+            } else {
+                output.push_str(&format!("// kobo: temporal {}\n", block.name));
+            }
+        }
+        WardItem::Port(fact) => {
+            output.push_str(&format!("// kobo: port {}\n", fact.text));
+        }
+        WardItem::Recording(fact) => {
+            output.push_str(&format!("// kobo: recording {}\n", fact.text));
+        }
+        WardItem::Debt(fact) => {
+            output.push_str(&format!("// kobo: debt {}\n", fact.text));
+        }
+        WardItem::Scenario(scenario) => {
+            output.push_str(&format!(
+                "// kobo: scenario {} profile {}\n",
+                scenario.name,
+                scenario.profile.as_str()
+            ));
+        }
+    }
 }
 
 struct ScenarioMetadata {

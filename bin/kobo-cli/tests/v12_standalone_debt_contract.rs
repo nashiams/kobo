@@ -124,6 +124,102 @@ fn debt_reports_liveness_candidate_with_source_span() {
 }
 
 #[test]
+fn debt_reports_multiline_spawn_liveness_candidate() {
+    let project = TestProject::new("standalone-debt-multiline-spawn");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "multiline_spawn"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    project.write(
+        "src/main.rs",
+        r#"
+fn main() {
+    let worker =
+        std::thread::spawn(
+        || {
+            println!("background");
+        },
+    );
+    let _ = worker.thread().id();
+}
+"#,
+    );
+
+    let json = debt_json(&project);
+    let findings = json["findings"]
+        .as_array()
+        .expect("findings should be array");
+    let finding = findings
+        .iter()
+        .find(|finding| finding["kind"] == "liveness-candidate")
+        .expect("multi-line thread spawn should produce a liveness candidate");
+
+    assert_eq!(finding["symbol"], "worker");
+    assert_contains(
+        &finding["evidence"].to_string(),
+        "std::thread::spawn",
+        "multi-line liveness finding should preserve spawn evidence",
+    );
+}
+
+#[test]
+fn debt_reports_aliased_spawn_and_dependency_calls() {
+    let project = TestProject::new("standalone-debt-aliases");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "alias_debt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = "0.12"
+"#,
+    );
+    project.write(
+        "src/main.rs",
+        r#"
+use std::thread::spawn as thread_spawn;
+use reqwest::get as http_get;
+
+fn main() {
+    let worker = thread_spawn(|| {
+        println!("background");
+    });
+    let _request = http_get("https://example.test/service");
+    observe_worker(worker);
+}
+
+fn observe_worker(worker: std::thread::JoinHandle<()>) {
+    worker.join().expect("worker should join");
+}
+"#,
+    );
+
+    let json = debt_json(&project);
+    let text = json["findings"].to_string();
+    assert_contains(
+        &text,
+        "thread_spawn",
+        "standalone debt should recognize aliased thread spawn calls",
+    );
+    assert_contains(
+        &text,
+        "http_get",
+        "standalone debt should recognize aliased external dependency calls",
+    );
+    assert_contains(
+        &text,
+        "observed-by-helper",
+        "standalone debt should note helper-observed handles instead of treating them as invisible",
+    );
+}
+
+#[test]
 fn debt_reports_nondeterminism_boundary_candidate() {
     let project = write_rust_only_project("standalone-debt-nondeterminism");
     let json = debt_json(&project);

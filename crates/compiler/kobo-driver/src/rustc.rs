@@ -3,6 +3,7 @@ mod remap;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kobo_codegen::KoboSourceMap;
 use kobo_ir::FileId;
@@ -11,6 +12,8 @@ use crate::session::CompileSession;
 
 use self::json::{parse_rustc_diagnostics, RustcJsonError};
 use self::remap::{remap_rustc_output, remap_warning_diagnostic, unparsed_output_diagnostic};
+
+static COMPILE_BINARY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Return value of a successful call to `compile_and_remap`.
 pub struct CompileOutput {
@@ -22,7 +25,18 @@ pub struct CompileOutput {
 }
 
 pub fn binary_path_for(rs_path: &Path) -> PathBuf {
-    rs_path.with_extension(std::env::consts::EXE_EXTENSION)
+    let counter = COMPILE_BINARY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let stem = rs_path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy())
+        .unwrap_or_else(|| "out".into());
+    let mut file_name = format!("{stem}.kobo-run-{}-{counter}", std::process::id());
+    let extension = std::env::consts::EXE_EXTENSION;
+    if !extension.is_empty() {
+        file_name.push('.');
+        file_name.push_str(extension);
+    }
+    rs_path.with_file_name(file_name)
 }
 
 pub fn compile_and_remap(
@@ -268,7 +282,9 @@ fn run_rustc(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_kobo_regions, filter_wrapper_noise};
+    use std::path::Path;
+
+    use super::{binary_path_for, extract_kobo_regions, filter_wrapper_noise};
     use crate::rustc::json::{RustcCode, RustcJsonError, RustcSpan};
 
     fn make_warning(msg: &str, lint: &str, spans: Vec<RustcSpan>) -> RustcJsonError {
@@ -293,6 +309,16 @@ mod tests {
             is_primary,
             label: label.map(|s| s.to_owned()),
         }
+    }
+
+    #[test]
+    fn binary_path_for_repeated_compile_uses_distinct_output_path() {
+        let first = binary_path_for(Path::new("src/main.rs"));
+        let second = binary_path_for(Path::new("src/main.rs"));
+        assert_ne!(
+            first, second,
+            "repeated rustc invocations must not contend for the same executable or PDB"
+        );
     }
 
     #[test]

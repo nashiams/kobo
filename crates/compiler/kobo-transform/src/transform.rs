@@ -1,5 +1,5 @@
 use crate::builder::build_transform_builder;
-use crate::cfg::stamp_cfg_and_liveness;
+use crate::cfg::{stamp_cfg_and_liveness, CfgGraph};
 use crate::finalize::{
     apply_validation_escalations, collect_hint_conflicts, finalize_transform,
     rewrite_dead_borrow_aliases,
@@ -10,7 +10,10 @@ use crate::strict::{analyze_strict_capture_set, flatten_nested_strict, validate_
 use crate::tier_validate::validate_tiers;
 use crate::tiered::{apply_decisions, choose_tiers};
 use crate::warn_early::detect_warn_early;
-use kobo_ir::{Kir, NodeIdGen};
+use kobo_ir::{
+    Kir, NodeIdGen, ScenarioCoreCfgBlock, ScenarioCoreCfgEdge, ScenarioCoreCfgFacts,
+    ScenarioProgram,
+};
 use kobo_parser::KoboFile;
 
 /// Transforms a parsed Kobo file into the frozen KIR.
@@ -58,12 +61,6 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     kir.set_migrate_sites(built.migrate_sites);
     kir.set_must_call_obligations(built.must_call_obligations);
     kir.set_must_call_attr_errors(built.must_call_attr_errors);
-    kir.set_scenario_programs(crate::scenario::build_scenario_programs(
-        ast,
-        kir.must_call_obligations(),
-        "checked",
-    ));
-
     // Phase 4: store method mutability map for codegen borrow/borrow_mut selection.
     kir.set_method_mutability(built.method_mutability);
 
@@ -128,8 +125,63 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     }
 
     // Build CFG, stamp cfg_block on each KirNode, and compute binding liveness.
-    let (_cfg, _liveness) = stamp_cfg_and_liveness(&mut kir);
+    let (cfg, _liveness) = stamp_cfg_and_liveness(&mut kir);
+    let core_cfg_facts = core_cfg_facts_from_graph(&cfg, &kir);
+    kir.set_core_cfg_facts(core_cfg_facts.clone());
+    let scenario_programs = attach_core_cfg_to_scenarios(
+        crate::scenario::build_scenario_programs(ast, kir.must_call_obligations(), "checked"),
+        core_cfg_facts,
+    );
+    kir.set_scenario_programs(scenario_programs);
     kir
+}
+
+fn core_cfg_facts_from_graph(cfg: &CfgGraph, kir: &Kir) -> ScenarioCoreCfgFacts {
+    let blocks = cfg
+        .blocks()
+        .iter()
+        .map(|block| {
+            let mut span_start = usize::MAX;
+            let mut span_end = 0usize;
+            for node_id in &block.kir_nodes {
+                if let Some(node) = kir.get_node(*node_id) {
+                    span_start = span_start.min(node.span.start as usize);
+                    span_end = span_end.max(node.span.end as usize);
+                }
+            }
+            if span_start == usize::MAX {
+                span_start = 0;
+            }
+            ScenarioCoreCfgBlock {
+                id: block.id as u32,
+                kir_nodes: block.kir_nodes.iter().map(|node| node.0).collect(),
+                span_start,
+                span_end,
+            }
+        })
+        .collect();
+    let edges = cfg
+        .edges()
+        .iter()
+        .map(|(from, to)| ScenarioCoreCfgEdge {
+            from: *from as u32,
+            to: *to as u32,
+        })
+        .collect();
+    ScenarioCoreCfgFacts { blocks, edges }
+}
+
+fn attach_core_cfg_to_scenarios(
+    programs: Vec<ScenarioProgram>,
+    core_cfg: ScenarioCoreCfgFacts,
+) -> Vec<ScenarioProgram> {
+    programs
+        .into_iter()
+        .map(|mut program| {
+            program.coverage.core_cfg = Some(core_cfg.clone());
+            program
+        })
+        .collect()
 }
 
 /// Find the statements of the enclosing function body for a given span.

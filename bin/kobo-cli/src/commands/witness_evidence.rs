@@ -154,7 +154,7 @@ pub(super) fn boundary_ledger_json(
 fn boundary_ledger_io_capture_json(
     decision: &kobo_sim_core::BoundaryDecision,
 ) -> Option<serde_json::Value> {
-    if decision.policy.as_str() != "record" {
+    if !matches!(decision.policy.as_str(), "record" | "activity") {
         return None;
     }
     decision.recorded_io.as_ref().map(boundary_io_capture_json)
@@ -188,13 +188,18 @@ fn boundary_io_payload_json(payload: &kobo_sim_core::BoundaryIoPayload) -> serde
 pub(super) fn inferred_obligations_json(
     source_path: &str,
     source: &str,
+    program: &ScenarioProgram,
     run: &FullDepthRun,
 ) -> serde_json::Value {
+    let template_facts = lifecycle_template_facts(program);
     serde_json::Value::Array(
         run.obligations
             .iter()
             .map(|obligation| {
-                let template = lifecycle_template(&obligation.actions);
+                let template = template_facts
+                    .get(&obligation.binding)
+                    .cloned()
+                    .unwrap_or_else(|| lifecycle_template(&obligation.actions));
                 let state = if obligation.is_discharged {
                     "discharged"
                 } else {
@@ -206,15 +211,23 @@ pub(super) fn inferred_obligations_json(
                     serde_json::Value::String("unresolved_terminal_action".to_owned())
                 };
 
+                let source_span = span_json_for_binding(
+                    source_path,
+                    source,
+                    obligation.declaration_span,
+                    &obligation.binding,
+                );
+
                 serde_json::json!({
                     "id": format!("{}:{}", template.id, obligation.binding),
                     "kind": template.kind,
                     "template_id": template.id,
-                    "template_version": "v0.10.1",
+                    "template_version": template.version,
+                    "template_source": template.source,
                     "binding": obligation.binding,
                     "state": state,
                     "terminal_actions": obligation.actions.clone(),
-                    "source_span": span_json(source_path, source, obligation.declaration_span),
+                    "source_span": source_span,
                     "confidence": template.confidence,
                     "coverage_loss": coverage_loss,
                 })
@@ -256,7 +269,9 @@ impl FunctionSummaryBuilder {
                         .creates
                         .push(binding.clone());
                 }
-                ScenarioOpKind::Transfer { binding, callee } => {
+                ScenarioOpKind::Transfer {
+                    binding, callee, ..
+                } => {
                     let owner = builder
                         .binding_owner
                         .get(binding)
@@ -312,7 +327,22 @@ impl FunctionSummaryBuilder {
                         .escapes
                         .push(operation.clone());
                 }
+                ScenarioOpKind::UnsupportedContainer {
+                    binding, container, ..
+                } => {
+                    builder
+                        .summary_mut(&program.target)
+                        .escapes
+                        .push(format!("{binding}->{container}"));
+                }
+                ScenarioOpKind::BranchUnresolved { binding } => {
+                    builder
+                        .summary_mut(&program.target)
+                        .leaks
+                        .push(format!("{binding}->branch_exit"));
+                }
                 ScenarioOpKind::MoveBinding { .. }
+                | ScenarioOpKind::CoreTerminator { .. }
                 | ScenarioOpKind::ModeledEffect { .. }
                 | ScenarioOpKind::StorageEvent { .. }
                 | ScenarioOpKind::NetworkEvent { .. }
@@ -377,6 +407,7 @@ fn operation_coverage_label(operation: &kobo_ir::ScenarioOp) -> String {
         ScenarioOpKind::Discharge { .. } => "obligation-discharge".to_owned(),
         ScenarioOpKind::Transfer { .. } => "obligation-transfer".to_owned(),
         ScenarioOpKind::MoveBinding { .. } => "obligation-move".to_owned(),
+        ScenarioOpKind::BranchUnresolved { .. } => "obligation-branch-unresolved".to_owned(),
         ScenarioOpKind::ModeledEffect { boundary } => {
             format!("modeled.{}", modeled_boundary_label(boundary))
         }
@@ -389,10 +420,20 @@ fn operation_coverage_label(operation: &kobo_ir::ScenarioOp) -> String {
         ScenarioOpKind::UncontrolledEffect { operation } => {
             format!("uncontrolled-effect.{operation}")
         }
+        ScenarioOpKind::UnsupportedContainer {
+            type_name,
+            container,
+            ..
+        } => {
+            format!("unsupported-container.{container}.{type_name}")
+        }
         ScenarioOpKind::ExternalBoundary {
             crate_name, policy, ..
         } => {
             format!("external-boundary.{}.{}", policy.as_str(), crate_name)
+        }
+        ScenarioOpKind::CoreTerminator { kind, .. } => {
+            format!("core-terminator.{}", kind.as_str())
         }
         ScenarioOpKind::Loop => "loop".to_owned(),
         ScenarioOpKind::Return => "return".to_owned(),
@@ -408,10 +449,43 @@ fn modeled_boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 struct LifecycleTemplate {
-    kind: &'static str,
-    id: &'static str,
-    confidence: &'static str,
+    kind: String,
+    id: String,
+    version: String,
+    confidence: String,
+    source: &'static str,
+}
+
+fn lifecycle_template_facts(program: &ScenarioProgram) -> BTreeMap<String, LifecycleTemplate> {
+    let mut facts = BTreeMap::new();
+    for operation in &program.operations {
+        let ScenarioOpKind::CreateObligation {
+            binding,
+            actions,
+            template,
+            ..
+        } = &operation.kind
+        else {
+            continue;
+        };
+        let fact = template.as_ref().map_or_else(
+            || lifecycle_template(actions),
+            |template| LifecycleTemplate {
+                kind: template.kind.clone(),
+                id: template.id.clone(),
+                version: template.version.clone(),
+                confidence: template.confidence.clone(),
+                source: match template.source {
+                    kobo_ir::ScenarioLifecycleTemplateSource::Declaration => "declaration",
+                    kobo_ir::ScenarioLifecycleTemplateSource::Inference => "inference",
+                },
+            },
+        );
+        facts.entry(binding.clone()).or_insert(fact);
+    }
+    facts
 }
 
 fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
@@ -420,9 +494,11 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "ack" | "nack" | "requeue"))
     {
         return LifecycleTemplate {
-            kind: "queue_delivery",
-            id: "queue_delivery",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:ack_nack_requeue".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
@@ -430,9 +506,11 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "commit" | "rollback"))
     {
         return LifecycleTemplate {
-            kind: "transaction",
-            id: "transaction",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:transaction".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
@@ -440,25 +518,55 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         .any(|action| matches!(action.as_str(), "reply" | "reject" | "cancel"))
     {
         return LifecycleTemplate {
-            kind: "handler_reply",
-            id: "handler_reply",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:handler_reply".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     if actions
         .iter()
-        .any(|action| matches!(action.as_str(), "join" | "abort" | "detach-with-policy"))
+        .any(|action| matches!(action.as_str(), "await" | "abort" | "detach-with-policy"))
     {
         return LifecycleTemplate {
-            kind: "spawned_task",
-            id: "spawned_task",
-            confidence: "exact_template",
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:spawned_task".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
+        };
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "release" | "drop-at-safe-boundary"))
+    {
+        return LifecycleTemplate {
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:lock_permit".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
+        };
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action.as_str(), "close" | "transfer" | "opaque-boundary"))
+    {
+        return LifecycleTemplate {
+            kind: "legacy_actions".to_owned(),
+            id: "legacy_actions:file_socket".to_owned(),
+            version: "v0.13.0".to_owned(),
+            confidence: "legacy_action_fallback".to_owned(),
+            source: "compatibility_fallback",
         };
     }
     LifecycleTemplate {
-        kind: "lifecycle_obligation",
-        id: "custom_lifecycle_obligation",
-        confidence: "heuristic",
+        kind: "lifecycle_obligation".to_owned(),
+        id: "custom_lifecycle_obligation".to_owned(),
+        version: "v0.13.0".to_owned(),
+        confidence: "compatibility_fallback".to_owned(),
+        source: "compatibility_fallback",
     }
 }
 
@@ -480,7 +588,28 @@ fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_jso
         "line": one_based_line_for_offset(source, span.0),
         "start": span.0,
         "end": span.1.max(span.0 + 1),
+        "mapped": span.1 > span.0,
+        "snippet": line_snippet(source, span.0),
     })
+}
+
+fn span_json_for_binding(
+    source_path: &str,
+    source: &str,
+    span: (usize, usize),
+    binding: &str,
+) -> serde_json::Value {
+    let value = span_json(source_path, source, span);
+    if value["snippet"]
+        .as_str()
+        .is_some_and(|snippet| !snippet.is_empty())
+    {
+        return value;
+    }
+    let Some(start) = source.find(binding) else {
+        return value;
+    };
+    span_json(source_path, source, (start, start + binding.len()))
 }
 
 fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
@@ -489,6 +618,19 @@ fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
         .filter(|byte| *byte == b'\n')
         .count()
         + 1
+}
+
+fn line_snippet(source: &str, offset: usize) -> String {
+    let bounded = offset.min(source.len());
+    let line_start = source[..bounded]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = source[bounded..]
+        .find('\n')
+        .map(|index| bounded + index)
+        .unwrap_or(source.len());
+    source[line_start..line_end].trim().to_owned()
 }
 
 fn function_summary_json(summary: FunctionSummary) -> serde_json::Value {

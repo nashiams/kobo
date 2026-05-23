@@ -31,3 +31,6 @@ nul
 *.swo
 *.swn
 docs
+.skill-staging
+.claude/prompt/roadmap/v0.12/implementation_notes/
+.claude/prompt/roadmap/v0.12/reviews/

@@ -18,6 +18,7 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     binding,
                     type_name,
                     actions,
+                    ..
                 } => Some(ScenarioOperation::CreateObligation {
                     binding: binding.clone(),
                     type_name: type_name.clone(),
@@ -31,7 +32,9 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                         action: action.clone(),
                     })
                 }
-                ScenarioOpKind::Transfer { binding, callee } => Some(ScenarioOperation::Transfer {
+                ScenarioOpKind::Transfer {
+                    binding, callee, ..
+                } => Some(ScenarioOperation::Transfer {
                     binding: binding.clone(),
                     callee: callee.clone(),
                     span_start,
@@ -39,6 +42,24 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                 }),
                 ScenarioOpKind::MoveBinding { binding } => Some(ScenarioOperation::MoveBinding {
                     binding: binding.clone(),
+                    span_start,
+                    span_end,
+                }),
+                ScenarioOpKind::BranchUnresolved { binding } => {
+                    Some(ScenarioOperation::BranchUnresolved {
+                        binding: binding.clone(),
+                        span_start,
+                        span_end,
+                    })
+                }
+                ScenarioOpKind::UnsupportedContainer {
+                    binding,
+                    type_name,
+                    container,
+                } => Some(ScenarioOperation::UnsupportedContainer {
+                    binding: binding.clone(),
+                    type_name: type_name.clone(),
+                    container: container.clone(),
                     span_start,
                     span_end,
                 }),
@@ -101,6 +122,7 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     span_start,
                     span_end,
                 }),
+                ScenarioOpKind::CoreTerminator { .. } => None,
                 ScenarioOpKind::Return => None,
             }
         })

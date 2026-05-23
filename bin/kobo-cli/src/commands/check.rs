@@ -1861,9 +1861,6 @@ fn parse_boundary_attr(source: &str) -> Option<BoundaryPolicy> {
     let parsed = syn::parse_file(source).ok()?;
     for item in &parsed.items {
         for attr in boundary_candidate_attrs(item) {
-            if !syn_path_ends_with(attr.path(), &["kobo", "boundary"]) {
-                continue;
-            }
             if let Some(boundary) = parse_boundary_attribute(attr, source) {
                 return Some(boundary);
             }
@@ -1885,6 +1882,15 @@ fn boundary_candidate_attrs(item: &syn::Item) -> &[syn::Attribute] {
 }
 
 fn parse_boundary_attribute(attr: &syn::Attribute, source: &str) -> Option<BoundaryPolicy> {
+    let default_policy = if syn_path_ends_with(attr.path(), &["kobo", "boundary"]) {
+        None
+    } else if syn_path_ends_with(attr.path(), &["kobo", "record"]) {
+        Some("record")
+    } else if syn_path_ends_with(attr.path(), &["kobo", "activity"]) {
+        Some("activity")
+    } else {
+        return None;
+    };
     let syn::Meta::List(list) = &attr.meta else {
         return None;
     };
@@ -1923,7 +1929,9 @@ fn parse_boundary_attribute(attr: &syn::Attribute, source: &str) -> Option<Bound
         .unwrap_or((0, crate_name.as_ref().map(String::len).unwrap_or(1)));
     Some(BoundaryPolicy {
         crate_name,
-        policy: policy.unwrap_or_else(|| "opaque".to_owned()),
+        policy: policy
+            .or_else(|| default_policy.map(str::to_owned))
+            .unwrap_or_else(|| "opaque".to_owned()),
         reason,
         span_start,
         span_end,

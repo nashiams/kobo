@@ -1,0 +1,16 @@
+struct AsyncGateway {}
+struct RequestToken {}
+
+impl RequestToken {
+    fn reply(self) {}
+    fn reject(self) {}
+    fn cancel(self) {}
+}
+
+fn gateway_clean_path() {
+    let _gateway = AsyncGateway {};
+    let token = RequestToken {};
+    token.reply();
+}
+
+fn main() {}

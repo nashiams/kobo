@@ -88,27 +88,20 @@ fn handler_spec(
 pub(crate) fn handler_evidence_from_lowered_file(
     file: &syn::File,
 ) -> Vec<HandlerLifecycleEvidence> {
-    let cancel_supported = lowered_handler_cancel_supported(file);
     file.items
         .iter()
         .filter_map(|item| {
             let syn::Item::Fn(function) = item else {
                 return None;
             };
-            lowered_handler_evidence(function, cancel_supported)
+            lowered_handler_evidence(function)
         })
         .collect()
 }
 
-fn lowered_handler_evidence(
-    function: &syn::ItemFn,
-    cancel_supported: bool,
-) -> Option<HandlerLifecycleEvidence> {
+fn lowered_handler_evidence(function: &syn::ItemFn) -> Option<HandlerLifecycleEvidence> {
     let (name, source_line) = lowered_handler_source(&function.attrs)?;
-    let mut lowered_scan = LoweredHandlerGuardScan::scan(&function.block);
-    if cancel_supported {
-        lowered_scan.push_terminal_action("cancel");
-    }
+    let lowered_scan = LoweredHandlerGuardScan::scan(&function.block);
     Some(HandlerLifecycleEvidence {
         name,
         source_line,
@@ -118,7 +111,7 @@ fn lowered_handler_evidence(
         metrics_boundary: "handler-entry-exit-counters".to_owned(),
         cleanup_boundary: "registered-success-error-cancel".to_owned(),
         cancel_cleanup: "drop-runs-registered-cleanup".to_owned(),
-        terminal_evidence_source: "lowered-function-and-support-guard-scan".to_owned(),
+        terminal_evidence_source: "lowered-result-path-guard-scan".to_owned(),
     })
 }
 
@@ -162,12 +155,6 @@ impl LoweredHandlerGuardScan {
         Self {
             cleanup_hook: visitor.cleanup_hook,
             terminal_actions: visitor.terminal_actions,
-        }
-    }
-
-    fn push_terminal_action(&mut self, action: &str) {
-        if !self.terminal_actions.iter().any(|seen| seen == action) {
-            self.terminal_actions.push(action.to_owned());
         }
     }
 }
@@ -224,29 +211,6 @@ fn first_lit_str_arg(
         };
         Some(lit.value())
     })
-}
-
-fn lowered_handler_cancel_supported(file: &syn::File) -> bool {
-    let mut visitor = HandlerCancelSupportVisitor::default();
-    visitor.visit_file(file);
-    visitor.drop_calls_cancel_cleanup && visitor.cancel_cleanup_records_cancel
-}
-
-#[derive(Default)]
-struct HandlerCancelSupportVisitor {
-    drop_calls_cancel_cleanup: bool,
-    cancel_cleanup_records_cancel: bool,
-}
-
-impl<'ast> Visit<'ast> for HandlerCancelSupportVisitor {
-    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        match node.method.to_string().as_str() {
-            "run_cancel_cleanup_on_drop" => self.drop_calls_cancel_cleanup = true,
-            "record_cancel" => self.cancel_cleanup_records_cancel = true,
-            _ => {}
-        }
-        visit::visit_expr_method_call(self, node);
-    }
 }
 
 fn is_kobo_attr(attr: &syn::Attribute, name: &str) -> bool {
@@ -345,6 +309,7 @@ fn result_handler_body(original_stmts: Vec<syn::Stmt>, spec: &HandlerSpec) -> Ve
             }
             Err(__kobo_handler_error) => {
                 __kobo_handler_guard.run_registered_cleanup("error").await;
+                __kobo_handler_guard.record_error_boundary(#handler_name, "handler-result-error");
                 __kobo_handler_guard.record_reject();
                 __kobo_handler_guard.metrics_boundary(#handler_name);
                 let __kobo_handler_outcome: KoboHandlerOutcome<_, _> =
@@ -411,33 +376,27 @@ fn handler_cleanup_runtime_impl_item() -> syn::Item {
         impl KoboHandlerCleanupRuntime {
             fn run(cleanup: fn() -> KoboHandlerCleanupFuture) {
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(cleanup());
+                    let cleanup_task = handle.spawn(cleanup());
+                    handle.spawn(async move {
+                        if let Err(error) = cleanup_task.await {
+                            eprintln!("kobo handler cleanup task failed: {error:?}");
+                        }
+                    });
                 } else {
                     Self::block_on(cleanup());
                 }
             }
 
-            fn block_on<F: std::future::Future>(future: F) -> F::Output {
-                fn clone(_: *const ()) -> std::task::RawWaker {
-                    raw_waker()
-                }
-                fn wake(_: *const ()) {}
-                fn wake_by_ref(_: *const ()) {}
-                fn drop(_: *const ()) {}
-                fn raw_waker() -> std::task::RawWaker {
-                    std::task::RawWaker::new(
-                        std::ptr::null(),
-                        &std::task::RawWakerVTable::new(clone, wake, wake_by_ref, drop),
-                    )
-                }
-
-                let waker = unsafe { std::task::Waker::from_raw(raw_waker()) };
-                let mut context = std::task::Context::from_waker(&waker);
-                let mut future = std::pin::pin!(future);
-                loop {
-                    match future.as_mut().poll(&mut context) {
-                        std::task::Poll::Ready(output) => return output,
-                        std::task::Poll::Pending => std::thread::yield_now(),
+            fn block_on(cleanup: KoboHandlerCleanupFuture) {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => {
+                        runtime.block_on(cleanup);
+                    }
+                    Err(error) => {
+                        eprintln!("kobo handler cleanup runtime failed: {error:?}");
                     }
                 }
             }
@@ -562,6 +521,22 @@ fn handler_guard_impl_item() -> syn::Item {
             fn record_reject(&mut self) {
                 self.state = "reject";
                 self.metrics.rejects += 1;
+            }
+
+            fn record_error_boundary(&mut self, handler: &'static str, reason: &'static str) {
+                let _ = (
+                    "handler-error-boundary",
+                    handler,
+                    reason,
+                    self.source_line,
+                    self.cleanup_status,
+                );
+                eprintln!(
+                    "kobo handler error boundary: handler={} reason={} source_line={}",
+                    handler,
+                    reason,
+                    self.source_line
+                );
             }
 
             fn record_cancel(&mut self) {

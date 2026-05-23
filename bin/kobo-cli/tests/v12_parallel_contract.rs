@@ -98,6 +98,81 @@ fn crunch(values: Vec<u64>) {
 }
 
 #[test]
+fn parallel_rejects_user_defined_non_send_capture() {
+    let project = TestProject::new("parallel-user-defined-non-send");
+    let source = r#"
+use std::rc::Rc;
+
+struct LocalState {
+    inner: Rc<u64>,
+}
+
+impl LocalState {
+    fn new() -> Self {
+        Self { inner: Rc::new(1_u64) }
+    }
+}
+
+fn crunch(values: Vec<u64>) {
+    let state = LocalState::new();
+    #[kobo::parallel]
+    for value in values.iter() {
+        let _seen = *value + *state.inner;
+    }
+}
+"#;
+    let file = project.main_file(source);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "parallel loop should reject user-defined captures that carry non-Send fields",
+    );
+    for expected in ["state", "LocalState", "non-Send"] {
+        assert_contains(
+            &output.combined(),
+            expected,
+            "parallel diagnostic should name the user-defined non-Send capture",
+        );
+    }
+}
+
+#[test]
+fn parallel_rejects_non_send_iterator_item_type_before_rayon() {
+    let project = TestProject::new("parallel-non-send-item-type");
+    let source = r#"
+use std::rc::Rc;
+
+fn crunch(values: Vec<Rc<u64>>) {
+    #[kobo::parallel]
+    for value in values.iter() {
+        let _seen = **value;
+    }
+}
+"#;
+    let file = project.main_file(source);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "parallel lowering should reject non-Send iterator item types before emitting Rayon",
+    );
+    for expected in ["values", "Rc", "non-Send"] {
+        assert_contains(
+            &output.combined(),
+            expected,
+            "parallel diagnostic should name the unsafe iterator source",
+        );
+    }
+}
+
+#[test]
 fn generated_safe_parallel_cargo_fixture_compiles() {
     let project = TestProject::new("parallel-safe-cargo-check");
     let file = project.main_file(
@@ -229,6 +304,41 @@ fn crunch(values: Vec<u64>) {
 }
 
 #[test]
+fn parallel_rejects_compound_assignment_shared_mutation() {
+    let project = TestProject::new("parallel-shared-compound-assignment");
+    let source = r#"
+fn crunch(values: Vec<u64>) {
+    let mut total = 0_u64;
+    #[kobo::parallel]
+    for value in values.iter() {
+        total += *value;
+    }
+}
+"#;
+    let file = project.main_file(source);
+    let output = run_kobo(
+        &[s("inspect"), s("--strict"), path_arg(&file)],
+        &project.root,
+    );
+    let mutation_line = one_based_line_of(source, "total +=");
+
+    assert_failure(
+        &output,
+        "parallel loop using compound shared assignment should fail before Rayon",
+    );
+    assert_contains(
+        &output.combined(),
+        "total",
+        "diagnostic should name the compound mutation target",
+    );
+    assert_mentions_line(
+        &output,
+        mutation_line,
+        "compound assignment diagnostic should point at the mutation site",
+    );
+}
+
+#[test]
 fn parallel_preserves_serial_order_when_order_is_required() {
     let generated = inspect_source(
         "parallel-serial-order",
@@ -324,6 +434,11 @@ fn crunch(values: Vec<u64>) {
         &generated,
         "parallel-policy=outside",
         "explicit ward-boundary policy should be inspect-visible",
+    );
+    assert_contains(
+        &generated,
+        ".par_iter()",
+        "explicit outside policy should still allow safe Rayon lowering",
     );
 }
 

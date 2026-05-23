@@ -6,8 +6,10 @@ use kobo_errors::{
     DiagnosticRenderer, KDiagnostic, KErrorCode, Severity,
 };
 use kobo_ir::{
-    FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KoboSpan, ScenarioOpKind, ScenarioProgram,
+    FileId, FileSetBuilder, GuaranteePolicy, GuaranteeProfile, KoboSpan, ScenarioOpKind,
+    ScenarioProgram,
 };
+use kobo_parser::{parse_ward_syntax, WardItem};
 use kobo_sim_core::{EngineMode, FullDepthRun, ReplayGuarantee, ScenarioEvent, ScenarioFailure};
 use proptest::prelude::{any, Strategy};
 use proptest::strategy::ValueTree;
@@ -17,6 +19,7 @@ use proptest::test_runner::{
 
 use crate::ErrorFormat;
 
+use super::formal_core;
 use super::sim_model::{self, ScenarioDocument};
 use super::witness_evidence;
 use super::{declarations, summary_validation};
@@ -73,7 +76,7 @@ pub(super) fn cmd_test(
     } else {
         None
     };
-    let run = match fuzz_plan.as_ref() {
+    let mut run = match fuzz_plan.as_ref() {
         Some(plan) => run_fuzz_portfolio(
             &scenario_program,
             &artifacts.rs_source,
@@ -88,6 +91,15 @@ pub(super) fn cmd_test(
             engine,
         )?,
     };
+    let strict_source_path = sim_model::cli_relative_path(file)?;
+    formal_core::apply_strict_liveness(
+        &strict_source_path,
+        &document.source,
+        &scenario_program,
+        &mut run,
+    );
+    apply_trace_checks(&strict_source_path, &document.source, &mut run);
+    apply_model_vs_implementation(&strict_source_path, &document.source, seed, &mut run);
     validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
@@ -437,7 +449,9 @@ fn stateful_input_sources(program: &ScenarioProgram) -> Vec<StatefulInputSource>
                 }
                 kobo_ir::ScenarioModeledBoundary::WardTime => {}
             },
-            ScenarioOpKind::Transfer { binding, callee } => {
+            ScenarioOpKind::Transfer {
+                binding, callee, ..
+            } => {
                 sources.push(StatefulInputSource::ObligationTransfer {
                     binding: binding.clone(),
                     callee: callee.clone(),
@@ -548,7 +562,7 @@ fn print_events(
             "file": sim_model::cli_relative_path(file)?,
             "sim_profile": sim_profile,
             "backend_profile": run.profile,
-            "scheduler": scheduler_json(sim_profile, seed, run),
+            "scheduler": scheduler_json(sim_profile, seed, run, None),
             "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
             "events": events_json(&run.events),
@@ -590,8 +604,22 @@ fn write_run_witness(
     let runtime_profile = runtime_profile_json(config, sim_profile, seed, run);
     let runtime_profile_hash =
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
-    let inferred_obligations =
-        witness_evidence::inferred_obligations_json(&source_path, &document.source, run);
+    let inferred_obligations = witness_evidence::inferred_obligations_json(
+        &source_path,
+        &document.source,
+        scenario_program,
+        run,
+    );
+    let formal_core =
+        formal_core::formal_core_json(&source_path, &document.source, scenario_program);
+    let proof_seed =
+        formal_core::proof_seed_json(&source_path, &document.source, scenario_program, run);
+    let strict_liveness =
+        formal_core::strict_liveness_json(&source_path, &document.source, scenario_program, run);
+    let trace_checks = trace_checks_json(&source_path, &document.source, run);
+    let model_vs_implementation =
+        model_vs_implementation_json(&source_path, &document.source, seed, run);
+    let flagship_demo = flagship_demo_json(scenario_program, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
@@ -617,7 +645,12 @@ fn write_run_witness(
         "ecosystem_scope": ecosystem_scope(run),
         "full_ecosystem_exploration": full_ecosystem_exploration(run),
         "replay_contract": replay_contract_json(run),
-        "scheduler": scheduler_json(sim_profile, seed, run),
+        "scheduler": scheduler_json(
+            sim_profile,
+            seed,
+            run,
+            Some(config.runtime_profile.scheduler.as_str()),
+        ),
         "harness_manifest": run.harness_manifest.clone(),
         "coverage": coverage,
         "operation_coverage": witness_evidence::operation_coverage_json(scenario_program, run),
@@ -652,6 +685,22 @@ fn write_run_witness(
         "call_graph_obligation_summaries".to_owned(),
         witness_evidence::call_graph_obligation_summaries_json(scenario_program, run),
     );
+    object.insert("formal_core".to_owned(), formal_core);
+    object.insert("proof_seed".to_owned(), proof_seed);
+    object.insert("strict_liveness".to_owned(), strict_liveness);
+    object.insert(
+        "invariant_checks".to_owned(),
+        trace_checks["invariant_checks"].clone(),
+    );
+    object.insert(
+        "temporal_checks".to_owned(),
+        trace_checks["temporal_checks"].clone(),
+    );
+    object.insert(
+        "model_vs_implementation".to_owned(),
+        model_vs_implementation,
+    );
+    object.insert("flagship_demo".to_owned(), flagship_demo);
     object.insert(
         "replay_grade".to_owned(),
         serde_json::json!(witness_evidence::replay_grade_json(
@@ -673,14 +722,14 @@ fn write_run_witness(
     );
     object.insert(
         "summaries".to_owned(),
-        serde_json::Value::Array(summary_usage_json(config)?),
+        serde_json::Value::Array(summary_usage_json(config, scenario_program)?),
     );
     object.insert(
         "lifecycle_inference".to_owned(),
         serde_json::json!({
             "mode": "observe",
             "source": "scenario_program",
-            "template_version": "v0.10.1",
+            "template_version": "v0.13.0",
             "obligations": inferred_obligations,
         }),
     );
@@ -1049,14 +1098,22 @@ fn scenario_coverage_json(run: &FullDepthRun) -> serde_json::Value {
     coverage_json(run)
 }
 
-fn scheduler_json(sim_profile: &str, seed: u64, run: &FullDepthRun) -> serde_json::Value {
-    let strategy = match sim_profile {
+fn scheduler_json(
+    sim_profile: &str,
+    seed: u64,
+    run: &FullDepthRun,
+    runtime_scheduler: Option<&str>,
+) -> serde_json::Value {
+    let profile_strategy = match sim_profile {
         "quick" => "small-random",
         "deep" => "pct-random-bounded",
         "replay" => "witness-event-stream",
         "exhaustive" => "tiny-ward-exhaustive",
         _ => "unknown",
     };
+    let strategy = runtime_scheduler
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(profile_strategy);
     serde_json::json!({
         "profile": sim_profile,
         "strategy": strategy,
@@ -1359,6 +1416,18 @@ fn scenario_failure_finding(failure: &ScenarioFailure, witness_path: Option<&Pat
             let boundary = scenario_failure_label(failure).unwrap_or("external code");
             format!("This replay path crosses `{boundary}` without a boundary policy.")
         }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "invariant-failure") => {
+            "An invariant check failed against the recorded scenario trace.".to_owned()
+        }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
+            "A temporal trace check failed against the recorded scenario trace.".to_owned()
+        }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-trace-divergence") => {
+            "The ward model and implementation produced different event traces.".to_owned()
+        }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-obligation-divergence") => {
+            "The ward model and implementation disagree about obligation state.".to_owned()
+        }
         KErrorCode::K0116 => {
             "This scenario uses syntax Kobo has not modeled for exact replay yet.".to_owned()
         }
@@ -1394,6 +1463,20 @@ fn scenario_failure_explanation(failure: &ScenarioFailure) -> String {
         KErrorCode::K0107 => {
             "External code can perform IO, scheduling, time, randomness, or other effects that Kobo cannot infer from the source alone. The boundary policy says what replay may assume.".to_owned()
         }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "invariant-failure") => {
+            "Invariant checks are evaluated over the same event stream written into the witness, so the failure is a counterexample trace, not a replay mismatch.".to_owned()
+        }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
+            "Temporal checks are evaluated over ordered witness events with stable event names. Missing or forbidden events are reported separately from replay mismatch diagnostics.".to_owned()
+        }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-trace-divergence") => {
+            "Model-vs-implementation comparison uses the same scheduler seed and compares ordered witness events, so a different first event is real comparison evidence.".to_owned()
+        }
+        KErrorCode::K0117
+            if scenario_failure_has_event(failure, "model-obligation-divergence") =>
+        {
+            "Model-vs-implementation comparison includes liveness obligation state, not just return values.".to_owned()
+        }
         KErrorCode::K0116 => {
             "Exact replay is only sound for modeled syntax. Kobo found a construct outside the current modeled island coverage.".to_owned()
         }
@@ -1428,6 +1511,20 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
         KErrorCode::K0107 => {
             "Choose a typed/model policy, record it, wrap it as an activity, or keep this path partial with outside, opaque, or debt before claiming exact replay.".to_owned()
         }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "invariant-failure") => {
+            "Inspect the witness invariant_checks trace excerpt, then update the model or scenario so the invariant holds.".to_owned()
+        }
+        KErrorCode::K0108 if scenario_failure_has_event(failure, "temporal-failure") => {
+            "Inspect the witness temporal_checks trace excerpt, then update the model, expected event name, or scenario ordering.".to_owned()
+        }
+        KErrorCode::K0117 if scenario_failure_has_event(failure, "model-trace-divergence") => {
+            "Inspect model_vs_implementation.trace.first_difference, then align the ward model event or the implementation behavior.".to_owned()
+        }
+        KErrorCode::K0117
+            if scenario_failure_has_event(failure, "model-obligation-divergence") =>
+        {
+            "Inspect model_vs_implementation.obligations.first_difference, then align the model state or discharge path.".to_owned()
+        }
         KErrorCode::K0116 => {
             "Use a modeled construct, split the scenario, or keep the witness partial until coverage is implemented.".to_owned()
         }
@@ -1446,6 +1543,10 @@ fn scenario_failure_label(failure: &ScenarioFailure) -> Option<&str> {
         .events
         .iter()
         .find_map(|event| event.label.as_deref())
+}
+
+fn scenario_failure_has_event(failure: &ScenarioFailure, kind: &str) -> bool {
+    failure.events.iter().any(|event| event.kind == kind)
 }
 
 fn scenario_failure_actions(message: &str) -> Option<String> {
@@ -1635,8 +1736,12 @@ fn declaration_metadata_json(facts: &declarations::DeclarationFacts) -> serde_js
     value
 }
 
-fn summary_usage_json(config: &kobo_driver::KoboConfig) -> anyhow::Result<Vec<serde_json::Value>> {
+fn summary_usage_json(
+    config: &kobo_driver::KoboConfig,
+    program: &ScenarioProgram,
+) -> anyhow::Result<Vec<serde_json::Value>> {
     let mut summaries = Vec::new();
+    summaries.push(formal_core::summary_json(program));
     for summary in &config.ecosystem_policy.summaries {
         let valid = summary_validation::load_valid_summary(summary)?;
         let parsed = valid.value;
@@ -1722,7 +1827,7 @@ fn boundary_capture_json(
         "event_kind": event.kind.clone(),
         "event_label": event.label.clone(),
         "event_value": event.value,
-        "io_capture": record_io_capture_json(decision),
+        "io_capture": boundary_decision_io_capture_json(decision),
         "call_path": decision.call_path.clone(),
         "call_arguments": decision.call_arguments.clone(),
         "return_type": decision.return_type.clone(),
@@ -1735,8 +1840,10 @@ fn boundary_capture_json(
     }))
 }
 
-fn record_io_capture_json(decision: &kobo_sim_core::BoundaryDecision) -> Option<serde_json::Value> {
-    if decision.policy.as_str() != "record" {
+fn boundary_decision_io_capture_json(
+    decision: &kobo_sim_core::BoundaryDecision,
+) -> Option<serde_json::Value> {
+    if !matches!(decision.policy.as_str(), "record" | "activity") {
         return None;
     }
     let capture = decision.recorded_io.as_ref()?;
@@ -1822,6 +1929,1533 @@ fn obligation_events_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
         }));
     }
     events
+}
+
+#[derive(Clone, Copy)]
+enum TraceCheckDomain {
+    Invariant,
+    Temporal,
+}
+
+#[derive(Clone, Copy)]
+enum TraceCheckKind {
+    Always,
+    Eventually,
+    Never,
+}
+
+#[derive(Clone)]
+struct TraceCheck {
+    domain: TraceCheckDomain,
+    name: String,
+    kind: TraceCheckKind,
+    event: String,
+    span: (usize, usize),
+    source: &'static str,
+}
+
+struct EvaluatedTraceCheck {
+    check: TraceCheck,
+    status: &'static str,
+    message: String,
+    trace_excerpt: Vec<serde_json::Value>,
+}
+
+fn apply_trace_checks(source_path: &str, source: &str, run: &mut FullDepthRun) {
+    if run.failure.is_some() {
+        return;
+    }
+    let Some(result) = evaluate_trace_checks(source_path, source, run)
+        .into_iter()
+        .find(|result| result.status == "failed")
+    else {
+        return;
+    };
+    let failure_kind = match result.check.domain {
+        TraceCheckDomain::Invariant => "invariant-failure",
+        TraceCheckDomain::Temporal => "temporal-failure",
+    };
+    run.failure = Some(ScenarioFailure {
+        code: KErrorCode::K0108,
+        message: result.message,
+        primary_start: result.check.span.0,
+        primary_end: result.check.span.1,
+        events: vec![ScenarioEvent {
+            kind: failure_kind.to_owned(),
+            label: Some(result.check.name),
+            value: None,
+            io: None,
+        }],
+    });
+}
+
+pub(super) fn trace_checks_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let mut invariants = Vec::new();
+    let mut temporals = Vec::new();
+    for result in evaluate_trace_checks(source_path, source, run) {
+        let value = serde_json::json!({
+            "name": result.check.name,
+            "kind": result.check.kind.as_str(),
+            "event": result.check.event,
+            "source": result.check.source,
+            "status": result.status,
+            "message": result.message,
+            "source_span": span_json(source_path, source, result.check.span),
+            "trace_excerpt": result.trace_excerpt,
+        });
+        match result.check.domain {
+            TraceCheckDomain::Invariant => invariants.push(value),
+            TraceCheckDomain::Temporal => temporals.push(value),
+        }
+    }
+    serde_json::json!({
+        "invariant_checks": invariants,
+        "temporal_checks": temporals,
+    })
+}
+
+fn evaluate_trace_checks(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+) -> Vec<EvaluatedTraceCheck> {
+    parse_trace_checks(source)
+        .into_iter()
+        .map(|check| evaluate_trace_check(source_path, source, run, check))
+        .collect()
+}
+
+fn evaluate_trace_check(
+    _source_path: &str,
+    _source: &str,
+    run: &FullDepthRun,
+    check: TraceCheck,
+) -> EvaluatedTraceCheck {
+    let matched_events = run
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.kind == check.event)
+        .map(|(index, event)| trace_event_json(index, event))
+        .collect::<Vec<_>>();
+    let violating_events = run
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.kind != check.event)
+        .map(|(index, event)| trace_event_json(index, event))
+        .collect::<Vec<_>>();
+
+    match check.kind {
+        TraceCheckKind::Always if violating_events.is_empty() => EvaluatedTraceCheck {
+            check,
+            status: "passed",
+            message: "all observed events satisfied the always check".to_owned(),
+            trace_excerpt: matched_events,
+        },
+        TraceCheckKind::Always => EvaluatedTraceCheck {
+            message: format!(
+                "trace check `{}` expected only `{}` events but observed a different event",
+                check.name, check.event
+            ),
+            check,
+            status: "failed",
+            trace_excerpt: violating_events.into_iter().take(5).collect(),
+        },
+        TraceCheckKind::Eventually if matched_events.is_empty() => EvaluatedTraceCheck {
+            message: format!(
+                "trace check `{}` expected event `{}` but it never occurred",
+                check.name, check.event
+            ),
+            check,
+            status: "failed",
+            trace_excerpt: events_json(&run.events).into_iter().take(5).collect(),
+        },
+        TraceCheckKind::Eventually => EvaluatedTraceCheck {
+            check,
+            status: "passed",
+            message: "required event occurred in the trace".to_owned(),
+            trace_excerpt: matched_events.into_iter().take(5).collect(),
+        },
+        TraceCheckKind::Never if matched_events.is_empty() => EvaluatedTraceCheck {
+            check,
+            status: "passed",
+            message: "forbidden event did not occur in the trace".to_owned(),
+            trace_excerpt: Vec::new(),
+        },
+        TraceCheckKind::Never => EvaluatedTraceCheck {
+            message: format!(
+                "trace check `{}` forbids event `{}` but the event occurred",
+                check.name, check.event
+            ),
+            check,
+            status: "failed",
+            trace_excerpt: matched_events.into_iter().take(5).collect(),
+        },
+    }
+}
+
+fn parse_trace_checks(source: &str) -> Vec<TraceCheck> {
+    let mut checks = parse_ward_trace_checks(source);
+    checks.extend(parse_legacy_trace_check_directives(source));
+    checks
+}
+
+fn parse_ward_trace_checks(source: &str) -> Vec<TraceCheck> {
+    parse_ward_syntax(source, FileId(0))
+        .wards
+        .into_iter()
+        .flat_map(|ward| ward.items)
+        .filter_map(ward_item_trace_check)
+        .collect()
+}
+
+fn ward_item_trace_check(item: WardItem) -> Option<TraceCheck> {
+    match item {
+        WardItem::Invariant(block) => {
+            let (kind, event) = parse_trace_check_expression(&block.body)?;
+            Some(TraceCheck {
+                domain: TraceCheckDomain::Invariant,
+                name: block.name,
+                kind,
+                event,
+                span: (block.span.start as usize, block.span.end as usize),
+                source: "ward_model",
+            })
+        }
+        WardItem::Temporal(block) => {
+            let (kind, event) = parse_trace_check_expression(&block.body)?;
+            Some(TraceCheck {
+                domain: TraceCheckDomain::Temporal,
+                name: temporal_check_name(block.name, kind, &event),
+                kind,
+                event,
+                span: (block.span.start as usize, block.span.end as usize),
+                source: "ward_model",
+            })
+        }
+        _ => None,
+    }
+}
+
+fn temporal_check_name(name: String, kind: TraceCheckKind, event: &str) -> String {
+    if name.is_empty() {
+        format!("temporal_{}_{}", kind.as_str(), sanitize_name(event))
+    } else {
+        name
+    }
+}
+
+fn parse_legacy_trace_check_directives(source: &str) -> Vec<TraceCheck> {
+    let mut checks = Vec::new();
+    let mut offset = 0;
+    for raw_line in source.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
+        let Some(check_line) = legacy_trace_check_directive(trimmed) else {
+            offset += raw_line.len();
+            continue;
+        };
+        let leading = line.find(trimmed).unwrap_or(0);
+        let span = (offset + leading, offset + line.len());
+        if let Some(check) = parse_invariant_line(check_line, span, "legacy_directive") {
+            checks.push(check);
+        } else if let Some(check) = parse_temporal_line(check_line, span, "legacy_directive") {
+            checks.push(check);
+        }
+        offset += raw_line.len();
+    }
+    checks
+}
+
+fn legacy_trace_check_directive(line: &str) -> Option<&str> {
+    line.strip_prefix("// kobo:").map(str::trim)
+}
+
+fn parse_invariant_line(
+    line: &str,
+    span: (usize, usize),
+    source: &'static str,
+) -> Option<TraceCheck> {
+    let rest = line.strip_prefix("invariant ")?;
+    let name = rest
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '{')
+        .next()
+        .filter(|value| !value.is_empty())?;
+    let body_start = rest.find('{')? + 1;
+    let body_end = rest.rfind('}')?;
+    let (kind, event) = parse_trace_check_expression(rest[body_start..body_end].trim())?;
+    Some(TraceCheck {
+        domain: TraceCheckDomain::Invariant,
+        name: name.to_owned(),
+        kind,
+        event,
+        span,
+        source,
+    })
+}
+
+fn parse_temporal_line(
+    line: &str,
+    span: (usize, usize),
+    source: &'static str,
+) -> Option<TraceCheck> {
+    let rest = line.strip_prefix("temporal ")?;
+    let (kind, event) = parse_trace_check_expression(rest.trim())?;
+    Some(TraceCheck {
+        domain: TraceCheckDomain::Temporal,
+        name: format!("temporal_{}_{}", kind.as_str(), sanitize_name(&event)),
+        kind,
+        event,
+        span,
+        source,
+    })
+}
+
+fn parse_trace_check_expression(expression: &str) -> Option<(TraceCheckKind, String)> {
+    let mut parts = expression.split_whitespace();
+    let kind = TraceCheckKind::parse(parts.next()?)?;
+    let event = parts.next()?.trim_matches([';', '}']).to_owned();
+    if event.is_empty() {
+        None
+    } else {
+        Some((kind, event))
+    }
+}
+
+struct WardBlock<'a> {
+    body: &'a str,
+    body_start: usize,
+}
+
+fn ward_blocks(source: &str) -> Vec<WardBlock<'_>> {
+    let cleaned = scrub_comments_and_strings(source);
+    let mut blocks = Vec::new();
+    let mut cursor = 0;
+    while let Some(start) = find_word(&cleaned, cursor, "ward") {
+        let Some(open) = find_byte(&cleaned, start, b'{') else {
+            break;
+        };
+        let Some(close) = matching_brace(&cleaned, open) else {
+            break;
+        };
+        blocks.push(WardBlock {
+            body: &source[open + 1..close],
+            body_start: open + 1,
+        });
+        cursor = close + 1;
+    }
+    blocks
+}
+
+fn scrub_comments_and_strings(source: &str) -> Vec<u8> {
+    let bytes = source.as_bytes();
+    let mut cleaned = bytes.to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                let start = index;
+                index += 2;
+                while index < bytes.len() && bytes[index] != b'\n' {
+                    index += 1;
+                }
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                let start = index;
+                index += 2;
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                index = (index + 2).min(bytes.len());
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            b'"' => {
+                let start = index;
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'\\' {
+                        index = (index + 2).min(bytes.len());
+                    } else if bytes[index] == b'"' {
+                        index += 1;
+                        break;
+                    } else {
+                        index += 1;
+                    }
+                }
+                blank_non_newlines(&mut cleaned, start, index);
+            }
+            _ => index += 1,
+        }
+    }
+    cleaned
+}
+
+fn blank_non_newlines(bytes: &mut [u8], start: usize, end: usize) {
+    let bounded_end = end.min(bytes.len());
+    for byte in &mut bytes[start..bounded_end] {
+        if *byte != b'\n' {
+            *byte = b' ';
+        }
+    }
+}
+
+fn find_word(bytes: &[u8], from: usize, word: &str) -> Option<usize> {
+    let needle = word.as_bytes();
+    let mut cursor = from;
+    while cursor + needle.len() <= bytes.len() {
+        if &bytes[cursor..cursor + needle.len()] == needle {
+            let end = cursor + needle.len();
+            let before = bytes.get(cursor.saturating_sub(1));
+            let after = bytes.get(end);
+            if !before.is_some_and(is_ident_byte)
+                && after.is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                return Some(cursor);
+            }
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn find_byte(bytes: &[u8], from: usize, needle: u8) -> Option<usize> {
+    bytes[from..]
+        .iter()
+        .position(|byte| *byte == needle)
+        .map(|relative| from + relative)
+}
+
+fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0_usize;
+    for (index, byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_ident_byte(byte: &u8) -> bool {
+    byte.is_ascii_alphanumeric() || *byte == b'_'
+}
+
+fn trace_event_json(index: usize, event: &ScenarioEvent) -> serde_json::Value {
+    serde_json::json!({
+        "id": index,
+        "kind": event.kind.clone(),
+        "label": event.label.clone(),
+        "value": event.value,
+    })
+}
+
+impl TraceCheckKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "always" => Some(Self::Always),
+            "eventually" => Some(Self::Eventually),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Eventually => "eventually",
+            Self::Never => "never",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ModelEventExpectation {
+    span: (usize, usize),
+}
+
+#[derive(Clone)]
+struct ModelObligationExpectation {
+    binding: String,
+    span: (usize, usize),
+}
+
+#[derive(Clone)]
+struct WardModelStep {
+    kind: WardModelStepKind,
+    span: (usize, usize),
+}
+
+#[derive(Clone)]
+enum WardModelStepKind {
+    EmitEvent(String),
+    SetObligation {
+        binding: String,
+        state: String,
+    },
+    SetState {
+        name: String,
+        value: String,
+    },
+    SchedulerAssumption {
+        preset: String,
+    },
+    Transition {
+        name: String,
+        boundary: ModelBoundaryCall,
+    },
+    BoundaryCall(ModelBoundaryCall),
+}
+
+#[derive(Clone, Copy)]
+enum ModelBoundaryCall {
+    WardTime,
+    WardRandom,
+    WardTask,
+    WardTaskLocal,
+    WardStorage,
+    WardNetwork,
+}
+
+struct ModelComparisonSpec {
+    steps: Vec<WardModelStep>,
+    events: Vec<ModelEventExpectation>,
+    obligations: Vec<ModelObligationExpectation>,
+    source: &'static str,
+}
+
+struct WardModelRun {
+    source: &'static str,
+    engine: &'static str,
+    seed: u64,
+    ir: Vec<WardModelStep>,
+    events: Vec<String>,
+    states: Vec<(String, String)>,
+    obligations: Vec<(String, String)>,
+    scheduler_preset: Option<String>,
+    steps_executed: usize,
+}
+
+struct ModelComparisonFailure {
+    kind: &'static str,
+    label: String,
+    message: String,
+    span: (usize, usize),
+}
+
+fn apply_model_vs_implementation(
+    source_path: &str,
+    source: &str,
+    seed: u64,
+    run: &mut FullDepthRun,
+) {
+    if run.failure.is_some() {
+        return;
+    }
+    let Some(failure) = model_comparison_failure(source_path, source, seed, run) else {
+        return;
+    };
+    run.failure = Some(ScenarioFailure {
+        code: KErrorCode::K0117,
+        message: failure.message,
+        primary_start: failure.span.0,
+        primary_end: failure.span.1,
+        events: vec![ScenarioEvent {
+            kind: failure.kind.to_owned(),
+            label: Some(failure.label),
+            value: None,
+            io: None,
+        }],
+    });
+}
+
+pub(super) fn model_vs_implementation_json(
+    source_path: &str,
+    source: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let spec = parse_model_comparison_spec(source);
+    let boundary = model_boundary_policy_json(run);
+    if !spec.requested() {
+        return serde_json::json!({
+            "status": "not_requested",
+            "scheduler_seed": model_scheduler_seed_json(seed),
+            "model_run": model_run_json(&execute_ward_model(&spec, seed)),
+            "trace": {
+                "status": "not_requested",
+                "model_events": [],
+                "implementation_events": implementation_event_kinds(run),
+            },
+            "obligations": {
+                "status": "not_requested",
+                "model_states": [],
+                "implementation_states": implementation_obligation_states(run),
+            },
+            "boundary_policy": boundary,
+        });
+    }
+
+    let model_run = execute_ward_model(&spec, seed);
+    let trace = model_trace_comparison_json(source_path, source, run, &spec, &model_run);
+    let obligations = model_obligation_comparison_json(source_path, source, run, &spec, &model_run);
+    let status = if boundary["status"] == "downgraded" {
+        "partial"
+    } else if trace["status"] == "diverged" || obligations["status"] == "diverged" {
+        "diverged"
+    } else {
+        "matched"
+    };
+
+    serde_json::json!({
+        "status": status,
+        "selection": {
+            "requested": true,
+            "source": spec.source,
+        },
+        "scheduler_seed": model_scheduler_seed_json(seed),
+        "model_run": model_run_json(&model_run),
+        "trace": trace,
+        "obligations": obligations,
+        "boundary_policy": boundary,
+    })
+}
+
+fn model_comparison_failure(
+    source_path: &str,
+    source: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> Option<ModelComparisonFailure> {
+    let spec = parse_model_comparison_spec(source);
+    if !spec.requested() || model_boundary_downgrade(run) {
+        return None;
+    }
+    let model_run = execute_ward_model(&spec, seed);
+    if let Some(diff) = first_model_trace_difference(run, &model_run, &spec) {
+        let model = diff.model.as_deref().unwrap_or("<missing model event>");
+        let implementation = diff
+            .implementation
+            .as_deref()
+            .unwrap_or("<missing implementation event>");
+        return Some(ModelComparisonFailure {
+            kind: "model-trace-divergence",
+            label: diff.label(),
+            message: format!(
+                "model-vs-implementation trace diverged at event {}: model `{model}`, implementation `{implementation}`",
+                diff.index
+            ),
+            span: diff.span,
+        });
+    }
+    if let Some(diff) = first_model_obligation_difference(run, &model_run, &spec) {
+        let model = diff.model.as_deref().unwrap_or("<missing model state>");
+        let implementation = diff
+            .implementation
+            .as_deref()
+            .unwrap_or("<missing implementation state>");
+        return Some(ModelComparisonFailure {
+            kind: "model-obligation-divergence",
+            label: diff.binding.clone(),
+            message: format!(
+                "model-vs-implementation obligation `{}` diverged: model `{model}`, implementation `{implementation}`",
+                diff.binding
+            ),
+            span: diff.span,
+        });
+    }
+    let _ = source_path;
+    None
+}
+
+fn model_trace_comparison_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+    spec: &ModelComparisonSpec,
+    model_run: &WardModelRun,
+) -> serde_json::Value {
+    let model_events = model_run.events.clone();
+    let implementation_events = implementation_event_kinds(run);
+    let first_difference = first_model_trace_difference(run, model_run, spec);
+    let status = if first_difference.is_some() {
+        "diverged"
+    } else {
+        "matched"
+    };
+    let source_span = first_difference
+        .as_ref()
+        .map(|difference| span_json(source_path, source, difference.span))
+        .unwrap_or_else(|| {
+            spec.events
+                .first()
+                .map(|expectation| span_json(source_path, source, expectation.span))
+                .unwrap_or_else(|| span_json(source_path, source, (0, 0)))
+        });
+    serde_json::json!({
+        "status": status,
+        "model_events": model_events,
+        "implementation_events": implementation_events,
+        "first_difference": first_difference.as_ref().map(ModelTraceDifference::to_json),
+        "source_span": source_span,
+        "trace_excerpt": trace_excerpt_for_difference(run, first_difference.as_ref()),
+    })
+}
+
+fn model_obligation_comparison_json(
+    source_path: &str,
+    source: &str,
+    run: &FullDepthRun,
+    spec: &ModelComparisonSpec,
+    model_run: &WardModelRun,
+) -> serde_json::Value {
+    let model_states = model_run
+        .obligations
+        .iter()
+        .map(|(binding, state)| {
+            serde_json::json!({
+                "binding": binding,
+                "state": state,
+                "source_span": spec
+                    .obligations
+                    .iter()
+                    .find(|expectation| expectation.binding == *binding)
+                    .map(|expectation| span_json(source_path, source, expectation.span))
+                    .unwrap_or_else(|| span_json(source_path, source, (0, 0))),
+            })
+        })
+        .collect::<Vec<_>>();
+    let implementation_states = implementation_obligation_states(run);
+    let first_difference = first_model_obligation_difference(run, model_run, spec);
+    let status = if first_difference.is_some() {
+        "diverged"
+    } else {
+        "matched"
+    };
+    serde_json::json!({
+        "status": status,
+        "model_states": model_states,
+        "implementation_states": implementation_states,
+        "first_difference": first_difference.as_ref().map(ModelObligationDifference::to_json),
+    })
+}
+
+struct ModelTraceDifference {
+    index: usize,
+    model: Option<String>,
+    implementation: Option<String>,
+    span: (usize, usize),
+}
+
+impl ModelTraceDifference {
+    fn label(&self) -> String {
+        format!(
+            "event:{}:model={}:implementation={}",
+            self.index,
+            self.model.as_deref().unwrap_or("<missing>"),
+            self.implementation.as_deref().unwrap_or("<missing>")
+        )
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "index": self.index,
+            "model": self.model,
+            "implementation": self.implementation,
+        })
+    }
+}
+
+struct ModelObligationDifference {
+    binding: String,
+    model: Option<String>,
+    implementation: Option<String>,
+    span: (usize, usize),
+}
+
+impl ModelObligationDifference {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "binding": self.binding,
+            "model": self.model,
+            "implementation": self.implementation,
+        })
+    }
+}
+
+fn first_model_trace_difference(
+    run: &FullDepthRun,
+    model_run: &WardModelRun,
+    spec: &ModelComparisonSpec,
+) -> Option<ModelTraceDifference> {
+    if model_run.events.is_empty() {
+        return None;
+    }
+    let implementation_events = implementation_event_kinds(run);
+    let max_len = model_run.events.len().max(implementation_events.len());
+    for index in 0..max_len {
+        let model = model_run.events.get(index).cloned();
+        let implementation = implementation_events.get(index).cloned();
+        if model != implementation {
+            let span = spec
+                .event_span(index)
+                .or_else(|| spec.steps.last().map(|step| step.span))
+                .unwrap_or((0, 0));
+            return Some(ModelTraceDifference {
+                index,
+                model,
+                implementation,
+                span,
+            });
+        }
+    }
+    None
+}
+
+fn first_model_obligation_difference(
+    run: &FullDepthRun,
+    model_run: &WardModelRun,
+    spec: &ModelComparisonSpec,
+) -> Option<ModelObligationDifference> {
+    for (binding, state) in &model_run.obligations {
+        let implementation = run
+            .obligations
+            .iter()
+            .find(|obligation| obligation.binding == *binding)
+            .map(|obligation| {
+                if obligation.is_discharged {
+                    "discharged".to_owned()
+                } else {
+                    "leaked".to_owned()
+                }
+            });
+        if implementation.as_deref() != Some(state.as_str()) {
+            let span = spec.obligation_span(binding).unwrap_or((0, 0));
+            return Some(ModelObligationDifference {
+                binding: binding.clone(),
+                model: Some(state.clone()),
+                implementation,
+                span,
+            });
+        }
+    }
+    None
+}
+
+fn trace_excerpt_for_difference(
+    run: &FullDepthRun,
+    difference: Option<&ModelTraceDifference>,
+) -> Vec<serde_json::Value> {
+    let Some(difference) = difference else {
+        return Vec::new();
+    };
+    events_json(&run.events)
+        .into_iter()
+        .skip(difference.index.saturating_sub(2))
+        .take(5)
+        .collect()
+}
+
+fn implementation_event_kinds(run: &FullDepthRun) -> Vec<String> {
+    run.events
+        .iter()
+        .filter(|event| is_model_trace_event(&event.kind))
+        .map(|event| event.kind.clone())
+        .collect()
+}
+
+fn is_model_trace_event(kind: &str) -> bool {
+    kind.starts_with("deterministic-")
+        || kind.ends_with("-boundary")
+        || kind == "obligation-transfer"
+}
+
+fn implementation_obligation_states(run: &FullDepthRun) -> Vec<serde_json::Value> {
+    run.obligations
+        .iter()
+        .map(|obligation| {
+            serde_json::json!({
+                "binding": obligation.binding,
+                "state": if obligation.is_discharged { "discharged" } else { "leaked" },
+                "actions": obligation.actions,
+            })
+        })
+        .collect()
+}
+
+fn model_boundary_policy_json(run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "status": if model_boundary_downgrade(run) { "downgraded" } else { "comparable" },
+        "decisions": boundary_decisions_json(run),
+    })
+}
+
+fn model_boundary_downgrade(run: &FullDepthRun) -> bool {
+    run.boundary_decisions.iter().any(|decision| {
+        matches!(
+            decision.policy.as_str(),
+            "opaque" | "outside" | "debt" | "stub"
+        )
+    })
+}
+
+fn model_scheduler_seed_json(seed: u64) -> serde_json::Value {
+    serde_json::json!({
+        "model": seed,
+        "implementation": seed,
+        "same_seed": true,
+    })
+}
+
+fn parse_model_comparison_spec(source: &str) -> ModelComparisonSpec {
+    let mut spec = ModelComparisonSpec {
+        steps: Vec::new(),
+        events: Vec::new(),
+        obligations: Vec::new(),
+        source: "not_requested",
+    };
+    parse_ward_model_specs(source, &mut spec);
+    parse_legacy_model_directives(source, &mut spec);
+    spec
+}
+
+fn parse_ward_model_specs(source: &str, spec: &mut ModelComparisonSpec) {
+    for block in ward_blocks(source) {
+        parse_structured_model_blocks(&block, spec);
+        let mut offset = block.body_start;
+        for raw_line in block.body.split_inclusive('\n') {
+            let line = raw_line.trim_end_matches(['\r', '\n']);
+            let trimmed = line.trim();
+            let leading = line.find(trimmed).unwrap_or(0);
+            let span = (offset + leading, offset + line.len());
+            if let Some(rest) = trimmed.strip_prefix("model ") {
+                spec.source = "ward_model";
+                parse_model_directive(rest, span, spec);
+            }
+            offset += raw_line.len();
+        }
+    }
+}
+
+fn parse_structured_model_blocks(block: &WardBlock<'_>, spec: &mut ModelComparisonSpec) {
+    let cleaned = scrub_comments_and_strings(block.body);
+    let mut cursor = 0;
+    while let Some(model_start) = find_word(&cleaned, cursor, "model") {
+        let after_model = model_start + "model".len();
+        let Some(open) = model_block_open(&cleaned, after_model) else {
+            cursor = after_model;
+            continue;
+        };
+        let Some(close) = matching_brace(&cleaned, open) else {
+            break;
+        };
+        spec.source = "ward_model";
+        let model_body = &block.body[open + 1..close];
+        parse_structured_model_statements(model_body, block.body_start + open + 1, spec);
+        cursor = close + 1;
+    }
+}
+
+fn model_block_open(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut cursor = from;
+    while let Some(byte) = bytes.get(cursor) {
+        if *byte == b'{' {
+            return Some(cursor);
+        }
+        if !byte.is_ascii_whitespace() {
+            return None;
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn parse_structured_model_statements(
+    model_body: &str,
+    body_start: usize,
+    spec: &mut ModelComparisonSpec,
+) {
+    let mut statement_start = 0usize;
+    for statement in model_body.split_terminator(';') {
+        let leading = statement
+            .find(|ch: char| !ch.is_ascii_whitespace())
+            .unwrap_or(0);
+        let trimmed = statement.trim();
+        let span = (
+            body_start + statement_start + leading,
+            body_start + statement_start + statement.len(),
+        );
+        parse_model_directive(trimmed, span, spec);
+        statement_start += statement.len() + 1;
+    }
+}
+
+fn parse_legacy_model_directives(source: &str, spec: &mut ModelComparisonSpec) {
+    let mut offset = 0;
+    for raw_line in source.split_inclusive('\n') {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
+        let leading = line.find(trimmed).unwrap_or(0);
+        let span = (offset + leading, offset + line.len());
+        if let Some(rest) = model_directive(trimmed) {
+            if spec.source == "not_requested" {
+                spec.source = "legacy_directive";
+            }
+            parse_model_directive(rest, span, spec);
+        }
+        offset += raw_line.len();
+    }
+}
+
+fn model_directive(line: &str) -> Option<&str> {
+    line.strip_prefix("// kobo:model ")
+}
+
+fn parse_model_directive(rest: &str, span: (usize, usize), spec: &mut ModelComparisonSpec) {
+    if let Some(event) = rest.strip_prefix("event ") {
+        let event = event.trim().trim_matches([';', '}']);
+        if !event.is_empty() {
+            spec.steps.push(WardModelStep {
+                kind: WardModelStepKind::EmitEvent(event.to_owned()),
+                span,
+            });
+            spec.events.push(ModelEventExpectation { span });
+        }
+    } else if let Some(obligation) = rest.strip_prefix("obligation ") {
+        let mut parts = obligation.split_whitespace();
+        let Some(binding) = parts.next() else {
+            return;
+        };
+        let Some(state) = parts.next() else {
+            return;
+        };
+        if matches!(state, "discharged" | "leaked") {
+            spec.steps.push(WardModelStep {
+                kind: WardModelStepKind::SetObligation {
+                    binding: binding.to_owned(),
+                    state: state.to_owned(),
+                },
+                span,
+            });
+            spec.obligations.push(ModelObligationExpectation {
+                binding: binding.to_owned(),
+                span,
+            });
+        }
+    } else if let Some((name, value)) = parse_model_state(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::SetState { name, value },
+            span,
+        });
+    } else if let Some(preset) = parse_model_scheduler(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::SchedulerAssumption { preset },
+            span,
+        });
+    } else if let Some((name, boundary)) = parse_model_transition(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::Transition { name, boundary },
+            span,
+        });
+    } else if let Some(boundary) = parse_model_boundary_call(rest) {
+        spec.steps.push(WardModelStep {
+            kind: WardModelStepKind::BoundaryCall(boundary),
+            span,
+        });
+    }
+}
+
+fn parse_model_state(rest: &str) -> Option<(String, String)> {
+    let state = rest.strip_prefix("state ")?;
+    let state = state.trim().trim_matches([';', '}']).trim();
+    if let Some((name, value)) = state.split_once('=') {
+        let name = name.trim();
+        let value = value.trim().trim_matches('"');
+        if !name.is_empty() && !value.is_empty() {
+            return Some((name.to_owned(), value.to_owned()));
+        }
+    }
+    let mut parts = state.split_whitespace();
+    let name = parts.next()?;
+    let value = parts.next()?;
+    Some((name.to_owned(), value.to_owned()))
+}
+
+fn parse_model_scheduler(rest: &str) -> Option<String> {
+    let preset = rest
+        .strip_prefix("scheduler ")?
+        .trim()
+        .trim_matches([';', '}'])
+        .trim();
+    (!preset.is_empty()).then(|| preset.to_owned())
+}
+
+fn parse_model_transition(rest: &str) -> Option<(String, ModelBoundaryCall)> {
+    let transition = rest.strip_prefix("transition ")?;
+    let transition = transition.trim().trim_matches([';', '}']).trim();
+    let (name, target) = transition.split_once("->")?;
+    let name = name.trim();
+    let boundary = parse_model_boundary_call(target.trim())?;
+    (!name.is_empty()).then(|| (name.to_owned(), boundary))
+}
+
+fn parse_model_boundary_call(rest: &str) -> Option<ModelBoundaryCall> {
+    let mut normalized = rest.trim().trim_matches([';', '}']).trim();
+    normalized = normalized.strip_suffix("()").unwrap_or(normalized).trim();
+    match normalized {
+        "ward.time" => Some(ModelBoundaryCall::WardTime),
+        "ward.random" => Some(ModelBoundaryCall::WardRandom),
+        "ward.task" => Some(ModelBoundaryCall::WardTask),
+        "ward.task.local" => Some(ModelBoundaryCall::WardTaskLocal),
+        "ward.storage" => Some(ModelBoundaryCall::WardStorage),
+        "ward.network" => Some(ModelBoundaryCall::WardNetwork),
+        _ => None,
+    }
+}
+
+impl ModelComparisonSpec {
+    fn requested(&self) -> bool {
+        !self.steps.is_empty()
+    }
+
+    fn event_span(&self, index: usize) -> Option<(usize, usize)> {
+        self.steps
+            .iter()
+            .filter(|step| step.kind.emits_event())
+            .nth(index)
+            .map(|step| step.span)
+    }
+
+    fn obligation_span(&self, binding: &str) -> Option<(usize, usize)> {
+        self.steps.iter().find_map(|step| match &step.kind {
+            WardModelStepKind::SetObligation {
+                binding: candidate, ..
+            } if candidate == binding => Some(step.span),
+            _ => None,
+        })
+    }
+}
+
+impl WardModelStepKind {
+    fn emits_event(&self) -> bool {
+        matches!(
+            self,
+            Self::EmitEvent(_)
+                | Self::Transition { .. }
+                | Self::BoundaryCall(ModelBoundaryCall::WardTime)
+                | Self::BoundaryCall(ModelBoundaryCall::WardRandom)
+                | Self::BoundaryCall(ModelBoundaryCall::WardTask)
+                | Self::BoundaryCall(ModelBoundaryCall::WardTaskLocal)
+                | Self::BoundaryCall(ModelBoundaryCall::WardStorage)
+                | Self::BoundaryCall(ModelBoundaryCall::WardNetwork)
+        )
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::EmitEvent(event) => serde_json::json!({
+                "kind": "emit_event",
+                "event": event,
+            }),
+            Self::SetObligation { binding, state } => serde_json::json!({
+                "kind": "set_obligation",
+                "binding": binding,
+                "state": state,
+            }),
+            Self::SetState { name, value } => serde_json::json!({
+                "kind": "set_state",
+                "name": name,
+                "value": value,
+            }),
+            Self::SchedulerAssumption { preset } => serde_json::json!({
+                "kind": "scheduler_assumption",
+                "preset": preset,
+            }),
+            Self::Transition { name, boundary } => serde_json::json!({
+                "kind": "transition",
+                "name": name,
+                "target": boundary.as_str(),
+                "emits": boundary.event_kind(),
+            }),
+            Self::BoundaryCall(boundary) => serde_json::json!({
+                "kind": "boundary_call",
+                "target": boundary.as_str(),
+                "emits": boundary.event_kind(),
+            }),
+        }
+    }
+}
+
+impl ModelBoundaryCall {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WardTime => "ward.time",
+            Self::WardRandom => "ward.random",
+            Self::WardTask => "ward.task",
+            Self::WardTaskLocal => "ward.task.local",
+            Self::WardStorage => "ward.storage",
+            Self::WardNetwork => "ward.network",
+        }
+    }
+
+    fn event_kind(self) -> &'static str {
+        match self {
+            Self::WardTime => "deterministic-time",
+            Self::WardRandom => "deterministic-random",
+            Self::WardTask | Self::WardTaskLocal => "deterministic-task",
+            Self::WardStorage => "storage-boundary",
+            Self::WardNetwork => "network-boundary",
+        }
+    }
+}
+
+fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardModelRun {
+    let mut interpreter = WardModelInterpreter::new(seed);
+    for step in &spec.steps {
+        interpreter.execute(step);
+    }
+    let (events, states, obligations, scheduler_preset) = interpreter.finish();
+    WardModelRun {
+        source: spec.source,
+        engine: if spec.source == "ward_model" {
+            "ward-model-interpreter"
+        } else {
+            "legacy-directive-interpreter"
+        },
+        seed,
+        ir: spec.steps.clone(),
+        events,
+        states,
+        obligations,
+        scheduler_preset,
+        steps_executed: spec.steps.len(),
+    }
+}
+
+struct WardModelInterpreter {
+    seed: u64,
+    events: Vec<String>,
+    states: Vec<(String, String)>,
+    obligations: Vec<(String, String)>,
+    scheduler_preset: Option<String>,
+}
+
+impl WardModelInterpreter {
+    fn new(seed: u64) -> Self {
+        Self {
+            seed,
+            events: Vec::new(),
+            states: Vec::new(),
+            obligations: Vec::new(),
+            scheduler_preset: None,
+        }
+    }
+
+    fn execute(&mut self, step: &WardModelStep) {
+        match &step.kind {
+            WardModelStepKind::EmitEvent(event) => self.events.push(event.clone()),
+            WardModelStepKind::SetObligation { binding, state } => {
+                self.set_obligation(binding, state);
+            }
+            WardModelStepKind::SetState { name, value } => {
+                self.set_state(name, value);
+            }
+            WardModelStepKind::SchedulerAssumption { preset } => {
+                self.scheduler_preset = Some(preset.clone());
+            }
+            WardModelStepKind::Transition { boundary, .. } => {
+                self.events.push(boundary.event_kind().to_owned());
+            }
+            WardModelStepKind::BoundaryCall(boundary) => {
+                self.events.push(boundary.event_kind().to_owned());
+            }
+        }
+    }
+
+    fn set_state(&mut self, name: &str, value: &str) {
+        if let Some((_, existing)) = self
+            .states
+            .iter_mut()
+            .find(|(candidate, _)| candidate == name)
+        {
+            *existing = value.to_owned();
+            return;
+        }
+        self.states.push((name.to_owned(), value.to_owned()));
+    }
+
+    fn set_obligation(&mut self, binding: &str, state: &str) {
+        if let Some((_, existing)) = self
+            .obligations
+            .iter_mut()
+            .find(|(candidate, _)| candidate == binding)
+        {
+            *existing = state.to_owned();
+            return;
+        }
+        self.obligations
+            .push((binding.to_owned(), state.to_owned()));
+    }
+
+    fn finish(
+        self,
+    ) -> (
+        Vec<String>,
+        Vec<(String, String)>,
+        Vec<(String, String)>,
+        Option<String>,
+    ) {
+        let _ = self.seed;
+        (
+            self.events,
+            self.states,
+            self.obligations,
+            self.scheduler_preset,
+        )
+    }
+}
+
+fn model_run_json(model_run: &WardModelRun) -> serde_json::Value {
+    serde_json::json!({
+        "source": model_run.source,
+        "engine": model_run.engine,
+        "semantics": "typed_ward_model_ir",
+        "seed": model_run.seed,
+        "ir": model_run
+            .ir
+            .iter()
+            .map(|step| {
+                let mut value = step.kind.to_json();
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("span_start".to_owned(), serde_json::json!(step.span.0));
+                    object.insert("span_end".to_owned(), serde_json::json!(step.span.1));
+                }
+                value
+            })
+            .collect::<Vec<_>>(),
+        "events": model_run.events,
+        "states": model_run
+            .states
+            .iter()
+            .map(|(name, value)| {
+                serde_json::json!({
+                    "name": name,
+                    "value": value,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "obligations": model_run
+            .obligations
+            .iter()
+            .map(|(binding, state)| {
+                serde_json::json!({
+                    "binding": binding,
+                    "state": state,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "scheduler_assumptions": {
+            "preset": model_run.scheduler_preset,
+            "seed": model_run.seed,
+            "same_as_implementation": true,
+        },
+        "steps_executed": model_run.steps_executed,
+    })
+}
+
+pub(super) fn flagship_demo_json(
+    program: &ScenarioProgram,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let facts = FlagshipDemoFacts::from_program(program);
+    if is_durable_queue_demo(&facts, run) {
+        return serde_json::json!({
+            "name": "durable_queue",
+            "history": if facts.has_crash_storage_action() || has_event_kind(run, "lost-message") {
+                "crash_after_ack"
+            } else {
+                "happy_path"
+            },
+            "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
+            "capabilities": {
+                "crash_histories": facts.has_crash_storage_action() || has_event_kind(run, "lost-message"),
+                "storage_facade": facts.has_storage_facade(),
+                "ack_nack_requeue_lifecycle": has_lifecycle_actions(run, &["ack", "nack", "requeue"]),
+                "clean_rust_output": harness_built_cleanly(run),
+                "ports_recordings_debt": has_boundary_or_debt_evidence(run),
+                "trace_check": run.failure.as_ref().is_some_and(|failure| failure.code == KErrorCode::K0108),
+            },
+            "evidence_inputs": flagship_evidence_inputs(&facts, run),
+        });
+    }
+    if is_async_gateway_demo(&facts, run) {
+        return serde_json::json!({
+            "name": "async_gateway",
+            "scheduler_preset": run.profile.clone(),
+            "replayable_kwit": run.replay_guarantee == ReplayGuarantee::Exact,
+            "capabilities": {
+                "cancellation_histories": has_event_kind(run, "failure-injection-cancel")
+                    || has_event_kind(run, "scheduler-cancel-path"),
+                "preemption_histories": has_event_kind(run, "failure-injection-preempt"),
+                "reply_reject_cancel_lifecycle": has_lifecycle_actions(run, &["reply", "reject", "cancel"]),
+                "no_orphan_tasks": run.failure.as_ref().is_some_and(|failure| {
+                    failure.message.contains("no_orphan_tasks")
+                        || failure.events.iter().any(|event| event.label.as_deref() == Some("no_orphan_tasks"))
+                }),
+                "request_token_diagnostics": run.failure.as_ref().is_some_and(|failure| {
+                    failure.message.contains("reply")
+                        || failure.message.contains("reject")
+                        || failure.message.contains("cancel")
+                }),
+                "clean_rust_output": harness_built_cleanly(run),
+            },
+            "evidence_inputs": flagship_evidence_inputs(&facts, run),
+        });
+    }
+    serde_json::Value::Null
+}
+
+#[derive(Clone, Debug, Default)]
+struct FlagshipDemoFacts {
+    template_ids: Vec<String>,
+    storage_actions: Vec<String>,
+    modeled_boundaries: Vec<String>,
+}
+
+impl FlagshipDemoFacts {
+    fn from_program(program: &ScenarioProgram) -> Self {
+        let mut facts = Self::default();
+        for operation in &program.operations {
+            match &operation.kind {
+                ScenarioOpKind::CreateObligation {
+                    template: Some(template),
+                    ..
+                } => push_unique(&mut facts.template_ids, template.id.clone()),
+                ScenarioOpKind::StorageEvent { action } => {
+                    push_unique(&mut facts.storage_actions, action.clone());
+                }
+                ScenarioOpKind::ModeledEffect { boundary } => {
+                    push_unique(&mut facts.modeled_boundaries, boundary.as_str().to_owned());
+                }
+                _ => {}
+            }
+        }
+        facts
+    }
+
+    fn has_storage_facade(&self) -> bool {
+        !self.storage_actions.is_empty()
+            || self
+                .modeled_boundaries
+                .iter()
+                .any(|boundary| boundary == "ward.storage")
+    }
+
+    fn has_crash_storage_action(&self) -> bool {
+        self.storage_actions.iter().any(|action| {
+            matches!(
+                normalize_demo_action(action).as_str(),
+                "crash" | "crash_after_write" | "crash_after_commit"
+            )
+        })
+    }
+
+    fn has_template(&self, template_id: &str) -> bool {
+        self.template_ids
+            .iter()
+            .any(|candidate| candidate == template_id)
+    }
+
+    fn has_modeled_boundary(&self, boundary: &str) -> bool {
+        self.modeled_boundaries
+            .iter()
+            .any(|candidate| candidate == boundary)
+    }
+}
+
+fn is_durable_queue_demo(facts: &FlagshipDemoFacts, run: &FullDepthRun) -> bool {
+    has_lifecycle_actions(run, &["ack", "nack", "requeue"])
+        && (facts.has_template("queue_delivery") || facts.has_storage_facade())
+}
+
+fn is_async_gateway_demo(facts: &FlagshipDemoFacts, run: &FullDepthRun) -> bool {
+    has_lifecycle_actions(run, &["reply", "reject", "cancel"])
+        && (run.profile == "async"
+            || facts.has_template("handler_reply")
+            || facts.has_modeled_boundary("ward.task")
+            || has_event_kind(run, "scheduler-cancel-path")
+            || has_event_kind(run, "failure-injection-cancel")
+            || has_event_kind(run, "failure-injection-preempt"))
+}
+
+fn harness_built_cleanly(run: &FullDepthRun) -> bool {
+    run.harness_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.exit_code == 0 && !manifest.harness_rs_path.is_empty())
+}
+
+fn has_boundary_or_debt_evidence(run: &FullDepthRun) -> bool {
+    !run.boundary_decisions.is_empty() || !run.opaque_boundaries.is_empty()
+}
+
+fn flagship_evidence_inputs(facts: &FlagshipDemoFacts, run: &FullDepthRun) -> serde_json::Value {
+    serde_json::json!({
+        "source": "compiler-scenario-program",
+        "target": run.target,
+        "profile": run.profile,
+        "template_ids": facts.template_ids,
+        "storage_actions": facts.storage_actions,
+        "modeled_boundaries": facts.modeled_boundaries,
+        "event_count": run.events.len(),
+        "obligation_count": run.obligations.len(),
+        "boundary_decision_count": run.boundary_decisions.len(),
+        "harness_manifest": run.harness_manifest.as_ref().map(|manifest| {
+            serde_json::json!({
+                "execution_scope": manifest.execution_scope,
+                "harness_rs_path": manifest.harness_rs_path,
+                "exit_code": manifest.exit_code,
+                "event_count": manifest.event_count,
+            })
+        }),
+    })
+}
+
+fn has_event_kind(run: &FullDepthRun, kind: &str) -> bool {
+    run.events.iter().any(|event| event.kind == kind)
+        || run
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.events.iter().any(|event| event.kind == kind))
+}
+
+fn normalize_demo_action(action: &str) -> String {
+    action.trim().replace('-', "_")
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|candidate| candidate == &value) {
+        values.push(value);
+    }
+}
+
+fn has_lifecycle_actions(run: &FullDepthRun, expected: &[&str]) -> bool {
+    run.obligations.iter().any(|obligation| {
+        expected
+            .iter()
+            .all(|action| obligation.actions.iter().any(|item| item == action))
+    })
 }
 
 fn expanded_policy_json(profile: &str) -> serde_json::Value {
@@ -1926,6 +3560,34 @@ fn source_spans_json(
 
 fn run_failure_mode(run: &FullDepthRun) -> &'static str {
     if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "model-trace-divergence"))
+    {
+        return "model_trace_divergence";
+    }
+    if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "model-obligation-divergence"))
+    {
+        return "model_obligation_divergence";
+    }
+    if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "invariant-failure"))
+    {
+        return "invariant_failure";
+    }
+    if run
+        .failure
+        .as_ref()
+        .is_some_and(|failure| scenario_failure_has_event(failure, "temporal-failure"))
+    {
+        return "temporal_failure";
+    }
+    if run
         .events
         .iter()
         .any(|event| event.kind == "lost-message" || event.kind == "storage-crash-after-write")
@@ -1989,6 +3651,8 @@ fn span_json(source_path: &str, source: &str, span: (usize, usize)) -> serde_jso
         "line": one_based_line_for_offset(source, span.0),
         "start": span.0,
         "end": span.1.max(span.0 + 1),
+        "mapped": span.1 > span.0,
+        "snippet": line_snippet(source, span.0),
     })
 }
 
@@ -2088,4 +3752,17 @@ fn one_based_line_for_offset(source: &str, offset: usize) -> usize {
         .filter(|byte| *byte == b'\n')
         .count()
         + 1
+}
+
+fn line_snippet(source: &str, offset: usize) -> String {
+    let bounded = offset.min(source.len());
+    let line_start = source[..bounded]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let line_end = source[bounded..]
+        .find('\n')
+        .map(|index| bounded + index)
+        .unwrap_or(source.len());
+    source[line_start..line_end].trim().to_owned()
 }

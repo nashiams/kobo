@@ -173,6 +173,10 @@ impl CfgGraph {
         &self.blocks
     }
 
+    pub fn edges(&self) -> &[(CfgBlockId, CfgBlockId)] {
+        &self.edges
+    }
+
     pub fn block(&self, id: CfgBlockId) -> &CfgBlock {
         &self.blocks[id]
     }

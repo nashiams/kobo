@@ -70,6 +70,20 @@ pub(crate) enum KoboCommand {
         visible_region: Option<String>,
         #[arg(long, help = "Keep budgeted diagnostics in machine output")]
         include_budgeted: bool,
+        #[arg(
+            long = "emit-proof",
+            value_enum,
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "partial",
+            help = "Emit a proof artifact after successful checking"
+        )]
+        emit_proof: Option<ProofReplayGradeArg>,
+    },
+    /// Emit or verify proof artifacts for modeled Core obligation flow.
+    Proof {
+        #[command(subcommand)]
+        command: ProofCommand,
     },
     /// Export diagnostics in the LSP diagnostic shape.
     LspDiagnostics {
@@ -472,6 +486,28 @@ pub(crate) enum SimCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub(crate) enum ProofCommand {
+    /// Emit a proof artifact from a modeled scenario.
+    Emit {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        #[arg(long, value_name = "SCENARIO")]
+        target: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        #[arg(long = "replay-grade", value_enum, default_value_t = ProofReplayGradeArg::Partial)]
+        replay_grade: ProofReplayGradeArg,
+    },
+    /// Verify a proof artifact using the independent verifier.
+    Verify {
+        #[arg(value_name = "ARTIFACT")]
+        artifact: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum ErrorFormat {
     Human,
@@ -523,6 +559,25 @@ impl GuaranteeProfileArg {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum PolicyOutputFormat {
     Json,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum ProofReplayGradeArg {
+    Exact,
+    Partial,
+    NotReplayable,
+    Debt,
+}
+
+impl ProofReplayGradeArg {
+    pub(crate) const fn proof_grade(self) -> kobo_driver::proof::ReplayGrade {
+        match self {
+            Self::Exact => kobo_driver::proof::ReplayGrade::Exact,
+            Self::Partial => kobo_driver::proof::ReplayGrade::Partial,
+            Self::NotReplayable => kobo_driver::proof::ReplayGrade::NotReplayable,
+            Self::Debt => kobo_driver::proof::ReplayGrade::Debt,
+        }
+    }
 }
 
 /// Resolve public profile controls to the selected guarantee profile.

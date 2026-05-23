@@ -13,6 +13,7 @@ use kobo_errors::{
 use kobo_ir::{FileSetBuilder, GuaranteePolicy, KoboSpan, ScenarioBoundaryPolicy};
 use syn::{spanned::Spanned, visit::Visit};
 
+use crate::ProofReplayGradeArg;
 use crate::{ErrorFormat, GuaranteeProfileArg, PolicyOutputFormat};
 
 use super::{
@@ -35,6 +36,7 @@ pub(super) fn cmd_check(
     max_diagnostics: Option<usize>,
     visible_region: Option<&str>,
     include_budgeted: bool,
+    emit_proof: Option<ProofReplayGradeArg>,
 ) -> anyhow::Result<()> {
     reject_invalid_field_capability_views(file, error_format, color_mode)?;
     reject_malformed_scenario_attributes(file, error_format)?;
@@ -114,6 +116,10 @@ pub(super) fn cmd_check(
                 if let Some(policy) = effective_policy.as_ref() {
                     policy::emit_policy_summary(policy);
                 }
+            }
+
+            if let Some(replay_grade) = emit_proof {
+                super::proof::emit_check_proof(file, replay_grade)?;
             }
 
             Ok(())

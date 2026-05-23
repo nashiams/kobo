@@ -397,7 +397,6 @@ show_backend_choices = true
 
 [sim.profile.quick]
 schedule_budget = 7
-seed_count = 3
 shrink = "off"
 
 [sim.backend.loom]
@@ -435,13 +434,112 @@ fn configured_sim_route() {
         "sim.profile.quick.schedule_budget should set the scheduler budget"
     );
     assert_eq!(
-        json["sim_config"]["profiles"]["quick"]["seed_count"], 3,
-        "stable sim config should be serialized for audit"
-    );
-    assert_eq!(
         json["sim_config"]["backends"]["loom"]["replay_token"],
         "record"
     );
+}
+
+#[test]
+fn sim_config_seed_count_runs_scheduler_portfolio() {
+    let project = TestProject::new("v10-sim-config-seed-count");
+    project.write(
+        "Kobo.toml",
+        r#"[sim]
+default_profile = "quick"
+
+[sim.profile.quick]
+seed_count = 3
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn configured_seed_portfolio_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--engine"),
+            s("semantic"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "seed_count should execute a seed portfolio");
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["scheduler"]["seed_count"], 3);
+    assert_eq!(
+        json["sim_config"]["profiles"]["quick"]["seed_count"], 3,
+        "stable sim config should be serialized for audit"
+    );
+    let seed_cases = json["events"]
+        .as_array()
+        .expect("events should be an array")
+        .iter()
+        .filter(|event| event["kind"] == "scheduler-seed-case")
+        .map(|event| {
+            event["value"]
+                .as_u64()
+                .expect("seed case should carry seed")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        seed_cases,
+        vec![0, 1, 2],
+        "sim.profile.quick.seed_count must drive executed scheduler seeds"
+    );
+}
+
+#[test]
+fn sim_backend_loom_max_branches_drives_exhaustive_budget() {
+    let project = TestProject::new("v10-sim-config-max-branches");
+    project.write(
+        "Kobo.toml",
+        r#"[sim]
+default_profile = "exhaustive"
+
+[sim.backend.loom]
+enabled = true
+scheduler = "exhaustive"
+max_branches = 5
+checkpoint_replay = true
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn configured_max_branches_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("exhaustive"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "configured Loom max_branches should execute without a CLI knob",
+    );
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["scheduler"]["event_budget"], 5);
+    assert_eq!(json["max_branches"], 5);
 }
 
 #[test]

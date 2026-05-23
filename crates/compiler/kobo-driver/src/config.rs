@@ -77,11 +77,31 @@ impl SimConfig {
             .and_then(|config| config.schedule_budget)
     }
 
+    pub fn seed_count_for(&self, profile: &str) -> Option<u64> {
+        self.profiles
+            .get(profile)
+            .and_then(|config| config.seed_count)
+    }
+
     pub fn scheduler_for_backend(&self, backend: &str) -> Option<&str> {
         self.backends
             .get(backend)
             .filter(|config| config.enabled)
             .and_then(|config| config.scheduler.as_deref())
+    }
+
+    pub fn max_branches_for_backend(&self, backend: &str) -> Option<u64> {
+        self.backends
+            .get(backend)
+            .filter(|config| config.enabled)
+            .and_then(|config| config.max_branches)
+    }
+
+    pub fn checkpoint_replay_for_backend(&self, backend: &str) -> Option<bool> {
+        self.backends
+            .get(backend)
+            .filter(|config| config.enabled)
+            .and_then(|config| config.checkpoint_replay)
     }
 }
 
@@ -742,6 +762,7 @@ impl RawSimSection {
         }
         for (name, profile) in self.profile {
             validate_sim_profile_name("[sim.profile]", &name)?;
+            validate_sim_seed_count("[sim.profile].seed_count", profile.seed_count)?;
             validate_sim_shrink("[sim.profile].shrink", profile.shrink.as_deref())?;
             sim.profiles.insert(
                 name,
@@ -756,6 +777,8 @@ impl RawSimSection {
             validate_sim_backend_name("[sim.backend]", &name)?;
             validate_sim_backend_scheduler(&name, backend.scheduler.as_deref())?;
             validate_sim_replay_token(&name, backend.replay_token.as_deref())?;
+            validate_sim_backend_max_branches(&name, backend.max_branches)?;
+            validate_sim_backend_checkpoint_replay(&name, backend.checkpoint_replay)?;
             sim.backends.insert(
                 name,
                 SimBackendConfig {
@@ -798,6 +821,16 @@ fn validate_sim_backend_name(key: &str, backend: &str) -> Result<(), ConfigError
     })
 }
 
+fn validate_sim_seed_count(key: &str, seed_count: Option<u64>) -> Result<(), ConfigError> {
+    if seed_count.map_or(true, |value| value > 0) {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: "seed_count must be greater than zero".to_owned(),
+    })
+}
+
 fn validate_sim_backend_scheduler(
     backend: &str,
     scheduler: Option<&str>,
@@ -817,6 +850,40 @@ fn validate_sim_backend_scheduler(
     Err(ConfigError::InvalidSimConfig {
         key: format!("[sim.backend.{backend}].scheduler"),
         message: format!("unsupported scheduler `{scheduler}` for backend `{backend}`"),
+    })
+}
+
+fn validate_sim_backend_max_branches(
+    backend: &str,
+    max_branches: Option<u64>,
+) -> Result<(), ConfigError> {
+    let Some(max_branches) = max_branches else {
+        return Ok(());
+    };
+    if backend == "loom" && max_branches > 0 {
+        return Ok(());
+    }
+    let message = if max_branches == 0 {
+        "max_branches must be greater than zero".to_owned()
+    } else {
+        format!("max_branches is only supported by backend `loom`, not `{backend}`")
+    };
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].max_branches"),
+        message,
+    })
+}
+
+fn validate_sim_backend_checkpoint_replay(
+    backend: &str,
+    checkpoint_replay: Option<bool>,
+) -> Result<(), ConfigError> {
+    if checkpoint_replay.is_none() || backend == "loom" {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].checkpoint_replay"),
+        message: format!("checkpoint_replay is only supported by backend `loom`, not `{backend}`"),
     })
 }
 
@@ -1250,6 +1317,45 @@ scheduler = "pct"
         assert!(
             scheduler_error.contains("unsupported scheduler"),
             "{scheduler_error}"
+        );
+
+        let seed_count_error = parse_kobo_config(
+            r#"
+[sim.profile.quick]
+seed_count = 0
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            seed_count_error.contains("seed_count must be greater than zero"),
+            "{seed_count_error}"
+        );
+
+        let max_branches_error = parse_kobo_config(
+            r#"
+[sim.backend.shuttle]
+max_branches = 10
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            max_branches_error.contains("max_branches is only supported by backend `loom`"),
+            "{max_branches_error}"
+        );
+
+        let checkpoint_error = parse_kobo_config(
+            r#"
+[sim.backend.shuttle]
+checkpoint_replay = true
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            checkpoint_error.contains("checkpoint_replay is only supported by backend `loom`"),
+            "{checkpoint_error}"
         );
     }
 

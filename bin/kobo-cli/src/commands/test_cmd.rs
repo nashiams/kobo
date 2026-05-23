@@ -46,7 +46,7 @@ pub(super) fn cmd_test(
     )?;
     let sim_profile = parse_sim_profile(sim, &session.config)?;
     let sim_profile = sim_profile.as_str();
-    let seed = seed.unwrap_or(0);
+    let requested_seed = seed.unwrap_or(0);
     let engine = parse_engine(engine.unwrap_or("both"))?;
     let document = sim_model::load_document(file)?;
     let target_name = target
@@ -60,13 +60,18 @@ pub(super) fn cmd_test(
         .unwrap_or_else(|| "<missing>".to_owned());
     let profile_roles = resolve_profile_roles(profile, &document, &target_name)?;
     let execution_profile = expert_options.execution_profile(&profile_roles.backend_profile)?;
+    let backend_name = expert_options.backend_name(&execution_profile).to_owned();
     let effective_scheduler = expert_options
         .effective_scheduler(&session.config, &execution_profile)
         .map(str::to_owned);
+    let effective_max_branches = expert_options
+        .max_branches
+        .or_else(|| session.config.sim.max_branches_for_backend(&backend_name));
     expert_options.validate(
         &execution_profile,
         sim_profile,
         effective_scheduler.as_deref(),
+        effective_max_branches,
     )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
@@ -79,31 +84,40 @@ pub(super) fn cmd_test(
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
         profile: execution_profile,
-        seed,
+        seed: requested_seed,
         inject: inject.map(str::to_owned),
         event_budget: event_budget
-            .or(expert_options.max_branches)
+            .or(effective_max_branches)
             .or_else(|| session.config.sim.schedule_budget_for(sim_profile))
             .or_else(|| default_budget(sim_profile)),
     };
+    let configured_seed_count = session.config.sim.seed_count_for(sim_profile);
     let fuzz_plan = if fuzz {
-        Some(FuzzPlan::new(seed, &scenario_program)?)
+        Some(FuzzPlan::new(
+            requested_seed,
+            &scenario_program,
+            configured_seed_count.unwrap_or(FuzzPlan::DEFAULT_CASES),
+        )?)
     } else {
         None
     };
-    let mut run = match fuzz_plan.as_ref() {
-        Some(plan) => run_fuzz_portfolio(
+    let (mut run, executed_seed) = match fuzz_plan.as_ref() {
+        Some(plan) => (
+            run_fuzz_portfolio(
+                &scenario_program,
+                &artifacts.rs_source,
+                &options,
+                engine,
+                plan,
+            )?,
+            requested_seed,
+        ),
+        None => run_seed_portfolio(
             &scenario_program,
             &artifacts.rs_source,
             &options,
             engine,
-            plan,
-        )?,
-        None => kobo_sim_core::run_full_depth_from_program(
-            &scenario_program,
-            &artifacts.rs_source,
-            &options,
-            engine,
+            configured_seed_count.unwrap_or(1),
         )?,
     };
     let strict_source_path = sim_model::cli_relative_path(file)?;
@@ -114,7 +128,12 @@ pub(super) fn cmd_test(
         &mut run,
     );
     apply_trace_checks(&strict_source_path, &document.source, &mut run);
-    apply_model_vs_implementation(&strict_source_path, &document.source, seed, &mut run);
+    apply_model_vs_implementation(
+        &strict_source_path,
+        &document.source,
+        executed_seed,
+        &mut run,
+    );
     validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
@@ -125,7 +144,7 @@ pub(super) fn cmd_test(
             &scenario_program,
             &profile_roles.guarantee_profile,
             sim_profile,
-            seed,
+            executed_seed,
             inject,
             fuzz_plan.as_ref(),
             witness_dir,
@@ -133,6 +152,7 @@ pub(super) fn cmd_test(
             &artifacts.runtime_evidence,
             &expert_options,
             effective_scheduler.as_deref(),
+            effective_max_branches,
             &run,
         )?);
     }
@@ -141,9 +161,10 @@ pub(super) fn cmd_test(
         print_events(
             file,
             sim_profile,
-            seed,
+            executed_seed,
             fuzz_plan.as_ref(),
             &expert_options,
+            effective_max_branches,
             &session.config,
             effective_scheduler.as_deref(),
             &run,
@@ -166,12 +187,12 @@ pub(super) fn cmd_test(
         "{}",
         serde_json::to_string(&serde_json::json!({
             "scenario": run.target,
-            "seed": seed,
+            "seed": executed_seed,
             "backend_profile": run.profile,
             "backend": expert_options.backend_name(&run.profile),
             "scheduler": scheduler_json(
                 sim_profile,
-                seed,
+                executed_seed,
                 &run,
                 effective_scheduler.as_deref(),
             ),
@@ -245,11 +266,12 @@ impl BackendExpertOptions {
         backend_profile: &str,
         sim_profile: &str,
         effective_scheduler: Option<&str>,
+        effective_max_branches: Option<u64>,
     ) -> anyhow::Result<()> {
         let backend_name = self.backend_name(backend_profile);
         validate_backend_name(backend_name)?;
         validate_scheduler_control(backend_name, effective_scheduler)?;
-        validate_max_branches_control(backend_name, self.max_branches)?;
+        validate_max_branches_control(backend_name, effective_max_branches)?;
         if self.backend_native && self.backend.is_none() {
             anyhow::bail!(
                 "unsupported backend option: --backend-native requires --backend; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
@@ -260,9 +282,9 @@ impl BackendExpertOptions {
                 "unsupported backend option: --backend-native is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
             );
         }
-        if self.max_branches.is_some() && sim_profile != "exhaustive" {
+        if effective_max_branches.is_some() && sim_profile != "exhaustive" {
             anyhow::bail!(
-                "unsupported backend option: --max-branches is only available with --sim exhaustive; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+                "unsupported backend option: max_branches is only available with --sim exhaustive; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
             );
         }
         Ok(())
@@ -304,9 +326,11 @@ enum StatefulInputSource {
 }
 
 impl FuzzPlan {
-    fn new(base_seed: u64, program: &ScenarioProgram) -> anyhow::Result<Self> {
+    const DEFAULT_CASES: u64 = 8;
+
+    fn new(base_seed: u64, program: &ScenarioProgram, case_count: u64) -> anyhow::Result<Self> {
         let candidate_sources = stateful_input_sources(program);
-        let cases = (0..8)
+        let cases = (0..case_count)
             .map(|index| FuzzCase::new(base_seed, index, &candidate_sources))
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Self {
@@ -320,7 +344,7 @@ impl FuzzPlan {
 impl FuzzCase {
     fn new(
         base_seed: u64,
-        index: usize,
+        index: u64,
         candidate_sources: &[StatefulInputSource],
     ) -> anyhow::Result<Self> {
         let seed = derive_fuzz_seed(base_seed, index);
@@ -329,7 +353,8 @@ impl FuzzCase {
         let operations = stateful_operations_from_inputs(generated_inputs, candidate_sources);
         let shrink_candidates = shrink_candidates_from_tree(&mut value_tree, operations.len());
         Ok(Self {
-            index,
+            index: usize::try_from(index)
+                .map_err(|_| anyhow::anyhow!("seed_count is too large for this platform"))?,
             seed,
             operations,
             shrink_candidates,
@@ -495,6 +520,75 @@ fn run_fuzz_portfolio(
     });
     attach_fuzz_driver_evidence(&mut run, combined_events, &fuzz_driver_events)?;
     Ok(run)
+}
+
+fn run_seed_portfolio(
+    scenario_program: &kobo_ir::ScenarioProgram,
+    generated_rust: &str,
+    options: &kobo_sim_core::ScenarioOptions,
+    engine: EngineMode,
+    seed_count: u64,
+) -> anyhow::Result<(FullDepthRun, u64)> {
+    if seed_count <= 1 {
+        let run = kobo_sim_core::run_full_depth_from_program(
+            scenario_program,
+            generated_rust,
+            options,
+            engine,
+        )?;
+        return Ok((run, options.seed));
+    }
+
+    let mut combined_events = Vec::new();
+    let mut last_run = None;
+    let mut last_seed = options.seed;
+    for index in 0..seed_count {
+        let seed = options.seed.wrapping_add(index);
+        combined_events.push(seed_case_event(index, seed, seed_count));
+        let mut case_options = options.clone();
+        case_options.seed = seed;
+        let mut run = kobo_sim_core::run_full_depth_from_program(
+            scenario_program,
+            generated_rust,
+            &case_options,
+            engine.clone(),
+        )?;
+        combined_events.extend(run.events.iter().cloned());
+        if run.failure.is_some() {
+            run.events = combined_events;
+            refresh_seed_portfolio_digest(&mut run);
+            return Ok((run, seed));
+        }
+        last_seed = seed;
+        last_run = Some(run);
+    }
+
+    let mut run = last_run.expect("seed_count greater than one should execute at least one seed");
+    run.events = combined_events;
+    refresh_seed_portfolio_digest(&mut run);
+    Ok((run, last_seed))
+}
+
+fn seed_case_event(index: u64, seed: u64, seed_count: u64) -> ScenarioEvent {
+    ScenarioEvent {
+        kind: "scheduler-seed-case".to_owned(),
+        label: Some(format!("index={index};count={seed_count}")),
+        value: Some(seed),
+        io: None,
+    }
+}
+
+fn refresh_seed_portfolio_digest(run: &mut FullDepthRun) {
+    run.digest.semantic_trace_hash = kobo_sim_core::digest::events_hash(&run.events);
+    if !run.digest.harness_trace_hash.is_empty() {
+        run.digest.harness_trace_hash = kobo_sim_core::digest::stable_hash(&format!(
+            "seed-portfolio:{}:{}",
+            run.digest.harness_trace_hash, run.digest.semantic_trace_hash
+        ));
+    }
+    if run.digest.agreement == "matched" {
+        run.digest.agreement = "matched+seed-portfolio".to_owned();
+    }
 }
 
 fn fuzz_driver_events_for_case(case: &FuzzCase, base_seed: u64) -> Vec<ScenarioEvent> {
@@ -673,11 +767,11 @@ fn fuzz_seed_bytes(seed: u64) -> [u8; 32] {
     bytes
 }
 
-fn derive_fuzz_seed(base_seed: u64, index: usize) -> u64 {
+fn derive_fuzz_seed(base_seed: u64, index: u64) -> u64 {
     base_seed
         .wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407)
-        .wrapping_add(index as u64)
+        .wrapping_add(index)
 }
 
 fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
@@ -747,6 +841,7 @@ fn print_events(
     seed: u64,
     fuzz_plan: Option<&FuzzPlan>,
     expert_options: &BackendExpertOptions,
+    effective_max_branches: Option<u64>,
     config: &kobo_driver::KoboConfig,
     effective_scheduler: Option<&str>,
     run: &FullDepthRun,
@@ -761,7 +856,7 @@ fn print_events(
             "backend": expert_options.backend_name(&run.profile),
             "scheduler": scheduler_json(sim_profile, seed, run, effective_scheduler),
             "backend_native": expert_options.backend_native,
-            "max_branches": expert_options.max_branches,
+            "max_branches": effective_max_branches,
             "sim_config": sim_config_json(config),
             "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
@@ -785,6 +880,7 @@ fn write_run_witness(
     runtime_evidence: &kobo_codegen::RuntimeEvidence,
     expert_options: &BackendExpertOptions,
     effective_scheduler: Option<&str>,
+    effective_max_branches: Option<u64>,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -853,8 +949,11 @@ fn write_run_witness(
         "backend_controls": {
             "backend": expert_options.backend_name(&run.profile),
             "scheduler": effective_scheduler,
-            "max_branches": expert_options.max_branches,
+            "max_branches": effective_max_branches,
             "backend_native": expert_options.backend_native,
+            "checkpoint_replay": config
+                .sim
+                .checkpoint_replay_for_backend(expert_options.backend_name(&run.profile)),
         },
         "source": {
             "path": source_path,
@@ -1459,10 +1558,13 @@ fn scheduler_json(
     let strategy = runtime_scheduler
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(profile_strategy);
+    let seeds = scheduler_seed_cases(run, seed);
     serde_json::json!({
         "profile": sim_profile,
         "strategy": strategy,
         "seed": seed,
+        "seed_count": seeds.len(),
+        "seeds": seeds,
         "event_budget": run
             .events
             .iter()
@@ -1470,6 +1572,20 @@ fn scheduler_json(
             .and_then(|event| event.value),
         "cancellation": scheduler_cancellation_json(run),
     })
+}
+
+fn scheduler_seed_cases(run: &FullDepthRun, fallback_seed: u64) -> Vec<u64> {
+    let seeds = run
+        .events
+        .iter()
+        .filter(|event| event.kind == "scheduler-seed-case")
+        .filter_map(|event| event.value)
+        .collect::<Vec<_>>();
+    if seeds.is_empty() {
+        vec![fallback_seed]
+    } else {
+        seeds
+    }
 }
 
 fn scheduler_cancellation_json(run: &FullDepthRun) -> serde_json::Value {

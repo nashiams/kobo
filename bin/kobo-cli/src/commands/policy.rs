@@ -118,7 +118,7 @@ pub(super) fn load_effective_policy(
                 }
             }
         }
-        if profile.compiler_profile() == GuaranteeProfile::Release
+        if (profile.compiler_profile() == GuaranteeProfile::Release || release.is_configured)
             && release
                 .strict_paths
                 .iter()

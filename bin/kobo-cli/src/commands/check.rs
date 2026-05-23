@@ -41,19 +41,21 @@ pub(super) fn cmd_check(
     reject_invalid_field_capability_views(file, error_format, color_mode)?;
     reject_malformed_scenario_attributes(file, error_format)?;
     reject_invalid_ecosystem_policy(file, error_format)?;
-    let mut effective_policy = if guarantee_profile.is_some() || print_policy.is_some() {
+    let effective_policy = if guarantee_profile.is_some() || print_policy.is_some() {
         let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
-        let loaded = policy::load_effective_policy(Some(file), profile)?;
+        Some(policy::load_effective_policy(Some(file), profile)?)
+    } else {
+        let base_policy = cli_policy.clone().unwrap_or_default();
+        policy::load_configured_release_policy(Some(file), &base_policy)?
+    };
+    if let Some(loaded) = effective_policy.as_ref() {
         if let Some(downgrade) = loaded.downgrade() {
             policy::emit_downgrade(downgrade, error_format)?;
             anyhow::bail!("guarantee policy downgrade requires reason ledger entry");
         }
         if print_policy.is_some() {
-            policy::print_policy_json(&loaded)?;
+            policy::print_policy_json(loaded)?;
         }
-        Some(loaded)
-    } else {
-        None
     };
 
     let session_policy = effective_policy
@@ -61,10 +63,6 @@ pub(super) fn cmd_check(
         .map(|policy| policy.compiler_policy().clone())
         .or(cli_policy);
     let mut session = build_session(file, session_policy)?;
-    if effective_policy.is_none() {
-        effective_policy =
-            policy::load_configured_release_policy(Some(file), session.guarantee_policy())?;
-    }
     session.config.enable_parse_recovery = recover_parse;
     if pipeline {
         eprintln!("[kobo] --pipeline: running full solver pipeline diagnostics");

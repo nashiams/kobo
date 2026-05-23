@@ -155,6 +155,60 @@ async fn {scenario_name}() {{
     )
 }
 
+fn tuple_nested_block_local_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let _tuple = ({{
+        let inner = 1;
+        helper().await;
+        inner
+    }}, 0);
+}}
+"#
+    )
+}
+
+fn call_nested_block_local_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+fn consume(_value: i32) {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    consume({{
+        let inner = 1;
+        helper().await;
+        inner
+    }});
+}}
+"#
+    )
+}
+
+fn match_block_local_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let _block = match 0 {{
+        _ => {{
+            let inner = 1;
+            helper().await;
+            inner
+        }}
+    }};
+}}
+"#
+    )
+}
+
 fn post_await_declared_local_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -376,6 +430,10 @@ fn async_model<'a>(artifact: &'a Value) -> &'a Value {
 }
 
 fn assert_single_await_retains_first(artifact: &Value) {
+    assert_single_await_retains_binding(artifact, "first");
+}
+
+fn assert_single_await_retains_binding(artifact: &Value, binding: &str) {
     let suspensions = async_model(artifact)["suspension_states"]
         .as_array()
         .expect("suspension states should be an array");
@@ -401,10 +459,10 @@ fn assert_single_await_retains_first(artifact: &Value) {
         .expect("suspension should have an id");
     assert!(
         locals.iter().any(|local| {
-            local["binding"].as_str() == Some("first")
+            local["binding"].as_str() == Some(binding)
                 && local["suspension_state"].as_str() == Some(suspension_id)
         }),
-        "first should be future state across the await continuation: {locals:?}"
+        "{binding} should be future state across the await continuation: {locals:?}"
     );
 }
 
@@ -666,6 +724,39 @@ fn nested_block_local_live_after_await_becomes_future_state() {
 }
 
 #[test]
+fn nested_block_local_inside_tuple_becomes_future_state() {
+    let project = TestProject::new("v14-async-tuple-nested-block-local");
+    let artifact_path = emit_artifact(
+        &project,
+        &tuple_nested_block_local_await_source("tuple_nested_block_local_case"),
+        "tuple_nested_block_local_case",
+    );
+    assert_single_await_retains_binding(&read_value(&artifact_path), "inner");
+}
+
+#[test]
+fn nested_block_local_inside_call_becomes_future_state() {
+    let project = TestProject::new("v14-async-call-nested-block-local");
+    let artifact_path = emit_artifact(
+        &project,
+        &call_nested_block_local_await_source("call_nested_block_local_case"),
+        "call_nested_block_local_case",
+    );
+    assert_single_await_retains_binding(&read_value(&artifact_path), "inner");
+}
+
+#[test]
+fn match_arm_block_local_live_after_await_becomes_future_state() {
+    let project = TestProject::new("v14-async-match-block-local");
+    let artifact_path = emit_artifact(
+        &project,
+        &match_block_local_await_source("match_block_local_case"),
+        "match_block_local_case",
+    );
+    assert_single_await_retains_binding(&read_value(&artifact_path), "inner");
+}
+
+#[test]
 fn pre_await_only_condition_local_is_not_future_state() {
     let project = TestProject::new("v14-async-pre-await-only");
     let artifact_path = emit_artifact(
@@ -914,6 +1005,51 @@ fn removed_future_state_local_is_rejected_after_hash_recompute() {
     );
     rewrite_valid_certificate(&artifact_path, |artifact| {
         artifact["core"]["async_model"]["future_state_locals"] = Value::Array(Vec::new());
+    });
+
+    verify_fails(&project, &artifact_path, "future_state_locals");
+}
+
+#[test]
+fn unexpected_future_state_local_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-future-local-extra-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &async_source("unexpected_future_state_local_case"),
+        "unexpected_future_state_local_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        let locals = artifact["core"]["async_model"]["future_state_locals"]
+            .as_array_mut()
+            .expect("future state locals should be mutable");
+        let mut extra = locals
+            .first()
+            .cloned()
+            .expect("source should emit one future state local");
+        extra["binding"] = Value::String("ghost".to_owned());
+        locals.push(extra);
+    });
+
+    verify_fails(&project, &artifact_path, "future_state_locals");
+}
+
+#[test]
+fn duplicate_future_state_local_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-future-local-duplicate-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &async_source("duplicate_future_state_local_case"),
+        "duplicate_future_state_local_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        let locals = artifact["core"]["async_model"]["future_state_locals"]
+            .as_array_mut()
+            .expect("future state locals should be mutable");
+        let duplicate = locals
+            .first()
+            .cloned()
+            .expect("source should emit one future state local");
+        locals.push(duplicate);
     });
 
     verify_fails(&project, &artifact_path, "future_state_locals");

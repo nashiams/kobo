@@ -166,6 +166,7 @@ fn emit_verified(
                 "artifact": artifact.display().to_string(),
                 "replay_grade": &certificate.replay_grade,
                 "adapter_confidence": &certificate.adapter_confidence,
+                "candidate_admission": &certificate.candidate_admission,
                 "source_hash": report.source_hash,
                 "core_hash": report.core_hash,
                 "checked_obligation_events": report.checked_obligation_events,

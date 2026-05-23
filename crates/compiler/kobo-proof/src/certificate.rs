@@ -23,6 +23,7 @@ pub struct ProofCertificate {
     pub function_summaries: Vec<FunctionSummary>,
     pub coverage_loss: Vec<CoverageLoss>,
     pub opaque_edge_ledger: Vec<OpaqueLedgerEntry>,
+    pub candidate_admission: Vec<CandidateAdmissionEvidence>,
     pub certificate_material_hash: String,
 }
 
@@ -123,6 +124,22 @@ pub struct SpawnedTaskObligationEvidence {
     pub binding: String,
     pub required_resolution: Vec<String>,
     pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateAdmissionEvidence {
+    pub id: String,
+    pub track: String,
+    pub status: String,
+    pub inspect_visibility: Option<String>,
+    pub manual_rust_equivalent: Option<String>,
+    pub strict_compatible: bool,
+    pub whole_ecosystem_modeling_required: bool,
+    pub diagnostic_snapshots: Vec<String>,
+    pub replay_related: bool,
+    pub replay_grade: Option<ReplayGrade>,
+    pub adapter_confidence: Vec<AdapterEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

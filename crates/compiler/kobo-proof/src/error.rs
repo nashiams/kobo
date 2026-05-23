@@ -36,6 +36,8 @@ pub enum VerificationError {
     SampledAdapterWithoutProbingPass { adapter: String },
     #[error("stale adapter {adapter} requires debt or not_replayable replay grade")]
     StaleAdapterReplayable { adapter: String },
+    #[error("candidate {id} missing admission evidence: {gate}")]
+    CandidateAdmissionMissing { id: String, gate: String },
     #[error("certificate material hash mismatch: expected {expected}, observed {observed}")]
     CertificateMaterialHashMismatch { expected: String, observed: String },
     #[error("obligation replay mismatch for {binding}: expected {expected}, observed {observed}")]

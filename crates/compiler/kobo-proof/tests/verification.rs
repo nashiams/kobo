@@ -119,6 +119,7 @@ fn valid_certificate() -> ProofCertificate {
         }],
         coverage_loss: Vec::new(),
         opaque_edge_ledger: Vec::new(),
+        candidate_admission: Vec::new(),
         certificate_material_hash: String::new(),
     };
     certificate.certificate_material_hash = certificate_material_hash(&certificate).unwrap();

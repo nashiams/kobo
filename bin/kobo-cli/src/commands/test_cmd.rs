@@ -627,6 +627,11 @@ fn write_run_witness(
     for adapter in &mut adapter_confidence {
         adapter.replay_grade = adapter_adjusted_proof_grade.clone();
     }
+    let candidate_admission = kobo_driver::proof::candidate_admission_evidence(
+        &document.source,
+        adapter_adjusted_proof_grade.clone(),
+        &adapter_confidence,
+    );
     let strict_liveness =
         formal_core::strict_liveness_json(&source_path, &document.source, scenario_program, run);
     let trace_checks = trace_checks_json(&source_path, &document.source, run);
@@ -725,6 +730,10 @@ fn write_run_witness(
     object.insert(
         "adapter_confidence".to_owned(),
         serde_json::to_value(&adapter_confidence)?,
+    );
+    object.insert(
+        "candidate_admission".to_owned(),
+        serde_json::to_value(&candidate_admission)?,
     );
     object.insert(
         "boundary_ledger".to_owned(),

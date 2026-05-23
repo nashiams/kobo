@@ -8,12 +8,12 @@ use kobo_ir::{
 };
 use kobo_proof::{
     certificate_material_hash, core_material_hash, stable_hash, AdapterConfidence, AdapterEvidence,
-    AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
-    FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
-    ObligationState, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence, SourceEvidence,
-    SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateVersionEvidence,
-    TimeoutCancelEdgeEvidence,
+    AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence,
+    CandidateAdmissionEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence, CoverageLoss,
+    FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence, HashEvidence,
+    ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry, ProofCertificate,
+    SelectPathEvidence, SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence,
+    SuspensionStateEvidence, TemplateVersionEvidence, TimeoutCancelEdgeEvidence,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -63,6 +63,8 @@ pub fn emit_proof_certificate(
     for adapter in &mut adapter_confidence {
         adapter.replay_grade = replay_grade.clone();
     }
+    let candidate_admission =
+        candidate_admission_evidence(input.source, replay_grade.clone(), &adapter_confidence);
     let function_summaries = function_summaries(
         input.program,
         &entry_env,
@@ -101,6 +103,7 @@ pub fn emit_proof_certificate(
         function_summaries,
         coverage_loss,
         opaque_edge_ledger,
+        candidate_admission,
         certificate_material_hash: String::new(),
     };
     certificate.certificate_material_hash = certificate_material_hash(&certificate)?;
@@ -379,6 +382,111 @@ fn adapter_version_is_stale(version: Option<&str>) -> bool {
         return true;
     };
     version == "0.0.0" || version.contains("stale")
+}
+
+pub fn candidate_admission_evidence(
+    source: &str,
+    replay_grade: ReplayGrade,
+    adapter_confidence: &[AdapterEvidence],
+) -> Vec<CandidateAdmissionEvidence> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for item in &file.items {
+        for attr in candidate_attrs(item) {
+            let Some(fields) = candidate_attr_fields(attr) else {
+                continue;
+            };
+            let replay_related = bool_field(&fields, "replay_related").unwrap_or(false);
+            candidates.push(CandidateAdmissionEvidence {
+                id: string_field(&fields, "id").unwrap_or_else(|| "unknown".to_owned()),
+                track: string_field(&fields, "track").unwrap_or_else(|| "unknown".to_owned()),
+                status: string_field(&fields, "status").unwrap_or_else(|| "research".to_owned()),
+                inspect_visibility: string_field(&fields, "inspect"),
+                manual_rust_equivalent: string_field(&fields, "manual_rust"),
+                strict_compatible: bool_field(&fields, "strict").unwrap_or(false),
+                whole_ecosystem_modeling_required: bool_field(&fields, "whole_ecosystem")
+                    .unwrap_or(true),
+                diagnostic_snapshots: string_field(&fields, "diagnostic_snapshot")
+                    .into_iter()
+                    .collect(),
+                replay_related,
+                replay_grade: replay_related.then_some(replay_grade.clone()),
+                adapter_confidence: replay_related
+                    .then(|| adapter_confidence.to_vec())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+    candidates
+}
+
+fn candidate_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Fn(item) => &item.attrs,
+        syn::Item::Impl(item) => &item.attrs,
+        syn::Item::Struct(item) => &item.attrs,
+        syn::Item::Mod(item) => &item.attrs,
+        syn::Item::Trait(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+fn candidate_attr_fields(attr: &syn::Attribute) -> Option<BTreeMap<String, String>> {
+    if !syn_path_ends_with(attr.path(), &["kobo", "candidate_track"]) {
+        return None;
+    }
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let entries = list
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+        )
+        .ok()?;
+    let mut fields = BTreeMap::new();
+    for entry in entries {
+        let key = entry
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())?;
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(value),
+            ..
+        }) = entry.value
+        else {
+            continue;
+        };
+        fields.insert(key, value.value());
+    }
+    Some(fields)
+}
+
+fn string_field(fields: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    fields.get(key).filter(|value| !value.is_empty()).cloned()
+}
+
+fn bool_field(fields: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+    match fields.get(key)?.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn syn_path_ends_with(path: &syn::Path, suffix: &[&str]) -> bool {
+    let segments = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    segments.len() >= suffix.len()
+        && segments[segments.len() - suffix.len()..]
+            .iter()
+            .zip(suffix)
+            .all(|(left, right)| left == right)
 }
 
 fn obligation_evidence(

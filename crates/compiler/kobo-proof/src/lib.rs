@@ -5,11 +5,12 @@ mod verify;
 
 pub use certificate::{
     AdapterConfidence, AdapterEvidence, ArtifactKind, AsyncModelEvidence, BoundaryAssumption,
-    BoundaryPolicy, CancelEdgeEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence, CoverageLoss,
-    FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence, HashEvidence,
-    ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry, ProofCertificate,
-    ReplayGrade, SelectPathEvidence, SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence,
-    SuspensionStateEvidence, TemplateVersionEvidence, TimeoutCancelEdgeEvidence,
+    BoundaryPolicy, CancelEdgeEvidence, CandidateAdmissionEvidence, CoreCfgEdge, CoreCfgNode,
+    CoreEvidence, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
+    FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
+    ObligationState, OpaqueLedgerEntry, ProofCertificate, ReplayGrade, SelectPathEvidence,
+    SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence,
+    TemplateVersionEvidence, TimeoutCancelEdgeEvidence,
 };
 pub use error::VerificationError;
 pub use hash::{certificate_material_hash, core_material_hash, stable_hash};

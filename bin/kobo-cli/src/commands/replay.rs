@@ -26,7 +26,7 @@ pub(super) fn cmd_replay(
     validate_witness(&witness)?;
     if backend_native {
         validate_backend_native_replay(&witness)?;
-        eprintln!("backend-native replay validated for Loom witness");
+        eprintln!("Loom backend replay evidence accepted; running Kobo replay validation");
     }
 
     if roundtrip_metadata {
@@ -114,6 +114,37 @@ fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
     if token.trim().is_empty() || witness["backend_replay"].as_str() != Some(token) {
         anyhow::bail!(
             "unsupported backend option: backend_replay_token must match backend_replay for --backend-native replay"
+        );
+    }
+    let evidence = &witness["backend_replay_evidence"];
+    if evidence["backend"].as_str() != Some("loom") {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_evidence.backend must be `loom` for --backend-native replay"
+        );
+    }
+    if evidence["source"].as_str() != Some("loom-generated-harness") {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_evidence.source must be `loom-generated-harness` for --backend-native replay"
+        );
+    }
+    let Some(native_replay_id) = evidence["native_replay_id"].as_str() else {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_evidence.native_replay_id is required for --backend-native replay"
+        );
+    };
+    if !native_replay_id.starts_with("loom-native:") || native_replay_id != token {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_evidence.native_replay_id must match backend_replay for --backend-native replay"
+        );
+    }
+    let Some(kobo_hash) = evidence["kobo_verification_hash"].as_str() else {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_evidence.kobo_verification_hash is required for --backend-native replay"
+        );
+    };
+    if kobo_hash == native_replay_id {
+        anyhow::bail!(
+            "unsupported backend option: backend_replay_evidence must keep native replay IDs separate from Kobo verification hashes"
         );
     }
     Ok(())
@@ -240,13 +271,20 @@ fn replay_v1(
     let runtime_profile = runtime_profile_json(&session.config, sim_profile, seed, &run);
     let runtime_profile_hash =
         kobo_sim_core::digest::stable_hash(&serde_json::to_string(&runtime_profile)?);
+    let replay_token_mode = witness["backend_controls"]["replay_token"]
+        .as_str()
+        .unwrap_or("record");
     let expected = serde_json::json!({
         "backend": backend_for_profile(&run.profile),
         "backend_version": backend_version_json(backend_for_profile(&run.profile)),
-        "backend_replay": backend_replay_token(
-            witness["backend_controls"]["replay_token"]
-                .as_str()
-                .unwrap_or("record"),
+        "backend_replay": test_cmd::backend_replay_id(
+            replay_token_mode,
+            &verified_source.hash,
+            seed,
+            &run,
+        ),
+        "backend_replay_evidence": test_cmd::backend_replay_evidence_json(
+            replay_token_mode,
             &verified_source.hash,
             seed,
             &run,
@@ -292,6 +330,7 @@ fn replay_v1(
         "backend": witness["backend"].clone(),
         "backend_version": witness["backend_version"].clone(),
         "backend_replay": witness["backend_replay"].clone(),
+        "backend_replay_evidence": witness["backend_replay_evidence"].clone(),
         "checkpoint_replay": witness["checkpoint_replay"].clone(),
         "ecosystem_scope": witness["ecosystem_scope"].clone(),
         "full_ecosystem_exploration": witness["full_ecosystem_exploration"].clone(),
@@ -559,7 +598,8 @@ fn execution_digest_json(run: &kobo_sim_core::FullDepthRun, runtime_profile_hash
         "engine": "semantic-sim",
         "semantic_engine": run.digest.semantic_engine.as_str(),
         "harness_engine": run.digest.harness_engine.as_str(),
-        "model_version": run.digest.model_version.as_str(),
+        "model_schema": run.digest.model_schema.as_str(),
+        "schema_version": run.digest.schema_version,
         "scenario_ir_hash": run.digest.scenario_ir_hash.as_str(),
         "operation_count": run.digest.operation_count,
         "event_hash": run.digest.semantic_trace_hash.as_str(),
@@ -618,6 +658,11 @@ fn checkpoint_replay_json(enabled: bool, run: &kobo_sim_core::FullDepthRun) -> V
             run.harness_manifest
                 .as_ref()
                 .and_then(|manifest| manifest.checkpoint_artifact_hash.as_deref())
+        } else {
+            None
+        },
+        "replay_mode": if enabled {
+            Some("loom-checkpoint-resume")
         } else {
             None
         },
@@ -1358,44 +1403,6 @@ fn witness_injections(witness: &Value) -> Option<String> {
         .filter(|hooks| !hooks.is_empty())
 }
 
-fn backend_replay_token(
-    mode: &str,
-    source_identity: &str,
-    seed: u64,
-    run: &kobo_sim_core::FullDepthRun,
-) -> String {
-    match mode {
-        "record" => replay_token(source_identity, seed, run),
-        "metadata" => kobo_sim_core::digest::stable_hash(&format!(
-            "metadata:{}:{}:{}:{}",
-            source_identity,
-            seed,
-            backend_for_profile(&run.profile),
-            run.digest.semantic_trace_hash
-        )),
-        "none" => "none".to_owned(),
-        _ => replay_token(source_identity, seed, run),
-    }
-}
-
-fn replay_token(source_identity: &str, seed: u64, run: &kobo_sim_core::FullDepthRun) -> String {
-    let mut material = String::new();
-    material.push_str(source_identity);
-    material.push(':');
-    material.push_str(&seed.to_string());
-    material.push(':');
-    material.push_str(backend_for_profile(&run.profile));
-    material.push(':');
-    material.push_str(&run.digest.semantic_trace_hash);
-    material.push(':');
-    material.push_str(&run.digest.harness_trace_hash);
-    if let Some(fuzz_driver_trace_hash) = run.digest.fuzz_driver_trace_hash.as_deref() {
-        material.push(':');
-        material.push_str(fuzz_driver_trace_hash);
-    }
-    kobo_sim_core::digest::stable_hash(&material)
-}
-
 fn backend_for_profile(profile: &str) -> &'static str {
     match profile {
         "sync" => "loom",
@@ -1640,7 +1647,8 @@ fn validate_witness(witness: &Value) -> anyhow::Result<()> {
             required.push(&["replay_contract", "full_ecosystem_exploration"][..]);
             required.push(&["replay_contract", "facades"][..]);
             required.push(&["execution_digest", "engine"][..]);
-            required.push(&["execution_digest", "model_version"][..]);
+            required.push(&["execution_digest", "model_schema"][..]);
+            required.push(&["execution_digest", "schema_version"][..]);
             required.push(&["execution_digest", "scenario_ir_hash"][..]);
             required.push(&["execution_digest", "operation_count"][..]);
             required.push(&["execution_digest", "event_hash"][..]);

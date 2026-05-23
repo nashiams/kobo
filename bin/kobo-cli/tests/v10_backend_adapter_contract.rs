@@ -680,6 +680,60 @@ fn configured_reserved_async_route() {
 }
 
 #[test]
+fn inspect_harness_configured_reserved_backend_reports_scenario_debt() {
+    let project = TestProject::new("v10-inspect-reserved-backend-config-debt");
+    project.write(
+        "Kobo.toml",
+        r#"[sim.backend.shuttle]
+enabled = true
+scheduler = "pct"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn inspect_configured_reserved_async_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("inspect"), s("--sim"), s("--harness"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "inspect should not silently ignore configured reserved backend controls",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "scenario debt",
+        "inspect should route configured reserved backend controls into scenario debt",
+    );
+    assert_contains(
+        &text,
+        ".kobo",
+        "inspect failure should point at the scenario debt artifact",
+    );
+    let debt_dir = project.root.join(".kobo").join("scenario-debt");
+    let debt_file = fs::read_dir(&debt_dir)
+        .expect("scenario debt directory should exist")
+        .next()
+        .expect("scenario debt file should exist")
+        .expect("scenario debt file should be readable")
+        .path();
+    let debt: Value =
+        serde_json::from_str(&fs::read_to_string(debt_file).expect("debt file should read"))
+            .expect("debt file should parse");
+    assert_eq!(debt["backend"], "shuttle");
+    assert_eq!(debt["scheduler"], "pct");
+    assert_eq!(debt["control_source"], "Kobo.toml");
+}
+
+#[test]
 fn inspect_harness_backend_pin_drives_generated_profile() {
     let project = TestProject::new("v10-inspect-backend-pin-drives-profile");
     let file = project.main_file(
@@ -1088,6 +1142,10 @@ fn configured_checkpoint_route() {
             .as_str()
             .is_some_and(|hash| !hash.is_empty()),
         "checkpoint replay should bind the checkpoint artifact hash: {witness}"
+    );
+    assert_eq!(
+        witness["checkpoint_replay"]["replay_mode"], "loom-checkpoint-resume",
+        "checkpoint replay should disclose that replay consumes the Loom checkpoint artifact"
     );
     let harness_path = witness["harness_manifest"]["harness_rs_path"]
         .as_str()

@@ -102,7 +102,7 @@ pub(super) fn cmd_test(
     }
     if expert_options.backend.is_none() {
         if let Some(intent) =
-            configured_reserved_backend_intent(&session.config, &execution_profile)
+            backend_debt::configured_reserved_backend_intent(&session.config, &execution_profile)
         {
             let debt_path = backend_debt::write_unsupported_backend_debt(
                 file,
@@ -590,7 +590,8 @@ fn run_fuzz_portfolio(
         digest: kobo_sim_core::ExecutionDigest {
             semantic_engine: "semantic-sim".to_owned(),
             harness_engine: "generated-rust-harness".to_owned(),
-            model_version: "v0.10".to_owned(),
+            model_schema: kobo_sim_core::lower::MODEL_SCHEMA.to_owned(),
+            schema_version: kobo_sim_core::lower::MODEL_SCHEMA_VERSION,
             scenario_ir_hash: scenario_program.source_hash.clone(),
             operation_count: 0,
             semantic_trace_hash: String::new(),
@@ -900,38 +901,6 @@ fn validate_backend_executes(backend: &str) -> anyhow::Result<()> {
     )
 }
 
-struct ReservedBackendIntent<'a> {
-    capability: &'static kobo_sim_core::backend::BackendCapability,
-    scheduler: Option<&'a str>,
-}
-
-fn configured_reserved_backend_intent<'a>(
-    config: &'a kobo_driver::KoboConfig,
-    profile: &str,
-) -> Option<ReservedBackendIntent<'a>> {
-    reserved_backend_fit_for_profile(profile)
-        .iter()
-        .filter_map(|backend| {
-            let backend_config = config.sim.backends.get(*backend)?;
-            if !backend_config.enabled || !configured_backend_has_controls(backend_config) {
-                return None;
-            }
-            let capability = backend_debt::unsupported_backend_capability(backend)?;
-            Some(ReservedBackendIntent {
-                capability,
-                scheduler: backend_config.scheduler.as_deref(),
-            })
-        })
-        .next()
-}
-
-fn configured_backend_has_controls(config: &kobo_driver::SimBackendConfig) -> bool {
-    config.scheduler.is_some()
-        || config.replay_token.is_some()
-        || config.max_branches.is_some()
-        || config.checkpoint_replay.is_some()
-}
-
 fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
     match backend {
         "loom" => Ok("sync"),
@@ -1048,8 +1017,10 @@ fn write_run_witness(
         )
     });
     let backend_name = expert_options.backend_name(&run.profile);
-    let backend_replay_token =
-        backend_replay_token(effective_replay_token, &document.source_hash, seed, run);
+    let backend_replay =
+        backend_replay_id(effective_replay_token, &document.source_hash, seed, run);
+    let backend_replay_evidence =
+        backend_replay_evidence_json(effective_replay_token, &document.source_hash, seed, run);
     let coverage = coverage_json(run);
     let event_stream = shrink_event_stream(run, sim_profile, effective_shrink);
     let witness_events = events_json(&event_stream.events);
@@ -1112,8 +1083,9 @@ fn write_run_witness(
         "backend_profile": run.profile,
         "backend": backend_name,
         "reserved_backend_fit": reserved_backend_fit_json(&run.profile),
-        "backend_replay": backend_replay_token.clone(),
-        "backend_replay_token": backend_replay_token,
+        "backend_replay": backend_replay.clone(),
+        "backend_replay_token": backend_replay,
+        "backend_replay_evidence": backend_replay_evidence,
         "replay_guarantee": run.replay_guarantee.as_str(),
         "exactness": exactness_json(run),
     });
@@ -1683,7 +1655,8 @@ fn execution_digest_json(run: &FullDepthRun, runtime_profile_hash: &str) -> serd
         "engine": "semantic-sim",
         "semantic_engine": run.digest.semantic_engine,
         "harness_engine": run.digest.harness_engine,
-        "model_version": run.digest.model_version,
+        "model_schema": run.digest.model_schema,
+        "schema_version": run.digest.schema_version,
         "scenario_ir_hash": run.digest.scenario_ir_hash,
         "operation_count": run.digest.operation_count,
         "event_hash": run.digest.semantic_trace_hash,
@@ -1742,6 +1715,11 @@ fn checkpoint_replay_json(enabled: bool, run: &FullDepthRun) -> serde_json::Valu
             run.harness_manifest
                 .as_ref()
                 .and_then(|manifest| manifest.checkpoint_artifact_hash.as_deref())
+        } else {
+            None
+        },
+        "replay_mode": if enabled {
+            Some("loom-checkpoint-resume")
         } else {
             None
         },
@@ -4462,12 +4440,43 @@ fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> serde
     })
 }
 
-fn backend_replay_token(
+pub(super) fn backend_replay_id(
     mode: &str,
     source_identity: &str,
     seed: u64,
     run: &FullDepthRun,
 ) -> String {
+    if mode == "none" {
+        return "none".to_owned();
+    }
+    if let Some(native_replay_id) = native_backend_replay_id(run) {
+        return native_replay_id;
+    }
+    kobo_replay_hash(mode, source_identity, seed, run)
+}
+
+pub(super) fn backend_replay_evidence_json(
+    mode: &str,
+    source_identity: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let kobo_verification_hash = kobo_replay_hash(mode, source_identity, seed, run);
+    let native_replay_id = if mode == "none" {
+        None
+    } else {
+        native_backend_replay_id(run)
+    };
+    serde_json::json!({
+        "backend": backend_for_profile(&run.profile),
+        "mode": if native_replay_id.is_some() { "native" } else { mode },
+        "source": if native_replay_id.is_some() { "loom-generated-harness" } else { "kobo-verification-hash" },
+        "native_replay_id": native_replay_id,
+        "kobo_verification_hash": kobo_verification_hash,
+    })
+}
+
+fn kobo_replay_hash(mode: &str, source_identity: &str, seed: u64, run: &FullDepthRun) -> String {
     match mode {
         "record" => replay_token(source_identity, seed, run),
         "metadata" => kobo_sim_core::digest::stable_hash(&format!(
@@ -4480,6 +4489,29 @@ fn backend_replay_token(
         "none" => "none".to_owned(),
         _ => replay_token(source_identity, seed, run),
     }
+}
+
+fn native_backend_replay_id(run: &FullDepthRun) -> Option<String> {
+    if backend_for_profile(&run.profile) != "loom" {
+        return None;
+    }
+    let manifest = run.harness_manifest.as_ref()?;
+    let material = format!(
+        "{}:{}:{}:{}:{}:{}",
+        manifest.source_hash,
+        manifest.generated_rust_hash,
+        manifest.stdout_hash,
+        manifest
+            .checkpoint_artifact_hash
+            .as_deref()
+            .unwrap_or("no-checkpoint"),
+        run.digest.semantic_trace_hash,
+        run.digest.harness_trace_hash,
+    );
+    Some(format!(
+        "loom-native:{}",
+        kobo_sim_core::digest::stable_hash(&material)
+    ))
 }
 
 fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String {

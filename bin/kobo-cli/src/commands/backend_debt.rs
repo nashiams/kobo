@@ -35,6 +35,31 @@ pub(super) fn unsupported_backend_capability(
     backend_capability(backend).filter(|capability| !capability.executes_now)
 }
 
+pub(super) struct ReservedBackendIntent<'a> {
+    pub(super) capability: &'static kobo_sim_core::backend::BackendCapability,
+    pub(super) scheduler: Option<&'a str>,
+}
+
+pub(super) fn configured_reserved_backend_intent<'a>(
+    config: &'a kobo_driver::KoboConfig,
+    profile: &str,
+) -> Option<ReservedBackendIntent<'a>> {
+    reserved_backend_fit_for_profile(profile)
+        .iter()
+        .filter_map(|backend| {
+            let backend_config = config.sim.backends.get(*backend)?;
+            if !backend_config.enabled || !configured_backend_has_controls(backend_config) {
+                return None;
+            }
+            let capability = unsupported_backend_capability(backend)?;
+            Some(ReservedBackendIntent {
+                capability,
+                scheduler: backend_config.scheduler.as_deref(),
+            })
+        })
+        .next()
+}
+
 pub(super) fn write_unsupported_backend_debt(
     file: &Path,
     target_name: &str,
@@ -96,4 +121,20 @@ fn sanitize_name(value: &str) -> String {
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect()
+}
+
+fn reserved_backend_fit_for_profile(profile: &str) -> &'static [&'static str] {
+    match profile {
+        "async" => &["shuttle"],
+        "network" => &["turmoil"],
+        "distributed" => &["madsim"],
+        _ => &[],
+    }
+}
+
+fn configured_backend_has_controls(config: &kobo_driver::SimBackendConfig) -> bool {
+    config.scheduler.is_some()
+        || config.replay_token.is_some()
+        || config.max_branches.is_some()
+        || config.checkpoint_replay.is_some()
 }

@@ -6,13 +6,27 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
 {
   "code": "K0104",
   "expected": {
-    "backend": "shuttle",
-    "backend_replay": "e0aa41bcdd76605b",
+    "backend": "generated-rust-process",
+    "backend_replay": "7ab5ac7d9b3e6dc3",
+    "backend_replay_evidence": {
+      "backend": "generated-rust-process",
+      "kobo_verification_hash": "7ab5ac7d9b3e6dc3",
+      "mode": "record",
+      "native_replay_id": null,
+      "source": "kobo-verification-hash"
+    },
+    "backend_version": {
+      "adapter_source": "kobo-sim-core",
+      "adapter_version": "0.1.0",
+      "backend": "generated-rust-process",
+      "integration_level": "generated-user-rust",
+      "scenario_execution": "compiler-owned-generated-rust"
+    },
     "boundary_ledger": [
       {
         "boundary": "ward.task",
         "policy": "model",
-        "reason": "modeled v0.10 facade",
+        "reason": "modeled compiler facade",
         "source": "scenario_program",
         "status": "modeled"
       }
@@ -43,6 +57,16 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
         }
       ],
       "target": "stable_replay"
+    },
+    "checkpoint_replay": {
+      "checkpoint_artifact_hash": null,
+      "checkpoint_path": null,
+      "enabled": false,
+      "event_count": null,
+      "harness_trace_hash": null,
+      "replay_mode": null,
+      "semantic_trace_hash": null,
+      "source": null
     },
     "declarations": [],
     "ecosystem_boundaries": [],
@@ -99,14 +123,14 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       {
         "id": 8,
         "kind": "scheduler-portfolio",
-        "label": "quick",
+        "label": "round-robin",
         "value": 64
       }
     ],
     "execution_digest": {
       "agreement": "matched",
       "engine": "semantic-sim",
-      "event_hash": "44a55175a3923021",
+      "event_hash": "51046d7e35ea1407",
       "fuzz_driver_event_count": 0,
       "fuzz_driver_trace_hash": null,
       "generated_rust_hash": "7fa93a9348b1d6f2",
@@ -114,13 +138,14 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "harness_event_count": 9,
       "harness_exit_code": 0,
       "harness_manifest_hash": "<hash>",
-      "harness_trace_hash": "8a4aedfdd2dc9203",
-      "model_version": "v0.11-driver-kir-generated-user-rust-harness-call-shape-1",
+      "harness_trace_hash": "51046d7e35ea1407",
+      "model_schema": "driver-kir-generated-user-rust-harness-call-shape",
       "operation_count": 1,
       "runtime_profile_hash": "23d3ae32fc8789d5",
       "scenario_ir_hash": "51eed2a9fac90296",
+      "schema_version": 1,
       "semantic_engine": "driver-kir-scenario",
-      "semantic_trace_hash": "44a55175a3923021"
+      "semantic_trace_hash": "51046d7e35ea1407"
     },
     "failure": null,
     "flagship_demo": null,
@@ -202,7 +227,7 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "service_hook_events": [],
       "source_hash": "84874d92ac6e8825",
       "stderr_hash": "cbf29ce484222325",
-      "stdout_hash": "c429a5d0bc994f98"
+      "stdout_hash": "b957fc0110f2282e"
     },
     "inferred_obligations": [],
     "invariant_checks": [],
@@ -345,13 +370,27 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
   },
   "message": "kwit replay diverged",
   "observed": {
-    "backend": "shuttle",
-    "backend_replay": "e0aa41bcdd76605b",
+    "backend": "generated-rust-process",
+    "backend_replay": "7ab5ac7d9b3e6dc3",
+    "backend_replay_evidence": {
+      "backend": "generated-rust-process",
+      "kobo_verification_hash": "7ab5ac7d9b3e6dc3",
+      "mode": "record",
+      "native_replay_id": null,
+      "source": "kobo-verification-hash"
+    },
+    "backend_version": {
+      "adapter_source": "kobo-sim-core",
+      "adapter_version": "0.1.0",
+      "backend": "generated-rust-process",
+      "integration_level": "generated-user-rust",
+      "scenario_execution": "compiler-owned-generated-rust"
+    },
     "boundary_ledger": [
       {
         "boundary": "ward.task",
         "policy": "model",
-        "reason": "modeled v0.10 facade",
+        "reason": "modeled compiler facade",
         "source": "scenario_program",
         "status": "modeled"
       }
@@ -382,6 +421,16 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
         }
       ],
       "target": "stable_replay"
+    },
+    "checkpoint_replay": {
+      "checkpoint_artifact_hash": null,
+      "checkpoint_path": null,
+      "enabled": false,
+      "event_count": null,
+      "harness_trace_hash": null,
+      "replay_mode": null,
+      "semantic_trace_hash": null,
+      "source": null
     },
     "declarations": [],
     "ecosystem_boundaries": [],
@@ -438,14 +487,14 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       {
         "id": 8,
         "kind": "scheduler-portfolio",
-        "label": "quick",
+        "label": "round-robin",
         "value": 64
       }
     ],
     "execution_digest": {
       "agreement": "matched",
       "engine": "semantic-sim",
-      "event_hash": "44a55175a3923021",
+      "event_hash": "51046d7e35ea1407",
       "fuzz_driver_event_count": 0,
       "fuzz_driver_trace_hash": null,
       "generated_rust_hash": "7fa93a9348b1d6f2",
@@ -453,13 +502,14 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "harness_event_count": 9,
       "harness_exit_code": 0,
       "harness_manifest_hash": "<hash>",
-      "harness_trace_hash": "8a4aedfdd2dc9203",
-      "model_version": "v0.11-driver-kir-generated-user-rust-harness-call-shape-1",
+      "harness_trace_hash": "51046d7e35ea1407",
+      "model_schema": "driver-kir-generated-user-rust-harness-call-shape",
       "operation_count": 1,
       "runtime_profile_hash": "23d3ae32fc8789d5",
       "scenario_ir_hash": "51eed2a9fac90296",
+      "schema_version": 1,
       "semantic_engine": "driver-kir-scenario",
-      "semantic_trace_hash": "44a55175a3923021"
+      "semantic_trace_hash": "51046d7e35ea1407"
     },
     "failure": null,
     "flagship_demo": null,
@@ -541,7 +591,7 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "service_hook_events": [],
       "source_hash": "84874d92ac6e8825",
       "stderr_hash": "cbf29ce484222325",
-      "stdout_hash": "c429a5d0bc994f98"
+      "stdout_hash": "b957fc0110f2282e"
     },
     "inferred_obligations": [],
     "invariant_checks": [],

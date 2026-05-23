@@ -72,7 +72,8 @@ pub(super) struct SimEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ExecutionDigest {
     pub engine: String,
-    pub model_version: String,
+    pub model_schema: String,
+    pub schema_version: u64,
     pub scenario_ir_hash: String,
     pub operation_count: usize,
     pub event_hash: String,
@@ -705,7 +706,8 @@ impl ScenarioProgram {
 
         ExecutionDigest {
             engine: "semantic-sim".to_owned(),
-            model_version: sim_core::lower::MODEL_VERSION.to_owned(),
+            model_schema: sim_core::lower::MODEL_SCHEMA.to_owned(),
+            schema_version: sim_core::lower::MODEL_SCHEMA_VERSION,
             scenario_ir_hash: source_hash(&ir_material),
             operation_count: self.operations.len(),
             event_hash: source_hash(&event_material),

@@ -367,6 +367,9 @@ fn simulation_harness_output(
                 "// kobo: generated harness manifest unavailable for this inspection target\n",
             );
         }
+        Err(error) if error.to_string().contains("unsupported backend option") => {
+            return Err(error);
+        }
         Err(error) => {
             output.push_str(&format!(
                 "// kobo: generated harness manifest unavailable: {error}\n"
@@ -408,6 +411,23 @@ fn generated_harness_inspection(
         .and_then(inspect_profile_for_backend)
         .map(str::to_owned)
         .unwrap_or(inferred_backend_profile);
+    if backend.is_none() {
+        if let Some(intent) =
+            backend_debt::configured_reserved_backend_intent(&session.config, &backend_profile)
+        {
+            let debt_path = backend_debt::write_unsupported_backend_debt(
+                file,
+                &target_name,
+                intent.capability,
+                intent.scheduler,
+                DebtControlSource::Config,
+            )?;
+            anyhow::bail!(
+                "{}",
+                backend_debt::unsupported_backend_debt_message(intent.capability, &debt_path)?
+            );
+        }
+    }
     let artifacts = run_codegen_pipeline(session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
     let scenario_program = kobo_driver::build_scenario_program(

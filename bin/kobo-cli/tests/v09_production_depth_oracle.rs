@@ -200,13 +200,21 @@ fn {scenario}() {{
     assert_eq!(original["replay_guarantee"].as_str(), Some("exact"));
     for path in [
         ["execution_digest", "engine"].as_slice(),
-        ["execution_digest", "model_version"].as_slice(),
+        ["execution_digest", "model_schema"].as_slice(),
+        ["execution_digest", "schema_version"].as_slice(),
         ["execution_digest", "scenario_ir_hash"].as_slice(),
         ["execution_digest", "operation_count"].as_slice(),
         ["execution_digest", "event_hash"].as_slice(),
     ] {
         assert_json_has_path(&original, path, "exact witness must carry execution digest");
     }
+    assert!(
+        !original["execution_digest"]["model_schema"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("v0."),
+        "public execution digest schema must not expose roadmap-stage wording: {original}"
+    );
     assert_eq!(
         original["execution_digest"]["engine"].as_str(),
         Some("semantic-sim"),

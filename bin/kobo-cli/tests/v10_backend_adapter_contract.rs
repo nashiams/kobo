@@ -153,3 +153,125 @@ fn ecosystem_backend_registry_does_not_claim_full_external_crate_exploration() {
         );
     }
 }
+
+#[test]
+fn expert_backend_flags_drive_scheduler_output_without_source_imports() {
+    let project = TestProject::new("v10-expert-backend-flags");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn expert_async_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--backend"),
+            s("shuttle"),
+            s("--scheduler"),
+            s("pct"),
+            s("--events=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "explicit backend and scheduler should run");
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["backend"], "shuttle");
+    assert_eq!(json["backend_profile"], "async");
+    assert_eq!(json["scheduler"]["strategy"], "pct");
+
+    let source = project.read("src/main.kobo");
+    assert_not_contains(&source, "shuttle::", "user source must not import Shuttle");
+    assert_not_contains(&source, "loom::", "user source must not import Loom");
+}
+
+#[test]
+fn unsupported_backend_scheduler_combo_reports_explicit_debt_path() {
+    let project = TestProject::new("v10-unsupported-backend-knob");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn expert_sync_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("deep"),
+            s("--backend"),
+            s("loom"),
+            s("--scheduler"),
+            s("pct"),
+            s("--error-format=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "unsupported backend scheduler combo should fail");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "unsupported backend option",
+        "failure should name unsupported backend controls",
+    );
+    assert_contains(
+        &text,
+        "scenario debt",
+        "failure should offer scenario debt as an explicit path",
+    );
+    assert_contains(
+        &text,
+        "stable Kobo profile",
+        "failure should offer the stable profile fallback",
+    );
+}
+
+#[test]
+fn inspect_harness_accepts_backend_pin_as_expert_transparency() {
+    let project = TestProject::new("v10-inspect-backend-pin");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn inspect_backend_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("inspect"),
+            s("--sim"),
+            s("--harness"),
+            s("--backend"),
+            s("shuttle"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "inspect should accept a backend pin");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "backend adapter boundary",
+        "inspect output should still describe the generated harness boundary",
+    );
+    assert_contains(
+        &text,
+        "backend pin: shuttle",
+        "inspect output should disclose the expert backend pin",
+    );
+}

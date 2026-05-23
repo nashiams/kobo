@@ -86,6 +86,7 @@ pub(super) fn cmd_inspect(
     harness: bool,
     cargo_dir: Option<&Path>,
     profile: Option<&str>,
+    backend: Option<&str>,
     trait_default: Option<&str>,
     audit: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -103,7 +104,7 @@ pub(super) fn cmd_inspect(
     if sim {
         let source = std::fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
-        let output = simulation_transparency_output(&source, harness);
+        let output = simulation_transparency_output(&source, harness, backend)?;
         eprintln!(
             "// effective guarantee profile: {}",
             session.guarantee_profile().as_str()
@@ -262,7 +263,12 @@ fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
     Ok(format!("{}\n", serde_json::to_string(&value)?))
 }
 
-fn simulation_transparency_output(source: &str, harness: bool) -> String {
+fn simulation_transparency_output(
+    source: &str,
+    harness: bool,
+    backend: Option<&str>,
+) -> anyhow::Result<String> {
+    validate_backend_pin(backend)?;
     let command = if harness {
         "inspect --sim --harness"
     } else {
@@ -280,6 +286,9 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
     output.push_str("// kobo: possible backend adapter engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n");
     if harness {
         output.push_str("// kobo: backend adapter boundary: generated harness owns backend-native imports; user source remains normal\n");
+        if let Some(backend) = backend {
+            output.push_str(&format!("// kobo: backend pin: {backend}\n"));
+        }
     } else {
         output.push_str("// kobo: use --harness to inspect generated backend adapter boundaries\n");
     }
@@ -310,7 +319,23 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
             candidate.whole_ecosystem_modeling_required
         ));
     }
-    output
+    Ok(output)
+}
+
+fn validate_backend_pin(backend: Option<&str>) -> anyhow::Result<()> {
+    let Some(backend) = backend else {
+        return Ok(());
+    };
+    if matches!(
+        backend,
+        "loom" | "shuttle" | "turmoil" | "madsim" | "proptest" | "failpoints"
+    ) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "unsupported backend option `{backend}`; use a stable Kobo profile, inspect the generated backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+        )
+    }
 }
 
 fn append_scenario_metadata(mut output: String, source: &str) -> String {

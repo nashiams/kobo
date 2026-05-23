@@ -107,6 +107,14 @@ pub(super) fn load_effective_policy(
                 }
             }
         }
+        if profile.compiler_profile() == GuaranteeProfile::Release
+            && release
+                .strict_paths
+                .iter()
+                .any(|pattern| matches_policy_pattern(&relative, pattern))
+        {
+            raise_policy_to_release_floor(&mut policy);
+        }
     }
 
     Ok(EffectiveGuaranteePolicy {
@@ -114,6 +122,38 @@ pub(super) fn load_effective_policy(
         release,
         downgrade,
     })
+}
+
+fn raise_policy_to_release_floor(policy: &mut GuaranteePolicy) {
+    let release = GuaranteePolicy::for_profile(GuaranteeProfile::Release);
+    let release_guarantees = release.guarantees();
+    if policy.guarantees().ownership() < release_guarantees.ownership() {
+        policy.guarantees_mut().set_level(
+            GuaranteeDimension::Ownership,
+            release_guarantees.ownership(),
+        );
+    }
+    if policy.guarantees().liveness() < release_guarantees.liveness() {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Liveness, release_guarantees.liveness());
+    }
+    if policy.guarantees().replay() < release_guarantees.replay() {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Replay, release_guarantees.replay());
+    }
+    if policy.guarantees().boundaries() < release_guarantees.boundaries() {
+        policy.guarantees_mut().set_level(
+            GuaranteeDimension::Boundaries,
+            release_guarantees.boundaries(),
+        );
+    }
+    if policy.guarantees().errors() < release_guarantees.errors() {
+        policy
+            .guarantees_mut()
+            .set_errors(release_guarantees.errors());
+    }
 }
 
 pub(super) fn print_policy_json(policy: &EffectiveGuaranteePolicy) -> anyhow::Result<()> {

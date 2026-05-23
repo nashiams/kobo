@@ -132,6 +132,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             harness,
             cargo,
             profile,
+            backend,
             trait_default,
             audit,
         } => run::cmd_inspect(
@@ -144,6 +145,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             harness,
             cargo.as_deref(),
             profile.as_deref(),
+            backend.as_deref(),
             trait_default.as_deref(),
             audit.as_deref(),
         ),
@@ -252,6 +254,10 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             error_format,
             target,
             engine,
+            backend,
+            scheduler,
+            max_branches,
+            backend_native,
             file,
         } => test_cmd::cmd_test(
             &file,
@@ -266,12 +272,14 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             error_format,
             target.as_deref(),
             engine.as_deref(),
+            test_cmd::BackendExpertOptions::new(backend, scheduler, max_branches, backend_native),
         ),
         KoboCommand::Replay {
             file,
             error_format,
             roundtrip_metadata,
-        } => replay::cmd_replay(&file, error_format, roundtrip_metadata),
+            backend_native,
+        } => replay::cmd_replay(&file, error_format, roundtrip_metadata, backend_native),
         KoboCommand::Fix {
             file,
             dry_run,

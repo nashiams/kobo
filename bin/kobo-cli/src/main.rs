@@ -175,6 +175,13 @@ pub(crate) enum KoboCommand {
         )]
         profile: Option<String>,
         #[arg(
+            long,
+            value_name = "BACKEND",
+            requires = "sim",
+            help = "Pin an expert simulation backend for harness transparency"
+        )]
+        backend: Option<String>,
+        #[arg(
             long = "trait-default",
             value_name = "MODE",
             help = "Select trait facade lowering default"
@@ -297,6 +304,14 @@ pub(crate) enum KoboCommand {
         target: Option<String>,
         #[arg(long, value_name = "ENGINE")]
         engine: Option<String>,
+        #[arg(long, value_name = "BACKEND")]
+        backend: Option<String>,
+        #[arg(long, value_name = "SCHEDULER")]
+        scheduler: Option<String>,
+        #[arg(long = "max-branches", value_name = "N")]
+        max_branches: Option<u64>,
+        #[arg(long = "backend-native")]
+        backend_native: bool,
         #[arg(value_name = "FILE")]
         file: PathBuf,
     },
@@ -308,6 +323,8 @@ pub(crate) enum KoboCommand {
         error_format: ErrorFormat,
         #[arg(long)]
         roundtrip_metadata: bool,
+        #[arg(long = "backend-native")]
+        backend_native: bool,
     },
     /// Apply safe machine-applicable codemods.
     Fix {

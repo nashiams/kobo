@@ -252,6 +252,69 @@ fn path_policy_overrides_follow_dynamic_file_globs() {
 }
 
 #[test]
+fn release_strict_paths_raise_policy_without_source_mode_identity() {
+    let project = TestProject::new("release-strict-paths");
+    let payment_name = unique_symbol("payment_strict");
+    let public_name = unique_symbol("public_recorded");
+    let source = fixture_text("policy/basic.kobo");
+    let payment_file = project.write(&format!("src/payment/{payment_name}.kobo"), &source);
+    let public_file = project.write(&format!("src/public/{public_name}.kobo"), &source);
+    project.write(
+        "Kobo.toml",
+        r#"[guarantees]
+ownership = "record"
+liveness = "record"
+replay = "record"
+boundaries = "record"
+errors = "typed"
+
+[ci.release]
+deny_new_debt = true
+strict_paths = ["src/payment/**"]
+deny_downgrade_without_reason = true
+"#,
+    );
+
+    let payment = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--print-policy=json"),
+            path_arg(&payment_file),
+        ],
+        &project.root,
+    );
+    let public = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--print-policy=json"),
+            path_arg(&public_file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&payment, "strict path policy should print");
+    assert_success(&public, "non-strict path policy should print");
+    let payment_json = first_json(&payment, "payment strict path policy json");
+    let public_json = first_json(&public, "public path policy json");
+    assert_eq!(
+        payment_json["guarantees"]["ownership"], "strict",
+        "release strict_paths should raise matching files back to strict ownership"
+    );
+    assert_eq!(
+        payment_json["guarantees"]["boundaries"], "strict",
+        "release strict_paths should raise matching files back to strict boundaries"
+    );
+    assert_eq!(
+        public_json["guarantees"]["ownership"], "record",
+        "non-matching files should keep the explicit gradual project policy"
+    );
+}
+
+#[test]
 fn docs_and_cli_do_not_expose_script_strict_as_language_identities() {
     let project = TestProject::new("no-mode-identity");
     let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");

@@ -17,7 +17,13 @@ pub(super) fn cmd_replay(
     file: &Path,
     error_format: ErrorFormat,
     roundtrip_metadata: bool,
+    backend_native: bool,
 ) -> anyhow::Result<()> {
+    if backend_native {
+        eprintln!(
+            "backend-native replay requested; Kobo will validate witness metadata before any backend-specific replay claim"
+        );
+    }
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read {}", file.display()))?;
     let witness: Value = serde_json::from_str(&source)

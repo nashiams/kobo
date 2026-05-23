@@ -37,6 +37,7 @@ pub(super) fn cmd_test(
     error_format: ErrorFormat,
     target: Option<&str>,
     engine: Option<&str>,
+    expert_options: BackendExpertOptions,
 ) -> anyhow::Result<()> {
     let sim_profile = parse_sim_profile(sim)?;
     let seed = seed.unwrap_or(0);
@@ -52,6 +53,7 @@ pub(super) fn cmd_test(
         })
         .unwrap_or_else(|| "<missing>".to_owned());
     let profile_roles = resolve_profile_roles(profile, &document, &target_name);
+    expert_options.validate(&profile_roles.backend_profile, sim_profile)?;
     let mut session = super::session::build_session(
         file,
         Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
@@ -69,7 +71,9 @@ pub(super) fn cmd_test(
         profile: profile_roles.backend_profile.clone(),
         seed,
         inject: inject.map(str::to_owned),
-        event_budget: event_budget.or_else(|| default_budget(sim_profile)),
+        event_budget: event_budget
+            .or(expert_options.max_branches)
+            .or_else(|| default_budget(sim_profile)),
     };
     let fuzz_plan = if fuzz {
         Some(FuzzPlan::new(seed, &scenario_program)?)
@@ -116,12 +120,20 @@ pub(super) fn cmd_test(
             witness_dir,
             &session.config,
             &artifacts.runtime_evidence,
+            &expert_options,
             &run,
         )?);
     }
 
     if events == Some("json") {
-        print_events(file, sim_profile, seed, fuzz_plan.as_ref(), &run)?;
+        print_events(
+            file,
+            sim_profile,
+            seed,
+            fuzz_plan.as_ref(),
+            &expert_options,
+            &run,
+        )?;
         return Ok(());
     }
 
@@ -142,6 +154,13 @@ pub(super) fn cmd_test(
             "scenario": run.target,
             "seed": seed,
             "backend_profile": run.profile,
+            "backend": expert_options.backend_name(&run.profile),
+            "scheduler": scheduler_json(
+                sim_profile,
+                seed,
+                &run,
+                expert_options.scheduler.as_deref(),
+            ),
             "status": "passed",
         }))?
     );
@@ -151,6 +170,54 @@ pub(super) fn cmd_test(
 struct ProfileRoles {
     guarantee_profile: String,
     backend_profile: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct BackendExpertOptions {
+    backend: Option<String>,
+    scheduler: Option<String>,
+    max_branches: Option<u64>,
+    backend_native: bool,
+}
+
+impl BackendExpertOptions {
+    pub(super) const fn new(
+        backend: Option<String>,
+        scheduler: Option<String>,
+        max_branches: Option<u64>,
+        backend_native: bool,
+    ) -> Self {
+        Self {
+            backend,
+            scheduler,
+            max_branches,
+            backend_native,
+        }
+    }
+
+    fn backend_name<'a>(&'a self, backend_profile: &'a str) -> &'a str {
+        self.backend
+            .as_deref()
+            .unwrap_or_else(|| backend_for_profile(backend_profile))
+    }
+
+    fn validate(&self, backend_profile: &str, sim_profile: &str) -> anyhow::Result<()> {
+        let backend_name = self.backend_name(backend_profile);
+        validate_backend_name(backend_name)?;
+        validate_scheduler_control(backend_name, self.scheduler.as_deref())?;
+        validate_max_branches_control(backend_name, self.max_branches)?;
+        if self.backend_native && self.backend.is_none() {
+            anyhow::bail!(
+                "unsupported backend option: --backend-native requires --backend; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            );
+        }
+        if self.max_branches.is_some() && sim_profile != "exhaustive" {
+            anyhow::bail!(
+                "unsupported backend option: --max-branches is only available with --sim exhaustive; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            );
+        }
+        Ok(())
+    }
 }
 
 struct FuzzPlan {
@@ -548,11 +615,49 @@ fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
     }
 }
 
+fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
+    if matches!(
+        backend,
+        "loom" | "shuttle" | "turmoil" | "madsim" | "proptest" | "failpoints"
+    ) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "unsupported backend option `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+        )
+    }
+}
+
+fn validate_scheduler_control(backend: &str, scheduler: Option<&str>) -> anyhow::Result<()> {
+    let Some(scheduler) = scheduler else {
+        return Ok(());
+    };
+    match (backend, scheduler) {
+        ("shuttle", "pct" | "pct-random-bounded" | "small-random") => Ok(()),
+        ("loom", "exhaustive" | "small-random") => Ok(()),
+        ("turmoil" | "madsim", "deterministic" | "small-random") => Ok(()),
+        (_, "small-random") => Ok(()),
+        _ => anyhow::bail!(
+            "unsupported backend option: scheduler `{scheduler}` is not supported by backend `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+        ),
+    }
+}
+
+fn validate_max_branches_control(backend: &str, max_branches: Option<u64>) -> anyhow::Result<()> {
+    if max_branches.is_none() || backend == "loom" {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "unsupported backend option: --max-branches is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+    )
+}
+
 fn print_events(
     file: &Path,
     sim_profile: &str,
     seed: u64,
     fuzz_plan: Option<&FuzzPlan>,
+    expert_options: &BackendExpertOptions,
     run: &FullDepthRun,
 ) -> anyhow::Result<()> {
     println!(
@@ -562,7 +667,10 @@ fn print_events(
             "file": sim_model::cli_relative_path(file)?,
             "sim_profile": sim_profile,
             "backend_profile": run.profile,
-            "scheduler": scheduler_json(sim_profile, seed, run, None),
+            "backend": expert_options.backend_name(&run.profile),
+            "scheduler": scheduler_json(sim_profile, seed, run, expert_options.scheduler.as_deref()),
+            "backend_native": expert_options.backend_native,
+            "max_branches": expert_options.max_branches,
             "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
             "events": events_json(&run.events),
@@ -583,6 +691,7 @@ fn write_run_witness(
     witness_dir: Option<&Path>,
     config: &kobo_driver::KoboConfig,
     runtime_evidence: &kobo_codegen::RuntimeEvidence,
+    expert_options: &BackendExpertOptions,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -648,6 +757,12 @@ fn write_run_witness(
             "profile": run.profile,
         },
         "sim_profile": sim_profile,
+        "backend_controls": {
+            "backend": expert_options.backend_name(&run.profile),
+            "scheduler": expert_options.scheduler.as_deref(),
+            "max_branches": expert_options.max_branches,
+            "backend_native": expert_options.backend_native,
+        },
         "source": {
             "path": source_path,
             "hash": document.source_hash,
@@ -658,7 +773,7 @@ fn write_run_witness(
         "fuzz": fuzz_plan_json(fuzz_plan),
         "injections": injections_json(inject),
         "backend_profile": run.profile,
-        "backend": backend_for_profile(&run.profile),
+        "backend": expert_options.backend_name(&run.profile),
         "backend_replay": backend_replay_token,
         "backend_replay_token": backend_replay_token,
         "ecosystem_scope": ecosystem_scope(run),

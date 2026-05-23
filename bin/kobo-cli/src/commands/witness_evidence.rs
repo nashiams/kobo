@@ -222,7 +222,8 @@ pub(super) fn inferred_obligations_json(
                     "id": format!("{}:{}", template.id, obligation.binding),
                     "kind": template.kind,
                     "template_id": template.id,
-                    "template_version": template.version,
+                    "template_schema": template.schema,
+                    "schema_version": template.schema_version,
                     "template_source": template.source,
                     "binding": obligation.binding,
                     "state": state,
@@ -453,7 +454,8 @@ fn modeled_boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
 struct LifecycleTemplate {
     kind: String,
     id: String,
-    version: String,
+    schema: String,
+    schema_version: u64,
     confidence: String,
     source: &'static str,
 }
@@ -475,7 +477,8 @@ fn lifecycle_template_facts(program: &ScenarioProgram) -> BTreeMap<String, Lifec
             |template| LifecycleTemplate {
                 kind: template.kind.clone(),
                 id: template.id.clone(),
-                version: template.version.clone(),
+                schema: "lifecycle-template".to_owned(),
+                schema_version: 1,
                 confidence: template.confidence.clone(),
                 source: match template.source {
                     kobo_ir::ScenarioLifecycleTemplateSource::Declaration => "declaration",
@@ -496,7 +499,8 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         return LifecycleTemplate {
             kind: "legacy_actions".to_owned(),
             id: "legacy_actions:ack_nack_requeue".to_owned(),
-            version: "v0.13.0".to_owned(),
+            schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "legacy_action_fallback".to_owned(),
             source: "compatibility_fallback",
         };
@@ -508,7 +512,8 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         return LifecycleTemplate {
             kind: "legacy_actions".to_owned(),
             id: "legacy_actions:transaction".to_owned(),
-            version: "v0.13.0".to_owned(),
+            schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "legacy_action_fallback".to_owned(),
             source: "compatibility_fallback",
         };
@@ -520,7 +525,8 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         return LifecycleTemplate {
             kind: "legacy_actions".to_owned(),
             id: "legacy_actions:handler_reply".to_owned(),
-            version: "v0.13.0".to_owned(),
+            schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "legacy_action_fallback".to_owned(),
             source: "compatibility_fallback",
         };
@@ -532,7 +538,8 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         return LifecycleTemplate {
             kind: "legacy_actions".to_owned(),
             id: "legacy_actions:spawned_task".to_owned(),
-            version: "v0.13.0".to_owned(),
+            schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "legacy_action_fallback".to_owned(),
             source: "compatibility_fallback",
         };
@@ -544,7 +551,8 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         return LifecycleTemplate {
             kind: "legacy_actions".to_owned(),
             id: "legacy_actions:lock_permit".to_owned(),
-            version: "v0.13.0".to_owned(),
+            schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "legacy_action_fallback".to_owned(),
             source: "compatibility_fallback",
         };
@@ -556,7 +564,8 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
         return LifecycleTemplate {
             kind: "legacy_actions".to_owned(),
             id: "legacy_actions:file_socket".to_owned(),
-            version: "v0.13.0".to_owned(),
+            schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "legacy_action_fallback".to_owned(),
             source: "compatibility_fallback",
         };
@@ -564,7 +573,8 @@ fn lifecycle_template(actions: &[String]) -> LifecycleTemplate {
     LifecycleTemplate {
         kind: "lifecycle_obligation".to_owned(),
         id: "custom_lifecycle_obligation".to_owned(),
-        version: "v0.13.0".to_owned(),
+        schema: "lifecycle-template".to_owned(),
+        schema_version: 1,
         confidence: "compatibility_fallback".to_owned(),
         source: "compatibility_fallback",
     }

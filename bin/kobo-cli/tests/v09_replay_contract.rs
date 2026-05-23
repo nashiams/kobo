@@ -211,23 +211,23 @@ fn replay_exact_sync() {
     assert_eq!(json["backend_replay_evidence"]["backend"], "loom");
     assert_eq!(
         json["backend_replay_evidence"]["source"],
-        "loom-generated-harness"
+        "generated-loom-harness"
     );
-    let native_replay_id = json["backend_replay_evidence"]["native_replay_id"]
+    let harness_replay_id = json["backend_replay_evidence"]["harness_replay_id"]
         .as_str()
-        .expect("backend-native witness should carry a native replay id");
+        .expect("backend-native witness should carry a generated harness replay id");
     assert!(
-        native_replay_id.starts_with("loom-native:"),
-        "native replay id should be backend-owned, not a bare Kobo hash: {json}"
+        harness_replay_id.starts_with("loom-harness:"),
+        "replay id should be honest generated-harness evidence, not a claimed native backend token: {json}"
     );
     assert_eq!(
-        json["backend_replay"], native_replay_id,
-        "backend_replay should copy the native backend replay id"
+        json["backend_replay"], harness_replay_id,
+        "backend_replay should copy the generated harness replay id"
     );
     assert_ne!(
-        json["backend_replay_evidence"]["native_replay_id"],
+        json["backend_replay_evidence"]["harness_replay_id"],
         json["backend_replay_evidence"]["kobo_verification_hash"],
-        "native replay id should stay separate from Kobo verification hashes"
+        "generated harness replay id should stay separate from Kobo verification hashes"
     );
     json["backend_controls"]["scheduler"] = serde_json::json!("pct");
     std::fs::write(witness, serde_json::to_string_pretty(&json).unwrap()).unwrap();

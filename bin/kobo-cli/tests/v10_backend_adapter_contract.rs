@@ -1144,8 +1144,8 @@ fn configured_checkpoint_route() {
         "checkpoint replay should bind the checkpoint artifact hash: {witness}"
     );
     assert_eq!(
-        witness["checkpoint_replay"]["replay_mode"], "loom-checkpoint-resume",
-        "checkpoint replay should disclose that replay consumes the Loom checkpoint artifact"
+        witness["checkpoint_replay"]["artifact_validation"], "loom-checkpoint-hash",
+        "checkpoint replay should honestly disclose checkpoint artifact integrity validation"
     );
     let harness_path = witness["harness_manifest"]["harness_rs_path"]
         .as_str()

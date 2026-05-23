@@ -125,7 +125,8 @@ fn normalized_obligations(witness: &Value) -> Vec<Value> {
                 "kind": obligation["kind"].clone(),
                 "state": obligation["state"].clone(),
                 "template_id": obligation["template_id"].clone(),
-                "template_version": obligation["template_version"].clone(),
+                "template_schema": obligation["template_schema"].clone(),
+                "schema_version": obligation["schema_version"].clone(),
                 "terminal_actions": obligation["terminal_actions"].clone(),
             })
         })

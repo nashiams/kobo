@@ -1265,7 +1265,8 @@ fn write_run_witness(
         serde_json::json!({
             "mode": "observe",
             "source": "scenario_program",
-            "template_version": "v0.13.0",
+            "template_schema": "lifecycle-template",
+            "schema_version": 1,
             "obligations": inferred_obligations,
         }),
     );
@@ -1718,8 +1719,8 @@ fn checkpoint_replay_json(enabled: bool, run: &FullDepthRun) -> serde_json::Valu
         } else {
             None
         },
-        "replay_mode": if enabled {
-            Some("loom-checkpoint-resume")
+        "artifact_validation": if enabled {
+            Some("loom-checkpoint-hash")
         } else {
             None
         },
@@ -4449,8 +4450,8 @@ pub(super) fn backend_replay_id(
     if mode == "none" {
         return "none".to_owned();
     }
-    if let Some(native_replay_id) = native_backend_replay_id(run) {
-        return native_replay_id;
+    if let Some(harness_replay_id) = harness_backend_replay_id(run) {
+        return harness_replay_id;
     }
     kobo_replay_hash(mode, source_identity, seed, run)
 }
@@ -4462,16 +4463,16 @@ pub(super) fn backend_replay_evidence_json(
     run: &FullDepthRun,
 ) -> serde_json::Value {
     let kobo_verification_hash = kobo_replay_hash(mode, source_identity, seed, run);
-    let native_replay_id = if mode == "none" {
+    let harness_replay_id = if mode == "none" {
         None
     } else {
-        native_backend_replay_id(run)
+        harness_backend_replay_id(run)
     };
     serde_json::json!({
         "backend": backend_for_profile(&run.profile),
-        "mode": if native_replay_id.is_some() { "native" } else { mode },
-        "source": if native_replay_id.is_some() { "loom-generated-harness" } else { "kobo-verification-hash" },
-        "native_replay_id": native_replay_id,
+        "mode": if harness_replay_id.is_some() { "generated_harness" } else { mode },
+        "source": if harness_replay_id.is_some() { "generated-loom-harness" } else { "kobo-verification-hash" },
+        "harness_replay_id": harness_replay_id,
         "kobo_verification_hash": kobo_verification_hash,
     })
 }
@@ -4491,7 +4492,7 @@ fn kobo_replay_hash(mode: &str, source_identity: &str, seed: u64, run: &FullDept
     }
 }
 
-fn native_backend_replay_id(run: &FullDepthRun) -> Option<String> {
+fn harness_backend_replay_id(run: &FullDepthRun) -> Option<String> {
     if backend_for_profile(&run.profile) != "loom" {
         return None;
     }
@@ -4509,7 +4510,7 @@ fn native_backend_replay_id(run: &FullDepthRun) -> Option<String> {
         run.digest.harness_trace_hash,
     );
     Some(format!(
-        "loom-native:{}",
+        "loom-harness:{}",
         kobo_sim_core::digest::stable_hash(&material)
     ))
 }

@@ -333,7 +333,7 @@ struct Queue {}
 struct Parcel {}
 
 impl Queue {
-    async fn recv(&self) -> Parcel { Parcel {} }
+    fn recv(&self) -> Parcel { Parcel {} }
 }
 
 impl Parcel {
@@ -342,7 +342,8 @@ impl Parcel {
 
 #[kobo::scenario(profile = "async")]
 async fn structured_case() {
-    let delivery = Queue {}.recv().await;
+    let queue = Queue {};
+    let delivery = queue.recv();
     delivery.requeue();
 }
 "#;
@@ -352,7 +353,8 @@ async fn structured_case() {
     for field in [
         "id",
         "template_id",
-        "template_version",
+        "template_schema",
+        "schema_version",
         "kind",
         "binding",
         "state",
@@ -366,7 +368,8 @@ async fn structured_case() {
             "structured template fact missing `{field}`: {obligation}"
         );
     }
-    assert_eq!(obligation["template_version"], "v0.13.0");
+    assert_eq!(obligation["template_schema"], "lifecycle-template");
+    assert_eq!(obligation["schema_version"], 1);
     assert_eq!(obligation["confidence"], "exact_template");
     assert!(
         obligation["source_span"].is_object(),

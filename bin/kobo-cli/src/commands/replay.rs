@@ -122,19 +122,19 @@ fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
             "unsupported backend option: backend_replay_evidence.backend must be `loom` for --backend-native replay"
         );
     }
-    if evidence["source"].as_str() != Some("loom-generated-harness") {
+    if evidence["source"].as_str() != Some("generated-loom-harness") {
         anyhow::bail!(
-            "unsupported backend option: backend_replay_evidence.source must be `loom-generated-harness` for --backend-native replay"
+            "unsupported backend option: backend_replay_evidence.source must be `generated-loom-harness` for --backend-native replay"
         );
     }
-    let Some(native_replay_id) = evidence["native_replay_id"].as_str() else {
+    let Some(harness_replay_id) = evidence["harness_replay_id"].as_str() else {
         anyhow::bail!(
-            "unsupported backend option: backend_replay_evidence.native_replay_id is required for --backend-native replay"
+            "unsupported backend option: backend_replay_evidence.harness_replay_id is required for --backend-native replay"
         );
     };
-    if !native_replay_id.starts_with("loom-native:") || native_replay_id != token {
+    if !harness_replay_id.starts_with("loom-harness:") || harness_replay_id != token {
         anyhow::bail!(
-            "unsupported backend option: backend_replay_evidence.native_replay_id must match backend_replay for --backend-native replay"
+            "unsupported backend option: backend_replay_evidence.harness_replay_id must match backend_replay for --backend-native replay"
         );
     }
     let Some(kobo_hash) = evidence["kobo_verification_hash"].as_str() else {
@@ -142,9 +142,9 @@ fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
             "unsupported backend option: backend_replay_evidence.kobo_verification_hash is required for --backend-native replay"
         );
     };
-    if kobo_hash == native_replay_id {
+    if kobo_hash == harness_replay_id {
         anyhow::bail!(
-            "unsupported backend option: backend_replay_evidence must keep native replay IDs separate from Kobo verification hashes"
+            "unsupported backend option: backend_replay_evidence must keep generated harness replay IDs separate from Kobo verification hashes"
         );
     }
     Ok(())
@@ -320,7 +320,8 @@ fn replay_v1(
         "lifecycle_inference": {
             "mode": "observe",
             "source": "scenario_program",
-            "template_version": "v0.13.0",
+            "template_schema": "lifecycle-template",
+            "schema_version": 1,
             "obligations": inferred_obligations,
         },
         "failure": failure_json(source_display, &verified_source.source, &run),
@@ -661,8 +662,8 @@ fn checkpoint_replay_json(enabled: bool, run: &kobo_sim_core::FullDepthRun) -> V
         } else {
             None
         },
-        "replay_mode": if enabled {
-            Some("loom-checkpoint-resume")
+        "artifact_validation": if enabled {
+            Some("loom-checkpoint-hash")
         } else {
             None
         },

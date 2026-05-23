@@ -10,9 +10,9 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
     "backend_replay": "7ab5ac7d9b3e6dc3",
     "backend_replay_evidence": {
       "backend": "generated-rust-process",
+      "harness_replay_id": null,
       "kobo_verification_hash": "7ab5ac7d9b3e6dc3",
       "mode": "record",
-      "native_replay_id": null,
       "source": "kobo-verification-hash"
     },
     "backend_version": {
@@ -59,12 +59,12 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "target": "stable_replay"
     },
     "checkpoint_replay": {
+      "artifact_validation": null,
       "checkpoint_artifact_hash": null,
       "checkpoint_path": null,
       "enabled": false,
       "event_count": null,
       "harness_trace_hash": null,
-      "replay_mode": null,
       "semantic_trace_hash": null,
       "source": null
     },
@@ -234,8 +234,9 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
     "lifecycle_inference": {
       "mode": "observe",
       "obligations": [],
+      "schema_version": 1,
       "source": "scenario_program",
-      "template_version": "v0.13.0"
+      "template_schema": "lifecycle-template"
     },
     "model_vs_implementation": {
       "boundary_policy": {
@@ -374,9 +375,9 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
     "backend_replay": "7ab5ac7d9b3e6dc3",
     "backend_replay_evidence": {
       "backend": "generated-rust-process",
+      "harness_replay_id": null,
       "kobo_verification_hash": "7ab5ac7d9b3e6dc3",
       "mode": "record",
-      "native_replay_id": null,
       "source": "kobo-verification-hash"
     },
     "backend_version": {
@@ -423,12 +424,12 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "target": "stable_replay"
     },
     "checkpoint_replay": {
+      "artifact_validation": null,
       "checkpoint_artifact_hash": null,
       "checkpoint_path": null,
       "enabled": false,
       "event_count": null,
       "harness_trace_hash": null,
-      "replay_mode": null,
       "semantic_trace_hash": null,
       "source": null
     },
@@ -598,8 +599,9 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
     "lifecycle_inference": {
       "mode": "observe",
       "obligations": [],
+      "schema_version": 1,
       "source": "scenario_program",
-      "template_version": "v0.13.0"
+      "template_schema": "lifecycle-template"
     },
     "model_vs_implementation": {
       "boundary_policy": {

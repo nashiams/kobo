@@ -132,6 +132,7 @@ pub struct CandidateAdmissionEvidence {
     pub id: String,
     pub track: String,
     pub status: String,
+    pub evidence: Vec<CandidateAdmissionFact>,
     pub inspect_visibility: Option<String>,
     pub manual_rust_equivalent: Option<String>,
     pub strict_compatible: bool,
@@ -140,6 +141,13 @@ pub struct CandidateAdmissionEvidence {
     pub replay_related: bool,
     pub replay_grade: Option<ReplayGrade>,
     pub adapter_confidence: Vec<AdapterEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateAdmissionFact {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -9,11 +9,12 @@ use kobo_ir::{
 use kobo_proof::{
     certificate_material_hash, core_material_hash, stable_hash, AdapterConfidence, AdapterEvidence,
     AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence,
-    CandidateAdmissionEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence, CoverageLoss,
-    FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence, HashEvidence,
-    ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry, ProofCertificate,
-    SelectPathEvidence, SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence,
-    SuspensionStateEvidence, TemplateVersionEvidence, TimeoutCancelEdgeEvidence,
+    CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence,
+    CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
+    HashEvidence, ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry,
+    ProofCertificate, SelectPathEvidence, SourceEvidence, SourceSpan,
+    SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateVersionEvidence,
+    TimeoutCancelEdgeEvidence,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -403,6 +404,7 @@ pub fn candidate_admission_evidence(
                 id: string_field(&fields, "id").unwrap_or_else(|| "unknown".to_owned()),
                 track: string_field(&fields, "track").unwrap_or_else(|| "unknown".to_owned()),
                 status: string_field(&fields, "status").unwrap_or_else(|| "research".to_owned()),
+                evidence: candidate_evidence_facts(&fields),
                 inspect_visibility: string_field(&fields, "inspect"),
                 manual_rust_equivalent: string_field(&fields, "manual_rust"),
                 strict_compatible: bool_field(&fields, "strict").unwrap_or(false),
@@ -474,6 +476,28 @@ fn bool_field(fields: &BTreeMap<String, String>, key: &str) -> Option<bool> {
         "false" => Some(false),
         _ => None,
     }
+}
+
+fn candidate_evidence_facts(fields: &BTreeMap<String, String>) -> Vec<CandidateAdmissionFact> {
+    const RESERVED: &[&str] = &[
+        "id",
+        "track",
+        "status",
+        "inspect",
+        "manual_rust",
+        "strict",
+        "whole_ecosystem",
+        "diagnostic_snapshot",
+        "replay_related",
+    ];
+    fields
+        .iter()
+        .filter(|(key, _)| !RESERVED.contains(&key.as_str()))
+        .map(|(key, value)| CandidateAdmissionFact {
+            key: key.clone(),
+            value: value.clone(),
+        })
+        .collect()
 }
 
 fn syn_path_ends_with(path: &syn::Path, suffix: &[&str]) -> bool {

@@ -49,6 +49,16 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         ["backend_profile"].as_slice(),
         ["backend"].as_slice(),
         ["backend_replay"].as_slice(),
+        ["backend_replay_token"].as_slice(),
+        ["backend_controls", "backend"].as_slice(),
+        ["backend_controls", "scheduler"].as_slice(),
+        ["backend_controls", "max_branches"].as_slice(),
+        ["backend_controls", "backend_native"].as_slice(),
+        ["sim_profile"].as_slice(),
+        ["sim_config", "default_profile"].as_slice(),
+        ["sim_config", "show_backend_choices"].as_slice(),
+        ["sim_config", "profiles"].as_slice(),
+        ["sim_config", "backends"].as_slice(),
         ["replay_guarantee"].as_slice(),
         ["expanded_policy", "ownership"].as_slice(),
         ["expanded_policy", "liveness"].as_slice(),
@@ -94,6 +104,29 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
             .as_array()
             .is_some_and(|spans| !spans.is_empty()),
         "liveness witness should include related source spans for the obligation"
+    );
+}
+
+#[test]
+fn replay_rejects_v1_witness_missing_sim_backend_schema() {
+    let project = TestProject::new("replay-missing-sim-schema");
+    let witnesses = emit_witness(&project);
+    assert!(!witnesses.is_empty(), "witness should exist before replay");
+    let witness = &witnesses[0];
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(witness).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("sim_config");
+    json.as_object_mut().unwrap().remove("backend_controls");
+    std::fs::write(witness, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    let output = run_kobo(&[s("replay"), path_arg(witness)], &project.root);
+
+    assert_failure(&output, "replay must reject missing sim/backend schema");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "missing backend_controls",
+        "failure should name the first missing stable backend schema field",
     );
 }
 

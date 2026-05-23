@@ -19,6 +19,20 @@
   "backend_profile": "async",
   "backend": "shuttle",
   "backend_replay": "partial-boundary-fixture",
+  "backend_replay_token": "partial-boundary-fixture",
+  "backend_controls": {
+    "backend": "shuttle",
+    "scheduler": null,
+    "max_branches": null,
+    "backend_native": false
+  },
+  "sim_profile": "quick",
+  "sim_config": {
+    "default_profile": "quick",
+    "show_backend_choices": false,
+    "profiles": {},
+    "backends": {}
+  },
   "replay_guarantee": "partial",
   "modeled_boundaries": ["ward.time"],
   "opaque_boundaries": ["reqwest::Client"],

@@ -1021,7 +1021,9 @@ impl<'a> ScenarioLowerer<'a> {
     }
 
     fn execute_if(&mut self, expr_if: &'a ExprIf, env: &mut BindingEnv) {
-        match self.eval_bool(expr_if.cond.as_ref(), env) {
+        let condition_value = self.eval_bool(expr_if.cond.as_ref(), env);
+        self.execute_expr(expr_if.cond.as_ref(), env);
+        match condition_value {
             Some(true) => self.execute_block(&expr_if.then_branch, env),
             Some(false) => {
                 if let Some((_, else_expr)) = expr_if.else_branch.as_ref() {
@@ -1066,9 +1068,13 @@ impl<'a> ScenarioLowerer<'a> {
 
     fn execute_match(&mut self, expr_match: &'a ExprMatch, env: &mut BindingEnv) {
         let discriminant = self.eval_bool(expr_match.expr.as_ref(), env);
+        self.execute_expr(expr_match.expr.as_ref(), env);
         if discriminant.is_some() {
             for arm in &expr_match.arms {
                 if matches_bool_pat(&arm.pat, discriminant) {
+                    if let Some((_, guard)) = arm.guard.as_ref() {
+                        self.execute_expr(guard.as_ref(), env);
+                    }
                     self.execute_expr(arm.body.as_ref(), env);
                     break;
                 }
@@ -1086,6 +1092,9 @@ impl<'a> ScenarioLowerer<'a> {
         let mut arm_envs = Vec::new();
         for arm in &expr_match.arms {
             let mut arm_env = before.clone();
+            if let Some((_, guard)) = arm.guard.as_ref() {
+                self.execute_expr(guard.as_ref(), &mut arm_env);
+            }
             self.execute_expr(arm.body.as_ref(), &mut arm_env);
             arm_envs.push(arm_env);
         }

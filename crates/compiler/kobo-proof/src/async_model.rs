@@ -184,6 +184,27 @@ fn verify_future_state_locals(
         });
     }
 
+    for summary in &certificate.function_summaries {
+        let expected_by_await = expected_by_function
+            .get(summary.function.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let actual_count = suspensions_by_function
+            .get(summary.function.as_str())
+            .map(Vec::len)
+            .unwrap_or_default();
+        let missing_required_future_locals = expected_by_await
+            .iter()
+            .skip(actual_count)
+            .any(|locals| !locals.is_empty());
+        if actual_count > expected_by_await.len() || missing_required_future_locals {
+            return Err(VerificationError::AsyncEvidenceMismatch {
+                field: "suspension_states".to_owned(),
+                id: summary.function.clone(),
+            });
+        }
+    }
+
     let mut expected = BTreeSet::<(String, String)>::new();
     for (function, suspensions) in suspensions_by_function {
         let Some(expected_by_await) = expected_by_function.get(function) else {
@@ -765,15 +786,17 @@ fn await_live_locals_in_match(
     for arm in &expr_match.arms {
         let mut arm_declared = declared_before.clone();
         collect_pat_bindings(&arm.pat, &mut arm_declared);
+        let (body_awaits, body_uses) =
+            await_live_locals_in_expr(arm.body.as_ref(), later_uses, &arm_declared);
+        let mut guard_later_uses = later_uses.clone();
+        guard_later_uses.extend(body_uses.iter().cloned());
         let (guard_awaits, guard_uses) = arm
             .guard
             .as_ref()
-            .map(|(_, guard)| await_live_locals_in_expr(guard.as_ref(), later_uses, &arm_declared))
+            .map(|(_, guard)| {
+                await_live_locals_in_expr(guard.as_ref(), &guard_later_uses, &arm_declared)
+            })
             .unwrap_or_default();
-        let mut body_later_uses = later_uses.clone();
-        body_later_uses.extend(guard_uses.iter().cloned());
-        let (body_awaits, body_uses) =
-            await_live_locals_in_expr(arm.body.as_ref(), &body_later_uses, &arm_declared);
         arm_awaits.extend(guard_awaits);
         arm_awaits.extend(body_awaits);
         arm_uses.extend(guard_uses);

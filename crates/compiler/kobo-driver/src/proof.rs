@@ -1788,15 +1788,17 @@ fn await_live_locals_in_match(
     for arm in &expr_match.arms {
         let mut arm_declared = declared_before.clone();
         collect_pat_bindings(&arm.pat, &mut arm_declared);
+        let (body_awaits, body_uses) =
+            await_live_locals_in_expr(arm.body.as_ref(), later_uses, &arm_declared);
+        let mut guard_later_uses = later_uses.clone();
+        guard_later_uses.extend(body_uses.iter().cloned());
         let (guard_awaits, guard_uses) = arm
             .guard
             .as_ref()
-            .map(|(_, guard)| await_live_locals_in_expr(guard.as_ref(), later_uses, &arm_declared))
+            .map(|(_, guard)| {
+                await_live_locals_in_expr(guard.as_ref(), &guard_later_uses, &arm_declared)
+            })
             .unwrap_or_default();
-        let mut body_later_uses = later_uses.clone();
-        body_later_uses.extend(guard_uses.iter().cloned());
-        let (body_awaits, body_uses) =
-            await_live_locals_in_expr(arm.body.as_ref(), &body_later_uses, &arm_declared);
         arm_awaits.extend(guard_awaits);
         arm_awaits.extend(body_awaits);
         arm_uses.extend(guard_uses);

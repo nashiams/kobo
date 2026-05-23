@@ -209,6 +209,58 @@ async fn {scenario_name}() {{
     )
 }
 
+fn if_condition_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn ready() -> bool {{ true }}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    if ready().await {{
+        let _after = first;
+    }}
+}}
+"#
+    )
+}
+
+fn match_guard_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn ready() -> bool {{ true }}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    let _value = match 0 {{
+        _ if ready().await => first,
+        _ => 0,
+    }};
+}}
+"#
+    )
+}
+
+fn match_guard_pre_await_only_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let _block = match 0 {{
+        p if p == 0 => {{
+            helper().await;
+            0
+        }}
+        _ => 0,
+    }};
+}}
+"#
+    )
+}
+
 fn post_await_declared_local_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -757,6 +809,48 @@ fn match_arm_block_local_live_after_await_becomes_future_state() {
 }
 
 #[test]
+fn if_condition_await_lowers_to_core_suspension() {
+    let project = TestProject::new("v14-async-if-condition-await");
+    let artifact_path = emit_artifact(
+        &project,
+        &if_condition_await_source("if_condition_await_case"),
+        "if_condition_await_case",
+    );
+    assert_single_await_retains_binding(&read_value(&artifact_path), "first");
+}
+
+#[test]
+fn match_guard_await_lowers_to_core_suspension() {
+    let project = TestProject::new("v14-async-match-guard-await");
+    let artifact_path = emit_artifact(
+        &project,
+        &match_guard_await_source("match_guard_await_case"),
+        "match_guard_await_case",
+    );
+    assert_single_await_retains_binding(&read_value(&artifact_path), "first");
+}
+
+#[test]
+fn match_guard_only_binding_is_not_future_state_for_body_await() {
+    let project = TestProject::new("v14-async-match-guard-only-binding");
+    let artifact_path = emit_artifact(
+        &project,
+        &match_guard_pre_await_only_source("match_guard_only_binding_case"),
+        "match_guard_only_binding_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+    assert!(
+        !locals
+            .iter()
+            .any(|local| local["binding"].as_str() == Some("p")),
+        "guard-only pattern binding must not be live across body await: {locals:?}"
+    );
+}
+
+#[test]
 fn pre_await_only_condition_local_is_not_future_state() {
     let project = TestProject::new("v14-async-pre-await-only");
     let artifact_path = emit_artifact(
@@ -1053,6 +1147,27 @@ fn duplicate_future_state_local_is_rejected_after_hash_recompute() {
     });
 
     verify_fails(&project, &artifact_path, "future_state_locals");
+}
+
+#[test]
+fn removed_core_await_evidence_is_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-source-await-count-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &if_condition_await_source("removed_core_await_evidence_case"),
+        "removed_core_await_evidence_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["core"]["async_model"]["suspension_states"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["cancel_edges"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["future_state_locals"] = Value::Array(Vec::new());
+        let edges = artifact["core"]["cfg_edges"]
+            .as_array_mut()
+            .expect("cfg edges should be mutable");
+        edges.retain(|edge| edge["kind"].as_str() != Some("await"));
+    });
+
+    verify_fails(&project, &artifact_path, "suspension_states");
 }
 
 #[test]

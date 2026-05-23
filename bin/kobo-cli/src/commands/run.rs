@@ -280,7 +280,7 @@ fn simulation_transparency_output(
     };
     let mut output = String::new();
     output.push_str(&format!(
-        "// kobo: {command} v0.10 simulation facade transparency path built on the v0.9 checked simulation MVP\n"
+        "// kobo: {command} simulation contract transparency path for scoped guarantee policy and inspectable harness boundaries\n"
     ));
     output.push_str(
         "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",
@@ -452,16 +452,23 @@ fn validate_backend_pin(backend: Option<&str>) -> anyhow::Result<()> {
     let Some(backend) = backend else {
         return Ok(());
     };
-    if matches!(
-        backend,
-        "loom" | "shuttle" | "turmoil" | "madsim" | "proptest" | "failpoints"
-    ) {
-        Ok(())
-    } else {
+    let Some(capability) = kobo_sim_core::backend::capabilities()
+        .iter()
+        .find(|capability| capability.name == backend)
+    else {
         anyhow::bail!(
             "unsupported backend option `{backend}`; use a stable Kobo profile, inspect the generated backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
-        )
+        );
+    };
+    if !capability.executes_in_v10 {
+        anyhow::bail!(
+            "unsupported backend option `{backend}`: {} ({}, {}); use a stable Kobo profile, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later",
+            capability.role,
+            capability.integration_level,
+            capability.scenario_execution
+        );
     }
+    Ok(())
 }
 
 fn append_scenario_metadata(mut output: String, source: &str) -> String {

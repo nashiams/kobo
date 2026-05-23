@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 use v09_common::{
-    assert_contains, assert_not_contains, assert_success, path_arg, run_kobo_with_timeout, s,
-    CliOutput, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg,
+    run_kobo_with_timeout, s, CliOutput, TestProject,
 };
 
 const V13_TIMEOUT: Duration = Duration::from_secs(90);
@@ -704,10 +704,28 @@ fn run() {
 }
 "#;
     let file = project.main_file(source);
-    let witness_dir = project.root.join(".kobo/witnesses");
-    std::fs::create_dir_all(&witness_dir).expect("witness dir should create");
-    let witness_path = witness_dir.join("run-1.kwit");
-    std::fs::write(&witness_path, "{}").expect("witness should write");
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&sim, "failing live LSP scenario should emit a witness");
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(
+        !witnesses.is_empty(),
+        "live LSP test requires a generated witness"
+    );
+    let witness_name = witnesses[0]
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("witness filename should be UTF-8")
+        .to_owned();
 
     let lsp = env!("CARGO_BIN_EXE_kobo-lsp");
     let uri = file_uri(&file);
@@ -758,7 +776,7 @@ fn run() {
     assert_success(&lsp_output, "kobo-lsp framed stdio witness session");
     assert_contains(
         &lsp_output.stdout,
-        "run-1.kwit",
+        &witness_name,
         "live document links should expose the current witness artifact",
     );
     assert_contains(

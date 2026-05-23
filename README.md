@@ -43,12 +43,11 @@ The primary workflow is:
   and reloads a bounded watch plan.
 
 Experts can stay on the Kobo workflow while inspecting or pinning simulation
-engines when needed: `kobo sim scout --why`, `kobo inspect --sim --harness
---backend shuttle`, `kobo test --sim exhaustive --profile sync --backend loom
---scheduler exhaustive`, and backend-native controls when the adapter can
-represent them without changing normal source imports. Unsupported native
-adapter knobs are rejected with scenario-debt guidance rather than accepted as
-metadata.
+engines when needed: `kobo sim scout --why`, `kobo inspect --sim --harness`,
+`kobo test --sim exhaustive --profile sync --backend loom --scheduler exhaustive`,
+and backend-native controls when the adapter can represent them without changing
+normal source imports. Unsupported native adapter knobs are rejected with
+scenario-debt guidance rather than accepted as metadata.
 
 Stable simulation defaults live in `Kobo.toml`:
 

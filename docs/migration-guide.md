@@ -64,7 +64,7 @@ knob:
 kobo test --sim quick
 kobo test --sim deep --profile async
 kobo test --sim exhaustive --profile sync --backend loom --scheduler exhaustive
-kobo inspect --sim --harness --backend shuttle
+kobo inspect --sim --harness
 ```
 
 Unsupported backend-native knobs such as Shuttle PCT scheduling remain visible

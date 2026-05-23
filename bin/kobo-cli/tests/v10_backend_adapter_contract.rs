@@ -291,7 +291,7 @@ fn expert_sync_route() {
 }
 
 #[test]
-fn inspect_harness_accepts_backend_pin_as_expert_transparency() {
+fn inspect_harness_rejects_unsupported_backend_pin() {
     let project = TestProject::new("v10-inspect-backend-pin");
     let file = project.main_file(
         r#"
@@ -314,17 +314,25 @@ fn inspect_backend_route() {
         &project.root,
     );
 
-    assert_success(&output, "inspect should accept a backend pin");
+    assert_failure(
+        &output,
+        "inspect should reject unsupported backend-native pins",
+    );
     let text = output.combined();
     assert_contains(
         &text,
-        "backend adapter boundary",
-        "inspect output should still describe the generated harness boundary",
+        "unsupported backend option",
+        "inspect failure should name unsupported backend controls",
     );
     assert_contains(
         &text,
-        "backend pin: shuttle",
-        "inspect output should disclose the expert backend pin",
+        "scenario debt",
+        "inspect failure should offer scenario debt as an explicit path",
+    );
+    assert_contains(
+        &text,
+        "unsupported-native-adapter",
+        "inspect failure should disclose that the adapter is metadata-only",
     );
 }
 

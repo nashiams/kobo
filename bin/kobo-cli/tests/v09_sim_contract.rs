@@ -567,7 +567,7 @@ fn sim_deep_is_public_v10_scheduler_profile() {
 }
 
 #[test]
-fn inspect_sim_uses_v09_transparency_wording() {
+fn inspect_sim_uses_policy_transparency_wording() {
     let project = TestProject::new("inspect-sim-wording");
     let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
 
@@ -575,16 +575,16 @@ fn inspect_sim_uses_v09_transparency_wording() {
 
     assert_success(&output, "inspect --sim should succeed");
     let text = output.combined();
-    assert_contains(&text, "v0.9", "inspect --sim should name v0.9 scope");
     assert_contains(
         &text,
-        "checked simulation MVP",
-        "inspect --sim should describe the scoped v0.9 surface",
+        "simulation contract transparency",
+        "inspect --sim should describe the stable simulation transparency surface",
     );
+    assert_not_contains(&text, "MVP", "inspect --sim must not expose MVP wording");
     assert_not_contains(
         &text,
-        "v0.8.5",
-        "inspect --sim must not expose stale v0.8.5 wording",
+        "v0.",
+        "inspect --sim should avoid version-branded product posture",
     );
 }
 

@@ -274,6 +274,25 @@ async fn {scenario_name}() {{
     )
 }
 
+fn method_call_await_initializer_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Client {{}}
+
+impl Client {{
+    async fn fetch(&self) -> i32 {{ 1 }}
+}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let client = Client {{}};
+    let value = client.fetch().await;
+    let _after = value;
+}}
+"#
+    )
+}
+
 fn post_await_declared_local_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -864,6 +883,33 @@ fn match_guard_only_binding_is_not_future_state_for_body_await() {
 }
 
 #[test]
+fn method_call_await_initializer_lowers_to_core_suspension() {
+    let project = TestProject::new("v14-async-method-await-initializer");
+    let artifact_path = emit_artifact(
+        &project,
+        &method_call_await_initializer_source("method_await_initializer_case"),
+        "method_await_initializer_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let suspensions = async_model(&artifact)["suspension_states"]
+        .as_array()
+        .expect("suspension states should be an array");
+    let cancel_edges = async_model(&artifact)["cancel_edges"]
+        .as_array()
+        .expect("cancel edges should be an array");
+    assert_eq!(
+        suspensions.len(),
+        1,
+        "method-call await initializer should lower to one suspension: {suspensions:?}"
+    );
+    assert_eq!(
+        cancel_edges.len(),
+        1,
+        "method-call await initializer should expose cancellation: {cancel_edges:?}"
+    );
+}
+
+#[test]
 fn pre_await_only_condition_local_is_not_future_state() {
     let project = TestProject::new("v14-async-pre-await-only");
     let artifact_path = emit_artifact(
@@ -1202,6 +1248,28 @@ fn removed_core_await_without_future_locals_is_rejected_after_hash_recompute() {
     });
 
     verify_fails(&project, &artifact_path, "suspension_states");
+}
+
+#[test]
+fn removed_function_summary_cannot_hide_removed_core_await_evidence() {
+    let project = TestProject::new("v14-source-await-summary-tamper-model");
+    let artifact_path = emit_artifact(
+        &project,
+        &no_live_local_await_source("removed_summary_core_await_evidence_case"),
+        "removed_summary_core_await_evidence_case",
+    );
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["function_summaries"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["suspension_states"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["cancel_edges"] = Value::Array(Vec::new());
+        artifact["core"]["async_model"]["future_state_locals"] = Value::Array(Vec::new());
+        let edges = artifact["core"]["cfg_edges"]
+            .as_array_mut()
+            .expect("cfg edges should be mutable");
+        edges.retain(|edge| edge["kind"].as_str() != Some("await"));
+    });
+
+    verify_fails(&project, &artifact_path, "function_summaries");
 }
 
 #[test]

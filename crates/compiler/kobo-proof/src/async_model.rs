@@ -150,6 +150,8 @@ fn verify_future_state_locals(
     suspensions: &BTreeMap<&str, &SuspensionStateEvidence>,
 ) -> Result<(), VerificationError> {
     let expected_by_function = parsed_live_locals_by_function(source);
+    let skippable_empty_method_awaits =
+        skippable_empty_method_initializer_awaits_by_function(source);
     let mut actual = BTreeSet::<(&str, &str)>::new();
     for local in &certificate.core.async_model.future_state_locals {
         if !actual.insert((local.suspension_state.as_str(), local.binding.as_str())) {
@@ -184,19 +186,45 @@ fn verify_future_state_locals(
         });
     }
 
-    for summary in &certificate.function_summaries {
+    let summary_functions = certificate
+        .function_summaries
+        .iter()
+        .map(|summary| summary.function.as_str())
+        .collect::<BTreeSet<_>>();
+    let modeled_functions = certificate
+        .core
+        .cfg_nodes
+        .iter()
+        .map(|node| node.function.as_str())
+        .chain(suspensions_by_function.keys().copied())
+        .collect::<BTreeSet<_>>();
+    for function in &modeled_functions {
+        if !summary_functions.contains(function) {
+            return Err(VerificationError::AsyncEvidenceMismatch {
+                field: "function_summaries".to_owned(),
+                id: (*function).to_owned(),
+            });
+        }
+    }
+
+    for function in modeled_functions {
         let expected_by_await = expected_by_function
-            .get(summary.function.as_str())
+            .get(function)
             .map(Vec::as_slice)
             .unwrap_or_default();
         let actual_count = suspensions_by_function
-            .get(summary.function.as_str())
+            .get(function)
             .map(Vec::len)
             .unwrap_or_default();
-        if actual_count != expected_by_await.len() {
+        let skippable_count = skippable_empty_method_awaits
+            .get(function)
+            .copied()
+            .unwrap_or_default();
+        let minimum_expected = expected_by_await.len().saturating_sub(skippable_count);
+        if actual_count > expected_by_await.len() || actual_count < minimum_expected {
             return Err(VerificationError::AsyncEvidenceMismatch {
                 field: "suspension_states".to_owned(),
-                id: summary.function.clone(),
+                id: function.to_owned(),
             });
         }
     }
@@ -490,6 +518,77 @@ fn parsed_live_locals_by_function(source: &str) -> BTreeMap<String, Vec<BTreeSet
         .collect()
 }
 
+fn skippable_empty_method_initializer_awaits_by_function(source: &str) -> BTreeMap<String, usize> {
+    let Ok(file) = syn::parse_file(source) else {
+        return BTreeMap::new();
+    };
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) => Some((
+                function.sig.ident.to_string(),
+                skippable_empty_method_initializer_awaits(function),
+            )),
+            _ => None,
+        })
+        .filter(|(_, count)| *count > 0)
+        .collect()
+}
+
+fn skippable_empty_method_initializer_awaits(function: &syn::ItemFn) -> usize {
+    let mut locals_before_statement = Vec::<BTreeSet<String>>::new();
+    let mut declared = BTreeSet::<String>::new();
+    for statement in &function.block.stmts {
+        locals_before_statement.push(declared.clone());
+        collect_pat_bindings_in_stmt(statement, &mut declared);
+    }
+
+    let mut later_statement_uses = vec![BTreeSet::<String>::new(); function.block.stmts.len()];
+    let mut suffix_uses = BTreeSet::<String>::new();
+    for (index, statement) in function.block.stmts.iter().enumerate().rev() {
+        later_statement_uses[index] = suffix_uses.clone();
+        collect_ident_uses_in_stmt(statement, &mut suffix_uses);
+    }
+
+    function
+        .block
+        .stmts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, statement)| {
+            let syn::Stmt::Local(local) = statement else {
+                return None;
+            };
+            let init = local.init.as_ref()?;
+            is_awaited_method_initializer(init.expr.as_ref()).then(|| {
+                let declared_before = locals_before_statement
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_default();
+                await_live_locals_in_expr(
+                    init.expr.as_ref(),
+                    &later_statement_uses[index],
+                    &declared_before,
+                )
+                .0
+            })
+        })
+        .filter(|locals_by_await| locals_by_await.iter().all(BTreeSet::is_empty))
+        .map(|locals_by_await| locals_by_await.len())
+        .sum()
+}
+
+fn is_awaited_method_initializer(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Await(await_expr) => {
+            matches!(await_expr.base.as_ref(), syn::Expr::MethodCall(_))
+        }
+        syn::Expr::Group(group) => is_awaited_method_initializer(group.expr.as_ref()),
+        syn::Expr::Paren(paren) => is_awaited_method_initializer(paren.expr.as_ref()),
+        _ => false,
+    }
+}
+
 fn parsed_live_locals_by_await(function: &syn::ItemFn) -> Vec<BTreeSet<String>> {
     let mut locals_before_statement = Vec::<BTreeSet<String>>::new();
     let mut declared = BTreeSet::<String>::new();
@@ -531,16 +630,8 @@ fn await_live_locals_in_stmt(
             .init
             .as_ref()
             .map(|init| {
-                if is_unmodeled_awaited_method_initializer(init.expr.as_ref()) {
-                    Vec::new()
-                } else {
-                    await_live_locals_in_expr(
-                        init.expr.as_ref(),
-                        later_statement_uses,
-                        declared_before,
-                    )
+                await_live_locals_in_expr(init.expr.as_ref(), later_statement_uses, declared_before)
                     .0
-                }
             })
             .unwrap_or_default(),
         syn::Stmt::Expr(expr, _) => {
@@ -721,17 +812,6 @@ fn live_declared_locals(
         .filter(|binding| live_uses.contains(*binding))
         .cloned()
         .collect()
-}
-
-fn is_unmodeled_awaited_method_initializer(expr: &syn::Expr) -> bool {
-    match expr {
-        syn::Expr::Await(await_expr) => {
-            matches!(await_expr.base.as_ref(), syn::Expr::MethodCall(_))
-        }
-        syn::Expr::Group(group) => is_unmodeled_awaited_method_initializer(group.expr.as_ref()),
-        syn::Expr::Paren(paren) => is_unmodeled_awaited_method_initializer(paren.expr.as_ref()),
-        _ => false,
-    }
 }
 
 fn await_live_locals_in_block(

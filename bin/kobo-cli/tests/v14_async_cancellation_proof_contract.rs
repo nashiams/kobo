@@ -172,6 +172,24 @@ async fn {scenario_name}() {{
     )
 }
 
+fn between_awaits_block_local_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let _block = {{
+        helper().await;
+        let between = 1;
+        helper().await;
+        between
+    }};
+}}
+"#
+    )
+}
+
 fn if_pre_await_only_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -684,6 +702,44 @@ fn post_await_declared_block_local_is_not_future_state() {
             .iter()
             .any(|local| local["binding"].as_str() == Some("later")),
         "later is declared after the await and must not be future state: {locals:?}"
+    );
+}
+
+#[test]
+fn block_local_between_awaits_attaches_only_to_later_suspension() {
+    let project = TestProject::new("v14-async-between-awaits-local");
+    let artifact_path = emit_artifact(
+        &project,
+        &between_awaits_block_local_source("between_awaits_block_local_case"),
+        "between_awaits_block_local_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let suspensions = async_model(&artifact)["suspension_states"]
+        .as_array()
+        .expect("suspension states should be an array");
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+    let first_suspension = suspensions[0]["id"]
+        .as_str()
+        .expect("first suspension should have an id");
+    let second_suspension = suspensions[1]["id"]
+        .as_str()
+        .expect("second suspension should have an id");
+
+    assert!(
+        !locals.iter().any(|local| {
+            local["binding"].as_str() == Some("between")
+                && local["suspension_state"].as_str() == Some(first_suspension)
+        }),
+        "between is declared after the first await and must not attach there: {locals:?}"
+    );
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("between")
+                && local["suspension_state"].as_str() == Some(second_suspension)
+        }),
+        "between is declared before the second await and used after it: {locals:?}"
     );
 }
 

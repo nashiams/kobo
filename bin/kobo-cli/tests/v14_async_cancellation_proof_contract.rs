@@ -104,6 +104,40 @@ async fn {scenario_name}() {{
     )
 }
 
+fn block_expression_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    let _block = {{ helper().await }};
+    let _after = first;
+}}
+"#
+    )
+}
+
+fn if_expression_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    let _both = if std::env::var("KOBO_IF").is_ok() {{
+        helper().await;
+        first
+    }} else {{
+        first
+    }};
+}}
+"#
+    )
+}
+
 fn select_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -268,6 +302,39 @@ fn async_model<'a>(artifact: &'a Value) -> &'a Value {
     artifact
         .pointer("/core/async_model")
         .expect("certificate should expose core async_model evidence")
+}
+
+fn assert_single_await_retains_first(artifact: &Value) {
+    let suspensions = async_model(artifact)["suspension_states"]
+        .as_array()
+        .expect("suspension states should be an array");
+    let cancel_edges = async_model(artifact)["cancel_edges"]
+        .as_array()
+        .expect("cancel edges should be an array");
+    let locals = async_model(artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+
+    assert_eq!(
+        suspensions.len(),
+        1,
+        "one await should lower to one suspension: {suspensions:?}"
+    );
+    assert_eq!(
+        cancel_edges.len(),
+        1,
+        "one await should expose one cancel edge: {cancel_edges:?}"
+    );
+    let suspension_id = suspensions[0]["id"]
+        .as_str()
+        .expect("suspension should have an id");
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("first")
+                && local["suspension_state"].as_str() == Some(suspension_id)
+        }),
+        "first should be future state across the await continuation: {locals:?}"
+    );
 }
 
 #[test]
@@ -476,6 +543,28 @@ fn await_inside_helper_call_argument_lowers_to_core_suspension() {
         }),
         "continuation after helper-call argument await should retain first: {locals:?}"
     );
+}
+
+#[test]
+fn block_expression_await_keeps_later_locals_in_future_state() {
+    let project = TestProject::new("v14-async-block-expression-await");
+    let artifact_path = emit_artifact(
+        &project,
+        &block_expression_await_source("block_expression_await_case"),
+        "block_expression_await_case",
+    );
+    assert_single_await_retains_first(&read_value(&artifact_path));
+}
+
+#[test]
+fn if_expression_await_keeps_branch_continuation_locals_in_future_state() {
+    let project = TestProject::new("v14-async-if-expression-await");
+    let artifact_path = emit_artifact(
+        &project,
+        &if_expression_await_source("if_expression_await_case"),
+        "if_expression_await_case",
+    );
+    assert_single_await_retains_first(&read_value(&artifact_path));
 }
 
 #[test]

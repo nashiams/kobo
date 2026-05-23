@@ -574,7 +574,12 @@ fn await_live_uses_in_expr(
         }
         syn::Expr::Tuple(tuple) => await_live_uses_in_expr_sequence(tuple.elems.iter(), later_uses),
         syn::Expr::Unary(unary) => await_live_uses_in_expr(unary.expr.as_ref(), later_uses),
-        _ => (Vec::new(), ident_uses_in_expr(expr)),
+        _ => {
+            let uses = ident_uses_in_expr(expr);
+            let mut conservative_after_await = later_uses.clone();
+            conservative_after_await.extend(uses.iter().cloned());
+            (vec![conservative_after_await; expr_await_count(expr)], uses)
+        }
     }
 }
 
@@ -600,6 +605,23 @@ fn ident_uses_in_expr(expr: &syn::Expr) -> BTreeSet<String> {
     let mut uses = BTreeSet::new();
     collect_ident_uses_in_expr(expr, &mut uses);
     uses
+}
+
+fn expr_await_count(expr: &syn::Expr) -> usize {
+    struct AwaitVisitor {
+        count: usize,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
+        fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
+            self.count += 1;
+            syn::visit::visit_expr_await(self, expr);
+        }
+    }
+
+    let mut visitor = AwaitVisitor { count: 0 };
+    syn::visit::visit_expr(&mut visitor, expr);
+    visitor.count
 }
 
 fn collect_pat_bindings_in_stmt(statement: &syn::Stmt, bindings: &mut BTreeSet<String>) {

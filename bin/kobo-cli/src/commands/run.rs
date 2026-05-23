@@ -13,7 +13,7 @@ use kobo_parser::{parse_ward_syntax, WardItem};
 use super::{
     boundary_projection, ownership_analysis, policy,
     session::{build_session, line_number_for_offset, render_diagnostics},
-    summary_validation,
+    sim_model, summary_validation,
 };
 use crate::{ErrorFormat, GuaranteeProfileArg};
 
@@ -104,7 +104,11 @@ pub(super) fn cmd_inspect(
     if sim {
         let source = std::fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
-        let output = simulation_transparency_output(&source, harness, backend)?;
+        let output = if harness {
+            simulation_harness_output(file, &source, backend, &mut session)?
+        } else {
+            simulation_transparency_output(&source, false, backend)?
+        };
         eprintln!(
             "// effective guarantee profile: {}",
             session.guarantee_profile().as_str()
@@ -320,6 +324,128 @@ fn simulation_transparency_output(
         ));
     }
     Ok(output)
+}
+
+fn simulation_harness_output(
+    file: &Path,
+    source: &str,
+    backend: Option<&str>,
+    session: &mut kobo_driver::CompileSession,
+) -> anyhow::Result<String> {
+    let mut output = simulation_transparency_output(source, true, backend)?;
+    match generated_harness_inspection(file, source, session) {
+        Ok(Some(inspection)) => {
+            output.push_str(&format!(
+                "// kobo: generated harness manifest: {}\n",
+                inspection.manifest_path
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_rs_path: {}\n",
+                inspection.harness_rs_path
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_manifest_hash: {}\n",
+                inspection.harness_manifest_hash
+            ));
+            output.push_str(&format!(
+                "// kobo: backend_replay_token_hash: {}\n",
+                inspection.backend_replay_token_hash
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_execution_scope: {}\n",
+                inspection.execution_scope
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_event_count: {}\n",
+                inspection.event_count
+            ));
+        }
+        Ok(None) => {
+            output.push_str(
+                "// kobo: generated harness manifest unavailable for this inspection target\n",
+            );
+        }
+        Err(error) => {
+            output.push_str(&format!(
+                "// kobo: generated harness manifest unavailable: {error}\n"
+            ));
+        }
+    }
+    Ok(output)
+}
+
+struct HarnessInspection {
+    manifest_path: String,
+    harness_rs_path: String,
+    harness_manifest_hash: String,
+    backend_replay_token_hash: String,
+    execution_scope: String,
+    event_count: usize,
+}
+
+fn generated_harness_inspection(
+    file: &Path,
+    source: &str,
+    session: &mut kobo_driver::CompileSession,
+) -> anyhow::Result<Option<HarnessInspection>> {
+    let document = sim_model::parse_document(source.to_owned());
+    let Some(target_name) = document
+        .scenarios
+        .first()
+        .map(|scenario| scenario.name.clone())
+    else {
+        return Ok(None);
+    };
+    let backend_profile = document
+        .scenarios
+        .first()
+        .map(|scenario| scenario.profile.clone())
+        .unwrap_or_else(|| sim_model::target_profile(&document, &target_name, None));
+    let artifacts = run_codegen_pipeline(session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
+    let scenario_program = kobo_driver::build_scenario_program(
+        &artifacts,
+        &target_name,
+        document.source_hash.clone(),
+        &backend_profile,
+    )?;
+    let options = kobo_sim_core::ScenarioOptions {
+        sim_profile: "inspect".to_owned(),
+        profile: backend_profile.clone(),
+        seed: 0,
+        inject: None,
+        event_budget: Some(session.config.runtime_profile.scenario_event_budget),
+    };
+    let run = kobo_sim_core::run_full_depth_from_program(
+        &scenario_program,
+        &artifacts.rs_source,
+        &options,
+        kobo_sim_core::EngineMode::Both,
+    )?;
+    let Some(manifest) = run.harness_manifest else {
+        return Ok(None);
+    };
+    let manifest_json = serde_json::to_string(&manifest)?;
+    let harness_manifest_hash = kobo_sim_core::digest::stable_hash(&manifest_json);
+    let backend_replay_token_hash = kobo_sim_core::digest::stable_hash(&format!(
+        "{}:{}:{}:{}",
+        backend_profile,
+        run.digest.semantic_trace_hash,
+        run.digest.harness_trace_hash,
+        manifest.generated_rust_hash
+    ));
+    let manifest_path = PathBuf::from(&manifest.harness_dir)
+        .join("manifest.json")
+        .display()
+        .to_string();
+    Ok(Some(HarnessInspection {
+        manifest_path,
+        harness_rs_path: manifest.harness_rs_path,
+        harness_manifest_hash,
+        backend_replay_token_hash,
+        execution_scope: manifest.execution_scope,
+        event_count: manifest.event_count,
+    }))
 }
 
 fn validate_backend_pin(backend: Option<&str>) -> anyhow::Result<()> {

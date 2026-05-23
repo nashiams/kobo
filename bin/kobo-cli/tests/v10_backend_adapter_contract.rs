@@ -277,6 +277,56 @@ fn inspect_backend_route() {
 }
 
 #[test]
+fn inspect_harness_reports_generated_manifest_and_source_path() {
+    let project = TestProject::new("v10-inspect-generated-harness");
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn inspect_generated_harness_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("inspect"), s("--sim"), s("--harness"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "inspect should generate and report harness artifacts",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "generated harness manifest",
+        "inspect output should point at the generated harness manifest",
+    );
+    assert_contains(
+        &text,
+        "harness_rs_path",
+        "inspect output should point at the generated harness source",
+    );
+    assert_contains(
+        &text,
+        "backend_replay_token_hash",
+        "inspect output should expose the backend replay token mapping",
+    );
+
+    let harness_path = text
+        .lines()
+        .find_map(|line| line.strip_prefix("// kobo: harness_rs_path: "))
+        .expect("inspect output should contain a harness source path");
+    let harness_source = fs::read_to_string(harness_path).expect("harness source should exist");
+    assert_contains(
+        &harness_source,
+        "fn inspect_generated_harness_route()",
+        "inspect should report a real generated harness that contains the target",
+    );
+}
+
+#[test]
 fn sim_config_profiles_and_backend_knobs_drive_test_output() {
     let project = TestProject::new("v10-sim-config-schema");
     project.write(

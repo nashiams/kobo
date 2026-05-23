@@ -514,6 +514,19 @@ fn candidate_evidence_facts(
         "cast_policy",
         "debt_casts",
         "strict_casts",
+        "transform_set",
+        "desugaring",
+        "coherence",
+        "hidden_impls",
+        "context_threading",
+        "hidden_globals",
+        "stable_semantics",
+        "temporal_extension",
+        "adapter_scope",
+        "adapter_treadmill",
+        "minimization_proof",
+        "backend_user_theory",
+        "backend_assumptions",
     ];
     let mut facts = fields
         .iter()
@@ -575,6 +588,71 @@ fn derived_candidate_facts(
                 } else {
                     facts.push(candidate_fact("debt_casts", "none"));
                     facts.push(candidate_fact("strict_casts", "explicit"));
+                }
+            }
+        }
+        "S-46" => {
+            if source.contains("#[kobo::sugar") {
+                let transform_set = ["builder", "visitor", "state_machine", "event_enum"]
+                    .into_iter()
+                    .filter(|token| source.contains(token))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                if !transform_set.is_empty() {
+                    facts.push(candidate_fact("transform_set", transform_set));
+                    facts.push(candidate_fact("desugaring", "inspectable"));
+                }
+            }
+        }
+        "S-47" => {
+            if source.contains("#[kobo::newtype_scaffold") {
+                facts.push(candidate_fact("coherence", "newtype_forwarding"));
+                facts.push(candidate_fact(
+                    "hidden_impls",
+                    source_has_hidden_impls(source).to_string(),
+                ));
+            }
+        }
+        "S-48" => {
+            let hidden_globals = source_has_hidden_globals(source);
+            if source.contains("let ctx") || source.contains("ctx:") || hidden_globals {
+                facts.push(candidate_fact("context_threading", "explicit"));
+                facts.push(candidate_fact("hidden_globals", hidden_globals.to_string()));
+            }
+        }
+        "research-smt-temporal" => {
+            if source.contains("#[kobo::ward") && source.contains("#[kobo::invariant") {
+                facts.push(candidate_fact("stable_semantics", "ward|invariant"));
+            }
+            if source.contains("#[kobo::temporal")
+                && source.contains("beyond_always_eventually_never")
+            {
+                facts.push(candidate_fact(
+                    "temporal_extension",
+                    "beyond_always_eventually_never",
+                ));
+            }
+        }
+        "research-broad-adapters" => {
+            if let Some(scope) = config_string(&config, &["adapters", "scope"]) {
+                facts.push(candidate_fact("adapter_scope", scope));
+            }
+            if let Some(treadmill) = config_string(&config, &["adapters", "treadmill"]) {
+                facts.push(candidate_fact("adapter_treadmill", treadmill));
+            }
+        }
+        "research-model-checking" => {
+            if source.contains("#[kobo::witness_minimization") && source.contains("labeled_trace") {
+                facts.push(candidate_fact("minimization_proof", "labeled_trace"));
+            }
+            if source.contains("#[kobo::model_check") {
+                if source.contains("backend_user_theory = \"kobo_core_loop\"") {
+                    facts.push(candidate_fact("backend_user_theory", "kobo_core_loop"));
+                } else if source.contains("backend_user_theory = \"z3_smt\"") {
+                    facts.push(candidate_fact("backend_user_theory", "z3_smt"));
+                }
+                if source.contains("backend_assumptions = \"ledger\"") {
+                    facts.push(candidate_fact("backend_assumptions", "ledger"));
                 }
             }
         }
@@ -640,6 +718,18 @@ fn hidden_heap_site_count(source: &str) -> usize {
 
 fn cast_site_count(source: &str) -> usize {
     source.matches(" as ").count()
+}
+
+fn source_has_hidden_impls(source: &str) -> bool {
+    source.contains("impl ExternalTrait for ExternalType")
+        || source.contains("impl external::")
+        || source.contains("hidden_impl")
+}
+
+fn source_has_hidden_globals(source: &str) -> bool {
+    source.contains("static mut")
+        || source.contains("lazy_static!")
+        || source.contains("thread_local!")
 }
 
 fn syn_path_ends_with(path: &syn::Path, suffix: &[&str]) -> bool {

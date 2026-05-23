@@ -92,6 +92,78 @@ fn verify_candidate_specific_gates(
                 return Err(candidate_gate_error(&candidate.id, "explicit cast"));
             }
         }
+        "S-46" => {
+            require_fact(
+                candidate,
+                &facts,
+                "transform_set",
+                "inspectable transform set",
+            )?;
+            if facts.get("desugaring").copied() != Some("inspectable") {
+                return Err(candidate_gate_error(
+                    &candidate.id,
+                    "inspectable desugaring",
+                ));
+            }
+        }
+        "S-47" => {
+            if facts.get("coherence").copied() != Some("newtype_forwarding") {
+                return Err(candidate_gate_error(&candidate.id, "coherence"));
+            }
+            if facts.get("hidden_impls").copied() != Some("false") {
+                return Err(candidate_gate_error(&candidate.id, "hidden impls"));
+            }
+        }
+        "S-48" => {
+            if facts.get("context_threading").copied() != Some("explicit") {
+                return Err(candidate_gate_error(
+                    &candidate.id,
+                    "explicit context threading",
+                ));
+            }
+            if facts.get("hidden_globals").copied() != Some("false") {
+                return Err(candidate_gate_error(&candidate.id, "hidden globals"));
+            }
+        }
+        "research-smt-temporal" => {
+            if facts.get("stable_semantics").copied() != Some("ward|invariant") {
+                return Err(candidate_gate_error(&candidate.id, "stable ward semantics"));
+            }
+            require_fact(
+                candidate,
+                &facts,
+                "temporal_extension",
+                "temporal extension",
+            )?;
+        }
+        "research-broad-adapters" => {
+            if facts.get("adapter_scope").copied() != Some("curated_demand") {
+                return Err(candidate_gate_error(
+                    &candidate.id,
+                    "curated adapter demand",
+                ));
+            }
+            if facts.get("adapter_treadmill").copied() != Some("rejected") {
+                return Err(candidate_gate_error(
+                    &candidate.id,
+                    "adapter treadmill rejection",
+                ));
+            }
+        }
+        "research-model-checking" => {
+            if facts.get("minimization_proof").copied() != Some("labeled_trace") {
+                return Err(candidate_gate_error(
+                    &candidate.id,
+                    "labeled trace minimization",
+                ));
+            }
+            if facts.get("backend_user_theory").copied() != Some("kobo_core_loop") {
+                return Err(candidate_gate_error(&candidate.id, "Kobo Core theory"));
+            }
+            if facts.get("backend_assumptions").copied() != Some("ledger") {
+                return Err(candidate_gate_error(&candidate.id, "backend assumptions"));
+            }
+        }
         _ => {}
     }
     Ok(())

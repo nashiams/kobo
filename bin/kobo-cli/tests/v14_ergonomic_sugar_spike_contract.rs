@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
-use v09_common::{assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject};
+use v09_common::{
+    assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject,
+};
 
 const V14_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -13,13 +15,13 @@ fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, V14_TIMEOUT)
 }
 
-fn source(target: &str, attr: &str) -> String {
+fn source(target: &str, attrs: &str, body: &str) -> String {
     format!(
         r#"
-{attr}
+{attrs}
 #[kobo::scenario(profile = "sync")]
 fn {target}() {{
-    let _value = 1u32;
+{body}
 }}
 "#
     )
@@ -44,6 +46,29 @@ fn emit(project: &TestProject, source: &str, target: &str) -> PathBuf {
     artifact_path
 }
 
+fn emit_failure(project: &TestProject, source: &str, target: &str, expected: &str) {
+    let file = project.main_file(source);
+    let artifact_path = project.root.join(format!("{target}.kproof"));
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&file),
+            s("--target"),
+            s(target),
+            s("--output"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+    assert_failure(&output, "invalid ergonomic spike admission should fail");
+    assert!(
+        output.combined().contains(expected),
+        "failure should mention `{expected}`\n{}",
+        output.combined()
+    );
+}
+
 fn artifact(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("artifact should read"))
         .expect("artifact should parse")
@@ -65,7 +90,8 @@ fn inspectable_sugar_transforms_name_manual_rust_equivalents() {
         &project,
         &source(
             "sugar_transform_case",
-            r#"#[kobo::candidate_track(
+            r#"#[kobo::sugar(builder, visitor, state_machine, event_enum)]
+#[kobo::candidate_track(
     id = "S-46",
     track = "Proc-macro replacement DSL",
     status = "research",
@@ -74,10 +100,9 @@ fn inspectable_sugar_transforms_name_manual_rust_equivalents() {
     strict = "true",
     whole_ecosystem = "false",
     diagnostic_snapshot = "v14_sugar_snapshot",
-    replay_related = "false",
-    transform_set = "builder|visitor|state_machine|event_enum",
-    desugaring = "inspectable"
+    replay_related = "false"
 )]"#,
+            "    let _value = 1u32;",
         ),
         "sugar_transform_case",
     );
@@ -97,7 +122,8 @@ fn orphan_newtype_scaffolding_respects_coherence_rules() {
         &project,
         &source(
             "newtype_scaffold_case",
-            r#"#[kobo::candidate_track(
+            r#"#[kobo::newtype_scaffold(wrapper = "PaymentId", forwarding = "true")]
+#[kobo::candidate_track(
     id = "S-47",
     track = "Orphan-rule newtype scaffolding",
     status = "research",
@@ -106,10 +132,9 @@ fn orphan_newtype_scaffolding_respects_coherence_rules() {
     strict = "true",
     whole_ecosystem = "false",
     diagnostic_snapshot = "v14_newtype_snapshot",
-    replay_related = "false",
-    coherence = "newtype_forwarding",
-    hidden_impls = "false"
+    replay_related = "false"
 )]"#,
+            "    let _value = 1u32;",
         ),
         "newtype_scaffold_case",
     );
@@ -135,10 +160,9 @@ fn context_injection_is_explicit_and_has_no_hidden_globals() {
     strict = "true",
     whole_ecosystem = "false",
     diagnostic_snapshot = "v14_context_snapshot",
-    replay_related = "false",
-    context_threading = "explicit",
-    hidden_globals = "false"
+    replay_related = "false"
 )]"#,
+            "    struct Context;\n    let ctx = Context;\n    let _value = &ctx;",
         ),
         "context_threading_case",
     );
@@ -146,4 +170,37 @@ fn context_injection_is_explicit_and_has_no_hidden_globals() {
 
     assert_eq!(fact(candidate, "context_threading")["value"], "explicit");
     assert_eq!(fact(candidate, "hidden_globals")["value"], "false");
+}
+
+#[test]
+fn hidden_global_blocks_graduated_context_injection() {
+    let project = TestProject::new("v14-context-hidden-global-fails");
+
+    emit_failure(
+        &project,
+        &format!(
+            r#"
+static mut GLOBAL_CONTEXT: u8 = 0;
+
+{}
+"#,
+            source(
+                "hidden_global_context_case",
+                r#"#[kobo::candidate_track(
+    id = "S-48",
+    track = "Explicit context injection",
+    status = "graduate",
+    inspect = "inspect shows explicit context threading",
+    manual_rust = "pass context parameters explicitly",
+    strict = "true",
+    whole_ecosystem = "false",
+    diagnostic_snapshot = "v14_context_snapshot",
+    replay_related = "false"
+)]"#,
+                "    let _value = unsafe { GLOBAL_CONTEXT };",
+            )
+        ),
+        "hidden_global_context_case",
+        "hidden globals",
+    );
 }

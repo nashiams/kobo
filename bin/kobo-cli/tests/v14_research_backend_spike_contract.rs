@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
-use v09_common::{assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject};
+use v09_common::{
+    assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject,
+};
 
 const V14_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -13,16 +15,20 @@ fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, V14_TIMEOUT)
 }
 
-fn source(target: &str, attr: &str) -> String {
+fn source(target: &str, attrs: &str, body: &str) -> String {
     format!(
         r#"
-{attr}
+{attrs}
 #[kobo::scenario(profile = "sync")]
 fn {target}() {{
-    let _value = 1u32;
+{body}
 }}
 "#
     )
+}
+
+fn write_config(project: &TestProject, contents: &str) {
+    project.write("Kobo.toml", contents);
 }
 
 fn emit(project: &TestProject, source: &str, target: &str) -> PathBuf {
@@ -42,6 +48,29 @@ fn emit(project: &TestProject, source: &str, target: &str) -> PathBuf {
     );
     assert_success(&output, "spike candidate artifact should emit");
     artifact_path
+}
+
+fn emit_failure(project: &TestProject, source: &str, target: &str, expected: &str) {
+    let file = project.main_file(source);
+    let artifact_path = project.root.join(format!("{target}.kproof"));
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&file),
+            s("--target"),
+            s(target),
+            s("--output"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+    assert_failure(&output, "invalid research spike admission should fail");
+    assert!(
+        output.combined().contains(expected),
+        "failure should mention `{expected}`\n{}",
+        output.combined()
+    );
 }
 
 fn artifact(path: &Path) -> Value {
@@ -65,7 +94,10 @@ fn smt_and_advanced_temporal_tracks_stay_over_stable_semantics() {
         &project,
         &source(
             "smt_temporal_case",
-            r#"#[kobo::candidate_track(
+            r#"#[kobo::ward]
+#[kobo::invariant]
+#[kobo::temporal(query = "beyond_always_eventually_never")]
+#[kobo::candidate_track(
     id = "research-smt-temporal",
     track = "SMT and advanced temporal logic",
     status = "research",
@@ -74,10 +106,9 @@ fn smt_and_advanced_temporal_tracks_stay_over_stable_semantics() {
     strict = "true",
     whole_ecosystem = "false",
     diagnostic_snapshot = "v14_smt_temporal_snapshot",
-    replay_related = "false",
-    stable_semantics = "ward|invariant",
-    temporal_extension = "beyond_always_eventually_never"
+    replay_related = "false"
 )]"#,
+            "    let _value = 1u32;",
         ),
         "smt_temporal_case",
     );
@@ -96,6 +127,14 @@ fn smt_and_advanced_temporal_tracks_stay_over_stable_semantics() {
 #[test]
 fn broad_adapters_are_curated_and_demand_driven() {
     let project = TestProject::new("v14-broad-adapters");
+    write_config(
+        &project,
+        r#"
+[adapters]
+scope = "curated_demand"
+treadmill = "rejected"
+"#,
+    );
     let path = emit(
         &project,
         &source(
@@ -109,10 +148,9 @@ fn broad_adapters_are_curated_and_demand_driven() {
     strict = "true",
     whole_ecosystem = "false",
     diagnostic_snapshot = "v14_broad_adapter_snapshot",
-    replay_related = "true",
-    adapter_scope = "curated_demand",
-    adapter_treadmill = "rejected"
+    replay_related = "true"
 )]"#,
+            "    let _value = 1u32;",
         ),
         "broad_adapters_case",
     );
@@ -133,7 +171,9 @@ fn witness_minimization_and_model_checking_remain_optional_assumption_backed() {
         &project,
         &source(
             "model_checking_case",
-            r#"#[kobo::candidate_track(
+            r#"#[kobo::witness_minimization(labeled_trace)]
+#[kobo::model_check(backend_user_theory = "kobo_core_loop", backend_assumptions = "ledger")]
+#[kobo::candidate_track(
     id = "research-model-checking",
     track = "Witness minimization and model checking backends",
     status = "research",
@@ -142,11 +182,9 @@ fn witness_minimization_and_model_checking_remain_optional_assumption_backed() {
     strict = "true",
     whole_ecosystem = "false",
     diagnostic_snapshot = "v14_model_checking_snapshot",
-    replay_related = "true",
-    minimization_proof = "labeled_trace",
-    backend_user_theory = "kobo_core_loop",
-    backend_assumptions = "ledger"
+    replay_related = "true"
 )]"#,
+            "    let _value = 1u32;",
         ),
         "model_checking_case",
     );
@@ -161,4 +199,32 @@ fn witness_minimization_and_model_checking_remain_optional_assumption_backed() {
         "kobo_core_loop"
     );
     assert_eq!(fact(candidate, "backend_assumptions")["value"], "ledger");
+}
+
+#[test]
+fn backend_specific_theory_blocks_graduated_model_checking_candidate() {
+    let project = TestProject::new("v14-model-checking-theory-fails");
+
+    emit_failure(
+        &project,
+        &source(
+            "backend_specific_theory_case",
+            r#"#[kobo::witness_minimization(labeled_trace)]
+#[kobo::model_check(backend_user_theory = "z3_smt", backend_assumptions = "ledger")]
+#[kobo::candidate_track(
+    id = "research-model-checking",
+    track = "Witness minimization and model checking backends",
+    status = "graduate",
+    inspect = "inspect shows labeled minimized trace assumptions",
+    manual_rust = "run the backend separately and keep Kobo trace labels",
+    strict = "true",
+    whole_ecosystem = "false",
+    diagnostic_snapshot = "v14_model_checking_snapshot",
+    replay_related = "true"
+)]"#,
+            "    let _value = 1u32;",
+        ),
+        "backend_specific_theory_case",
+        "Kobo Core theory",
+    );
 }

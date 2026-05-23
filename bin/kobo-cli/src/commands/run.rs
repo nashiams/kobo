@@ -478,12 +478,12 @@ fn validate_backend_pin(backend: Option<&str>) -> anyhow::Result<()> {
         .find(|capability| capability.name == backend)
     else {
         anyhow::bail!(
-            "unsupported backend option `{backend}`; use a stable Kobo profile, inspect the generated backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            "unsupported backend option `{backend}`; use a stable Kobo profile, inspect the generated backend-native harness, or mark unsupported knobs as scenario debt"
         );
     };
     if !capability.executes_in_v10 {
         anyhow::bail!(
-            "unsupported backend option `{backend}`: {} ({}, {}); use a stable Kobo profile, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later",
+            "unsupported backend option `{backend}`: {} ({}, {}); use a stable Kobo profile, inspect the generated backend-native harness, or mark unsupported knobs as scenario debt",
             capability.role,
             capability.integration_level,
             capability.scenario_execution

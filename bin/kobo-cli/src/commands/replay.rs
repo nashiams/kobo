@@ -73,7 +73,7 @@ fn validate_backend_native_replay(witness: &Value) -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "unsupported backend option: --backend-native replay is only supported for exact Loom witnesses; use normal `kobo replay`, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+        "unsupported backend option: --backend-native replay is only supported for exact Loom witnesses; use normal `kobo replay`, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
     )
 }
 
@@ -81,7 +81,7 @@ fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
     let controls = &witness["backend_controls"];
     if controls["backend"].as_str() != Some("loom") {
         anyhow::bail!(
-            "unsupported backend option: backend_controls.backend must be `loom` for --backend-native replay; mark unsupported knobs as scenario debt or run the backend directly and import witness metadata later"
+            "unsupported backend option: backend_controls.backend must be `loom` for --backend-native replay; replay without backend-native controls or mark unsupported knobs as scenario debt"
         );
     }
     if controls["backend_native"].as_bool() != Some(true) {
@@ -92,7 +92,7 @@ fn validate_backend_native_controls(witness: &Value) -> anyhow::Result<()> {
     if let Some(scheduler) = controls["scheduler"].as_str() {
         if !matches!(scheduler, "exhaustive" | "small-random") {
             anyhow::bail!(
-                "unsupported backend option: backend_controls.scheduler `{scheduler}` is not linked for Loom replay; mark unsupported knobs as scenario debt or run the backend directly and import witness metadata later"
+                "unsupported backend option: backend_controls.scheduler `{scheduler}` is not linked for Loom replay; replay without backend-native controls or mark unsupported knobs as scenario debt"
             );
         }
     }

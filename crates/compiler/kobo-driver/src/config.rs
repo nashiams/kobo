@@ -853,7 +853,8 @@ fn validate_sim_backend_scheduler(
     };
     let supported = match backend {
         "loom" => matches!(scheduler, "exhaustive" | "small-random"),
-        "shuttle" | "turmoil" | "madsim" => false,
+        "shuttle" => scheduler == "pct",
+        "turmoil" | "madsim" => false,
         "proptest" | "failpoints" => false,
         _ => false,
     };
@@ -1319,17 +1320,20 @@ scheduler = "pct"
             "{backend_error}"
         );
 
-        let scheduler_error = parse_kobo_config(
+        let reserved_scheduler = parse_kobo_config(
             r#"
 [sim.backend.shuttle]
 scheduler = "pct"
 "#,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(
-            scheduler_error.contains("unsupported scheduler"),
-            "{scheduler_error}"
+        .expect("reserved backend scheduler intent should parse as scenario debt input");
+        assert_eq!(
+            reserved_scheduler
+                .sim
+                .backends
+                .get("shuttle")
+                .and_then(|backend| backend.scheduler.as_deref()),
+            Some("pct")
         );
 
         let seed_count_error = parse_kobo_config(

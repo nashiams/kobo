@@ -84,6 +84,22 @@ pub(super) fn cmd_test(
         .sim
         .checkpoint_replay_for_backend(&backend_name)
         .unwrap_or(false);
+    if let Some(capability) = unsupported_backend_capability(&backend_name) {
+        let debt_path = write_unsupported_backend_debt(
+            file,
+            &target_name,
+            capability,
+            effective_scheduler.as_deref(),
+        )?;
+        let debt_path = sim_model::cli_relative_path(&debt_path)?;
+        anyhow::bail!(
+            "unsupported backend option `{}`: {} (adapter is not linked; {}, {}); use a stable Kobo profile, keep the inspected backend-native harness, or keep the unsupported knob as scenario debt recorded at {debt_path}",
+            capability.name,
+            capability.role,
+            capability.integration_level,
+            capability.scenario_execution
+        );
+    }
     expert_options.validate(
         &execution_profile,
         sim_profile,
@@ -290,7 +306,7 @@ impl BackendExpertOptions {
         let expected_profile = profile_for_backend(backend)?;
         if expected_profile != scenario_profile {
             anyhow::bail!(
-                "unsupported backend option: backend `{backend}` requires simulation profile `{expected_profile}`, but the scenario resolved to `{scenario_profile}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+                "unsupported backend option: backend `{backend}` requires simulation profile `{expected_profile}`, but the scenario resolved to `{scenario_profile}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
             );
         }
         Ok(expected_profile.to_owned())
@@ -324,17 +340,17 @@ impl BackendExpertOptions {
         validate_max_branches_control(backend_name, effective_max_branches)?;
         if self.backend_native && self.backend.is_none() {
             anyhow::bail!(
-                "unsupported backend option: --backend-native requires --backend; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+                "unsupported backend option: --backend-native requires --backend; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
             );
         }
         if self.backend_native && backend_name != "loom" {
             anyhow::bail!(
-                "unsupported backend option: --backend-native is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+                "unsupported backend option: --backend-native is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
             );
         }
         if effective_max_branches.is_some() && sim_profile != "exhaustive" {
             anyhow::bail!(
-                "unsupported backend option: max_branches is only available with --sim exhaustive; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+                "unsupported backend option: max_branches is only available with --sim exhaustive; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
             );
         }
         Ok(())
@@ -849,16 +865,13 @@ fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
         Ok(())
     } else {
         anyhow::bail!(
-            "unsupported backend option `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            "unsupported backend option `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
         )
     }
 }
 
 fn validate_backend_executes(backend: &str) -> anyhow::Result<()> {
-    let Some(capability) = kobo_sim_core::backend::capabilities()
-        .iter()
-        .find(|capability| capability.name == backend)
-    else {
+    let Some(capability) = backend_capability(backend) else {
         validate_backend_name(backend)?;
         return Ok(());
     };
@@ -866,11 +879,63 @@ fn validate_backend_executes(backend: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     anyhow::bail!(
-        "unsupported backend option `{backend}`: {} (adapter is not linked; {}, {}); use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later",
+        "unsupported backend option `{backend}`: {} (adapter is not linked; {}, {}); use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt",
         capability.role,
         capability.integration_level,
         capability.scenario_execution
     )
+}
+
+fn backend_capability(backend: &str) -> Option<&'static kobo_sim_core::backend::BackendCapability> {
+    kobo_sim_core::backend::capabilities()
+        .iter()
+        .find(|capability| capability.name == backend)
+}
+
+fn unsupported_backend_capability(
+    backend: &str,
+) -> Option<&'static kobo_sim_core::backend::BackendCapability> {
+    backend_capability(backend).filter(|capability| !capability.executes_in_v10)
+}
+
+fn write_unsupported_backend_debt(
+    file: &Path,
+    target_name: &str,
+    capability: &kobo_sim_core::backend::BackendCapability,
+    scheduler: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    let debt_dir = std::env::current_dir()
+        .context("failed to determine current directory")?
+        .join(".kobo")
+        .join("scenario-debt");
+    std::fs::create_dir_all(&debt_dir)
+        .with_context(|| format!("failed to create {}", debt_dir.display()))?;
+    let debt_path = debt_dir.join(format!(
+        "{}-{}-backend.json",
+        sanitize_name(target_name),
+        sanitize_name(capability.name)
+    ));
+    let source_path = sim_model::cli_relative_path(file)?;
+    let debt = serde_json::json!({
+        "schema_version": 1,
+        "status": "scenario-debt",
+        "kind": "unsupported-backend-native-control",
+        "target": format!("{source_path}:{target_name}"),
+        "backend": capability.name,
+        "display_name": capability.display_name,
+        "scheduler": scheduler,
+        "integration_level": capability.integration_level,
+        "scenario_execution": capability.scenario_execution,
+        "role": capability.role,
+        "available_paths": [
+            "use a stable Kobo profile",
+            "keep the inspected backend-native harness",
+            "keep this unsupported knob as scenario debt"
+        ],
+    });
+    std::fs::write(&debt_path, serde_json::to_string_pretty(&debt)?)
+        .with_context(|| format!("failed to write {}", debt_path.display()))?;
+    Ok(debt_path)
 }
 
 fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
@@ -894,10 +959,10 @@ fn validate_scheduler_control(backend: &str, scheduler: Option<&str>) -> anyhow:
     match (backend, scheduler) {
         ("loom", "exhaustive" | "small-random") => Ok(()),
         ("shuttle" | "turmoil" | "madsim", _) => anyhow::bail!(
-            "unsupported backend option: scheduler `{scheduler}` requires native backend `{backend}`, but that adapter is not linked; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            "unsupported backend option: scheduler `{scheduler}` requires native backend `{backend}`, but that adapter is not linked; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
         ),
         _ => anyhow::bail!(
-            "unsupported backend option: scheduler `{scheduler}` is not supported by backend `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+            "unsupported backend option: scheduler `{scheduler}` is not supported by backend `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
         ),
     }
 }
@@ -907,7 +972,7 @@ fn validate_max_branches_control(backend: &str, max_branches: Option<u64>) -> an
         return Ok(());
     }
     anyhow::bail!(
-        "unsupported backend option: --max-branches is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, mark unsupported knobs as scenario debt, or run the backend directly and import witness metadata later"
+        "unsupported backend option: --max-branches is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
     )
 }
 

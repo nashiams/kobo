@@ -384,6 +384,24 @@ fn expert_async_route() {
         "scenario debt",
         "failure should offer scenario debt as an explicit path",
     );
+    assert_contains(
+        &text,
+        ".kobo",
+        "failure should point at the scenario debt artifact",
+    );
+    let debt_dir = project.root.join(".kobo").join("scenario-debt");
+    let debt_file = fs::read_dir(&debt_dir)
+        .expect("scenario debt directory should exist")
+        .next()
+        .expect("scenario debt file should exist")
+        .expect("scenario debt file should be readable")
+        .path();
+    let debt: Value =
+        serde_json::from_str(&fs::read_to_string(debt_file).expect("debt file should read"))
+            .expect("debt file should parse");
+    assert_eq!(debt["backend"], "shuttle");
+    assert_eq!(debt["scheduler"], "pct");
+    assert_eq!(debt["status"], "scenario-debt");
 }
 
 #[test]
@@ -427,6 +445,18 @@ fn reserved_backend_route() {
         "failure should disclose adapter status",
     );
     assert_contains(&text, "scenario debt", "failure should offer scenario debt");
+    let debt_dir = project.root.join(".kobo").join("scenario-debt");
+    let debt_file = fs::read_dir(&debt_dir)
+        .expect("scenario debt directory should exist")
+        .next()
+        .expect("scenario debt file should exist")
+        .expect("scenario debt file should be readable")
+        .path();
+    let debt: Value =
+        serde_json::from_str(&fs::read_to_string(debt_file).expect("debt file should read"))
+            .expect("debt file should parse");
+    assert_eq!(debt["backend"], "shuttle");
+    assert_eq!(debt["status"], "scenario-debt");
 }
 
 #[test]

@@ -1128,6 +1128,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         "use rust-analyzer delegation and source maps",
         "Script, Checked, and Strict",
         "scoped modes",
+        "profile = \"strict\"",
     ] {
         assert_not_contains(
             &combined,

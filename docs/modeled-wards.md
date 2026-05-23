@@ -15,7 +15,7 @@ struct DurableQueue {}
 #[kobo::must_call(ack, nack, requeue)]
 struct Delivery {}
 
-#[kobo::scenario(profile = "strict")]
+#[kobo::scenario(profile = "async")]
 fn crash_during_ack(queue: &mut DurableQueue) {
     let delivery = queue.recv();
     delivery.ack();

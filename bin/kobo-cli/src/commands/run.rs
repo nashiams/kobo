@@ -296,6 +296,7 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
         output.push_str("// kobo: network facade: modeled ports can drop, delay, reorder, or require boundary policy\n");
     }
     for candidate in kobo_driver::proof::candidate_admission_evidence(
+        Path::new("src/main.kobo"),
         source,
         kobo_driver::proof::ReplayGrade::Partial,
         &[],

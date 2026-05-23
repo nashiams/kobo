@@ -69,8 +69,12 @@ pub fn emit_proof_certificate(
     for adapter in &mut adapter_confidence {
         adapter.replay_grade = replay_grade.clone();
     }
-    let candidate_admission =
-        candidate_admission_evidence(input.source, replay_grade.clone(), &adapter_confidence);
+    let candidate_admission = candidate_admission_evidence(
+        input.source_path,
+        input.source,
+        replay_grade.clone(),
+        &adapter_confidence,
+    );
     let function_summaries = function_summaries(
         input.program,
         &entry_env,
@@ -391,6 +395,7 @@ fn adapter_version_is_stale(version: Option<&str>) -> bool {
 }
 
 pub fn candidate_admission_evidence(
+    source_path: &Path,
     source: &str,
     replay_grade: ReplayGrade,
     adapter_confidence: &[AdapterEvidence],
@@ -409,7 +414,7 @@ pub fn candidate_admission_evidence(
                 id: string_field(&fields, "id").unwrap_or_else(|| "unknown".to_owned()),
                 track: string_field(&fields, "track").unwrap_or_else(|| "unknown".to_owned()),
                 status: string_field(&fields, "status").unwrap_or_else(|| "research".to_owned()),
-                evidence: candidate_evidence_facts(&fields),
+                evidence: candidate_evidence_facts(source_path, source, &fields),
                 inspect_visibility: string_field(&fields, "inspect"),
                 manual_rust_equivalent: string_field(&fields, "manual_rust"),
                 strict_compatible: bool_field(&fields, "strict").unwrap_or(false),
@@ -483,7 +488,11 @@ fn bool_field(fields: &BTreeMap<String, String>, key: &str) -> Option<bool> {
     }
 }
 
-fn candidate_evidence_facts(fields: &BTreeMap<String, String>) -> Vec<CandidateAdmissionFact> {
+fn candidate_evidence_facts(
+    source_path: &Path,
+    source: &str,
+    fields: &BTreeMap<String, String>,
+) -> Vec<CandidateAdmissionFact> {
     const RESERVED: &[&str] = &[
         "id",
         "track",
@@ -495,14 +504,142 @@ fn candidate_evidence_facts(fields: &BTreeMap<String, String>) -> Vec<CandidateA
         "diagnostic_snapshot",
         "replay_related",
     ];
-    fields
+    const DERIVED: &[&str] = &[
+        "target_rust",
+        "avoids_nightly",
+        "no_hidden_heap",
+        "allocation_report",
+        "memory_budget",
+        "hidden_heap_sites",
+        "cast_policy",
+        "debt_casts",
+        "strict_casts",
+    ];
+    let mut facts = fields
         .iter()
         .filter(|(key, _)| !RESERVED.contains(&key.as_str()))
+        .filter(|(key, _)| !DERIVED.contains(&key.as_str()))
         .map(|(key, value)| CandidateAdmissionFact {
             key: key.clone(),
             value: value.clone(),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    facts.extend(derived_candidate_facts(source_path, source, fields));
+    facts.sort_by(|left, right| left.key.cmp(&right.key));
+    facts.dedup_by(|left, right| left.key == right.key);
+    facts
+}
+
+fn derived_candidate_facts(
+    source_path: &Path,
+    source: &str,
+    fields: &BTreeMap<String, String>,
+) -> Vec<CandidateAdmissionFact> {
+    let mut facts = Vec::new();
+    let candidate_id = fields.get("id").map(String::as_str).unwrap_or("");
+    let config = read_project_config(source_path);
+    match candidate_id {
+        "S-32" => {
+            if let Some(target_rust) = config_string(&config, &["output", "target_rust"]) {
+                facts.push(candidate_fact("target_rust", target_rust));
+                facts.push(candidate_fact(
+                    "avoids_nightly",
+                    (!source_uses_nightly_features(source)).to_string(),
+                ));
+            }
+        }
+        "S-49" => {
+            if config_bool(&config, &["output", "no_std"]).unwrap_or(false) {
+                let hidden_heap_sites = hidden_heap_site_count(source);
+                facts.push(candidate_fact(
+                    "no_hidden_heap",
+                    (hidden_heap_sites == 0).to_string(),
+                ));
+                facts.push(candidate_fact("allocation_report", "structural"));
+                facts.push(candidate_fact(
+                    "hidden_heap_sites",
+                    hidden_heap_sites.to_string(),
+                ));
+                if let Some(memory_budget) = config_string(&config, &["output", "memory_budget"]) {
+                    facts.push(candidate_fact("memory_budget", memory_budget));
+                }
+            }
+        }
+        "S-37+" => {
+            if let Some(policy) = config_string(&config, &["casts", "policy"]) {
+                let cast_count = cast_site_count(source);
+                facts.push(candidate_fact("cast_policy", policy));
+                if cast_count > 0 {
+                    facts.push(candidate_fact("debt_casts", "source_spans"));
+                    facts.push(candidate_fact("strict_casts", "raw-casts-present"));
+                } else {
+                    facts.push(candidate_fact("debt_casts", "none"));
+                    facts.push(candidate_fact("strict_casts", "explicit"));
+                }
+            }
+        }
+        _ => {}
+    }
+    facts
+}
+
+fn candidate_fact(key: &str, value: impl Into<String>) -> CandidateAdmissionFact {
+    CandidateAdmissionFact {
+        key: key.to_owned(),
+        value: value.into(),
+    }
+}
+
+fn read_project_config(source_path: &Path) -> Option<toml::Value> {
+    for directory in source_path.parent().into_iter().flat_map(Path::ancestors) {
+        let config_path = directory.join("Kobo.toml");
+        let Ok(source) = std::fs::read_to_string(&config_path) else {
+            continue;
+        };
+        if let Ok(config) = source.parse::<toml::Value>() {
+            return Some(config);
+        }
+    }
+    None
+}
+
+fn config_string(config: &Option<toml::Value>, path: &[&str]) -> Option<String> {
+    let mut current = config.as_ref()?;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str().map(str::to_owned)
+}
+
+fn config_bool(config: &Option<toml::Value>, path: &[&str]) -> Option<bool> {
+    let mut current = config.as_ref()?;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_bool()
+}
+
+fn source_uses_nightly_features(source: &str) -> bool {
+    source.contains("#![feature(") || source.contains("#[feature(")
+}
+
+fn hidden_heap_site_count(source: &str) -> usize {
+    [
+        "Vec::new",
+        "Vec::<",
+        "Box::new",
+        "Box::<",
+        "String::new",
+        "String::from",
+        "alloc::",
+    ]
+    .iter()
+    .map(|needle| source.matches(needle).count())
+    .sum()
+}
+
+fn cast_site_count(source: &str) -> usize {
+    source.matches(" as ").count()
 }
 
 fn syn_path_ends_with(path: &syn::Path, suffix: &[&str]) -> bool {

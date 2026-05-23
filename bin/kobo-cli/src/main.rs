@@ -345,6 +345,9 @@ pub(crate) enum KoboCommand {
         /// Show must_call liveness debt
         #[arg(long)]
         liveness: bool,
+        /// Show numeric cast debt with source spans and policy
+        #[arg(long)]
+        casts: bool,
         /// Watch mode - emit a scoped debt rerun plan with precursor warning changes.
         #[arg(long)]
         watch: bool,

@@ -1,4 +1,6 @@
-use crate::{ProofCertificate, ReplayGrade, VerificationError};
+use std::collections::BTreeMap;
+
+use crate::{CandidateAdmissionEvidence, ProofCertificate, ReplayGrade, VerificationError};
 
 pub(crate) fn verify_candidate_admission(
     certificate: &ProofCertificate,
@@ -53,6 +55,56 @@ pub(crate) fn verify_candidate_admission(
                 "replay grade and adapter confidence",
             ));
         }
+        verify_candidate_specific_gates(candidate)?;
+    }
+    Ok(())
+}
+
+fn verify_candidate_specific_gates(
+    candidate: &CandidateAdmissionEvidence,
+) -> Result<(), VerificationError> {
+    let facts = candidate
+        .evidence
+        .iter()
+        .map(|fact| (fact.key.as_str(), fact.value.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    match candidate.id.as_str() {
+        "S-32" => {
+            require_fact(candidate, &facts, "target_rust", "target Rust")?;
+            if facts.get("avoids_nightly").copied() != Some("true") {
+                return Err(candidate_gate_error(
+                    &candidate.id,
+                    "nightly feature avoidance",
+                ));
+            }
+        }
+        "S-49" => {
+            if facts.get("no_hidden_heap").copied() != Some("true") {
+                return Err(candidate_gate_error(&candidate.id, "hidden heap"));
+            }
+            require_fact(candidate, &facts, "allocation_report", "allocation report")?;
+            require_fact(candidate, &facts, "memory_budget", "memory budget")?;
+        }
+        "S-37+" => {
+            require_fact(candidate, &facts, "cast_policy", "cast policy")?;
+            require_fact(candidate, &facts, "debt_casts", "cast debt")?;
+            if facts.get("strict_casts").copied() != Some("explicit") {
+                return Err(candidate_gate_error(&candidate.id, "explicit cast"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn require_fact(
+    candidate: &CandidateAdmissionEvidence,
+    facts: &BTreeMap<&str, &str>,
+    key: &str,
+    gate: &str,
+) -> Result<(), VerificationError> {
+    if facts.get(key).is_none() {
+        return Err(candidate_gate_error(&candidate.id, gate));
     }
     Ok(())
 }

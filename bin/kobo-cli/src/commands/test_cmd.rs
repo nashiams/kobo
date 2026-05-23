@@ -628,6 +628,7 @@ fn write_run_witness(
         adapter.replay_grade = adapter_adjusted_proof_grade.clone();
     }
     let candidate_admission = kobo_driver::proof::candidate_admission_evidence(
+        file,
         &document.source,
         adapter_adjusted_proof_grade.clone(),
         &adapter_confidence,

@@ -92,6 +92,48 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
     Ok(())
 }
 
+pub(super) fn cmd_debt_casts(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
+    let source = fs::read_to_string(file)
+        .with_context(|| format!("failed to read source {}", file.display()))?;
+    let policy = cast_policy_for_file(file).unwrap_or_else(|| "unspecified".to_owned());
+    let casts = cast_debt_sites(file, &source, &policy);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "mode": "cast_debt",
+                "source": file.display().to_string(),
+                "policy": policy,
+                "casts": casts,
+            }))?
+        );
+        return Ok(());
+    }
+
+    if summary {
+        println!("Cast debt: {} cast site(s), policy={policy}", casts.len());
+        return Ok(());
+    }
+
+    if casts.is_empty() {
+        println!("Cast debt: no numeric cast sites found, policy={policy}");
+    } else {
+        println!("Cast debt: {} cast site(s), policy={policy}", casts.len());
+        for cast in casts {
+            println!(
+                "{}:{}: cast debt [{}] {}",
+                file.display(),
+                cast["line"].as_u64().unwrap_or_default(),
+                cast["policy"].as_str().unwrap_or("unspecified"),
+                cast["snippet"].as_str().unwrap_or("")
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn cmd_debt_watch(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
     let ticks = debt_watch_ticks();
     let mut observations = Vec::new();
@@ -367,6 +409,55 @@ pub(super) fn cmd_debt_cargo(root: &Path, json: bool, summary: bool) -> anyhow::
     }
 
     Ok(())
+}
+
+fn cast_debt_sites(file: &Path, source: &str, policy: &str) -> Vec<serde_json::Value> {
+    let mut sites = Vec::new();
+    let mut offset = 0usize;
+    for (line_index, line) in source.lines().enumerate() {
+        let mut search_start = 0usize;
+        while let Some(relative) = line[search_start..].find(" as ") {
+            let column = search_start + relative;
+            let start = offset + column;
+            let end = start + " as ".len();
+            sites.push(serde_json::json!({
+                "file": file.display().to_string(),
+                "line": line_index + 1,
+                "span": {
+                    "start": start,
+                    "end": end,
+                },
+                "policy": policy,
+                "required": "use an explicit checked, saturating, or wrapping conversion",
+                "snippet": line.trim(),
+            }));
+            search_start = column + " as ".len();
+        }
+        offset += line.len() + 1;
+    }
+    sites
+}
+
+fn cast_policy_for_file(file: &Path) -> Option<String> {
+    let config = read_project_config(file)?;
+    let mut current = &config;
+    for key in ["casts", "policy"] {
+        current = current.get(key)?;
+    }
+    current.as_str().map(str::to_owned)
+}
+
+fn read_project_config(source_path: &Path) -> Option<toml::Value> {
+    for directory in source_path.parent().into_iter().flat_map(Path::ancestors) {
+        let config_path = directory.join("Kobo.toml");
+        let Ok(source) = fs::read_to_string(&config_path) else {
+            continue;
+        };
+        if let Ok(config) = source.parse::<toml::Value>() {
+            return Some(config);
+        }
+    }
+    None
 }
 
 fn count_files_and_lines(file_set: &kobo_ir::FileSet) -> (usize, usize) {

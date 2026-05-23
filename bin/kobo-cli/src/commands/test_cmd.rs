@@ -53,7 +53,7 @@ pub(super) fn cmd_test(
                 .map(|scenario| scenario.name.clone())
         })
         .unwrap_or_else(|| "<missing>".to_owned());
-    let profile_roles = resolve_profile_roles(profile, &document, &target_name);
+    let profile_roles = resolve_profile_roles(profile, &document, &target_name)?;
     let mut session = super::session::build_session(
         file,
         Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
@@ -351,28 +351,50 @@ fn resolve_profile_roles(
     cli_profile: Option<&str>,
     document: &ScenarioDocument,
     target_name: &str,
-) -> ProfileRoles {
+) -> anyhow::Result<ProfileRoles> {
     let scenario_profile = document
         .scenarios
         .iter()
         .find(|scenario| scenario.name == target_name)
         .map(|scenario| scenario.profile.clone())
         .unwrap_or_else(|| sim_model::target_profile(document, target_name, None));
+    validate_simulation_profile(&scenario_profile)?;
 
-    match cli_profile {
+    Ok(match cli_profile {
         Some(profile @ ("dev" | "checked" | "release")) => ProfileRoles {
             guarantee_profile: profile.to_owned(),
             backend_profile: scenario_profile,
         },
-        Some(profile) => ProfileRoles {
+        Some(profile) if is_stable_simulation_profile(profile) => ProfileRoles {
             guarantee_profile: "checked".to_owned(),
             backend_profile: profile.to_owned(),
         },
+        Some(profile) => {
+            anyhow::bail!(
+                "unsupported simulation profile `{profile}`; expected sync, async, stateful-input, failpoint, network, distributed, or guarantee profile dev, checked, release"
+            );
+        }
         None => ProfileRoles {
             guarantee_profile: "checked".to_owned(),
             backend_profile: scenario_profile,
         },
+    })
+}
+
+fn validate_simulation_profile(profile: &str) -> anyhow::Result<()> {
+    if is_stable_simulation_profile(profile) {
+        return Ok(());
     }
+    anyhow::bail!(
+        "unsupported simulation profile `{profile}`; expected sync, async, stateful-input, failpoint, network, distributed"
+    )
+}
+
+fn is_stable_simulation_profile(profile: &str) -> bool {
+    matches!(
+        profile,
+        "sync" | "async" | "stateful-input" | "failpoint" | "network" | "distributed"
+    )
 }
 
 fn default_budget(sim_profile: &str) -> Option<u64> {
@@ -4017,11 +4039,12 @@ fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String 
 fn backend_for_profile(profile: &str) -> &'static str {
     match profile {
         "sync" => "loom",
+        "async" => "shuttle",
         "stateful-input" => "proptest",
         "failpoint" => "failpoints",
-        "network" | "network-design" => "turmoil",
-        "distributed" | "madsim" => "madsim",
-        _ => "shuttle",
+        "network" => "turmoil",
+        "distributed" => "madsim",
+        _ => "unknown",
     }
 }
 

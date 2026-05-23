@@ -86,6 +86,7 @@ pub(super) enum Backend {
     Proptest,
     Failpoints,
     DesignOnlyNetwork,
+    Unknown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,6 +153,7 @@ impl Backend {
             Self::Proptest => "proptest",
             Self::Failpoints => "failpoints",
             Self::DesignOnlyNetwork => "network-design",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -1772,11 +1774,12 @@ fn ident_prefix(input: &str) -> Option<String> {
 pub(super) fn backend_for_profile(profile: &str) -> Backend {
     match profile {
         "sync" => Backend::Loom,
+        "async" => Backend::Shuttle,
         "distributed" => Backend::Madsim,
         "stateful-input" => Backend::Proptest,
         "failpoint" => Backend::Failpoints,
         "network" | "network-design" => Backend::DesignOnlyNetwork,
-        _ => Backend::Shuttle,
+        _ => Backend::Unknown,
     }
 }
 

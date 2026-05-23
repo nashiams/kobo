@@ -80,6 +80,7 @@ impl SimConfig {
     pub fn scheduler_for_backend(&self, backend: &str) -> Option<&str> {
         self.backends
             .get(backend)
+            .filter(|config| config.enabled)
             .and_then(|config| config.scheduler.as_deref())
     }
 }
@@ -402,6 +403,9 @@ pub enum ConfigError {
 
     #[error("K0120 ecosystem policy parse error at {key}: unknown boundary policy `{value}`")]
     InvalidEcosystemPolicy { key: String, value: String },
+
+    #[error("K0121 simulation config parse error at {key}: {message}")]
+    InvalidSimConfig { key: String, message: String },
 }
 
 impl Default for KoboConfig {
@@ -722,20 +726,23 @@ impl RawKoboConfig {
         self.ecosystem
             .apply_to(&mut config.ecosystem_policy, config_dir)?;
         self.runtime.profile.apply_to(&mut config.runtime_profile);
-        self.sim.apply_to(&mut config.sim);
+        self.sim.apply_to(&mut config.sim)?;
         Ok(())
     }
 }
 
 impl RawSimSection {
-    fn apply_to(self, sim: &mut SimConfig) {
+    fn apply_to(self, sim: &mut SimConfig) -> Result<(), ConfigError> {
         if let Some(default_profile) = self.default_profile {
+            validate_sim_profile_name("[sim].default_profile", &default_profile)?;
             sim.default_profile = default_profile;
         }
         if let Some(show_backend_choices) = self.show_backend_choices {
             sim.show_backend_choices = show_backend_choices;
         }
         for (name, profile) in self.profile {
+            validate_sim_profile_name("[sim.profile]", &name)?;
+            validate_sim_shrink("[sim.profile].shrink", profile.shrink.as_deref())?;
             sim.profiles.insert(
                 name,
                 SimProfileConfig {
@@ -746,6 +753,9 @@ impl RawSimSection {
             );
         }
         for (name, backend) in self.backend {
+            validate_sim_backend_name("[sim.backend]", &name)?;
+            validate_sim_backend_scheduler(&name, backend.scheduler.as_deref())?;
+            validate_sim_replay_token(&name, backend.replay_token.as_deref())?;
             sim.backends.insert(
                 name,
                 SimBackendConfig {
@@ -757,7 +767,86 @@ impl RawSimSection {
                 },
             );
         }
+        Ok(())
     }
+}
+
+fn validate_sim_profile_name(key: &str, profile: &str) -> Result<(), ConfigError> {
+    if matches!(profile, "quick" | "deep" | "replay" | "exhaustive") {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: format!(
+            "unknown simulation profile `{profile}`; expected quick, deep, replay, or exhaustive"
+        ),
+    })
+}
+
+fn validate_sim_backend_name(key: &str, backend: &str) -> Result<(), ConfigError> {
+    if matches!(
+        backend,
+        "loom" | "shuttle" | "turmoil" | "madsim" | "proptest" | "failpoints"
+    ) {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: format!(
+            "unknown simulation backend `{backend}`; expected loom, shuttle, turmoil, madsim, proptest, or failpoints"
+        ),
+    })
+}
+
+fn validate_sim_backend_scheduler(
+    backend: &str,
+    scheduler: Option<&str>,
+) -> Result<(), ConfigError> {
+    let Some(scheduler) = scheduler else {
+        return Ok(());
+    };
+    let supported = match backend {
+        "shuttle" => matches!(scheduler, "pct" | "pct-random-bounded" | "small-random"),
+        "loom" => matches!(scheduler, "exhaustive" | "small-random"),
+        "turmoil" | "madsim" => matches!(scheduler, "deterministic" | "small-random"),
+        "proptest" | "failpoints" => scheduler == "small-random",
+        _ => false,
+    };
+    if supported {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].scheduler"),
+        message: format!("unsupported scheduler `{scheduler}` for backend `{backend}`"),
+    })
+}
+
+fn validate_sim_replay_token(backend: &str, replay_token: Option<&str>) -> Result<(), ConfigError> {
+    let Some(replay_token) = replay_token else {
+        return Ok(());
+    };
+    if matches!(replay_token, "record" | "metadata" | "none") {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].replay_token"),
+        message: format!(
+            "unsupported replay token `{replay_token}`; expected record, metadata, or none"
+        ),
+    })
+}
+
+fn validate_sim_shrink(key: &str, shrink: Option<&str>) -> Result<(), ConfigError> {
+    let Some(shrink) = shrink else {
+        return Ok(());
+    };
+    if matches!(shrink, "off" | "best-effort") {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: format!("unsupported shrink mode `{shrink}`; expected off or best-effort"),
+    })
 }
 
 impl RawRuntimeProfileSection {
@@ -1121,6 +1210,35 @@ checkpoint_replay = true
         assert_eq!(backend.replay_token.as_deref(), Some("record"));
         assert_eq!(backend.max_branches, Some(11));
         assert_eq!(backend.checkpoint_replay, Some(true));
+    }
+
+    #[test]
+    fn parse_config_rejects_unstable_sim_profile_and_backend_keys() {
+        let profile_error = parse_kobo_config(
+            r#"
+[sim.profile.shuttle-ish]
+schedule_budget = 7
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            profile_error.contains("unknown simulation profile"),
+            "{profile_error}"
+        );
+
+        let backend_error = parse_kobo_config(
+            r#"
+[sim.backend.fake]
+scheduler = "pct"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            backend_error.contains("unknown simulation backend"),
+            "{backend_error}"
+        );
     }
 
     #[test]

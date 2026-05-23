@@ -80,9 +80,13 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
         .iter()
         .filter(|operation| !matches!(operation.kind, ScenarioOpKind::Return))
         .collect::<Vec<_>>();
+    let branch_arm_joins = branch_arm_join_targets(&modeled_ops);
 
     for (index, operation) in modeled_ops.iter().enumerate() {
-        let next = (index + 1 < modeled_ops.len()).then(|| format!("bb{}", index + 1));
+        let next = match branch_arm_joins.get(&index) {
+            Some(join) => join.clone(),
+            None => (index + 1 < modeled_ops.len()).then(|| format!("bb{}", index + 1)),
+        };
         let statements = statement_from_operation(index, operation)
             .into_iter()
             .collect();
@@ -147,6 +151,24 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
             blocks,
         }],
     }
+}
+
+fn branch_arm_join_targets(modeled_ops: &[&ScenarioOp]) -> BTreeMap<usize, Option<String>> {
+    let mut joins = BTreeMap::new();
+    for (index, operation) in modeled_ops.iter().enumerate() {
+        let ScenarioOpKind::Select { branch_count } = operation.kind else {
+            continue;
+        };
+        let branch_count = branch_count.max(1) as usize;
+        let join = (index + branch_count + 1 < modeled_ops.len())
+            .then(|| format!("bb{}", index + branch_count + 1));
+        for branch_index in index + 1..=index + branch_count {
+            if branch_index < modeled_ops.len() {
+                joins.insert(branch_index, join.clone());
+            }
+        }
+    }
+    joins
 }
 
 fn apply_kir_cfg_successors(

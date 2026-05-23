@@ -738,6 +738,7 @@ fn ecosystem_boundaries_json(
                     "adapter": config.ecosystem_policy.adapter_for(&decision.crate_name).map(|adapter| serde_json::json!({
                         "package": adapter.package,
                         "version": adapter.version,
+                        "confidence": adapter.confidence,
                         "source": adapter.source,
                         "registry": adapter.registry,
                         "checksum": adapter.checksum,

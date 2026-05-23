@@ -702,6 +702,9 @@ impl<'a> ScenarioLowerer<'a> {
             }
         }
         if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref(), env) {
+            if expr_contains_await(init.expr.as_ref()) {
+                self.record_unsupported_construct("lifecycle_method_await_initializer");
+            }
             env.bind_obligation(
                 creation.binding.clone(),
                 creation.binding.clone(),
@@ -876,9 +879,10 @@ impl<'a> ScenarioLowerer<'a> {
             Expr::Match(expr_match) => self.execute_match(expr_match, env),
             Expr::Async(expr_async) => self.execute_async(expr_async, env),
             Expr::Await(await_expr) => {
+                let timeout_boundary = self.timeout_await_boundary(await_expr.base.as_ref(), env);
                 self.record_core_terminator(
                     ScenarioCoreTerminatorKind::Await,
-                    None,
+                    timeout_boundary,
                     None,
                     vec!["await_resume".to_owned(), "await_cancel".to_owned()],
                     expr,
@@ -899,11 +903,80 @@ impl<'a> ScenarioLowerer<'a> {
             }
             Expr::Try(expr_try) => self.execute_try(expr_try, env),
             Expr::Block(block) => self.execute_block(&block.block, env),
+            Expr::Array(array) => {
+                for element in &array.elems {
+                    self.execute_expr(element, env);
+                }
+            }
+            Expr::Assign(assign) => {
+                self.execute_expr(assign.left.as_ref(), env);
+                self.execute_expr(assign.right.as_ref(), env);
+            }
+            Expr::Binary(binary) => {
+                self.execute_expr(binary.left.as_ref(), env);
+                self.execute_expr(binary.right.as_ref(), env);
+            }
+            Expr::Break(expr_break) => {
+                if let Some(value) = expr_break.expr.as_deref() {
+                    self.execute_expr(value, env);
+                }
+            }
+            Expr::Cast(cast) => self.execute_expr(cast.expr.as_ref(), env),
+            Expr::Closure(closure) => self.execute_expr(closure.body.as_ref(), env),
+            Expr::Field(field) => self.execute_expr(field.base.as_ref(), env),
+            Expr::ForLoop(expr_for) => {
+                self.execute_expr(expr_for.expr.as_ref(), env);
+                self.execute_block(&expr_for.body, env);
+            }
+            Expr::Group(group) => self.execute_expr(group.expr.as_ref(), env),
+            Expr::Index(index) => {
+                self.execute_expr(index.expr.as_ref(), env);
+                self.execute_expr(index.index.as_ref(), env);
+            }
+            Expr::Let(expr_let) => self.execute_expr(expr_let.expr.as_ref(), env),
             Expr::Loop(expr_loop) => self.operations.push(ScenarioOp {
                 span: self.span(expr_loop),
                 kind: ScenarioOpKind::Loop,
             }),
             Expr::Paren(paren) => self.execute_expr(paren.expr.as_ref(), env),
+            Expr::Range(range) => {
+                if let Some(start) = range.start.as_deref() {
+                    self.execute_expr(start, env);
+                }
+                if let Some(end) = range.end.as_deref() {
+                    self.execute_expr(end, env);
+                }
+            }
+            Expr::Reference(reference) => self.execute_expr(reference.expr.as_ref(), env),
+            Expr::Repeat(repeat) => {
+                self.execute_expr(repeat.expr.as_ref(), env);
+                self.execute_expr(repeat.len.as_ref(), env);
+            }
+            Expr::Struct(expr_struct) => {
+                for field in &expr_struct.fields {
+                    self.execute_expr(&field.expr, env);
+                }
+                if let Some(rest) = expr_struct.rest.as_deref() {
+                    self.execute_expr(rest, env);
+                }
+            }
+            Expr::TryBlock(try_block) => self.execute_block(&try_block.block, env),
+            Expr::Tuple(tuple) => {
+                for element in &tuple.elems {
+                    self.execute_expr(element, env);
+                }
+            }
+            Expr::Unary(unary) => self.execute_expr(unary.expr.as_ref(), env),
+            Expr::Unsafe(expr_unsafe) => self.execute_block(&expr_unsafe.block, env),
+            Expr::While(expr_while) => {
+                self.execute_expr(expr_while.cond.as_ref(), env);
+                self.execute_block(&expr_while.body, env);
+            }
+            Expr::Yield(expr_yield) => {
+                if let Some(value) = expr_yield.expr.as_deref() {
+                    self.execute_expr(value, env);
+                }
+            }
             Expr::Macro(expr_macro) => {
                 if self.record_panic_macro(&expr_macro.mac) {
                     return;
@@ -951,7 +1024,9 @@ impl<'a> ScenarioLowerer<'a> {
     }
 
     fn execute_if(&mut self, expr_if: &'a ExprIf, env: &mut BindingEnv) {
-        match self.eval_bool(expr_if.cond.as_ref(), env) {
+        let condition_value = self.eval_bool(expr_if.cond.as_ref(), env);
+        self.execute_expr(expr_if.cond.as_ref(), env);
+        match condition_value {
             Some(true) => self.execute_block(&expr_if.then_branch, env),
             Some(false) => {
                 if let Some((_, else_expr)) = expr_if.else_branch.as_ref() {
@@ -996,9 +1071,13 @@ impl<'a> ScenarioLowerer<'a> {
 
     fn execute_match(&mut self, expr_match: &'a ExprMatch, env: &mut BindingEnv) {
         let discriminant = self.eval_bool(expr_match.expr.as_ref(), env);
+        self.execute_expr(expr_match.expr.as_ref(), env);
         if discriminant.is_some() {
             for arm in &expr_match.arms {
                 if matches_bool_pat(&arm.pat, discriminant) {
+                    if let Some((_, guard)) = arm.guard.as_ref() {
+                        self.execute_expr(guard.as_ref(), env);
+                    }
                     self.execute_expr(arm.body.as_ref(), env);
                     break;
                 }
@@ -1016,6 +1095,9 @@ impl<'a> ScenarioLowerer<'a> {
         let mut arm_envs = Vec::new();
         for arm in &expr_match.arms {
             let mut arm_env = before.clone();
+            if let Some((_, guard)) = arm.guard.as_ref() {
+                self.execute_expr(guard.as_ref(), &mut arm_env);
+            }
             self.execute_expr(arm.body.as_ref(), &mut arm_env);
             arm_envs.push(arm_env);
         }
@@ -1459,6 +1541,10 @@ impl<'a> ScenarioLowerer<'a> {
             return true;
         }
 
+        for argument in &call.args {
+            self.execute_expr(argument, env);
+        }
+
         let mut helper_env = BindingEnv::with_imports(self.imports.clone());
         let mut transfer_ops = Vec::new();
         for (input, argument) in function.sig.inputs.iter().zip(call.args.iter()) {
@@ -1660,6 +1746,21 @@ impl<'a> ScenarioLowerer<'a> {
             mac,
         );
         true
+    }
+
+    fn timeout_await_boundary(&self, expr: &'a Expr, env: &BindingEnv) -> Option<String> {
+        match peel_paren_expr(expr) {
+            Expr::Call(call) => {
+                let Expr::Path(path) = call.func.as_ref() else {
+                    return None;
+                };
+                let resolved_path = self.resolved_path_segments(&path.path, env);
+                path_ends_with_segments(&resolved_path, &["tokio", "time", "timeout"])
+                    .then(|| "tokio::time::timeout".to_owned())
+            }
+            Expr::Await(await_expr) => self.timeout_await_boundary(await_expr.base.as_ref(), env),
+            _ => None,
+        }
     }
 
     fn record_core_terminator(
@@ -1938,6 +2039,22 @@ fn expr_static_type_from_initializer(expr: &Expr) -> Option<String> {
         Expr::Paren(paren) => expr_static_type_from_initializer(paren.expr.as_ref()),
         _ => None,
     }
+}
+
+fn expr_contains_await(expr: &Expr) -> bool {
+    struct AwaitVisitor {
+        found: bool,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
+        fn visit_expr_await(&mut self, _expr: &'ast syn::ExprAwait) {
+            self.found = true;
+        }
+    }
+
+    let mut visitor = AwaitVisitor { found: false };
+    syn::visit::visit_expr(&mut visitor, expr);
+    visitor.found
 }
 
 fn obligation_container_shape(

@@ -295,6 +295,21 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
     if source.contains("ward.network") || source.contains("reqwest::") {
         output.push_str("// kobo: network facade: modeled ports can drop, delay, reorder, or require boundary policy\n");
     }
+    for candidate in kobo_driver::proof::candidate_admission_evidence(
+        Path::new("src/main.kobo"),
+        source,
+        kobo_driver::proof::ReplayGrade::Partial,
+        &[],
+    ) {
+        output.push_str(&format!(
+            "// kobo-candidate-admission: candidate_admission id={} status={} inspect_visible={} strict_compatible={} whole_ecosystem_modeling_required={}\n",
+            candidate.id,
+            candidate.status,
+            candidate.inspect_visibility.is_some(),
+            candidate.strict_compatible,
+            candidate.whole_ecosystem_modeling_required
+        ));
+    }
     output
 }
 

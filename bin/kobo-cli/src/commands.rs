@@ -17,6 +17,7 @@ mod migrate;
 mod ownership_analysis;
 mod perf;
 mod policy;
+mod proof;
 mod replay;
 mod run;
 mod session;
@@ -31,7 +32,9 @@ use std::fmt as std_fmt;
 
 use kobo_ir::GuaranteePolicy;
 
-use crate::{resolve_guarantee_profile, GuaranteeProfileArg, KoboCommand, SimCommand};
+use crate::{
+    resolve_guarantee_profile, GuaranteeProfileArg, KoboCommand, ProofCommand, SimCommand,
+};
 
 #[derive(Debug)]
 pub(crate) struct DiagnosticExit;
@@ -68,6 +71,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             max_diagnostics,
             visible_region,
             include_budgeted,
+            emit_proof,
         } => {
             let guarantee_profile = resolve_guarantee_profile(checked, strict, profile);
             check::cmd_check(
@@ -83,8 +87,18 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 max_diagnostics,
                 visible_region.as_deref(),
                 include_budgeted,
+                emit_proof,
             )
         }
+        KoboCommand::Proof { command } => match command {
+            ProofCommand::Emit {
+                file,
+                target,
+                output,
+                replay_grade,
+            } => proof::cmd_emit(&file, target.as_deref(), output.as_deref(), replay_grade),
+            ProofCommand::Verify { artifact, json } => proof::cmd_verify(&artifact, json),
+        },
         KoboCommand::LspDiagnostics {
             file,
             format,
@@ -273,11 +287,12 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             patterns,
             errors,
             liveness,
+            casts,
             watch,
         } => {
             if let Some(cargo_root) = cargo {
                 anyhow::ensure!(
-                    !(borrows || patterns || errors || liveness || watch),
+                    !(borrows || patterns || errors || liveness || casts || watch),
                     "kobo debt --cargo supports default, --summary, and --json output only"
                 );
                 return debt::cmd_debt_cargo(&cargo_root, json, summary);
@@ -285,6 +300,13 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             let Some(file) = file else {
                 anyhow::bail!("kobo debt requires FILE or --cargo DIR");
             };
+            if casts {
+                anyhow::ensure!(
+                    !(borrows || patterns || errors || liveness || watch),
+                    "kobo debt --casts cannot be combined with other debt views"
+                );
+                return debt::cmd_debt_casts(file.as_path(), json, summary);
+            }
             if watch {
                 return debt::cmd_debt_watch(file.as_path(), json, summary);
             }

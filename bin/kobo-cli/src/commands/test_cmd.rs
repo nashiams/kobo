@@ -614,6 +614,25 @@ fn write_run_witness(
         formal_core::formal_core_json(&source_path, &document.source, scenario_program);
     let proof_seed =
         formal_core::proof_seed_json(&source_path, &document.source, scenario_program, run);
+    let requested_proof_grade = proof_replay_grade(&run.replay_guarantee);
+    let mut adapter_confidence = kobo_driver::proof::adapter_evidence(
+        scenario_program,
+        &config.ecosystem_policy.adapters,
+        requested_proof_grade.clone(),
+    );
+    let adapter_adjusted_proof_grade = kobo_driver::proof::adapter_adjusted_replay_grade(
+        requested_proof_grade,
+        &adapter_confidence,
+    );
+    for adapter in &mut adapter_confidence {
+        adapter.replay_grade = adapter_adjusted_proof_grade.clone();
+    }
+    let candidate_admission = kobo_driver::proof::candidate_admission_evidence(
+        file,
+        &document.source,
+        adapter_adjusted_proof_grade.clone(),
+        &adapter_confidence,
+    );
     let strict_liveness =
         formal_core::strict_liveness_json(&source_path, &document.source, scenario_program, run);
     let trace_checks = trace_checks_json(&source_path, &document.source, run);
@@ -703,10 +722,19 @@ fn write_run_witness(
     object.insert("flagship_demo".to_owned(), flagship_demo);
     object.insert(
         "replay_grade".to_owned(),
-        serde_json::json!(witness_evidence::replay_grade_json(
+        serde_json::json!(witness_replay_grade(
             run,
-            fuzz_plan.is_some()
+            fuzz_plan.is_some(),
+            &adapter_adjusted_proof_grade,
         )),
+    );
+    object.insert(
+        "adapter_confidence".to_owned(),
+        serde_json::to_value(&adapter_confidence)?,
+    );
+    object.insert(
+        "candidate_admission".to_owned(),
+        serde_json::to_value(&candidate_admission)?,
     );
     object.insert(
         "boundary_ledger".to_owned(),
@@ -762,7 +790,74 @@ fn write_run_witness(
     );
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
+    write_proof_artifact(file, document, scenario_program, run, &witness_path, config)?;
     Ok(witness_path)
+}
+
+fn write_proof_artifact(
+    file: &Path,
+    document: &ScenarioDocument,
+    scenario_program: &ScenarioProgram,
+    run: &FullDepthRun,
+    witness_path: &Path,
+    config: &kobo_driver::KoboConfig,
+) -> anyhow::Result<()> {
+    if run.failure.is_some() {
+        return Ok(());
+    }
+    let certificate =
+        kobo_driver::proof::emit_proof_certificate(kobo_driver::proof::ProofEmissionInput {
+            source_path: file,
+            source: &document.source,
+            program: scenario_program,
+            adapter_policies: &config.ecosystem_policy.adapters,
+            replay_grade: proof_replay_grade(&run.replay_guarantee),
+            artifact_kind: kobo_driver::proof::ArtifactKind::KwitProofJson,
+        })?;
+    kobo_proof::verify_certificate(
+        &certificate,
+        &kobo_proof::VerificationContext {
+            source: document.source.clone(),
+        },
+    )?;
+    let proof_path = kwit_proof_path(witness_path);
+    std::fs::write(&proof_path, serde_json::to_string_pretty(&certificate)?)
+        .with_context(|| format!("failed to write {}", proof_path.display()))?;
+    Ok(())
+}
+
+fn proof_replay_grade(guarantee: &ReplayGuarantee) -> kobo_driver::proof::ReplayGrade {
+    match guarantee {
+        ReplayGuarantee::Exact => kobo_driver::proof::ReplayGrade::Exact,
+        ReplayGuarantee::Partial => kobo_driver::proof::ReplayGrade::Partial,
+        ReplayGuarantee::NotReplayable => kobo_driver::proof::ReplayGrade::NotReplayable,
+    }
+}
+
+fn witness_replay_grade(
+    run: &FullDepthRun,
+    fuzz_enabled: bool,
+    adjusted_proof_grade: &kobo_driver::proof::ReplayGrade,
+) -> &'static str {
+    let base = witness_evidence::replay_grade_json(run, fuzz_enabled);
+    if !matches!(base, "exact" | "partial" | "not_replayable") {
+        return base;
+    }
+    match adjusted_proof_grade {
+        kobo_driver::proof::ReplayGrade::Exact => "exact",
+        kobo_driver::proof::ReplayGrade::Partial => "partial",
+        kobo_driver::proof::ReplayGrade::NotReplayable => "not_replayable",
+        kobo_driver::proof::ReplayGrade::Debt => "debt",
+    }
+}
+
+fn kwit_proof_path(witness_path: &Path) -> PathBuf {
+    let proof_file_name = witness_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("{name}.proof.json"))
+        .unwrap_or_else(|| "witness.kwit.proof.json".to_owned());
+    witness_path.with_file_name(proof_file_name)
 }
 
 fn service_runtime_json(
@@ -1612,6 +1707,7 @@ fn ecosystem_boundaries_json(
                 "adapter": config.ecosystem_policy.adapter_for(&decision.crate_name).map(|adapter| serde_json::json!({
                     "package": adapter.package,
                     "version": adapter.version,
+                    "confidence": adapter.confidence,
                     "source": adapter.source,
                     "registry": adapter.registry,
                     "checksum": adapter.checksum,

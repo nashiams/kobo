@@ -3,6 +3,7 @@ mod errors;
 mod filesystem;
 mod multi_file;
 mod pipeline;
+pub mod proof;
 mod query;
 mod rustc;
 pub mod scenario;

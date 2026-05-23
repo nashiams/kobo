@@ -351,6 +351,7 @@ dependencies = [
  "kobo-lsp",
  "kobo-migrate",
  "kobo-parser",
+ "kobo-proof",
  "kobo-sim-core",
  "proc-macro2",
  "proptest",
@@ -407,6 +408,7 @@ dependencies = [
  "kobo-ir",
  "kobo-migrate",
  "kobo-parser",
+ "kobo-proof",
  "kobo-transform",
  "quote",
  "serde",
@@ -463,6 +465,16 @@ dependencies = [
  "kobo-errors",
  "kobo-ir",
  "proc-macro2",
+ "syn",
+ "thiserror",
+]
+
+[[package]]
+name = "kobo-proof"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "syn",
  "thiserror",
 ]

@@ -9,6 +9,8 @@ pub(super) struct BoundaryPolicyProjection {
     pub(super) crate_name: String,
     pub(super) policy: String,
     pub(super) source: &'static str,
+    pub(super) adapter_package: Option<String>,
+    pub(super) adapter_confidence: Option<String>,
     pub(super) calls: Vec<String>,
     pub(super) spans: Vec<BoundarySourceSpan>,
     pub(super) reason: Option<String>,
@@ -23,10 +25,11 @@ pub(super) struct BoundarySourceSpan {
 impl BoundaryPolicyProjection {
     pub(super) fn inspect_comment(&self) -> String {
         format!(
-            "// kobo-boundary-policy: crate={} policy={} source={}{}{}{}",
+            "// kobo-boundary-policy: crate={} policy={} source={}{}{}{}{}",
             self.crate_name,
             self.policy,
             self.source,
+            self.adapter_fragment(),
             self.call_fragment(),
             self.span_fragment(),
             self.reason
@@ -38,10 +41,11 @@ impl BoundaryPolicyProjection {
 
     pub(super) fn debt_line(&self) -> String {
         format!(
-            "Boundary policy debt: crate={} policy={} source={}{}{}{}",
+            "Boundary policy debt: crate={} policy={} source={}{}{}{}{}",
             self.crate_name,
             self.policy,
             self.source,
+            self.adapter_fragment(),
             self.call_fragment(),
             self.span_fragment(),
             self.reason
@@ -57,6 +61,17 @@ impl BoundaryPolicyProjection {
         } else {
             format!(" call={}", self.calls.join(","))
         }
+    }
+
+    fn adapter_fragment(&self) -> String {
+        let mut fragment = String::new();
+        if let Some(package) = self.adapter_package.as_deref() {
+            fragment.push_str(&format!(" adapter={package}"));
+        }
+        if let Some(confidence) = self.adapter_confidence.as_deref() {
+            fragment.push_str(&format!(" adapter_confidence={confidence}"));
+        }
+        fragment
     }
 
     fn span_fragment(&self) -> String {
@@ -78,6 +93,8 @@ impl BoundaryPolicyProjection {
             "crate": self.crate_name,
             "policy": self.policy,
             "source": self.source,
+            "adapter": &self.adapter_package,
+            "adapter_confidence": &self.adapter_confidence,
             "calls": self.calls,
             "spans": self.spans.iter().map(|span| {
                 serde_json::json!({
@@ -97,7 +114,7 @@ pub(super) fn projections_for_file(
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read {}", file.display()))?;
     let references = BoundaryReferences::from_source(&source, config);
-    let mut projections = source_boundary_projections(&source, &references);
+    let mut projections = source_boundary_projections(&source, &references, config);
     let source_crates = projections
         .iter()
         .map(|projection| projection.crate_name.clone())
@@ -108,6 +125,8 @@ pub(super) fn projections_for_file(
             crate_name: crate_policy.name.clone(),
             policy: crate_policy.policy.as_str().to_owned(),
             source: "project-crate",
+            adapter_package: adapter_package(config, &crate_policy.name),
+            adapter_confidence: adapter_confidence(config, &crate_policy.name),
             calls: references.calls_for_crate(&crate_policy.name),
             spans: references.spans_for_crate(&crate_policy.name),
             reason: crate_policy.reason.clone(),
@@ -129,6 +148,8 @@ pub(super) fn projections_for_file(
                 crate_name: crate_name.clone(),
                 policy: config.ecosystem_policy.default.as_str().to_owned(),
                 source: "project-default",
+                adapter_package: adapter_package(config, &crate_name),
+                adapter_confidence: adapter_confidence(config, &crate_name),
                 calls: references.calls_for_crate(&crate_name),
                 spans: references.spans_for_crate(&crate_name),
                 reason: None,
@@ -147,6 +168,8 @@ pub(super) fn projections_for_file(
         left.crate_name == right.crate_name
             && left.source == right.source
             && left.policy == right.policy
+            && left.adapter_package == right.adapter_package
+            && left.adapter_confidence == right.adapter_confidence
             && left.calls == right.calls
             && left.spans == right.spans
     });
@@ -156,6 +179,7 @@ pub(super) fn projections_for_file(
 fn source_boundary_projections(
     source: &str,
     references: &BoundaryReferences,
+    config: &kobo_driver::KoboConfig,
 ) -> Vec<BoundaryPolicyProjection> {
     let mut projections = Vec::new();
     let Ok(parsed) = syn::parse_file(source) else {
@@ -170,6 +194,8 @@ fn source_boundary_projections(
                 let calls = references.calls_for_crate(&crate_name);
                 let spans = references.spans_for_crate(&crate_name);
                 projections.push(BoundaryPolicyProjection {
+                    adapter_package: adapter_package(config, &crate_name),
+                    adapter_confidence: adapter_confidence(config, &crate_name),
                     crate_name,
                     policy,
                     source: "source",
@@ -181,6 +207,20 @@ fn source_boundary_projections(
         }
     }
     projections
+}
+
+fn adapter_package(config: &kobo_driver::KoboConfig, crate_name: &str) -> Option<String> {
+    config
+        .ecosystem_policy
+        .adapter_for(crate_name)
+        .map(|adapter| adapter.package.clone())
+}
+
+fn adapter_confidence(config: &kobo_driver::KoboConfig, crate_name: &str) -> Option<String> {
+    config
+        .ecosystem_policy
+        .adapter_for(crate_name)
+        .and_then(|adapter| adapter.confidence.clone())
 }
 
 fn referenced_crates(

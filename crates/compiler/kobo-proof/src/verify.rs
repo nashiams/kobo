@@ -29,6 +29,7 @@ pub fn verify_certificate(
 ) -> Result<VerificationReport, VerificationError> {
     verify_source_hash(certificate, context)?;
     verify_core_hash(certificate)?;
+    verify_cancel_edges(certificate)?;
     verify_template_versions(certificate)?;
     verify_template_hashes(certificate)?;
     verify_boundary_policies(certificate)?;
@@ -94,6 +95,25 @@ fn verify_core_hash(certificate: &ProofCertificate) -> Result<(), VerificationEr
             expected: certificate.core.hash.clone(),
             observed,
         });
+    }
+    Ok(())
+}
+
+fn verify_cancel_edges(certificate: &ProofCertificate) -> Result<(), VerificationError> {
+    let mut await_blocks = BTreeSet::<String>::new();
+    let mut cancel_blocks = BTreeSet::<String>::new();
+    for edge in &certificate.core.cfg_edges {
+        if edge.kind == "await" {
+            await_blocks.insert(edge.from.clone());
+            if edge.to == "await_cancel" {
+                cancel_blocks.insert(edge.from.clone());
+            }
+        }
+    }
+    for block in await_blocks {
+        if !cancel_blocks.contains(&block) {
+            return Err(VerificationError::MissingCancelEdge { block });
+        }
     }
     Ok(())
 }
@@ -273,6 +293,9 @@ fn verify_event_state_after(
     for (binding, expected_state) in expected {
         let observed_state = env.get(&binding).cloned().unwrap_or_default();
         if observed_state != expected_state {
+            if expected_state == "resolved" && observed_state == "owned" {
+                return Err(VerificationError::RemovedDischarge { binding });
+            }
             return Err(VerificationError::ObligationReplayMismatch {
                 binding,
                 expected: expected_state,
@@ -291,6 +314,9 @@ fn verify_exit_env(
     for (binding, expected_state) in expected {
         let observed_state = env.get(&binding).cloned().unwrap_or_default();
         if observed_state != expected_state {
+            if expected_state == "resolved" && observed_state == "owned" {
+                return Err(VerificationError::RemovedDischarge { binding });
+            }
             return Err(VerificationError::ObligationReplayMismatch {
                 binding,
                 expected: expected_state,

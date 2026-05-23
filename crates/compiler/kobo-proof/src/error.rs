@@ -6,6 +6,8 @@ pub enum VerificationError {
     SourceHashMismatch { expected: String, observed: String },
     #[error("core hash mismatch: expected {expected}, observed {observed}")]
     CoreHashMismatch { expected: String, observed: String },
+    #[error("missing cancel edge for suspension block {block}")]
+    MissingCancelEdge { block: String },
     #[error("template {id} has stale version {version}")]
     StaleTemplateVersion { id: String, version: String },
     #[error("template hash mismatch for {id}: expected {expected}, observed {observed}")]
@@ -32,6 +34,8 @@ pub enum VerificationError {
         expected: String,
         observed: String,
     },
+    #[error("removed discharge for {binding}")]
+    RemovedDischarge { binding: String },
     #[error("unresolved obligation {binding} reaches a modeled exit")]
     UnresolvedExitObligation { binding: String },
     #[error("unknown obligation event kind: {message}")]

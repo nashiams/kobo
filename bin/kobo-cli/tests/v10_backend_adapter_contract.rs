@@ -823,6 +823,8 @@ fn configured_max_branches_route() {
             s("--sim"),
             s("exhaustive"),
             s("--events=json"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
             path_arg(&file),
         ],
         &project.root,
@@ -835,6 +837,28 @@ fn configured_max_branches_route() {
     let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
     assert_eq!(json["scheduler"]["event_budget"], 5);
     assert_eq!(json["max_branches"], 5);
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    let harness_path = witness["harness_manifest"]["harness_rs_path"]
+        .as_str()
+        .expect("witness should include generated harness source path");
+    let harness_source = fs::read_to_string(harness_path).expect("harness source should read");
+    assert_contains(
+        &harness_source,
+        "loom::model::Builder::new",
+        "Loom max_branches should use native Loom builder controls",
+    );
+    assert_contains(
+        &harness_source,
+        "max_branches = 5",
+        "configured max_branches should be assigned to the Loom builder",
+    );
 }
 
 #[test]

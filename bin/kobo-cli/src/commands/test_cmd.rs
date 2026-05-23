@@ -108,6 +108,7 @@ pub(super) fn cmd_test(
             .or_else(|| session.config.sim.schedule_budget_for(sim_profile))
             .or_else(|| default_budget(sim_profile)),
         scheduler: kobo_sim_core::SchedulerPolicy::from_name(effective_scheduler.as_deref()),
+        loom_max_branches: effective_max_branches,
     };
     let configured_seed_count = session.config.sim.seed_count_for(sim_profile);
     let fuzz_plan = if fuzz {

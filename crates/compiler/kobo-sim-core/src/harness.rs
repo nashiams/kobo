@@ -1754,7 +1754,17 @@ fn main_wrapper_source(
     target_is_async: bool,
 ) -> Result<String> {
     let mut source = if options.profile == "sync" {
-        String::from("\nfn main() {\n    loom::model(|| {\n")
+        let mut source = String::from("\nfn main() {\n");
+        if let Some(max_branches) = options.loom_max_branches {
+            source.push_str("    let mut __kobo_loom = loom::model::Builder::new();\n");
+            source.push_str(&format!(
+                "    __kobo_loom.max_branches = {max_branches}_usize;\n"
+            ));
+            source.push_str("    __kobo_loom.check(|| {\n");
+        } else {
+            source.push_str("    loom::model(|| {\n");
+        }
+        source
     } else {
         String::from("\nfn main() {\n")
     };

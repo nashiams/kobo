@@ -21,6 +21,7 @@ pub struct ScenarioOptions {
     pub inject: Option<String>,
     pub event_budget: Option<u64>,
     pub scheduler: SchedulerPolicy,
+    pub loom_max_branches: Option<u64>,
 }
 
 impl Default for ScenarioOptions {
@@ -32,6 +33,7 @@ impl Default for ScenarioOptions {
             inject: None,
             event_budget: None,
             scheduler: SchedulerPolicy::Default,
+            loom_max_branches: None,
         }
     }
 }

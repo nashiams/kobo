@@ -181,6 +181,7 @@ fn replay_v1(
         scheduler: kobo_sim_core::SchedulerPolicy::from_name(
             witness["backend_controls"]["scheduler"].as_str(),
         ),
+        loom_max_branches: witness["backend_controls"]["max_branches"].as_u64(),
     };
     let run = kobo_sim_core::run_full_depth_from_program(
         &scenario_program,

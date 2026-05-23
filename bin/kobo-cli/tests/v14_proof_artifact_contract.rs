@@ -214,3 +214,40 @@ fn proof_artifact_claim_ends_at_core_until_translation_validation() {
         "proof artifacts must not claim generated Rust binary behavior: {rendered}"
     );
 }
+
+#[test]
+fn release_docs_state_scope_non_goals_and_honesty_gates() {
+    let docs_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("docs")
+        .join("proof-artifacts-v014.md");
+    let docs = fs::read_to_string(&docs_path).expect("v0.14 proof docs should exist");
+
+    for required in [
+        "independently checked proof artifacts for modeled obligation flow",
+        "does not prove generated Rust binary behavior",
+        "explicit non-goals",
+        "adapter confidence",
+        "replay grade",
+        "candidate-track admission",
+        "research tracks remain spikes",
+    ] {
+        assert!(
+            docs.contains(required),
+            "docs should contain required release wording `{required}`:\n{docs}"
+        );
+    }
+
+    for forbidden in [
+        "proves arbitrary",
+        "whole-program deterministic replay",
+        "AI-native",
+        "hidden runtime tax",
+    ] {
+        assert!(
+            !docs.contains(forbidden),
+            "docs must not overclaim with `{forbidden}`:\n{docs}"
+        );
+    }
+}

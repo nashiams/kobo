@@ -40,7 +40,12 @@ pub(super) fn cmd_test(
     engine: Option<&str>,
     expert_options: BackendExpertOptions,
 ) -> anyhow::Result<()> {
-    let sim_profile = parse_sim_profile(sim)?;
+    let mut session = super::session::build_session(
+        file,
+        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
+    let sim_profile = parse_sim_profile(sim, &session.config)?;
+    let sim_profile = sim_profile.as_str();
     let seed = seed.unwrap_or(0);
     let engine = parse_engine(engine.unwrap_or("both"))?;
     let document = sim_model::load_document(file)?;
@@ -54,10 +59,6 @@ pub(super) fn cmd_test(
         })
         .unwrap_or_else(|| "<missing>".to_owned());
     let profile_roles = resolve_profile_roles(profile, &document, &target_name)?;
-    let mut session = super::session::build_session(
-        file,
-        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
-    )?;
     let execution_profile = expert_options.execution_profile(&profile_roles.backend_profile)?;
     let effective_scheduler = expert_options
         .effective_scheduler(&session.config, &execution_profile)
@@ -356,13 +357,16 @@ impl StatefulInputSource {
     }
 }
 
-fn parse_sim_profile(sim: Option<&str>) -> anyhow::Result<&str> {
+fn parse_sim_profile(
+    sim: Option<&str>,
+    config: &kobo_driver::KoboConfig,
+) -> anyhow::Result<String> {
     match sim {
-        Some(profile @ ("quick" | "deep" | "replay" | "exhaustive")) => Ok(profile),
+        Some(profile @ ("quick" | "deep" | "replay" | "exhaustive")) => Ok(profile.to_owned()),
         Some(other) => anyhow::bail!(
             "kobo test --sim {other} is not available; expected quick, deep, replay, or exhaustive"
         ),
-        None => anyhow::bail!("kobo test requires --sim quick, deep, replay, or exhaustive"),
+        None => Ok(config.sim.default_profile.clone()),
     }
 }
 

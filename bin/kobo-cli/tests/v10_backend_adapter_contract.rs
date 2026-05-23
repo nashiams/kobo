@@ -435,3 +435,38 @@ fn configured_sim_route() {
         "record"
     );
 }
+
+#[test]
+fn sim_config_default_profile_runs_without_cli_sim_flag() {
+    let project = TestProject::new("v10-sim-default-profile");
+    project.write(
+        "Kobo.toml",
+        r#"[sim]
+default_profile = "deep"
+
+[sim.profile.deep]
+schedule_budget = 13
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "async")]
+fn default_profile_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[s("test"), s("--events=json"), path_arg(&file)],
+        &project.root,
+    );
+
+    assert_success(&output, "sim default profile should drive test");
+    let json = serde_json::from_str::<Value>(&output.stdout).expect("test JSON should parse");
+    assert_eq!(json["sim_profile"], "deep");
+    assert_eq!(
+        json["scheduler"]["event_budget"], 13,
+        "default profile should use configured schedule budget"
+    );
+}

@@ -1013,6 +1013,9 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         "release",
         "gradual guarantees",
         "backend-native controls",
+        "[sim]",
+        "default_profile",
+        "schedule_budget",
     ] {
         assert_contains(&readme, expected, "README should document workflow claim");
     }
@@ -1023,6 +1026,18 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
             &root_config,
             expected,
             "root config should show guarantee policy instead of mode identity",
+        );
+    }
+    for expected in [
+        "[sim]",
+        "default_profile",
+        "[sim.profile.quick]",
+        "[sim.backend.loom]",
+    ] {
+        assert_contains(
+            &root_config,
+            expected,
+            "root config should publish stable simulation schema",
         );
     }
     for forbidden in [
@@ -1040,10 +1055,10 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         );
     }
 
-    let docs = [
+    let docs: &[(&str, &[&str])] = &[
         (
             "docs/modeled-wards.md",
-            [
+            &[
                 "Modeled Ward Tutorial",
                 "attribute form",
                 "first-class ward syntax",
@@ -1055,7 +1070,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         ),
         (
             "docs/replay-and-strict-liveness.md",
-            [
+            &[
                 "Strict Liveness Reference",
                 "modeled scenario Core CFG evidence",
                 "join",
@@ -1067,7 +1082,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         ),
         (
             "docs/failure-lab.md",
-            [
+            &[
                 "Failure Lab",
                 "durable queue",
                 "async gateway",
@@ -1079,7 +1094,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         ),
         (
             "docs/editor-clean-rust-workflow.md",
-            [
+            &[
                 "Editor Workflow",
                 "kobo-lsp",
                 "witness links",
@@ -1091,7 +1106,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         ),
         (
             "docs/migration-guide.md",
-            [
+            &[
                 "Migration Guide",
                 "dev",
                 "checked",
@@ -1099,12 +1114,15 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
                 "strict_paths",
                 "debt",
                 "guarantee policy",
+                "[sim]",
+                "default_profile",
+                "schedule_budget",
             ],
         ),
     ];
 
     let mut combined = readme;
-    for (relative, required_terms) in docs {
+    for &(relative, required_terms) in docs {
         let path = repo_root.join(relative);
         assert!(path.is_file(), "{relative} should be shipped documentation");
         let contents = std::fs::read_to_string(&path)

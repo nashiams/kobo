@@ -44,9 +44,36 @@ The primary workflow is:
 
 Experts can stay on the Kobo workflow while inspecting or pinning simulation
 engines when needed: `kobo sim scout --why`, `kobo inspect --sim --harness
---backend shuttle`, `kobo test --sim deep --backend shuttle --scheduler pct`,
-and backend-native controls when the adapter can represent them without
-changing normal source imports.
+--backend shuttle`, `kobo test --sim exhaustive --profile sync --backend loom
+--scheduler exhaustive`, and backend-native controls when the adapter can
+represent them without changing normal source imports. Unsupported native
+adapter knobs are rejected with scenario-debt guidance rather than accepted as
+metadata.
+
+Stable simulation defaults live in `Kobo.toml`:
+
+```toml
+[sim]
+default_profile = "quick"
+show_backend_choices = false
+
+[sim.profile.quick]
+schedule_budget = 10000
+seed_count = 16
+shrink = "off"
+
+[sim.profile.deep]
+schedule_budget = 1000000
+seed_count = 1024
+shrink = "best-effort"
+
+[sim.backend.loom]
+enabled = true
+scheduler = "exhaustive"
+replay_token = "record"
+max_branches = 100000
+checkpoint_replay = true
+```
 
 ## Editor Workflow
 

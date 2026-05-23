@@ -30,20 +30,46 @@ strict_paths = ["src/payment/**", "src/auth/**"]
 deny_downgrade_without_reason = true
 ```
 
-Simulation controls follow the same ladder. Start with stable Kobo profiles, and
-pin backend-native controls only when the adapter can represent the requested
+Simulation controls follow the same ladder. Start with stable Kobo profiles and
+keep backend-native knobs explicit. `default_profile` is used when `kobo test`
+is run without `--sim`.
+
+```toml
+[sim]
+default_profile = "quick"
+show_backend_choices = false
+
+[sim.profile.quick]
+schedule_budget = 10000
+seed_count = 16
+shrink = "off"
+
+[sim.profile.deep]
+schedule_budget = 1000000
+seed_count = 1024
+shrink = "best-effort"
+
+[sim.backend.loom]
+enabled = true
+scheduler = "exhaustive"
+replay_token = "record"
+max_branches = 100000
+checkpoint_replay = true
+```
+
+Pin backend-native controls only when the adapter can represent the requested
 knob:
 
 ```text
 kobo test --sim quick
 kobo test --sim deep --profile async
-kobo test --sim deep --backend shuttle --scheduler pct
+kobo test --sim exhaustive --profile sync --backend loom --scheduler exhaustive
 kobo inspect --sim --harness --backend shuttle
 ```
 
-Unsupported backend knobs should remain visible as scenario debt or be run
-outside Kobo with imported witness metadata later; Kobo should not silently
-pretend unsupported controls were applied.
+Unsupported backend-native knobs such as Shuttle PCT scheduling remain visible
+as scenario debt or can be run outside Kobo with imported witness metadata later;
+Kobo should not silently pretend unsupported controls were applied.
 
 Recommended migration path:
 

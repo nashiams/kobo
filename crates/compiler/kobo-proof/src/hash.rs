@@ -1,4 +1,4 @@
-use crate::{CoreCfgEdge, CoreCfgNode, ProofCertificate};
+use crate::{AsyncModelEvidence, CoreCfgEdge, CoreCfgNode, ProofCertificate};
 
 pub fn stable_hash(material: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -21,11 +21,13 @@ pub fn core_material_hash(
     core_version: &str,
     cfg_nodes: &[CoreCfgNode],
     cfg_edges: &[CoreCfgEdge],
+    async_model: &AsyncModelEvidence,
 ) -> Result<String, serde_json::Error> {
     let material = serde_json::json!({
         "version": core_version,
         "cfg_nodes": cfg_nodes,
         "cfg_edges": cfg_edges,
+        "async_model": async_model,
     });
     serde_json::to_string(&material).map(|source| stable_hash(&source))
 }

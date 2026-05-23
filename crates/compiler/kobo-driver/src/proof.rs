@@ -11,8 +11,8 @@ use kobo_proof::{
     AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CancelEdgeEvidence,
     CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence,
     CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
-    HashEvidence, ObligationEvent, ObligationEventKind, ObligationState, OpaqueLedgerEntry,
-    ProofCertificate, SelectPathEvidence, SourceEvidence, SourceSpan,
+    HashEvidence, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
+    OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence, SourceEvidence, SourceSpan,
     SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateVersionEvidence,
     TimeoutCancelEdgeEvidence,
 };
@@ -41,7 +41,6 @@ pub fn emit_proof_certificate(
     let core_program = lower_core_program(input.program);
     let cfg_nodes = core_cfg_nodes(&source_path, input.source, &core_program.functions);
     let cfg_edges = core_cfg_edges(&source_path, input.source, &core_program.functions);
-    let core_hash = core_material_hash(core_program.core_version, &cfg_nodes, &cfg_edges)?;
     let (template_hashes, template_versions) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
@@ -55,6 +54,12 @@ pub fn emit_proof_certificate(
         &core_program.functions,
         &exit_env,
     );
+    let core_hash = core_material_hash(
+        core_program.core_version,
+        &cfg_nodes,
+        &cfg_edges,
+        &async_model,
+    )?;
     let mut adapter_confidence = adapter_evidence(
         input.program,
         input.adapter_policies,
@@ -522,7 +527,7 @@ fn obligation_evidence(
     Vec<ObligationState>,
     Vec<ObligationEvent>,
 ) {
-    let mut current_env = BTreeMap::<String, String>::new();
+    let mut current_env = BTreeMap::<String, ObligationStatus>::new();
     let entry_env = env_states(&current_env);
     let mut events = Vec::new();
     for function in functions {
@@ -565,7 +570,7 @@ fn async_model_evidence(
     let mut model = AsyncModelEvidence::default();
 
     for function in functions {
-        let mut current_env = BTreeMap::<String, String>::new();
+        let mut current_env = BTreeMap::<String, ObligationStatus>::new();
         for block in &function.blocks {
             for statement in &block.statements {
                 apply_obligation_statement(statement, &mut current_env);
@@ -615,7 +620,7 @@ fn async_model_evidence(
                         }
                         for state in env_states(&current_env)
                             .into_iter()
-                            .filter(|state| state.state == "owned")
+                            .filter(|state| state.state == ObligationStatus::Owned)
                         {
                             model
                                 .future_state_obligations
@@ -626,9 +631,7 @@ fn async_model_evidence(
                                     source_span: source_span.clone(),
                                 });
                         }
-                        if source_span.snippet.contains("timeout")
-                            || source.contains("tokio::time::timeout")
-                        {
+                        if terminator.boundary.as_deref() == Some("tokio::time::timeout") {
                             model.timeout_cancel_edges.push(TimeoutCancelEdgeEvidence {
                                 id: format!("{suspension_id}:timeout"),
                                 function: function.name.clone(),
@@ -696,37 +699,37 @@ fn async_model_evidence(
 
 fn apply_obligation_statement(
     statement: &CoreStatement,
-    current_env: &mut BTreeMap<String, String>,
+    current_env: &mut BTreeMap<String, ObligationStatus>,
 ) {
     match statement.kind {
         CoreStatementKind::ObligationCreate => {
             if let Some(binding) = statement.binding.as_ref() {
-                current_env.insert(binding.clone(), "owned".to_owned());
+                current_env.insert(binding.clone(), ObligationStatus::Owned);
             }
         }
         CoreStatementKind::ObligationDischarge => {
             if let Some(binding) = statement.binding.as_ref() {
-                current_env.insert(binding.clone(), "resolved".to_owned());
+                current_env.insert(binding.clone(), ObligationStatus::Resolved);
             }
         }
         CoreStatementKind::ObligationTransfer => {
             if let Some(binding) = statement.binding.as_ref() {
-                current_env.insert(binding.clone(), "transferred".to_owned());
+                current_env.insert(binding.clone(), ObligationStatus::Transferred);
             }
         }
         CoreStatementKind::ObligationMove => {
             if let Some(binding) = statement.binding.as_ref() {
-                current_env.insert(binding.clone(), "moved".to_owned());
+                current_env.insert(binding.clone(), ObligationStatus::Moved);
             }
         }
         CoreStatementKind::ObligationBranchUnresolved => {
             if let Some(binding) = statement.binding.as_ref() {
-                current_env.insert(binding.clone(), "branch_unresolved".to_owned());
+                current_env.insert(binding.clone(), ObligationStatus::BranchUnresolved);
             }
         }
         CoreStatementKind::ObligationEscape => {
             if let Some(binding) = statement.binding.as_ref() {
-                current_env.insert(binding.clone(), "escaped".to_owned());
+                current_env.insert(binding.clone(), ObligationStatus::Escaped);
             }
         }
         CoreStatementKind::UnsupportedContainer | CoreStatementKind::Call => {}
@@ -748,7 +751,7 @@ fn obligation_event_kind(kind: &CoreStatementKind) -> Option<ObligationEventKind
     }
 }
 
-fn env_states(env: &BTreeMap<String, String>) -> Vec<ObligationState> {
+fn env_states(env: &BTreeMap<String, ObligationStatus>) -> Vec<ObligationState> {
     env.iter()
         .map(|(binding, state)| ObligationState {
             binding: binding.clone(),

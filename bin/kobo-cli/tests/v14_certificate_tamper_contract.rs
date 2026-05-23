@@ -39,11 +39,22 @@ fn {scenario_name}() {{
 
 fn async_source() -> &'static str {
     r#"
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {}
+
+impl Delivery {
+    fn ack(self) {}
+    fn nack(self) {}
+    fn requeue(self) {}
+}
+
 async fn helper() {}
 
 #[kobo::scenario(profile = "async")]
 async fn async_cancel_case() {
+    let delivery = Delivery {};
     helper().await;
+    delivery.ack();
 }
 "#
 }
@@ -110,8 +121,20 @@ fn rewrite_valid_certificate(path: &Path, mutate: impl FnOnce(&mut Value)) {
         &certificate.core.version,
         &certificate.core.cfg_nodes,
         &certificate.core.cfg_edges,
+        &certificate.core.async_model,
     )
     .expect("core hash should recompute");
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should recompute");
+    fs::write(path, serde_json::to_string_pretty(&certificate).unwrap())
+        .expect("artifact should write");
+}
+
+fn rewrite_certificate_hash_only(path: &Path, mutate: impl FnOnce(&mut Value)) {
+    let mut value = read_value(path);
+    mutate(&mut value);
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(value).expect("tampered certificate should remain schema-valid");
     certificate.certificate_material_hash =
         certificate_material_hash(&certificate).expect("certificate hash should recompute");
     fs::write(path, serde_json::to_string_pretty(&certificate).unwrap())
@@ -131,6 +154,31 @@ fn missing_cancel_edge_rejected() {
     });
 
     verify_fails(&project, &artifact_path, "missing cancel edge");
+}
+
+#[test]
+fn async_model_material_changes_require_core_hash_update() {
+    let project = TestProject::new("v14-tamper-async-core-hash");
+    let artifact_path = emit_artifact(&project, async_source(), "async_cancel_case");
+
+    rewrite_certificate_hash_only(&artifact_path, |value| {
+        value["core"]["async_model"]["suspension_states"][0]["resume_edge"] =
+            Value::String("tampered_resume".to_owned());
+    });
+
+    verify_fails(&project, &artifact_path, "core hash mismatch");
+}
+
+#[test]
+fn removed_future_state_obligation_rejected_after_hash_recompute() {
+    let project = TestProject::new("v14-tamper-future-state-obligation");
+    let artifact_path = emit_artifact(&project, async_source(), "async_cancel_case");
+
+    rewrite_valid_certificate(&artifact_path, |value| {
+        value["core"]["async_model"]["future_state_obligations"] = Value::Array(Vec::new());
+    });
+
+    verify_fails(&project, &artifact_path, "future state obligation");
 }
 
 #[test]
@@ -219,6 +267,7 @@ fn exact_over_disallowed_boundary_rejected() {
 
     rewrite_valid_certificate(&artifact_path, |value| {
         value["replay_grade"] = Value::String("exact".to_owned());
+        value["coverage_loss"] = Value::Array(Vec::new());
     });
 
     verify_fails(
@@ -226,4 +275,25 @@ fn exact_over_disallowed_boundary_rejected() {
         &artifact_path,
         "exact replay crosses disallowed boundary",
     );
+}
+
+#[test]
+fn exact_replay_with_coverage_loss_rejected() {
+    let project = TestProject::new("v14-tamper-exact-coverage-loss");
+    let artifact_path = emit_artifact(
+        &project,
+        &sync_source("exact_coverage_loss_case"),
+        "exact_coverage_loss_case",
+    );
+
+    rewrite_valid_certificate(&artifact_path, |value| {
+        value["replay_grade"] = Value::String("exact".to_owned());
+        value["coverage_loss"] = serde_json::json!([{
+            "kind": "unsupported_construct",
+            "label": "manual-tamper",
+            "reason": "coverage loss must block exact replay"
+        }]);
+    });
+
+    verify_fails(&project, &artifact_path, "exact replay has coverage loss");
 }

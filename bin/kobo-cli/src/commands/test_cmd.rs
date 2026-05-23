@@ -810,6 +810,12 @@ fn write_proof_artifact(
             replay_grade: proof_replay_grade(&run.replay_guarantee),
             artifact_kind: kobo_driver::proof::ArtifactKind::KwitProofJson,
         })?;
+    kobo_proof::verify_certificate(
+        &certificate,
+        &kobo_proof::VerificationContext {
+            source: document.source.clone(),
+        },
+    )?;
     let proof_path = kwit_proof_path(witness_path);
     std::fs::write(&proof_path, serde_json::to_string_pretty(&certificate)?)
         .with_context(|| format!("failed to write {}", proof_path.display()))?;

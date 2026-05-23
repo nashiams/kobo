@@ -80,7 +80,7 @@ pub struct FutureStateLocalEvidence {
 #[serde(deny_unknown_fields)]
 pub struct FutureStateObligationEvidence {
     pub binding: String,
-    pub state: String,
+    pub state: ObligationStatus,
     pub suspension_state: String,
     pub source_span: SourceSpan,
 }
@@ -236,7 +236,7 @@ pub struct ObligationEvent {
 #[serde(deny_unknown_fields)]
 pub struct ObligationState {
     pub binding: String,
-    pub state: String,
+    pub state: ObligationStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,4 +316,32 @@ pub enum ObligationEventKind {
     Escape,
     UnsupportedContainer,
     Call,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObligationStatus {
+    Owned,
+    Resolved,
+    Transferred,
+    Moved,
+    BranchUnresolved,
+    Escaped,
+}
+
+impl ObligationStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Owned => "owned",
+            Self::Resolved => "resolved",
+            Self::Transferred => "transferred",
+            Self::Moved => "moved",
+            Self::BranchUnresolved => "branch_unresolved",
+            Self::Escaped => "escaped",
+        }
+    }
+
+    pub const fn is_unresolved_exit(&self) -> bool {
+        matches!(self, Self::Owned | Self::Moved | Self::BranchUnresolved)
+    }
 }

@@ -876,9 +876,10 @@ impl<'a> ScenarioLowerer<'a> {
             Expr::Match(expr_match) => self.execute_match(expr_match, env),
             Expr::Async(expr_async) => self.execute_async(expr_async, env),
             Expr::Await(await_expr) => {
+                let timeout_boundary = self.timeout_await_boundary(await_expr.base.as_ref(), env);
                 self.record_core_terminator(
                     ScenarioCoreTerminatorKind::Await,
-                    None,
+                    timeout_boundary,
                     None,
                     vec!["await_resume".to_owned(), "await_cancel".to_owned()],
                     expr,
@@ -1660,6 +1661,21 @@ impl<'a> ScenarioLowerer<'a> {
             mac,
         );
         true
+    }
+
+    fn timeout_await_boundary(&self, expr: &'a Expr, env: &BindingEnv) -> Option<String> {
+        match peel_paren_expr(expr) {
+            Expr::Call(call) => {
+                let Expr::Path(path) = call.func.as_ref() else {
+                    return None;
+                };
+                let resolved_path = self.resolved_path_segments(&path.path, env);
+                path_ends_with_segments(&resolved_path, &["tokio", "time", "timeout"])
+                    .then(|| "tokio::time::timeout".to_owned())
+            }
+            Expr::Await(await_expr) => self.timeout_await_boundary(await_expr.base.as_ref(), env),
+            _ => None,
+        }
     }
 
     fn record_core_terminator(

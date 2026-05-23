@@ -2,8 +2,8 @@ use kobo_proof::{
     certificate_material_hash, core_material_hash, parse_certificate_json, stable_hash,
     verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence,
     FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind, ObligationState,
-    ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan, TemplateVersionEvidence,
-    VerificationContext, VerificationError,
+    ObligationStatus, ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan,
+    TemplateVersionEvidence, VerificationContext, VerificationError,
 };
 use serde_json::Value;
 
@@ -53,7 +53,7 @@ fn valid_certificate() -> ProofCertificate {
     let entry_env = Vec::new();
     let exit_env = vec![ObligationState {
         binding: "delivery".to_owned(),
-        state: "resolved".to_owned(),
+        state: ObligationStatus::Resolved,
     }];
     let obligation_events = vec![
         ObligationEvent {
@@ -65,7 +65,7 @@ fn valid_certificate() -> ProofCertificate {
             state_before: Vec::new(),
             state_after: vec![ObligationState {
                 binding: "delivery".to_owned(),
-                state: "owned".to_owned(),
+                state: ObligationStatus::Owned,
             }],
         },
         ObligationEvent {
@@ -76,7 +76,7 @@ fn valid_certificate() -> ProofCertificate {
             source_span: span(),
             state_before: vec![ObligationState {
                 binding: "delivery".to_owned(),
-                state: "owned".to_owned(),
+                state: ObligationStatus::Owned,
             }],
             state_after: exit_env.clone(),
         },
@@ -93,7 +93,13 @@ fn valid_certificate() -> ProofCertificate {
             hash: stable_hash(SOURCE),
         },
         core: CoreEvidence {
-            hash: core_material_hash("core-1", &cfg_nodes, &cfg_edges).unwrap(),
+            hash: core_material_hash(
+                "core-1",
+                &cfg_nodes,
+                &cfg_edges,
+                &AsyncModelEvidence::default(),
+            )
+            .unwrap(),
             version: "core-1".to_owned(),
             cfg_nodes,
             cfg_edges,

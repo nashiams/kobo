@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use kobo_proof::{certificate_material_hash, core_material_hash, ProofCertificate};
 use serde_json::Value;
 use v09_common::{
     assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject,
@@ -168,6 +169,24 @@ fn emit_fails(project: &TestProject, source: &str, target: &str, expected: &str)
 fn read_value(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("artifact should read"))
         .expect("artifact should parse")
+}
+
+fn rewrite_valid_certificate(path: &Path, mutate: impl FnOnce(&mut Value)) {
+    let mut value = read_value(path);
+    mutate(&mut value);
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(value).expect("tampered certificate should remain schema-valid");
+    certificate.core.hash = core_material_hash(
+        &certificate.core.version,
+        &certificate.core.cfg_nodes,
+        &certificate.core.cfg_edges,
+        &certificate.core.async_model,
+    )
+    .expect("core hash should recompute");
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should recompute");
+    fs::write(path, serde_json::to_string_pretty(&certificate).unwrap())
+        .expect("artifact should write");
 }
 
 fn verify_fails(project: &TestProject, artifact_path: &Path, expected: &str) {
@@ -398,13 +417,9 @@ fn removed_async_cancel_evidence_is_rejected() {
         &async_source("removed_async_cancel_evidence_case"),
         "removed_async_cancel_evidence_case",
     );
-    let mut artifact = read_value(&artifact_path);
-    artifact["core"]["async_model"]["cancel_edges"] = Value::Array(Vec::new());
-    fs::write(
-        &artifact_path,
-        serde_json::to_string_pretty(&artifact).unwrap(),
-    )
-    .expect("tampered artifact should write");
+    rewrite_valid_certificate(&artifact_path, |artifact| {
+        artifact["core"]["async_model"]["cancel_edges"] = Value::Array(Vec::new());
+    });
 
     verify_fails(&project, &artifact_path, "missing async cancel evidence");
 }

@@ -10,6 +10,15 @@ pub enum VerificationError {
     MissingCancelEdge { block: String },
     #[error("missing async cancel evidence for suspension block {block}")]
     MissingAsyncCancelEvidence { block: String },
+    #[error("async evidence mismatch in {field} for {id}")]
+    AsyncEvidenceMismatch { field: String, id: String },
+    #[error("missing future state obligation {binding} for suspension state {suspension_state}")]
+    MissingFutureStateObligation {
+        binding: String,
+        suspension_state: String,
+    },
+    #[error("missing select path evidence for block {block} path {path_kind}")]
+    MissingSelectPathEvidence { block: String, path_kind: String },
     #[error("template {id} has stale version {version}")]
     StaleTemplateVersion { id: String, version: String },
     #[error("template hash mismatch for {id}: expected {expected}, observed {observed}")]
@@ -28,6 +37,8 @@ pub enum VerificationError {
     OpaqueEdgeWithoutLedger { boundary: String },
     #[error("exact replay crosses disallowed boundary {boundary} with policy {policy}")]
     ExactReplayWithDebtBoundary { boundary: String, policy: String },
+    #[error("exact replay has coverage loss {kind}:{label}")]
+    ExactReplayWithCoverageLoss { kind: String, label: String },
     #[error("exact replay crosses adapter {adapter} with confidence {confidence}")]
     ExactReplayWithAdapterConfidence { adapter: String, confidence: String },
     #[error("metadata-only adapter {adapter} cannot claim replayable behavior")]

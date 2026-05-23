@@ -138,6 +138,42 @@ async fn {scenario_name}() {{
     )
 }
 
+fn nested_block_local_await_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let _block = {{
+        let inner = 1;
+        helper().await;
+        inner
+    }};
+}}
+"#
+    )
+}
+
+fn if_pre_await_only_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+async fn helper() {{}}
+
+#[kobo::scenario(profile = "async")]
+async fn {scenario_name}() {{
+    let first = 1;
+    let _both = if first == 1 {{
+        helper().await;
+        0
+    }} else {{
+        0
+    }};
+}}
+"#
+    )
+}
+
 fn select_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -565,6 +601,53 @@ fn if_expression_await_keeps_branch_continuation_locals_in_future_state() {
         "if_expression_await_case",
     );
     assert_single_await_retains_first(&read_value(&artifact_path));
+}
+
+#[test]
+fn nested_block_local_live_after_await_becomes_future_state() {
+    let project = TestProject::new("v14-async-nested-block-local");
+    let artifact_path = emit_artifact(
+        &project,
+        &nested_block_local_await_source("nested_block_local_await_case"),
+        "nested_block_local_await_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let suspensions = async_model(&artifact)["suspension_states"]
+        .as_array()
+        .expect("suspension states should be an array");
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+    let suspension_id = suspensions[0]["id"]
+        .as_str()
+        .expect("suspension should have an id");
+    assert!(
+        locals.iter().any(|local| {
+            local["binding"].as_str() == Some("inner")
+                && local["suspension_state"].as_str() == Some(suspension_id)
+        }),
+        "inner is declared inside the block and used after await, so it must be future state: {locals:?}"
+    );
+}
+
+#[test]
+fn pre_await_only_condition_local_is_not_future_state() {
+    let project = TestProject::new("v14-async-pre-await-only");
+    let artifact_path = emit_artifact(
+        &project,
+        &if_pre_await_only_source("pre_await_only_case"),
+        "pre_await_only_case",
+    );
+    let artifact = read_value(&artifact_path);
+    let locals = async_model(&artifact)["future_state_locals"]
+        .as_array()
+        .expect("future state locals should be an array");
+    assert!(
+        !locals
+            .iter()
+            .any(|local| local["binding"].as_str() == Some("first")),
+        "first is used only before the await and must not be overclaimed as future state: {locals:?}"
+    );
 }
 
 #[test]

@@ -95,7 +95,7 @@ fn bindgen_positional_crate_uses_builtin_registry_metadata() {
     );
     assert_contains(
         &output.stdout,
-        r#"registry = "builtin-v0.11""#,
+        r#"registry = "builtin-ecosystem""#,
         "registry bindgen should identify the metadata registry layer",
     );
     assert_contains(

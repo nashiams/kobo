@@ -13,7 +13,7 @@ pub struct ProofCertificate {
     pub core: CoreEvidence,
     pub replay_grade: ReplayGrade,
     pub template_hashes: Vec<HashEvidence>,
-    pub template_versions: Vec<TemplateVersionEvidence>,
+    pub template_schemas: Vec<TemplateSchemaEvidence>,
     pub boundary_assumption_hashes: Vec<HashEvidence>,
     pub boundary_assumptions: Vec<BoundaryAssumption>,
     pub adapter_confidence: Vec<AdapterEvidence>,
@@ -193,13 +193,24 @@ pub struct HashEvidence {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TemplateVersionEvidence {
+pub struct TemplateSchemaEvidence {
     pub id: String,
     pub kind: String,
-    pub version: String,
+    #[serde(default = "default_template_schema")]
+    pub template_schema: String,
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u64,
     pub confidence: String,
     pub source: String,
     pub source_span: SourceSpan,
+}
+
+fn default_template_schema() -> String {
+    "lifecycle-template".to_owned()
+}
+
+fn default_schema_version() -> u64 {
+    1
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

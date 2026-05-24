@@ -1,5 +1,5 @@
 use crate::{
-    AsyncModelEvidence, CoreCfgEdge, CoreCfgNode, ProofCertificate, TemplateVersionEvidence,
+    AsyncModelEvidence, CoreCfgEdge, CoreCfgNode, ProofCertificate, TemplateSchemaEvidence,
 };
 
 pub fn stable_hash(material: &str) -> String {
@@ -34,13 +34,14 @@ pub fn core_material_hash(
     serde_json::to_string(&material).map(|source| stable_hash(&source))
 }
 
-pub fn template_version_hash(
-    template: &TemplateVersionEvidence,
+pub fn template_schema_hash(
+    template: &TemplateSchemaEvidence,
 ) -> Result<String, serde_json::Error> {
     let material = serde_json::json!({
         "id": &template.id,
         "kind": &template.kind,
-        "version": &template.version,
+        "template_schema": &template.template_schema,
+        "schema_version": template.schema_version,
         "confidence": &template.confidence,
         "source": &template.source,
     });

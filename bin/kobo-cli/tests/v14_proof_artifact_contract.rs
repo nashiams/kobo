@@ -78,10 +78,10 @@ fn read_json(path: &Path) -> Value {
 }
 
 #[test]
-fn kproof_records_required_hashes_and_versions() {
+fn kproof_records_required_hashes_and_template_schemas() {
     let artifact = run_proof_artifact("v14-proof-required", "proof_required_case", "ack");
 
-    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(artifact["schema_version"], 2);
     assert_eq!(
         artifact["proof_target_version"],
         "kobo-core-obligation-flow-1"
@@ -113,10 +113,17 @@ fn kproof_records_required_hashes_and_versions() {
         "template hashes must be recorded: {artifact}"
     );
     assert!(
-        artifact["template_versions"]
+        artifact["template_schemas"]
             .as_array()
-            .is_some_and(|versions| !versions.is_empty()),
-        "template versions must be recorded: {artifact}"
+            .is_some_and(|schemas| !schemas.is_empty()),
+        "template schemas must be recorded: {artifact}"
+    );
+    let template_schema = &artifact["template_schemas"][0];
+    assert_eq!(template_schema["template_schema"], "lifecycle-template");
+    assert_eq!(template_schema["schema_version"], 1);
+    assert!(
+        template_schema.get("version").is_none(),
+        "proof artifacts should not expose roadmap-stage template versions: {artifact}"
     );
     assert!(
         artifact["boundary_assumption_hashes"].as_array().is_some(),

@@ -237,7 +237,7 @@ fn builtin_types_package_makes_typed_registry_boundary_understood() {
     let kobo_toml = project.read("Kobo.toml");
     for expected in [
         r#"source = "registry""#,
-        r#"registry = "builtin-v0.11""#,
+        r#"registry = "builtin-ecosystem""#,
         r#"trust_policy = "builtin-reviewed""#,
         r#"signed_by = "kobo-core""#,
         r#"validated = true"#,

@@ -1,18 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    stable_hash, template_version_hash, BoundaryAssumption, BoundaryPolicy, ProofCertificate,
-    ReplayGrade, TemplateVersionEvidence, VerificationError,
+    stable_hash, template_schema_hash, BoundaryAssumption, BoundaryPolicy, ProofCertificate,
+    ReplayGrade, TemplateSchemaEvidence, VerificationError,
 };
 
-pub(crate) fn verify_template_versions(
+pub(crate) fn verify_template_schemas(
     certificate: &ProofCertificate,
 ) -> Result<(), VerificationError> {
-    for template in &certificate.template_versions {
-        if !is_supported_template_version(template) {
-            return Err(VerificationError::StaleTemplateVersion {
+    for template in &certificate.template_schemas {
+        if !is_supported_template_schema(template) {
+            return Err(VerificationError::UnsupportedTemplateSchema {
                 id: template.id.clone(),
-                version: template.version.clone(),
+                template_schema: template.template_schema.clone(),
+                schema_version: template.schema_version,
             });
         }
     }
@@ -27,9 +28,9 @@ pub(crate) fn verify_template_hashes(
         .iter()
         .map(|hash| (hash.id.as_str(), hash.hash.as_str()))
         .collect::<BTreeMap<_, _>>();
-    for template in &certificate.template_versions {
+    for template in &certificate.template_schemas {
         let observed =
-            template_version_hash(template).map_err(|error| VerificationError::Parse {
+            template_schema_hash(template).map_err(|error| VerificationError::Parse {
                 message: error.to_string(),
             })?;
         let expected = recorded_hashes
@@ -78,8 +79,8 @@ pub(crate) fn verify_boundary_hashes(
     Ok(())
 }
 
-fn is_supported_template_version(template: &TemplateVersionEvidence) -> bool {
-    matches!(template.version.as_str(), "v0.13.0")
+fn is_supported_template_schema(template: &TemplateSchemaEvidence) -> bool {
+    template.template_schema == "lifecycle-template" && template.schema_version == 1
 }
 
 fn verify_opaque_edges_have_ledger(

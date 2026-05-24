@@ -1,9 +1,9 @@
 use kobo_proof::{
     certificate_material_hash, core_material_hash, parse_certificate_json, stable_hash,
-    template_version_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge,
+    template_schema_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge,
     CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind,
     ObligationState, ObligationStatus, ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan,
-    TemplateVersionEvidence, VerificationContext, VerificationError,
+    TemplateSchemaEvidence, VerificationContext, VerificationError,
 };
 use serde_json::Value;
 
@@ -41,15 +41,16 @@ fn valid_certificate() -> ProofCertificate {
         kind: "goto".to_owned(),
         source_span: span(),
     }];
-    let template_version = TemplateVersionEvidence {
+    let template_schema = TemplateSchemaEvidence {
         id: "declared_must_call:Delivery".to_owned(),
         kind: "declared_must_call".to_owned(),
-        version: "v0.13.0".to_owned(),
+        template_schema: "lifecycle-template".to_owned(),
+        schema_version: 1,
         confidence: "declared_contract".to_owned(),
         source: "declaration".to_owned(),
         source_span: span(),
     };
-    let template_hash = template_version_hash(&template_version).unwrap();
+    let template_hash = template_schema_hash(&template_schema).unwrap();
     let entry_env = Vec::new();
     let exit_env = vec![ObligationState {
         binding: "delivery".to_owned(),
@@ -82,7 +83,7 @@ fn valid_certificate() -> ProofCertificate {
         },
     ];
     let mut certificate = ProofCertificate {
-        schema_version: 1,
+        schema_version: 2,
         proof_target_version: "kobo-core-obligation-flow-1".to_owned(),
         semantic_schema: ".kproof".to_owned(),
         artifact_kind: ArtifactKind::Kproof,
@@ -107,10 +108,10 @@ fn valid_certificate() -> ProofCertificate {
         },
         replay_grade: ReplayGrade::Partial,
         template_hashes: vec![HashEvidence {
-            id: template_version.id.clone(),
+            id: template_schema.id.clone(),
             hash: template_hash,
         }],
-        template_versions: vec![template_version],
+        template_schemas: vec![template_schema],
         boundary_assumption_hashes: Vec::new(),
         boundary_assumptions: Vec::new(),
         adapter_confidence: Vec::new(),
@@ -186,15 +187,15 @@ fn unknown_event_kind_rejected() {
 }
 
 #[test]
-fn stale_template_version_rejected() {
+fn unsupported_template_schema_rejected() {
     let mut certificate = valid_certificate();
-    certificate.template_versions[0].version = "v0.0.0-stale".to_owned();
+    certificate.template_schemas[0].schema_version = 99;
 
     let error = verify_certificate(&certificate, &context()).unwrap_err();
 
     assert!(matches!(
         error,
-        VerificationError::StaleTemplateVersion { .. }
+        VerificationError::UnsupportedTemplateSchema { .. }
     ));
 }
 

@@ -477,8 +477,8 @@ fn lifecycle_template_facts(program: &ScenarioProgram) -> BTreeMap<String, Lifec
             |template| LifecycleTemplate {
                 kind: template.kind.clone(),
                 id: template.id.clone(),
-                schema: "lifecycle-template".to_owned(),
-                schema_version: 1,
+                schema: template.template_schema.clone(),
+                schema_version: template.schema_version,
                 confidence: template.confidence.clone(),
                 source: match template.source {
                     kobo_ir::ScenarioLifecycleTemplateSource::Declaration => "declaration",

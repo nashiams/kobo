@@ -280,7 +280,7 @@ pub(crate) enum KoboCommand {
         #[command(subcommand)]
         command: SimCommand,
     },
-    /// Run reserved v0.9 test/replay gates.
+    /// Run simulation test/replay gates.
     Test {
         #[arg(long, value_name = "PROFILE")]
         sim: Option<String>,

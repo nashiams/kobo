@@ -19,8 +19,12 @@ pub enum VerificationError {
     },
     #[error("missing select path evidence for block {block} path {path_kind}")]
     MissingSelectPathEvidence { block: String, path_kind: String },
-    #[error("template {id} has stale version {version}")]
-    StaleTemplateVersion { id: String, version: String },
+    #[error("template {id} has unsupported schema {template_schema}@{schema_version}")]
+    UnsupportedTemplateSchema {
+        id: String,
+        template_schema: String,
+        schema_version: u64,
+    },
     #[error("template hash mismatch for {id}: expected {expected}, observed {observed}")]
     TemplateHashMismatch {
         id: String,

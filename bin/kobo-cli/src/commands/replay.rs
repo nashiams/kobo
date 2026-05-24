@@ -54,7 +54,7 @@ pub(super) fn cmd_replay(
     println!("scenario: {scenario}");
     println!("events: {event_count}");
     println!(
-        "metadata-only: legacy schema_version 0 witnesses do not carry v0.9 exact replay data"
+        "metadata-only: legacy schema_version 0 witnesses do not carry exact replay event history"
     );
     Ok(())
 }

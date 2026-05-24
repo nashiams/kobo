@@ -91,7 +91,8 @@ const fn default_transfer_proven() -> bool {
 pub struct ScenarioLifecycleTemplate {
     pub id: String,
     pub kind: String,
-    pub version: String,
+    pub template_schema: String,
+    pub schema_version: u64,
     pub confidence: String,
     pub source: ScenarioLifecycleTemplateSource,
 }
@@ -107,7 +108,8 @@ impl ScenarioLifecycleTemplate {
         Self {
             id: id.to_owned(),
             kind: kind.to_owned(),
-            version: "v0.13.0".to_owned(),
+            template_schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "exact_template".to_owned(),
             source: ScenarioLifecycleTemplateSource::Inference,
         }
@@ -117,7 +119,8 @@ impl ScenarioLifecycleTemplate {
         Self {
             id: format!("declared_must_call:{}", type_name),
             kind: "declared_must_call".to_owned(),
-            version: "v0.13.0".to_owned(),
+            template_schema: "lifecycle-template".to_owned(),
+            schema_version: 1,
             confidence: "declared_contract".to_owned(),
             source: ScenarioLifecycleTemplateSource::Declaration,
         }

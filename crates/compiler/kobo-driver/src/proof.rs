@@ -7,14 +7,14 @@ use kobo_ir::{
     CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, stable_hash, template_version_hash,
+    certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
     AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy,
     CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
     CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
     FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
     ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence,
     SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence,
-    TemplateVersionEvidence, TimeoutCancelEdgeEvidence,
+    TemplateSchemaEvidence, TimeoutCancelEdgeEvidence,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -41,7 +41,7 @@ pub fn emit_proof_certificate(
     let core_program = lower_core_program(input.program);
     let cfg_nodes = core_cfg_nodes(&source_path, input.source, &core_program.functions);
     let cfg_edges = core_cfg_edges(&source_path, input.source, &core_program.functions);
-    let (template_hashes, template_versions) =
+    let (template_hashes, template_schemas) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
         boundary_evidence(&source_path, input.source, input.program)?;
@@ -83,7 +83,7 @@ pub fn emit_proof_certificate(
     let coverage_loss = coverage_loss(input.program);
 
     let mut certificate = ProofCertificate {
-        schema_version: 1,
+        schema_version: 2,
         proof_target_version: "kobo-core-obligation-flow-1".to_owned(),
         semantic_schema: ".kproof".to_owned(),
         artifact_kind: input.artifact_kind,
@@ -102,7 +102,7 @@ pub fn emit_proof_certificate(
         },
         replay_grade,
         template_hashes,
-        template_versions,
+        template_schemas,
         boundary_assumption_hashes,
         boundary_assumptions,
         adapter_confidence,
@@ -188,9 +188,9 @@ fn template_evidence(
     source_path: &str,
     source: &str,
     program: &ScenarioProgram,
-) -> Result<(Vec<HashEvidence>, Vec<TemplateVersionEvidence>), serde_json::Error> {
+) -> Result<(Vec<HashEvidence>, Vec<TemplateSchemaEvidence>), serde_json::Error> {
     let mut hashes = Vec::new();
-    let mut versions = Vec::new();
+    let mut schemas = Vec::new();
     for operation in &program.operations {
         let ScenarioOpKind::CreateObligation {
             template: Some(template),
@@ -203,22 +203,23 @@ fn template_evidence(
             ScenarioLifecycleTemplateSource::Declaration => "declaration",
             ScenarioLifecycleTemplateSource::Inference => "inference",
         };
-        let version = TemplateVersionEvidence {
+        let schema = TemplateSchemaEvidence {
             id: template.id.clone(),
             kind: template.kind.clone(),
-            version: template.version.clone(),
+            template_schema: template.template_schema.clone(),
+            schema_version: template.schema_version,
             confidence: template.confidence.clone(),
             source: template_source.to_owned(),
             source_span: source_span_from_kobo(source_path, source, operation.span),
         };
-        let hash = template_version_hash(&version)?;
+        let hash = template_schema_hash(&schema)?;
         hashes.push(HashEvidence {
             id: template.id.clone(),
             hash,
         });
-        versions.push(version);
+        schemas.push(schema);
     }
-    Ok((hashes, versions))
+    Ok((hashes, schemas))
 }
 
 fn boundary_evidence(

@@ -244,7 +244,7 @@ fn cmd_bindgen_registry(crate_name: &str, features: Option<&str>) -> anyhow::Res
     }
     let entry = community_registry_entry(crate_name)?.with_context(|| {
         format!(
-            "K0127: no built-in v0.11 registry metadata for `{crate_name}`; use kobo bindgen --path <crate>"
+            "K0127: no built-in ecosystem registry metadata for `{crate_name}`; use kobo bindgen --path <crate>"
         )
     })?;
     if let Some(source_path) = entry.source_path.as_deref() {

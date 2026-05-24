@@ -16,11 +16,12 @@ use kobo_proof::{
     FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence,
     InvariantConfidence, InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource,
     InvariantTier, LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState,
-    ObligationStatus, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence, SourceEvidence,
-    SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
-    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
-    TranslationValidationEvidence, TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION,
-    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    ObligationStatus, OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence,
+    SelectPathEvidence, SourceEvidence, SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan,
+    SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateSchemaEvidence,
+    TimeoutCancelEdgeEvidence, TraceEventKind, TranslationValidationEvidence,
+    TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE,
+    PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -315,41 +316,128 @@ fn bounded_evidence_from_fields(
     program: &ScenarioProgram,
     fields: &BTreeMap<String, String>,
 ) -> BoundedProofEvidence {
-    let enumerated_history_count = numeric_field(fields, "histories").unwrap_or_default();
+    let observed_history_count = numeric_field(fields, "histories").unwrap_or_default();
+    let enumerated_history_count = numeric_field(fields, "unique_histories")
+        .map(|unique| unique.min(observed_history_count))
+        .unwrap_or(observed_history_count);
     let expected_complete_history_count = numeric_field(fields, "expected");
-    let completeness = bounded_completeness(fields.get("completeness").map(String::as_str));
+    let declared_completeness =
+        bounded_completeness(fields.get("completeness").map(String::as_str));
+    let scheduler_dimensions = string_field(fields, "scheduler")
+        .into_iter()
+        .collect::<Vec<_>>();
+    let fault_dimensions = string_field(fields, "fault")
+        .into_iter()
+        .collect::<Vec<_>>();
+    let cancellation_points = string_field(fields, "cancellation")
+        .into_iter()
+        .collect::<Vec<_>>();
+    let completeness = effective_bounded_completeness(
+        declared_completeness,
+        enumerated_history_count,
+        expected_complete_history_count,
+        &scheduler_dimensions,
+        &fault_dimensions,
+        &cancellation_points,
+    );
     let wording = bounded_wording(
         &completeness,
         enumerated_history_count,
         expected_complete_history_count,
     );
-    let scheduler = string_field(fields, "scheduler").unwrap_or_else(|| "unspecified".to_owned());
-    let fault = string_field(fields, "fault").unwrap_or_else(|| "unspecified".to_owned());
-    let cancellation =
-        string_field(fields, "cancellation").unwrap_or_else(|| "unspecified".to_owned());
-    let bounds = vec![BoundDeclaration {
-        dimension: BoundDimension::SchedulerHistories,
-        value: expected_complete_history_count.unwrap_or(enumerated_history_count),
-        source: BoundSource::Ward,
-        proof_relevant: true,
-    }];
+    let bounds = bound_declarations(
+        expected_complete_history_count.unwrap_or(enumerated_history_count),
+        &scheduler_dimensions,
+        &fault_dimensions,
+        &cancellation_points,
+    );
+    let pruned_histories = (observed_history_count > enumerated_history_count)
+        .then(|| PrunedHistoryEvidence {
+            id: format!("pruned-{}", program.target),
+            reason: format!(
+                "{} duplicate histories collapsed before completeness evaluation",
+                observed_history_count - enumerated_history_count
+            ),
+        })
+        .into_iter()
+        .collect();
     BoundedProofEvidence {
         id: format!("bounded-{}", program.target),
         function: program.target.clone(),
         normalized_bound_hash: stable_hash(&format!(
-            "{}:{enumerated_history_count}:{expected_complete_history_count:?}:{scheduler}:{fault}:{cancellation}",
-            program.target
+            "{}:{enumerated_history_count}:{expected_complete_history_count:?}:{scheduler_dimensions:?}:{fault_dimensions:?}:{cancellation_points:?}",
+            program.target,
         )),
         bounds,
         enumerated_history_count,
         expected_complete_history_count,
-        scheduler_dimensions: vec![scheduler],
-        fault_dimensions: vec![fault],
-        cancellation_points: vec![cancellation],
-        pruned_histories: Vec::new(),
+        scheduler_dimensions,
+        fault_dimensions,
+        cancellation_points,
+        pruned_histories,
         completeness,
         wording,
     }
+}
+
+fn effective_bounded_completeness(
+    declared: BoundedCompleteness,
+    enumerated_history_count: u64,
+    expected_complete_history_count: Option<u64>,
+    scheduler_dimensions: &[String],
+    fault_dimensions: &[String],
+    cancellation_points: &[String],
+) -> BoundedCompleteness {
+    if declared != BoundedCompleteness::Complete {
+        return declared;
+    }
+    if expected_complete_history_count != Some(enumerated_history_count)
+        || scheduler_dimensions.is_empty()
+        || fault_dimensions.is_empty()
+        || cancellation_points.is_empty()
+    {
+        return BoundedCompleteness::Incomplete;
+    }
+    BoundedCompleteness::Complete
+}
+
+fn bound_declarations(
+    history_bound: u64,
+    scheduler_dimensions: &[String],
+    fault_dimensions: &[String],
+    cancellation_points: &[String],
+) -> Vec<BoundDeclaration> {
+    let mut bounds = vec![BoundDeclaration {
+        dimension: BoundDimension::SchedulerHistories,
+        value: history_bound,
+        source: BoundSource::Ward,
+        proof_relevant: true,
+    }];
+    if !scheduler_dimensions.is_empty() {
+        bounds.push(BoundDeclaration {
+            dimension: BoundDimension::LoopIterations,
+            value: 1,
+            source: BoundSource::Ward,
+            proof_relevant: true,
+        });
+    }
+    if !fault_dimensions.is_empty() {
+        bounds.push(BoundDeclaration {
+            dimension: BoundDimension::FaultInjectionChoices,
+            value: fault_dimensions.len() as u64,
+            source: BoundSource::Ward,
+            proof_relevant: true,
+        });
+    }
+    if !cancellation_points.is_empty() {
+        bounds.push(BoundDeclaration {
+            dimension: BoundDimension::CancellationPoints,
+            value: cancellation_points.len() as u64,
+            source: BoundSource::Ward,
+            proof_relevant: true,
+        });
+    }
+    bounds
 }
 
 fn core_trace_evidence(

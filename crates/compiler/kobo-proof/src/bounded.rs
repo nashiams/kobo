@@ -5,6 +5,7 @@ pub(crate) fn verify_bounded_evidence(
 ) -> Result<(), VerificationError> {
     for evidence in &certificate.bounded_evidence {
         verify_proof_relevant_bounds(evidence)?;
+        verify_complete_dimensions(evidence)?;
         verify_bounded_wording(evidence)?;
         verify_complete_history_count(evidence)?;
     }
@@ -13,6 +14,22 @@ pub(crate) fn verify_bounded_evidence(
 
 fn verify_proof_relevant_bounds(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {
     if evidence.bounds.iter().any(|bound| bound.proof_relevant) {
+        return Ok(());
+    }
+    Err(VerificationError::MissingBoundedProofDimension {
+        evidence_id: evidence.id.clone(),
+    })
+}
+
+fn verify_complete_dimensions(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {
+    if evidence.completeness != BoundedCompleteness::Complete {
+        return Ok(());
+    }
+    if !evidence.scheduler_dimensions.is_empty()
+        && !evidence.fault_dimensions.is_empty()
+        && !evidence.cancellation_points.is_empty()
+        && evidence.pruned_histories.is_empty()
+    {
         return Ok(());
     }
     Err(VerificationError::MissingBoundedProofDimension {

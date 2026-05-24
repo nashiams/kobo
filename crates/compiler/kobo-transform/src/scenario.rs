@@ -75,6 +75,7 @@ enum BlockFlow {
     Continue { loop_id: String },
     Break { loop_id: String },
     Return,
+    Mixed { flows: Vec<BlockFlow> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -759,6 +760,13 @@ impl<'a> ScenarioLowerer<'a> {
             }
             BlockFlow::Continue { loop_id } if loop_id == frame.id => BlockFlow::Fallthrough,
             BlockFlow::Break { loop_id } if loop_id == frame.id => BlockFlow::Fallthrough,
+            BlockFlow::Mixed { flows } => {
+                let remaining = flows
+                    .into_iter()
+                    .filter(|flow| !loop_consumes_flow(flow, frame))
+                    .collect::<Vec<_>>();
+                combined_non_fallthrough_flow(remaining)
+            }
             flow => flow,
         }
     }
@@ -2446,7 +2454,7 @@ fn common_branch_flow(left: BlockFlow, right: BlockFlow) -> BlockFlow {
     if left == right {
         left
     } else {
-        BlockFlow::Fallthrough
+        combined_non_fallthrough_flow([left, right])
     }
 }
 
@@ -2457,7 +2465,44 @@ fn common_multi_branch_flow(flows: &[BlockFlow]) -> BlockFlow {
     if flows.iter().all(|flow| flow == &first) {
         first
     } else {
-        BlockFlow::Fallthrough
+        combined_non_fallthrough_flow(flows.iter().cloned())
+    }
+}
+
+fn combined_non_fallthrough_flow(flows: impl IntoIterator<Item = BlockFlow>) -> BlockFlow {
+    let mut unique_flows = Vec::new();
+    for flow in flows {
+        push_unique_non_fallthrough_flow(&mut unique_flows, flow);
+    }
+    match unique_flows.len() {
+        0 => BlockFlow::Fallthrough,
+        1 => unique_flows.pop().unwrap_or(BlockFlow::Fallthrough),
+        _ => BlockFlow::Mixed {
+            flows: unique_flows,
+        },
+    }
+}
+
+fn push_unique_non_fallthrough_flow(unique_flows: &mut Vec<BlockFlow>, flow: BlockFlow) {
+    match flow {
+        BlockFlow::Fallthrough => {}
+        BlockFlow::Mixed { flows } => {
+            for flow in flows {
+                push_unique_non_fallthrough_flow(unique_flows, flow);
+            }
+        }
+        flow => {
+            if !unique_flows.contains(&flow) {
+                unique_flows.push(flow);
+            }
+        }
+    }
+}
+
+fn loop_consumes_flow(flow: &BlockFlow, frame: &LoopFrame) -> bool {
+    match flow {
+        BlockFlow::Continue { loop_id } | BlockFlow::Break { loop_id } => loop_id == &frame.id,
+        _ => false,
     }
 }
 

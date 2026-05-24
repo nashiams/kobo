@@ -193,6 +193,30 @@ fn {scenario_name}() {{
     )
 }
 
+fn mixed_labeled_branch_control_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+fn choose() -> bool {{
+    std::env::args().next().is_some()
+}}
+
+#[kobo::bounded(histories = "4", expected = "4", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    'outer: loop {{
+        loop {{
+            if choose() {{
+                break 'outer;
+            }} else {{
+                continue;
+            }}
+        }}
+    }}
+}}
+"#
+    )
+}
+
 fn loop_control_flow_source(scenario_name: &str, control_flow: &str) -> String {
     format!(
         r#"
@@ -483,6 +507,49 @@ fn labeled_break_targets_the_named_outer_loop() {
                         == edge["loop_edge_kind"].as_str().is_some()
             }),
         "loop control metadata should be typed on Core edges, not encoded in the target: {artifact}"
+    );
+}
+
+#[test]
+fn mixed_labeled_branch_control_does_not_fabricate_back_edges() {
+    let project = TestProject::new("v15-loop-invariant-mixed-labeled-control");
+    let artifact_path = emit_artifact(
+        &project,
+        &mixed_labeled_branch_control_source("mixed_labeled_control_case"),
+        "mixed_labeled_control_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let cfg_edges = artifact["core"]["cfg_edges"]
+        .as_array()
+        .expect("Core edges should be present");
+    let loop_facts = artifact["core"]["loop_facts"]
+        .as_array()
+        .expect("loop facts should be present");
+    let exit_facts = artifact["core"]["loop_exit_facts"]
+        .as_array()
+        .expect("loop exit facts should be present");
+
+    assert!(
+        cfg_edges
+            .iter()
+            .any(|edge| edge["loop_edge_kind"] == "continue"),
+        "the unlabeled continue branch should remain a typed continue edge: {artifact}"
+    );
+    assert!(
+        exit_facts
+            .iter()
+            .any(|fact| fact["loop_label"] == "outer" && fact["exit_kind"] == "break"),
+        "the labeled break branch should remain an outer loop exit fact: {artifact}"
+    );
+    assert!(
+        cfg_edges
+            .iter()
+            .all(|edge| edge["loop_edge_kind"] != "back_edge"),
+        "a branch where every arm exits by break/continue must not synthesize a fallthrough back-edge: {artifact}"
+    );
+    assert!(
+        loop_facts.iter().all(|fact| fact["loop_label"] != "outer"),
+        "outer loop must not receive a fabricated back-edge fact when all inner branch arms transfer control: {artifact}"
     );
 }
 

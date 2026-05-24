@@ -12,6 +12,12 @@ pub enum VerificationError {
         expected: String,
         observed: String,
     },
+    #[error("unsupported certificate field {field}: expected {expected}, observed {observed}")]
+    UnsupportedCertificateField {
+        field: String,
+        expected: String,
+        observed: String,
+    },
     #[error("missing cancel edge for suspension block {block}")]
     MissingCancelEdge { block: String },
     #[error("missing async cancel evidence for suspension block {block}")]

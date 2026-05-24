@@ -236,6 +236,84 @@ fn invalid_artifact_kind_reports_header_field() {
 }
 
 #[test]
+fn invalid_replay_grade_reports_replay_grade_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["replay_grade"] = Value::String("mystery".to_owned());
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "replay_grade"
+    ));
+}
+
+#[test]
+fn invalid_adapter_confidence_reports_confidence_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["adapter_confidence"] = serde_json::json!([{
+            "boundary": "runtime",
+            "adapter": "tokio",
+            "version": null,
+            "confidence": "mystery",
+            "replay_grade": "partial",
+            "outcome": "modeled",
+            "reason": "fixture"
+        }]);
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "adapter_confidence[0].confidence"
+    ));
+}
+
+#[test]
+fn invalid_adapter_replay_grade_reports_adapter_replay_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["adapter_confidence"] = serde_json::json!([{
+            "boundary": "runtime",
+            "adapter": "tokio",
+            "version": null,
+            "confidence": "modeled",
+            "replay_grade": "mystery",
+            "outcome": "modeled",
+            "reason": "fixture"
+        }]);
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "adapter_confidence[0].replay_grade"
+    ));
+}
+
+#[test]
+fn invalid_candidate_replay_grade_reports_candidate_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["candidate_admission"] = serde_json::json!([{
+            "replay_grade": "mystery"
+        }]);
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "candidate_admission[0].replay_grade"
+    ));
+}
+
+#[test]
 fn missing_template_schema_fields_are_rejected() {
     let source = mutate_json(valid_certificate(), |value| {
         let template = value["template_schemas"][0]

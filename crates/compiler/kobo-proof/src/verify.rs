@@ -18,7 +18,7 @@ pub struct VerificationReport {
 }
 
 pub fn parse_certificate_json(source: &str) -> Result<ProofCertificate, VerificationError> {
-    preflight_certificate_header_json(source)?;
+    preflight_certificate_json(source)?;
     serde_json::from_str::<ProofCertificate>(source).map_err(classify_parse_error)
 }
 
@@ -74,26 +74,27 @@ pub fn verify_certificate_header(certificate: &ProofCertificate) -> Result<(), V
     }
 }
 
-fn preflight_certificate_header_json(source: &str) -> Result<(), VerificationError> {
+fn preflight_certificate_json(source: &str) -> Result<(), VerificationError> {
     let value: serde_json::Value =
         serde_json::from_str(source).map_err(|error| VerificationError::Parse {
             message: error.to_string(),
         })?;
-    let Some(kind) = value.get("artifact_kind") else {
-        return Ok(());
-    };
-    let observed = kind
-        .as_str()
-        .map(str::to_owned)
-        .unwrap_or_else(|| kind.to_string());
-    if matches!(observed.as_str(), "kproof" | "kwit.proof.json") {
-        return Ok(());
+    if let Some(kind) = value.get("artifact_kind") {
+        validate_header_enum(
+            "artifact_kind",
+            kind,
+            &["kproof", "kwit.proof.json"],
+            "kproof or kwit.proof.json",
+        )?;
     }
-    Err(VerificationError::UnsupportedCertificateHeader {
-        field: "artifact_kind".to_owned(),
-        expected: "kproof or kwit.proof.json".to_owned(),
-        observed,
-    })
+    if let Some(replay_grade) = value.get("replay_grade") {
+        validate_replay_grade("replay_grade", replay_grade)?;
+    }
+    validate_boundary_policy_fields(&value)?;
+    validate_obligation_event_kind_fields(&value)?;
+    validate_adapter_evidence_fields("adapter_confidence", value.get("adapter_confidence"))?;
+    validate_candidate_admission_fields(&value)?;
+    Ok(())
 }
 
 fn verify_header_field(
@@ -111,22 +112,196 @@ fn verify_header_field(
     })
 }
 
+fn validate_boundary_policy_fields(value: &serde_json::Value) -> Result<(), VerificationError> {
+    let Some(boundaries) = value
+        .get("boundary_assumptions")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(());
+    };
+    for (index, boundary) in boundaries.iter().enumerate() {
+        if let Some(policy) = boundary.get("policy") {
+            let field = format!("boundary_assumptions[{index}].policy");
+            validate_boundary_policy(&field, policy)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_obligation_event_kind_fields(
+    value: &serde_json::Value,
+) -> Result<(), VerificationError> {
+    let Some(events) = value
+        .get("obligation_events")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(());
+    };
+    for (index, event) in events.iter().enumerate() {
+        if let Some(kind) = event.get("kind") {
+            let field = format!("obligation_events[{index}].kind");
+            validate_obligation_event_kind(&field, kind)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_candidate_admission_fields(value: &serde_json::Value) -> Result<(), VerificationError> {
+    let Some(candidates) = value
+        .get("candidate_admission")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(());
+    };
+    for (index, candidate) in candidates.iter().enumerate() {
+        if let Some(replay_grade) = candidate.get("replay_grade") {
+            validate_optional_replay_grade(
+                &format!("candidate_admission[{index}].replay_grade"),
+                replay_grade,
+            )?;
+        }
+        validate_adapter_evidence_fields(
+            &format!("candidate_admission[{index}].adapter_confidence"),
+            candidate.get("adapter_confidence"),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_adapter_evidence_fields(
+    field_prefix: &str,
+    value: Option<&serde_json::Value>,
+) -> Result<(), VerificationError> {
+    let Some(adapters) = value.and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    for (index, adapter) in adapters.iter().enumerate() {
+        if let Some(confidence) = adapter.get("confidence") {
+            validate_certificate_enum(
+                &format!("{field_prefix}[{index}].confidence"),
+                confidence,
+                &["exact", "modeled", "sampled", "metadata-only"],
+                "exact, modeled, sampled, or metadata-only",
+            )?;
+        }
+        if let Some(replay_grade) = adapter.get("replay_grade") {
+            validate_replay_grade(
+                &format!("{field_prefix}[{index}].replay_grade"),
+                replay_grade,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_replay_grade(field: &str, value: &serde_json::Value) -> Result<(), VerificationError> {
+    validate_certificate_enum(
+        field,
+        value,
+        &["exact", "partial", "not_replayable", "debt"],
+        "exact, partial, not_replayable, or debt",
+    )
+}
+
+fn validate_optional_replay_grade(
+    field: &str,
+    value: &serde_json::Value,
+) -> Result<(), VerificationError> {
+    if value.is_null() {
+        return Ok(());
+    }
+    validate_replay_grade(field, value)
+}
+
+fn validate_boundary_policy(
+    field: &str,
+    value: &serde_json::Value,
+) -> Result<(), VerificationError> {
+    let observed = observed_json(value);
+    if matches!(
+        observed.as_str(),
+        "typed"
+            | "model"
+            | "record"
+            | "activity"
+            | "stub"
+            | "outside"
+            | "opaque"
+            | "debt"
+            | "unselected"
+    ) {
+        return Ok(());
+    }
+    Err(VerificationError::UnknownBoundaryPolicy {
+        message: format!(
+            "{field}: expected typed, model, record, activity, stub, outside, opaque, debt, or unselected; observed {observed}"
+        ),
+    })
+}
+
+fn validate_obligation_event_kind(
+    field: &str,
+    value: &serde_json::Value,
+) -> Result<(), VerificationError> {
+    let observed = observed_json(value);
+    if matches!(
+        observed.as_str(),
+        "create" | "discharge" | "transfer" | "move" | "branch_unresolved"
+    ) {
+        return Ok(());
+    }
+    Err(VerificationError::UnknownEventKind {
+        message: format!(
+            "{field}: expected create, discharge, transfer, move, or branch_unresolved; observed {observed}"
+        ),
+    })
+}
+
+fn validate_header_enum(
+    field: &str,
+    value: &serde_json::Value,
+    allowed: &[&str],
+    expected: &str,
+) -> Result<(), VerificationError> {
+    let observed = observed_json(value);
+    if allowed.iter().any(|allowed| *allowed == observed) {
+        return Ok(());
+    }
+    Err(VerificationError::UnsupportedCertificateHeader {
+        field: field.to_owned(),
+        expected: expected.to_owned(),
+        observed,
+    })
+}
+
+fn validate_certificate_enum(
+    field: &str,
+    value: &serde_json::Value,
+    allowed: &[&str],
+    expected: &str,
+) -> Result<(), VerificationError> {
+    let observed = observed_json(value);
+    if allowed.iter().any(|allowed| *allowed == observed) {
+        return Ok(());
+    }
+    Err(VerificationError::UnsupportedCertificateField {
+        field: field.to_owned(),
+        expected: expected.to_owned(),
+        observed,
+    })
+}
+
+fn observed_json(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
+}
+
 fn classify_parse_error(error: serde_json::Error) -> VerificationError {
     let message = error.to_string();
     if message.contains("unknown field") {
         return VerificationError::UnknownField { message };
-    }
-    if message.contains("unknown variant") {
-        if message.contains("typed")
-            || message.contains("model")
-            || message.contains("record")
-            || message.contains("opaque")
-            || message.contains("debt")
-            || message.contains("mystery")
-        {
-            return VerificationError::UnknownBoundaryPolicy { message };
-        }
-        return VerificationError::UnknownEventKind { message };
     }
     VerificationError::Parse { message }
 }

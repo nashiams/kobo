@@ -290,6 +290,8 @@ pub struct ObligationEvent {
     pub kind: ObligationEventKind,
     pub binding: Option<String>,
     pub action: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loop_regions: Vec<String>,
     pub source_span: SourceSpan,
     pub state_before: Vec<ObligationState>,
     pub state_after: Vec<ObligationState>,
@@ -324,6 +326,10 @@ pub struct CoverageLoss {
 pub struct LoopInvariantEvidence {
     pub id: String,
     pub function: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub loop_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_label: Option<String>,
     pub entry_block: String,
     pub back_edge_source: String,
     pub back_edge_target: String,

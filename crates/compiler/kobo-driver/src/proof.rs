@@ -76,6 +76,11 @@ struct ParsedCoreEdge {
     loop_entry_block: Option<String>,
 }
 
+#[derive(Default)]
+struct LoopRegionIndex {
+    block_regions: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+}
+
 impl ParsedLoopEdgeKind {
     const fn as_str(self) -> &'static str {
         match self {
@@ -102,12 +107,17 @@ pub fn emit_proof_certificate(
     );
     let loop_facts = core_loop_facts(&cfg_edges);
     let loop_exit_facts = core_loop_exit_facts(&cfg_edges);
+    let loop_regions = LoopRegionIndex::from_core(&core_program.functions, &cfg_edges, &loop_facts);
     let (template_hashes, template_schemas) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
         boundary_evidence(&source_path, input.source, input.program)?;
-    let (entry_env, exit_env, obligation_events) =
-        obligation_evidence(&source_path, input.source, &core_program.functions);
+    let (entry_env, exit_env, obligation_events) = obligation_evidence(
+        &source_path,
+        input.source,
+        &core_program.functions,
+        &loop_regions,
+    );
     let async_model = async_model_evidence(
         &source_path,
         input.source,
@@ -378,6 +388,8 @@ fn loop_invariant_evidence(
             Some(LoopInvariantEvidence {
                 id: fact.id.clone(),
                 function: fact.function.clone(),
+                loop_id: fact.loop_id.clone(),
+                loop_label: fact.loop_label.clone(),
                 entry_block: fact.entry_block.clone(),
                 back_edge_source: fact.back_edge_source.clone(),
                 back_edge_target: fact.back_edge_target.clone(),
@@ -417,21 +429,14 @@ fn created_bindings_for_loop(
     fact: &CoreLoopBackEdgeFact,
     obligation_events: &[ObligationEvent],
 ) -> Vec<String> {
-    let Some(entry_index) = block_index(&fact.entry_block) else {
-        return Vec::new();
-    };
-    let Some(back_edge_index) = block_index(&fact.back_edge_source) else {
-        return Vec::new();
-    };
     obligation_events
         .iter()
         .filter(|event| event.kind == ObligationEventKind::Create)
         .filter(|event| {
             event
-                .id
-                .strip_prefix("stmt-")
-                .and_then(|index| index.parse::<usize>().ok())
-                .is_some_and(|index| entry_index <= index && index <= back_edge_index)
+                .loop_regions
+                .iter()
+                .any(|loop_id| loop_id == &fact.loop_id)
         })
         .filter_map(|event| event.binding.clone())
         .collect()
@@ -1365,6 +1370,85 @@ impl ParsedCoreEdge {
     }
 }
 
+impl LoopRegionIndex {
+    fn from_core(
+        functions: &[CoreFunction],
+        edges: &[CoreCfgEdge],
+        loop_facts: &[CoreLoopBackEdgeFact],
+    ) -> Self {
+        let mut index = Self::default();
+        for function in functions {
+            for fact in loop_facts
+                .iter()
+                .filter(|fact| fact.function == function.name.as_str())
+            {
+                let region_blocks = loop_region_blocks(function, edges, fact);
+                for block_id in region_blocks {
+                    push_unique_loop_region(
+                        index
+                            .block_regions
+                            .entry(function.name.clone())
+                            .or_default()
+                            .entry(block_id)
+                            .or_default(),
+                        fact.loop_id.clone(),
+                    );
+                }
+            }
+        }
+        index
+    }
+
+    fn loop_regions_for_block(&self, function: &str, block: &str) -> Vec<String> {
+        self.block_regions
+            .get(function)
+            .and_then(|regions| regions.get(block))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+fn loop_region_blocks(
+    function: &CoreFunction,
+    edges: &[CoreCfgEdge],
+    fact: &CoreLoopBackEdgeFact,
+) -> BTreeSet<String> {
+    let known_blocks = function
+        .blocks
+        .iter()
+        .map(|block| block.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let function_edges = edges
+        .iter()
+        .filter(|edge| edge.function == function.name.as_str())
+        .collect::<Vec<_>>();
+    let mut visited = BTreeSet::new();
+    let mut queued = VecDeque::from([fact.entry_block.clone()]);
+    while let Some(block_id) = queued.pop_front() {
+        if !known_blocks.contains(block_id.as_str()) || !visited.insert(block_id.clone()) {
+            continue;
+        }
+        for edge in function_edges.iter().filter(|edge| edge.from == block_id) {
+            if !edge.to.starts_with("bb") || !known_blocks.contains(edge.to.as_str()) {
+                continue;
+            }
+            if edge.loop_id.as_deref() == Some(fact.loop_id.as_str())
+                && edge.loop_edge_kind.is_some()
+            {
+                continue;
+            }
+            queued.push_back(edge.to.clone());
+        }
+    }
+    visited
+}
+
+fn push_unique_loop_region(regions: &mut Vec<String>, loop_id: String) {
+    if !regions.contains(&loop_id) {
+        regions.push(loop_id);
+    }
+}
+
 fn block_span(block: &CoreBlock) -> KoboSpan {
     block
         .statements
@@ -2229,6 +2313,7 @@ fn obligation_evidence(
     source_path: &str,
     source: &str,
     functions: &[CoreFunction],
+    loop_regions: &LoopRegionIndex,
 ) -> (
     Vec<ObligationState>,
     Vec<ObligationState>,
@@ -2255,6 +2340,8 @@ fn obligation_evidence(
                         kind,
                         binding: statement.binding.clone(),
                         action: statement.action.clone(),
+                        loop_regions: loop_regions
+                            .loop_regions_for_block(&function.name, &block.id),
                         source_span: source_span_from_kobo(
                             source_path,
                             source,

@@ -772,6 +772,25 @@ fn multiple_loops_scope_invariants_to_each_back_edge() {
         invariants[1]["obligations_created"],
         serde_json::json!(["second"])
     );
+
+    let events = artifact["obligation_events"]
+        .as_array()
+        .expect("obligation events should be present");
+    for (binding, invariant) in [("first", &invariants[0]), ("second", &invariants[1])] {
+        let loop_id = invariant["loop_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("invariant must carry a typed loop id: {artifact}"));
+        let create_event = events
+            .iter()
+            .find(|event| event["binding"] == binding && event["kind"] == "create")
+            .unwrap_or_else(|| panic!("create event for {binding} should be present: {artifact}"));
+        assert!(
+            create_event["loop_regions"]
+                .as_array()
+                .is_some_and(|regions| regions.iter().any(|region| region == loop_id)),
+            "obligation event for {binding} must carry typed loop-region membership: {artifact}"
+        );
+    }
 }
 
 #[test]

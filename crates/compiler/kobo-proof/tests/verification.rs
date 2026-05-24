@@ -68,6 +68,7 @@ fn valid_certificate() -> ProofCertificate {
             kind: ObligationEventKind::Create,
             binding: Some("delivery".to_owned()),
             action: None,
+            loop_regions: Vec::new(),
             source_span: span(),
             state_before: Vec::new(),
             state_after: vec![ObligationState {
@@ -80,6 +81,7 @@ fn valid_certificate() -> ProofCertificate {
             kind: ObligationEventKind::Discharge,
             binding: Some("delivery".to_owned()),
             action: Some("ack".to_owned()),
+            loop_regions: Vec::new(),
             source_span: span(),
             state_before: vec![ObligationState {
                 binding: "delivery".to_owned(),
@@ -158,6 +160,7 @@ fn certificate_with_single_event_kind(kind: ObligationEventKind) -> ProofCertifi
         kind,
         binding: None,
         action: None,
+        loop_regions: Vec::new(),
         source_span: span(),
         state_before: Vec::new(),
         state_after: Vec::new(),
@@ -679,9 +682,12 @@ fn unknown_unversioned_field_rejected() {
 #[test]
 fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
     let source = mutate_json(valid_certificate(), |value| {
+        value["obligation_events"][0]["loop_regions"] = serde_json::json!(["loop-proof"]);
+        value["obligation_events"][1]["loop_regions"] = serde_json::json!(["loop-proof"]);
         value["loop_invariants"] = serde_json::json!([{
             "id": "loop-proof_case-0",
             "function": "proof_case",
+            "loop_id": "loop-proof",
             "entry_block": "bb0",
             "back_edge_source": "bb1",
             "back_edge_target": "bb0",

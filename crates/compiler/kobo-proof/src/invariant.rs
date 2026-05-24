@@ -50,9 +50,11 @@ fn verify_loop_back_edge_shape(
     certificate: &ProofCertificate,
     invariant: &crate::LoopInvariantEvidence,
 ) -> Result<(), VerificationError> {
+    let loop_id = invariant_loop_id(certificate, invariant);
     let has_core_fact = certificate.core.loop_facts.iter().any(|fact| {
         fact.id == invariant.id
             && fact.function == invariant.function
+            && fact.loop_id == loop_id
             && fact.entry_block == invariant.entry_block
             && fact.back_edge_source == invariant.back_edge_source
             && fact.back_edge_target == invariant.back_edge_target
@@ -69,20 +71,12 @@ fn verify_invariant_created_bindings(
     certificate: &ProofCertificate,
     invariant: &crate::LoopInvariantEvidence,
 ) -> Result<(), VerificationError> {
-    let Some(entry_index) = block_index(&invariant.entry_block) else {
-        return Ok(());
-    };
-    let Some(back_edge_index) = block_index(&invariant.back_edge_source) else {
-        return Ok(());
-    };
+    let loop_id = invariant_loop_id(certificate, invariant);
     let expected = certificate
         .obligation_events
         .iter()
         .filter(|event| event.kind == crate::ObligationEventKind::Create)
-        .filter(|event| {
-            statement_index(&event.id)
-                .is_some_and(|index| entry_index <= index && index <= back_edge_index)
-        })
+        .filter(|event| event.loop_regions.iter().any(|region| region == loop_id))
         .filter_map(|event| event.binding.clone())
         .collect::<BTreeSet<_>>();
     let observed = invariant
@@ -95,8 +89,24 @@ fn verify_invariant_created_bindings(
     }
     Err(VerificationError::InvariantNotPreserved {
         loop_id: invariant.id.clone(),
-        reason: "invariant obligation scope does not match Core loop range".to_owned(),
+        reason: "invariant obligation scope does not match Core loop-region membership".to_owned(),
     })
+}
+
+fn invariant_loop_id<'a>(
+    certificate: &'a ProofCertificate,
+    invariant: &'a crate::LoopInvariantEvidence,
+) -> &'a str {
+    if !invariant.loop_id.is_empty() {
+        return invariant.loop_id.as_str();
+    }
+    certificate
+        .core
+        .loop_facts
+        .iter()
+        .find(|fact| fact.id == invariant.id && fact.function == invariant.function)
+        .map(|fact| fact.loop_id.as_str())
+        .unwrap_or_default()
 }
 
 fn verify_back_edge_states_match_core_replay(
@@ -189,12 +199,4 @@ fn is_unresolved_back_edge_state(status: &ObligationStatus) -> bool {
         status,
         ObligationStatus::Owned | ObligationStatus::Moved | ObligationStatus::BranchUnresolved
     )
-}
-
-fn statement_index(id: &str) -> Option<usize> {
-    id.strip_prefix("stmt-")?.parse().ok()
-}
-
-fn block_index(id: &str) -> Option<usize> {
-    id.strip_prefix("bb")?.parse().ok()
 }

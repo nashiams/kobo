@@ -3,6 +3,7 @@ mod v15_common;
 
 use kobo_proof::{certificate_material_hash, ProofCertificate, TranslationValidationStatus};
 use std::fs;
+use std::path::Path;
 use v15_common::{
     assert_success, bounded_source, emit_artifact, first_json, path_arg, queue_loop_source,
     read_json, run_kobo, s, TestProject,
@@ -156,5 +157,21 @@ fn translation_validated_wording_names_trace_preservation_only() {
         !text.contains("generated Rust binary behavior is proven")
             && !text.contains("validated Rust"),
         "translation wording must not overclaim Rust semantics: {text}"
+    );
+}
+
+#[test]
+fn readme_documents_proof_evidence_and_translation_boundaries() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme_path = manifest_dir.join("..").join("..").join("README.md");
+    let readme = fs::read_to_string(&readme_path).expect("README should be readable");
+
+    assert!(readme.contains("proof: modeled Core obligation flow"));
+    assert!(readme.contains("bounded proof: all <N> histories explored under declared bounds"));
+    assert!(readme.contains("evidence only"));
+    assert!(readme.contains("translation validated"));
+    assert!(
+        readme.contains("does not prove generated Rust binary behavior"),
+        "README must state the generated Rust proof boundary"
     );
 }

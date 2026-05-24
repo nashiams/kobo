@@ -6,6 +6,41 @@ use v15_common::{
     TestProject,
 };
 
+fn bounded_source_without_expected(
+    scenario_name: &str,
+    histories: u64,
+    scheduler: &str,
+    fault: &str,
+    cancellation: &str,
+) -> String {
+    format!(
+        r#"
+#[kobo::bounded(histories = "{histories}", completeness = "complete", scheduler = "{scheduler}", fault = "{fault}", cancellation = "{cancellation}")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let _unit = ();
+}}
+"#
+    )
+}
+
+fn bounded_source_with_unique_histories(
+    scenario_name: &str,
+    histories: u64,
+    unique_histories: u64,
+    expected: u64,
+) -> String {
+    format!(
+        r#"
+#[kobo::bounded(histories = "{histories}", unique_histories = "{unique_histories}", expected = "{expected}", completeness = "complete", scheduler = "ready_queue_order", fault = "timeout_or_success", cancellation = "await_recv")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let _unit = ();
+}}
+"#
+    )
+}
+
 #[test]
 fn complete_finite_state_space_emits_bounded_proof_wording() {
     let project = TestProject::new("v15-bounded-complete");
@@ -116,6 +151,65 @@ fn missing_scheduler_dimension_downgrades_to_evidence_only() {
             .as_str()
             .is_some_and(|wording| wording.contains("evidence only")),
         "omitted proof-relevant dimensions must not claim bounded proof: {artifact}"
+    );
+}
+
+#[test]
+fn finite_state_space_can_derive_expected_count_from_declared_dimensions() {
+    let project = TestProject::new("v15-bounded-derived-expected");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_without_expected(
+            "bounded_derived_expected_case",
+            4,
+            "fifo|round_robin",
+            "none|timeout",
+            "none",
+        ),
+        "bounded_derived_expected_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
+    assert_eq!(
+        artifact["bounded_evidence"][0]["expected_complete_history_count"],
+        4
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["wording"],
+        "bounded proof: all 4 histories explored under declared bounds"
+    );
+}
+
+#[test]
+fn duplicate_histories_do_not_inflate_bounded_completeness() {
+    let project = TestProject::new("v15-bounded-duplicate-histories");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_with_unique_histories("bounded_duplicate_case", 384, 128, 384),
+        "bounded_duplicate_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(
+        artifact["bounded_evidence"][0]["completeness"],
+        "incomplete"
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["enumerated_history_count"],
+        128
+    );
+    assert!(
+        artifact["bounded_evidence"][0]["pruned_histories"]
+            .as_array()
+            .is_some_and(|histories| !histories.is_empty()),
+        "duplicate history pruning must be recorded: {artifact}"
+    );
+    assert!(
+        artifact["bounded_evidence"][0]["wording"]
+            .as_str()
+            .is_some_and(|wording| wording.contains("evidence only")),
+        "duplicate-inflated histories must be evidence-only: {artifact}"
     );
 }
 

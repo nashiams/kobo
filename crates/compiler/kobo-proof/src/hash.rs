@@ -50,3 +50,9 @@ pub fn template_schema_hash(
     });
     serde_json::to_string(&material).map(|source| stable_hash(&source))
 }
+
+pub fn trace_material_hash<TTrace: serde::Serialize>(
+    trace: &TTrace,
+) -> Result<String, serde_json::Error> {
+    serde_json::to_string(trace).map(|source| stable_hash(&source))
+}

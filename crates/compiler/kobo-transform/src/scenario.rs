@@ -2160,6 +2160,33 @@ fn lifecycle_template_from_shape(
                 actions: transaction_actions(),
             })
         }
+        "next" | "poll_next"
+            if type_has_terminal_action(return_type, &stream_item_actions(), method_shapes) =>
+        {
+            Some(LifecycleTemplateShape {
+                template_id: "stream_item",
+                type_name: "StreamItem",
+                actions: stream_item_actions(),
+            })
+        }
+        "attempt" | "next_attempt"
+            if type_has_terminal_action(return_type, &retry_attempt_actions(), method_shapes) =>
+        {
+            Some(LifecycleTemplateShape {
+                template_id: "retry_attempt",
+                type_name: "RetryAttempt",
+                actions: retry_attempt_actions(),
+            })
+        }
+        "request"
+            if type_has_terminal_action(return_type, &handler_reply_actions(), method_shapes) =>
+        {
+            Some(LifecycleTemplateShape {
+                template_id: "handler_reply",
+                type_name: "HandlerReply",
+                actions: handler_reply_actions(),
+            })
+        }
         "acquire" | "lock" | "try_acquire"
             if type_has_terminal_action(return_type, &lock_permit_actions(), method_shapes) =>
         {
@@ -2250,6 +2277,17 @@ fn queue_delivery_actions() -> Vec<String> {
 
 fn transaction_actions() -> Vec<String> {
     ["commit", "rollback"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn stream_item_actions() -> Vec<String> {
+    ["consume", "skip"].into_iter().map(str::to_owned).collect()
+}
+
+fn retry_attempt_actions() -> Vec<String> {
+    ["succeed", "retry", "give_up"]
         .into_iter()
         .map(str::to_owned)
         .collect()

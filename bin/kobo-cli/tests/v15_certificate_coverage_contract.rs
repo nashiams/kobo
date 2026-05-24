@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use kobo_proof::{certificate_material_hash, ProofCertificate};
 use serde_json::Value;
 use v09_common::{
     assert_failure, assert_success, first_json, path_arg, run_kobo_with_timeout, s, CliOutput,
@@ -43,6 +44,13 @@ fn {scenario_name}() {{
     }}
 }}
 "#
+    )
+}
+
+fn queue_loop_source_with_invariant(scenario_name: &str) -> String {
+    queue_loop_source(scenario_name).replace(
+        "#[kobo::scenario(profile = \"sync\")]",
+        "#[kobo::invariant(expression = \"no_pending(Delivery)\")]\n#[kobo::scenario(profile = \"sync\")]",
     )
 }
 
@@ -130,6 +138,17 @@ fn proof_emit_records_loop_invariant_and_translation_trace_coverage() {
         .expect("generated trace must be an array");
     assert_eq!(generated_trace.len(), core_trace.len());
     assert!(
+        artifact["trace_hashes"]
+            .as_array()
+            .is_some_and(|hashes| hashes
+                .iter()
+                .any(|hash| hash["id"] == "core_obligation_trace")
+                && hashes
+                    .iter()
+                    .any(|hash| hash["id"] == "generated_rust_trace")),
+        "certificate must record stable hashes for both trace sides: {artifact}"
+    );
+    assert!(
         generated_trace.iter().all(|event| {
             event["source_map_anchor"]["status"] == "mapped"
                 && event["source_map_anchor"]["id"]
@@ -172,6 +191,26 @@ fn proof_verify_json_and_text_report_translation_validation_status() {
         text_output.combined().contains("translation validated"),
         "text output should name trace preservation, not just green status: {}",
         text_output.combined()
+    );
+}
+
+#[test]
+fn proof_emit_records_user_invariant_coverage() {
+    let project = TestProject::new("v15-user-invariant-coverage");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source_with_invariant("user_invariant_coverage_case"),
+        "user_invariant_coverage_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let invariant = &artifact["loop_invariants"][0];
+
+    assert_eq!(invariant["tier"], "user");
+    assert_eq!(invariant["expression"], "no_pending(Delivery)");
+    assert_eq!(invariant["preservation"], "preserved");
+    assert!(
+        invariant["source_span"]["mapped"].as_bool() == Some(true),
+        "user invariant coverage must include source span: {artifact}"
     );
 }
 
@@ -221,6 +260,38 @@ fn dropped_generated_discharge_event_is_rejected() {
     assert!(
         output.combined().contains("missing generated event"),
         "rejection should name the trace preservation failure: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn stale_trace_hash_is_rejected_even_when_certificate_hash_is_recomputed() {
+    let project = TestProject::new("v15-trace-hash-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source("trace_hash_tamper_case"),
+        "trace_hash_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.trace_hashes[0].hash = "stale".to_owned();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(&output, "stale trace hash should reject proof verification");
+    assert!(
+        output.combined().contains("trace hash mismatch"),
+        "rejection should name stale trace hashes: {}",
         output.combined()
     );
 }

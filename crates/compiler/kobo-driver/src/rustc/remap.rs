@@ -392,6 +392,7 @@ mod tests {
             ],
             runtime_evidence: None,
             solver_evidence: None,
+            lowering_trace: Vec::new(),
         }
     }
 

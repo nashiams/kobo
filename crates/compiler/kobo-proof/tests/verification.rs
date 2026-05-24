@@ -131,6 +131,7 @@ fn valid_certificate() -> ProofCertificate {
         bounded_evidence: Vec::new(),
         core_obligation_trace: Vec::new(),
         generated_rust_trace: Vec::new(),
+        trace_hashes: Vec::new(),
         translation_validation: Default::default(),
         opaque_edge_ledger: Vec::new(),
         candidate_admission: Vec::new(),

@@ -29,7 +29,10 @@ pub use certificate::{
     PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 pub use error::VerificationError;
-pub use hash::{certificate_material_hash, core_material_hash, stable_hash, template_schema_hash};
+pub use hash::{
+    certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
+    trace_material_hash,
+};
 pub use verify::{
     parse_certificate_json, verify_certificate, verify_certificate_header, VerificationContext,
     VerificationReport,

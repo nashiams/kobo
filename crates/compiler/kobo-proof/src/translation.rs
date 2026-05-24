@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    trace, GeneratedTraceEvent, ProofCertificate, SourceMapAnchorStatus,
-    TranslationValidationStatus, VerificationError,
+    trace, trace_material_hash, GeneratedTraceEvent, HashEvidence, ProofCertificate,
+    SourceMapAnchorStatus, TranslationValidationStatus, VerificationError,
 };
 
 pub(crate) fn verify_translation_validation(
@@ -22,6 +22,7 @@ pub(crate) fn verify_translation_validation(
     let generated_by_core_id = generated_trace_by_core_id(&certificate.generated_rust_trace)?;
     verify_core_events_have_generated_matches(certificate, &generated_by_core_id)?;
     verify_generated_events_have_core_matches(certificate)?;
+    verify_trace_hashes(certificate)?;
     verify_trace_status(certificate, TranslationValidationStatus::Validated)
 }
 
@@ -170,5 +171,41 @@ fn verify_trace_status(
             .status
             .as_str()
             .to_owned(),
+    })
+}
+
+fn verify_trace_hashes(certificate: &ProofCertificate) -> Result<(), VerificationError> {
+    verify_trace_hash(
+        "core_obligation_trace",
+        &certificate.trace_hashes,
+        trace_material_hash(&certificate.core_obligation_trace),
+    )?;
+    verify_trace_hash(
+        "generated_rust_trace",
+        &certificate.trace_hashes,
+        trace_material_hash(&certificate.generated_rust_trace),
+    )
+}
+
+fn verify_trace_hash(
+    trace_id: &str,
+    hashes: &[HashEvidence],
+    expected: Result<String, serde_json::Error>,
+) -> Result<(), VerificationError> {
+    let expected = expected.map_err(|error| VerificationError::Parse {
+        message: format!("failed to hash {trace_id}: {error}"),
+    })?;
+    let observed = hashes
+        .iter()
+        .find(|hash| hash.id == trace_id)
+        .map(|hash| hash.hash.clone())
+        .unwrap_or_default();
+    if observed == expected {
+        return Ok(());
+    }
+    Err(VerificationError::TranslationTraceHashMismatch {
+        trace_id: trace_id.to_owned(),
+        expected,
+        observed,
     })
 }

@@ -36,6 +36,8 @@ pub struct ProofCertificate {
     #[serde(default)]
     pub generated_rust_trace: Vec<GeneratedTraceEvent>,
     #[serde(default)]
+    pub trace_hashes: Vec<HashEvidence>,
+    #[serde(default)]
     pub translation_validation: TranslationValidationEvidence,
     pub opaque_edge_ledger: Vec<OpaqueLedgerEntry>,
     pub candidate_admission: Vec<CandidateAdmissionEvidence>,

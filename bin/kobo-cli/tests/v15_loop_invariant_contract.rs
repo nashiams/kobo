@@ -6,6 +6,87 @@ use v15_common::{
     queue_loop_source, read_json, run_kobo, s, TestProject,
 };
 
+fn protocol_loop_source(
+    scenario_name: &str,
+    owner_type: &str,
+    owner_binding: &str,
+    create_method: &str,
+    obligation_type: &str,
+    obligation_binding: &str,
+    terminal_actions: &[&str],
+    discharge_action: &str,
+) -> String {
+    let terminal_methods = terminal_actions
+        .iter()
+        .map(|action| format!("    fn {action}(self) {{}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"
+struct {owner_type} {{}}
+struct {obligation_type} {{}}
+
+impl {owner_type} {{
+    fn {create_method}(&self) -> {obligation_type} {{ {obligation_type} {{}} }}
+}}
+
+impl {obligation_type} {{
+{terminal_methods}
+}}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let {owner_binding} = {owner_type} {{}};
+    loop {{
+        let {obligation_binding} = {owner_binding}.{create_method}();
+        {obligation_binding}.{discharge_action}();
+    }}
+}}
+"#
+    )
+}
+
+fn assert_inferred_template(
+    artifact: &serde_json::Value,
+    template_id: &str,
+    obligation_kind: &str,
+    obligation_binding: &str,
+) {
+    let invariant = &artifact["loop_invariants"][0];
+    assert_eq!(invariant["tier"], "inferred");
+    assert_eq!(
+        invariant["expression"],
+        format!("no_pending({obligation_kind})")
+    );
+    assert_eq!(invariant["template"]["id"], template_id);
+    assert_eq!(invariant["template"]["version"], "0.1");
+    assert_eq!(invariant["preservation"], "preserved");
+    assert_eq!(invariant["obligations_created"][0], obligation_binding);
+}
+
+fn queue_loop_source_with_invariant(scenario_name: &str, expression: &str) -> String {
+    queue_loop_source(scenario_name, "delivery", "queue").replace(
+        "#[kobo::scenario(profile = \"sync\")]",
+        &format!(
+            "#[kobo::invariant(expression = \"{expression}\")]\n#[kobo::scenario(profile = \"sync\")]"
+        ),
+    )
+}
+
+fn empty_loop_source_with_invariant(scenario_name: &str, expression: &str) -> String {
+    format!(
+        r#"
+#[kobo::invariant(expression = "{expression}")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    loop {{
+        let _unit = ();
+    }}
+}}
+"#
+    )
+}
+
 #[test]
 fn queue_loop_infers_template_invariant() {
     let project = TestProject::new("v15-loop-invariant-queue");
@@ -77,6 +158,133 @@ fn branch_leak_reaching_back_edge_rejects_proof() {
             || output.combined().contains("branch_unresolved")
             || output.combined().contains("CFG edge transition mismatch"),
         "failure should name the back-edge, join, or branch-unresolved obligation: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn stream_loop_infers_template_before_user_invariant() {
+    let project = TestProject::new("v15-loop-invariant-stream");
+    let source = protocol_loop_source(
+        "stream_loop_case",
+        "Stream",
+        "stream",
+        "next",
+        "StreamItem",
+        "entry",
+        &["consume", "skip"],
+        "consume",
+    );
+    let artifact_path = emit_artifact(&project, &source, "stream_loop_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_inferred_template(&artifact, "stream_item", "StreamItem", "entry");
+}
+
+#[test]
+fn retry_loop_infers_template_before_user_invariant() {
+    let project = TestProject::new("v15-loop-invariant-retry");
+    let source = protocol_loop_source(
+        "retry_loop_case",
+        "RetryPolicy",
+        "policy",
+        "attempt",
+        "RetryAttempt",
+        "attempt",
+        &["succeed", "retry", "give_up"],
+        "succeed",
+    );
+    let artifact_path = emit_artifact(&project, &source, "retry_loop_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_inferred_template(&artifact, "retry_attempt", "RetryAttempt", "attempt");
+}
+
+#[test]
+fn transaction_loop_infers_template_before_user_invariant() {
+    let project = TestProject::new("v15-loop-invariant-transaction");
+    let source = protocol_loop_source(
+        "transaction_loop_case",
+        "TransactionManager",
+        "manager",
+        "begin",
+        "Transaction",
+        "tx",
+        &["commit", "rollback"],
+        "commit",
+    );
+    let artifact_path = emit_artifact(&project, &source, "transaction_loop_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_inferred_template(&artifact, "transaction", "Transaction", "tx");
+}
+
+#[test]
+fn service_request_loop_infers_reply_template_before_user_invariant() {
+    let project = TestProject::new("v15-loop-invariant-service");
+    let source = protocol_loop_source(
+        "service_request_loop_case",
+        "Service",
+        "service",
+        "request",
+        "HandlerReply",
+        "reply",
+        &["reply", "reject", "cancel"],
+        "reply",
+    );
+    let artifact_path = emit_artifact(&project, &source, "service_request_loop_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_inferred_template(&artifact, "handler_reply", "HandlerReply", "reply");
+}
+
+#[test]
+fn explicit_user_invariant_records_user_tier_and_preservation() {
+    let project = TestProject::new("v15-loop-invariant-user");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source_with_invariant("user_invariant_case", "no_pending(Delivery)"),
+        "user_invariant_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let invariant = &artifact["loop_invariants"][0];
+
+    assert_eq!(invariant["tier"], "user");
+    assert_eq!(invariant["expression"], "no_pending(Delivery)");
+    assert_eq!(invariant["preservation"], "preserved");
+    assert_eq!(invariant["obligations_created"][0], "delivery");
+}
+
+#[test]
+fn explicit_user_invariant_rejects_unknown_obligation_kind() {
+    let project = TestProject::new("v15-loop-invariant-user-unknown");
+    let source_file = project.main_file(&empty_loop_source_with_invariant(
+        "unknown_user_case",
+        "no_pending(Ghost)",
+    ));
+    let artifact_path = project.root.join("unknown_user_case.kproof");
+
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&source_file),
+            s("--target"),
+            s("unknown_user_case"),
+            s("--output"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "unknown user invariant obligation kind should reject proof emission",
+    );
+    assert!(
+        output.combined().contains("unknown obligation kind")
+            || output.combined().contains("invariant was not preserved"),
+        "failure should name the unknown invariant fact: {}",
         output.combined()
     );
 }

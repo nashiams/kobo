@@ -41,6 +41,47 @@ fn generated_rust_trace_matches_core_trace_and_validates() {
 }
 
 #[test]
+fn codegen_source_map_emits_structured_lowering_trace_metadata() {
+    let project = TestProject::new("v15-translation-codegen-trace");
+    let artifact_path = emit_queue_artifact(&project, "translation_codegen_trace_case");
+    let artifact = read_json(&artifact_path);
+    let map_path = project
+        .find_files_with_ext("map")
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == "main.kobo.map"))
+        .expect("proof emit should write a source map");
+    let source_map = read_json(&map_path);
+    let lowering_trace = source_map["lowering_trace"]
+        .as_array()
+        .expect("source map lowering_trace should be an array");
+
+    assert!(
+        lowering_trace.iter().any(|event| event["kind"] == "create"
+            && event["binding"] == "delivery"
+            && event["lowering_phase"] == "kobo-codegen"),
+        "codegen-owned trace must include Delivery creation: {source_map}"
+    );
+    assert!(
+        lowering_trace
+            .iter()
+            .any(|event| event["kind"] == "discharge"
+                && event["binding"] == "delivery"
+                && event["source_map_entry_id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())),
+        "codegen-owned trace must include anchored Delivery discharge: {source_map}"
+    );
+    assert!(
+        artifact["generated_rust_trace"]
+            .as_array()
+            .expect("generated trace should be an array")
+            .iter()
+            .all(|event| event["lowering_phase"] == "kobo-codegen"),
+        ".kproof generated trace must consume codegen lowering metadata: {artifact}"
+    );
+}
+
+#[test]
 fn dropped_discharge_event_fails_translation_validation() {
     let project = TestProject::new("v15-translation-dropped-discharge");
     let artifact_path = emit_queue_artifact(&project, "translation_drop_case");

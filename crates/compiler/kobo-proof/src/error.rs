@@ -135,6 +135,12 @@ pub enum VerificationError {
     },
     #[error("translation validation status mismatch: expected {expected}, observed {observed}")]
     TranslationValidationStatusMismatch { expected: String, observed: String },
+    #[error("translation validation trace hash mismatch for {trace_id}: expected {expected}, observed {observed}")]
+    TranslationTraceHashMismatch {
+        trace_id: String,
+        expected: String,
+        observed: String,
+    },
     #[error("removed discharge for {binding}")]
     RemovedDischarge { binding: String },
     #[error("unresolved obligation {binding} reaches a modeled exit")]

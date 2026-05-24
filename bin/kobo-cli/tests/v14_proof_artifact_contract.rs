@@ -239,6 +239,15 @@ fn release_docs_state_scope_non_goals_and_honesty_gates() {
         "replay grade",
         "candidate-track admission",
         "research tracks remain spikes",
+        "template_schemas[]",
+        "template_schema",
+        "schema_version",
+        "proof_target_version",
+        "semantic_schema",
+        "artifact_kind",
+        "claim_scope",
+        ".kproof",
+        ".kwit.proof.json",
     ] {
         assert!(
             docs.contains(required),
@@ -251,6 +260,8 @@ fn release_docs_state_scope_non_goals_and_honesty_gates() {
         "whole-program deterministic replay",
         "AI-native",
         "hidden runtime tax",
+        "template versions",
+        "template_versions",
     ] {
         assert!(
             !docs.contains(forbidden),

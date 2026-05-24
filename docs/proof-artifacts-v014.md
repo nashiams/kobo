@@ -1,6 +1,8 @@
 # Proof Artifacts And Admission Gates
 
-v0.14 emits independently checked proof artifacts for modeled obligation flow. The proof surface is Kobo Core evidence: source hash, Core hash, CFG nodes and edges, obligation events, environments, template versions, boundary assumptions, async cancellation evidence, adapter confidence, replay grade, and candidate-track admission metadata.
+Kobo emits independently checked proof artifacts for modeled obligation flow. The proof surface is Kobo Core evidence: source hash, Core hash, CFG nodes and edges, obligation events, environments, `template_schemas[]` entries with stable `template_schema` and numeric `schema_version` fields, boundary assumptions, async cancellation evidence, adapter confidence, replay grade, and candidate-track admission metadata.
+
+Proof artifacts use explicit public header fields: `schema_version`, `proof_target_version`, `semantic_schema`, `artifact_kind`, and `claim_scope`. The verifier accepts only the public path contracts: `.kproof` files with `artifact_kind = "kproof"` and `.kwit.proof.json` files with `artifact_kind = "kwit.proof.json"`.
 
 The verifier in `kobo-proof` checks the artifact from certificate data. It rejects stale hashes, unknown unversioned fields, unknown event or boundary values, missing async cancel evidence, unresolved obligations, and replay claims that cross disallowed boundary or adapter evidence.
 

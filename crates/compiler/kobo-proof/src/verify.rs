@@ -18,6 +18,7 @@ pub struct VerificationReport {
 }
 
 pub fn parse_certificate_json(source: &str) -> Result<ProofCertificate, VerificationError> {
+    preflight_certificate_header_json(source)?;
     serde_json::from_str::<ProofCertificate>(source).map_err(classify_parse_error)
 }
 
@@ -47,7 +48,7 @@ pub fn verify_certificate(
     })
 }
 
-fn verify_certificate_header(certificate: &ProofCertificate) -> Result<(), VerificationError> {
+pub fn verify_certificate_header(certificate: &ProofCertificate) -> Result<(), VerificationError> {
     verify_header_field(
         "schema_version",
         PROOF_CERTIFICATE_SCHEMA_VERSION.to_string(),
@@ -71,6 +72,28 @@ fn verify_certificate_header(certificate: &ProofCertificate) -> Result<(), Verif
     match certificate.artifact_kind {
         ArtifactKind::Kproof | ArtifactKind::KwitProofJson => Ok(()),
     }
+}
+
+fn preflight_certificate_header_json(source: &str) -> Result<(), VerificationError> {
+    let value: serde_json::Value =
+        serde_json::from_str(source).map_err(|error| VerificationError::Parse {
+            message: error.to_string(),
+        })?;
+    let Some(kind) = value.get("artifact_kind") else {
+        return Ok(());
+    };
+    let observed = kind
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| kind.to_string());
+    if matches!(observed.as_str(), "kproof" | "kwit.proof.json") {
+        return Ok(());
+    }
+    Err(VerificationError::UnsupportedCertificateHeader {
+        field: "artifact_kind".to_owned(),
+        expected: "kproof or kwit.proof.json".to_owned(),
+        observed,
+    })
 }
 
 fn verify_header_field(

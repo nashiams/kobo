@@ -221,6 +221,21 @@ fn unknown_event_kind_rejected() {
 }
 
 #[test]
+fn invalid_artifact_kind_reports_header_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["artifact_kind"] = Value::String("totally_proof".to_owned());
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateHeader { ref field, .. }
+            if field == "artifact_kind"
+    ));
+}
+
+#[test]
 fn missing_template_schema_fields_are_rejected() {
     let source = mutate_json(valid_certificate(), |value| {
         let template = value["template_schemas"][0]

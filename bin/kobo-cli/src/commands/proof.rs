@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_driver::run_codegen_pipeline;
 use kobo_proof::{
-    parse_certificate_json, verify_certificate, ArtifactKind, ProofCertificate,
-    VerificationContext, VerificationError, VerificationReport,
+    parse_certificate_json, verify_certificate, verify_certificate_header, ArtifactKind,
+    ProofCertificate, VerificationContext, VerificationError, VerificationReport,
 };
 
 use crate::ProofReplayGradeArg;
@@ -43,6 +43,10 @@ pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
     };
     let certificate = read_certificate(artifact)?;
     if let Err(error) = verify_artifact_kind_matches_path(&expected_artifact_kind, &certificate) {
+        emit_rejected(artifact, &error, json)?;
+        anyhow::bail!("{error}");
+    }
+    if let Err(error) = verify_certificate_header(&certificate) {
         emit_rejected(artifact, &error, json)?;
         anyhow::bail!("{error}");
     }

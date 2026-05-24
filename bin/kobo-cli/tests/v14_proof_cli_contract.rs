@@ -162,6 +162,44 @@ fn proof_verify_rejects_artifact_kind_path_mismatch() {
 }
 
 #[test]
+fn proof_verify_rejects_invalid_header_before_source_path_read() {
+    let (project, _source_file, artifact_path) = emit_project(
+        "v14-proof-verify-header-before-source",
+        "proof_verify_header_case",
+    );
+    let mut artifact = read_json(&artifact_path);
+    artifact["schema_version"] = Value::Number(99.into());
+    artifact["source"]["path"] = Value::String("missing-source.kobo".to_owned());
+    fs::write(
+        &artifact_path,
+        serde_json::to_string_pretty(&artifact).unwrap(),
+    )
+    .expect("invalid header artifact should write");
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "proof verify should reject unsupported headers before reading certificate-controlled sources",
+    );
+    assert!(
+        output.combined().contains("schema_version"),
+        "header rejection should name the unsupported field: {}",
+        output.combined()
+    );
+    assert!(
+        !output
+            .combined()
+            .contains("failed to read certificate source"),
+        "header rejection should happen before source path dereference: {}",
+        output.combined()
+    );
+}
+
+#[test]
 fn proof_verify_rejects_unsupported_artifact_extension() {
     let (project, _source_file, artifact_path) = emit_project(
         "v14-proof-verify-unsupported-extension",

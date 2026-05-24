@@ -20,9 +20,9 @@ use kobo_proof::{
     ObligationStatus, OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence,
     SelectPathEvidence, SourceEvidence, SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan,
     SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateSchemaEvidence,
-    TimeoutCancelEdgeEvidence, TraceEventKind, TranslationValidationEvidence,
-    TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE,
-    PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    TimeoutCancelEdgeEvidence, TraceEventKind, TraceMismatchEvidence, TraceMismatchKind,
+    TranslationValidationEvidence, TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION,
+    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -774,19 +774,141 @@ fn translation_validation_evidence(
     generated_trace: &[GeneratedTraceEvent],
     source_map: Option<&KoboSourceMap>,
 ) -> TranslationValidationEvidence {
+    let mismatches = translation_trace_mismatches(core_trace, generated_trace);
     let status = if core_trace.is_empty() {
         TranslationValidationStatus::CoreOnly
     } else if source_map.is_none() {
         TranslationValidationStatus::CoreOnly
-    } else if core_trace.len() == generated_trace.len() {
+    } else if mismatches.is_empty() {
         TranslationValidationStatus::Validated
     } else {
         TranslationValidationStatus::Failed
     };
-    TranslationValidationEvidence {
-        status,
-        mismatches: Vec::new(),
+    TranslationValidationEvidence { status, mismatches }
+}
+
+fn translation_trace_mismatches(
+    core_trace: &[CoreTraceEvent],
+    generated_trace: &[GeneratedTraceEvent],
+) -> Vec<TraceMismatchEvidence> {
+    let mut mismatches = Vec::new();
+    let mut generated_by_core_id = BTreeMap::new();
+    for generated_event in generated_trace {
+        if generated_by_core_id
+            .insert(generated_event.core_event_id.as_str(), generated_event)
+            .is_some()
+        {
+            mismatches.push(trace_mismatch(
+                TraceMismatchKind::ExtraEvent,
+                None,
+                Some(generated_event.id.clone()),
+                "duplicate generated event for Core event".to_owned(),
+            ));
+        }
     }
+    let core_ids = core_trace
+        .iter()
+        .map(|event| event.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for core_event in core_trace {
+        let Some(generated_event) = generated_by_core_id.get(core_event.id.as_str()) else {
+            mismatches.push(trace_mismatch(
+                TraceMismatchKind::MissingEvent,
+                Some(core_event.id.clone()),
+                None,
+                "generated trace is missing this Core event".to_owned(),
+            ));
+            continue;
+        };
+        record_event_identity_mismatches(core_event, generated_event, &mut mismatches);
+    }
+    for generated_event in generated_trace {
+        if !core_ids.contains(generated_event.core_event_id.as_str()) {
+            mismatches.push(trace_mismatch(
+                TraceMismatchKind::ExtraEvent,
+                None,
+                Some(generated_event.id.clone()),
+                "generated trace event has no matching Core event".to_owned(),
+            ));
+        }
+    }
+    mismatches
+}
+
+fn record_event_identity_mismatches(
+    core_event: &CoreTraceEvent,
+    generated_event: &GeneratedTraceEvent,
+    mismatches: &mut Vec<TraceMismatchEvidence>,
+) {
+    if core_event.order != generated_event.order {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::OrderMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected order {}, observed {}",
+                core_event.order, generated_event.order
+            ),
+        ));
+    }
+    if core_event.kind != generated_event.kind {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::KindMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected kind {}, observed {}",
+                core_event.kind.as_str(),
+                generated_event.kind.as_str()
+            ),
+        ));
+    }
+    if core_event.binding != generated_event.binding {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::BindingMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected binding {}, observed {}",
+                optional_trace_text(&core_event.binding),
+                optional_trace_text(&generated_event.binding)
+            ),
+        ));
+    }
+    if core_event.template_id != generated_event.template_id
+        || core_event.template_version != generated_event.template_version
+    {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::TemplateMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected template {}@{}, observed {}@{}",
+                optional_trace_text(&core_event.template_id),
+                optional_trace_text(&core_event.template_version),
+                optional_trace_text(&generated_event.template_id),
+                optional_trace_text(&generated_event.template_version)
+            ),
+        ));
+    }
+}
+
+fn trace_mismatch(
+    kind: TraceMismatchKind,
+    core_event_id: Option<String>,
+    generated_event_id: Option<String>,
+    reason: String,
+) -> TraceMismatchEvidence {
+    TraceMismatchEvidence {
+        kind,
+        core_event_id,
+        generated_event_id,
+        reason,
+    }
+}
+
+fn optional_trace_text(value: &Option<String>) -> &str {
+    value.as_deref().unwrap_or("<none>")
 }
 
 fn trace_hashes(
@@ -2883,4 +3005,54 @@ fn line_snippet(source: &str, offset: usize) -> String {
         .map(|index| bounded + index)
         .unwrap_or(source.len());
     source[line_start..line_end].trim().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span() -> SourceSpan {
+        SourceSpan {
+            path: "src/main.kobo".to_owned(),
+            line: 1,
+            start: 0,
+            end: 1,
+            mapped: true,
+            snippet: "return".to_owned(),
+        }
+    }
+
+    fn source_map() -> KoboSourceMap {
+        KoboSourceMap {
+            version: 3,
+            file: "src/main.rs".to_owned(),
+            sources: vec!["src/main.kobo".to_owned()],
+            x_kobo_mappings: Vec::new(),
+            runtime_evidence: None,
+            solver_evidence: None,
+            lowering_trace: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn translation_validation_records_missing_generated_event() {
+        let core_trace = vec![CoreTraceEvent {
+            id: "core-term-0".to_owned(),
+            kind: TraceEventKind::Return,
+            binding: None,
+            order: 0,
+            source_span: span(),
+            template_id: None,
+            template_version: None,
+        }];
+        let evidence = translation_validation_evidence(&core_trace, &[], Some(&source_map()));
+
+        assert_eq!(evidence.status, TranslationValidationStatus::Failed);
+        assert_eq!(evidence.mismatches.len(), 1);
+        assert_eq!(evidence.mismatches[0].kind, TraceMismatchKind::MissingEvent);
+        assert_eq!(
+            evidence.mismatches[0].core_event_id.as_deref(),
+            Some("core-term-0")
+        );
+    }
 }

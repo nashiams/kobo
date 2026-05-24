@@ -8,6 +8,7 @@ use crate::{
 pub(crate) type ObligationEnv = BTreeMap<String, ObligationStatus>;
 
 struct CfgReplay {
+    block_entry_envs: BTreeMap<String, ObligationEnv>,
     block_exit_envs: BTreeMap<String, ObligationEnv>,
     terminal_envs: Vec<ObligationEnv>,
     checked_events: usize,
@@ -34,6 +35,12 @@ pub(crate) fn block_obligation_envs(
     certificate: &ProofCertificate,
 ) -> Result<BTreeMap<String, ObligationEnv>, VerificationError> {
     replay_cfg_obligations(certificate).map(|replay| replay.block_exit_envs)
+}
+
+pub(crate) fn block_obligation_entry_envs(
+    certificate: &ProofCertificate,
+) -> Result<BTreeMap<String, ObligationEnv>, VerificationError> {
+    replay_cfg_obligations(certificate).map(|replay| replay.block_entry_envs)
 }
 
 pub(crate) fn event_state_map(states: &[ObligationState]) -> ObligationEnv {
@@ -73,6 +80,7 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
         .min_by_key(|node| block_index(&node.id).unwrap_or(usize::MAX))
     else {
         return Ok(CfgReplay {
+            block_entry_envs: BTreeMap::new(),
             block_exit_envs: BTreeMap::new(),
             terminal_envs: Vec::new(),
             checked_events: 0,
@@ -175,6 +183,7 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
     }
 
     Ok(CfgReplay {
+        block_entry_envs,
         block_exit_envs,
         terminal_envs,
         checked_events: checked_event_ids.len(),

@@ -160,6 +160,43 @@ fn {scenario_name}() {{
     )
 }
 
+fn two_labeled_queue_while_loops_with_user_invariant(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+fn choose() -> bool {{ true }}
+
+#[kobo::invariant(expression = "no_pending(Delivery)", loop_label = "second")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    'first: while choose() {{
+        let first = queue.recv();
+        first.ack();
+    }}
+    'second: while choose() {{
+        let second = queue.recv();
+        second.ack();
+    }}
+}}
+"#
+    )
+}
+
 fn labeled_outer_break_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -668,6 +705,52 @@ fn explicit_user_invariant_records_user_tier_and_preservation() {
     assert_eq!(invariant["expression"], "no_pending(Delivery)");
     assert_eq!(invariant["preservation"], "preserved");
     assert_eq!(invariant["obligations_created"][0], "delivery");
+    assert!(
+        invariant["loop_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "user invariant must be scoped to a concrete loop id: {artifact}"
+    );
+    assert_eq!(
+        invariant["entry_states"],
+        serde_json::json!([]),
+        "user invariant must record loop-entry truth evidence: {artifact}"
+    );
+}
+
+#[test]
+fn explicit_user_invariant_is_scoped_to_named_loop() {
+    let project = TestProject::new("v15-loop-invariant-user-scope");
+    let artifact_path = emit_artifact(
+        &project,
+        &two_labeled_queue_while_loops_with_user_invariant("user_scoped_loop_case"),
+        "user_scoped_loop_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let invariants = artifact["loop_invariants"]
+        .as_array()
+        .expect("loop invariants should be present");
+    let user_invariants = invariants
+        .iter()
+        .filter(|invariant| invariant["tier"] == "user")
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        user_invariants.len(),
+        1,
+        "user invariant should annotate only the named loop: {artifact}"
+    );
+    assert_eq!(user_invariants[0]["loop_label"], "second");
+    assert_eq!(
+        user_invariants[0]["obligations_created"],
+        serde_json::json!(["second"])
+    );
+    assert!(
+        invariants
+            .iter()
+            .any(|invariant| invariant["loop_label"] == "first" && invariant["tier"] == "inferred"),
+        "unannotated loop should keep inferred proof evidence: {artifact}"
+    );
 }
 
 #[test]
@@ -826,6 +909,44 @@ fn tampered_invariant_back_edge_states_are_replayed_from_core() {
             || output.combined().contains("back-edge")
             || output.combined().contains("replay mismatch"),
         "failure should name invariant/Core state mismatch: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn tampered_user_invariant_entry_states_are_replayed_from_core() {
+    let project = TestProject::new("v15-loop-invariant-entry-state-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source_with_invariant("entry_state_tamper_case", "no_pending(Delivery)"),
+        "entry_state_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.loop_invariants[0].entry_states = vec![kobo_proof::ObligationState {
+        binding: "delivery".to_owned(),
+        state: kobo_proof::ObligationStatus::Owned,
+    }];
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    v15_common::write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "tampered user invariant entry states should reject proof verification",
+    );
+    assert!(
+        output.combined().contains("entry") || output.combined().contains("invariant"),
+        "failure should name invariant entry/Core state mismatch: {}",
         output.combined()
     );
 }

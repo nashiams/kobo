@@ -337,6 +337,8 @@ pub struct LoopInvariantEvidence {
     pub expression: String,
     pub source_span: SourceSpan,
     pub obligations_created: Vec<String>,
+    #[serde(default)]
+    pub entry_states: Vec<ObligationState>,
     pub back_edge_states: Vec<ObligationState>,
     pub preservation: InvariantPreservation,
     pub template: Option<InvariantTemplateEvidence>,

@@ -48,6 +48,7 @@ pub enum ProofEmissionError {
 struct UserLoopInvariantDirective {
     expression: String,
     obligation_kind: Option<String>,
+    loop_label: Option<String>,
     source_span: SourceSpan,
 }
 
@@ -392,11 +393,12 @@ fn loop_invariant_evidence(
     loop_facts
         .iter()
         .filter_map(|fact| {
+            let user_invariant = user_invariant_for_fact(user_loop_invariant, fact, loop_facts);
             let scoped_bindings = created_bindings_for_loop(fact, obligation_events);
             let relevant_bindings = scoped_bindings
                 .iter()
                 .filter(|binding| {
-                    user_loop_invariant
+                    user_invariant
                         .and_then(|directive| directive.obligation_kind.as_deref())
                         .map(|kind| {
                             type_by_binding
@@ -408,7 +410,7 @@ fn loop_invariant_evidence(
                 .cloned()
                 .collect::<Vec<_>>();
             let first_binding = relevant_bindings.first();
-            if user_loop_invariant.is_none() && first_binding.is_none() {
+            if user_invariant.is_none() && first_binding.is_none() {
                 return None;
             }
             let template =
@@ -416,11 +418,14 @@ fn loop_invariant_evidence(
             let obligation_kind = type_by_binding
                 .get(first_binding.map(String::as_str).unwrap_or_default())
                 .cloned()
-                .or_else(|| {
-                    user_loop_invariant.and_then(|directive| directive.obligation_kind.clone())
-                })
+                .or_else(|| user_invariant.and_then(|directive| directive.obligation_kind.clone()))
                 .unwrap_or_else(|| "obligation".to_owned());
             let replay = replay_by_function.get(fact.function.as_str())?;
+            let entry_states = replay
+                .block_entry_envs
+                .get(&fact.entry_block)
+                .map(env_states)
+                .unwrap_or_default();
             let back_edge_states = replay
                 .block_exit_envs
                 .get(&fact.back_edge_source)
@@ -436,9 +441,9 @@ fn loop_invariant_evidence(
                     )
             });
             let malformed_user_invariant =
-                user_loop_invariant.is_some_and(|directive| directive.obligation_kind.is_none());
+                user_invariant.is_some_and(|directive| directive.obligation_kind.is_none());
             let unknown_user_kind = malformed_user_invariant
-                || (user_loop_invariant.is_some() && relevant_bindings.is_empty());
+                || (user_invariant.is_some() && relevant_bindings.is_empty());
             let preservation = if back_edge_leak || unknown_user_kind {
                 InvariantPreservation::Failed
             } else {
@@ -452,16 +457,17 @@ fn loop_invariant_evidence(
                 entry_block: fact.entry_block.clone(),
                 back_edge_source: fact.back_edge_source.clone(),
                 back_edge_target: fact.back_edge_target.clone(),
-                tier: user_loop_invariant
+                tier: user_invariant
                     .map(|_| InvariantTier::User)
                     .unwrap_or(InvariantTier::Inferred),
-                expression: user_loop_invariant
+                expression: user_invariant
                     .map(|directive| directive.expression.clone())
                     .unwrap_or_else(|| format!("no_pending({obligation_kind})")),
-                source_span: user_loop_invariant
+                source_span: user_invariant
                     .map(|directive| directive.source_span.clone())
                     .unwrap_or_else(|| fact.source_span.clone()),
                 obligations_created: relevant_bindings,
+                entry_states,
                 back_edge_states,
                 preservation,
                 template: template.map(|template| InvariantTemplateEvidence {
@@ -474,7 +480,7 @@ fn loop_invariant_evidence(
                     lifecycle_owner: lifecycle_owner(&template.id),
                 }),
                 downgrade_reason: user_invariant_downgrade_reason(
-                    user_loop_invariant,
+                    user_invariant,
                     malformed_user_invariant,
                     unknown_user_kind,
                     back_edge_leak,
@@ -482,6 +488,26 @@ fn loop_invariant_evidence(
             })
         })
         .collect()
+}
+
+fn user_invariant_for_fact<'a>(
+    directive: Option<&'a UserLoopInvariantDirective>,
+    fact: &CoreLoopBackEdgeFact,
+    loop_facts: &[CoreLoopBackEdgeFact],
+) -> Option<&'a UserLoopInvariantDirective> {
+    let directive = directive?;
+    if let Some(loop_label) = directive.loop_label.as_deref() {
+        return fact
+            .loop_label
+            .as_deref()
+            .is_some_and(|label| label == loop_label)
+            .then_some(directive);
+    }
+    let function_loop_count = loop_facts
+        .iter()
+        .filter(|loop_fact| loop_fact.function == fact.function)
+        .count();
+    (function_loop_count == 1).then_some(directive)
 }
 
 fn created_bindings_for_loop(
@@ -533,10 +559,15 @@ fn user_loop_invariant_directive(
     let fields = attr_name_value_fields(attr)?;
     let expression = fields.get("expression")?.clone();
     let obligation_kind = no_pending_obligation_kind(&expression);
+    let loop_label = fields
+        .get("loop_label")
+        .or_else(|| fields.get("loop"))
+        .cloned();
     let source_span = source_span_for_user_invariant(source_path, source, &expression);
     Some(UserLoopInvariantDirective {
         expression,
         obligation_kind,
+        loop_label,
         source_span,
     })
 }

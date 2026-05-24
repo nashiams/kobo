@@ -470,6 +470,8 @@ pub(crate) enum KoboCommand {
     Explain {
         #[arg(value_name = "CODE")]
         code: String,
+        #[arg(value_name = "FILE:LINE[:COLUMN]")]
+        location: Option<String>,
         #[arg(long, help = "Show registry metadata and machine policy details")]
         verbose: bool,
     },

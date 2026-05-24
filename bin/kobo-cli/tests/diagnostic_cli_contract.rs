@@ -43,6 +43,33 @@ fn explain_prints_registry_text_for_k0107() {
 }
 
 #[test]
+fn explain_accepts_location_context_for_k0107() {
+    let exe = env!("CARGO_BIN_EXE_kobo");
+    let root = unique_fixture_dir("kobo-cli-explain-location");
+    let src = root.join("src");
+    fs::create_dir_all(&src).unwrap();
+    let file = src.join("client.kobo");
+    let mut lines = vec!["fn main() {}".to_owned(); 26];
+    lines.push("let response = reqwest::get(url).await?;".to_owned());
+    fs::write(&file, lines.join("\n")).unwrap();
+
+    let output = Command::new(exe)
+        .current_dir(&root)
+        .args(["explain", "K0107", "src/client.kobo:27"])
+        .output()
+        .expect("kobo explain with a source location should run");
+
+    assert!(output.status.success(), "{}", combined_output(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("K0107"));
+    assert!(stdout.contains("src/client.kobo:27"));
+    assert!(stdout.contains("model, record, outside, opaque, or debt"));
+    assert!(stdout.contains("reqwest::get"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn check_bad_parse_uses_registry_backed_card() {
     let exe = env!("CARGO_BIN_EXE_kobo");
     let (root, file) =

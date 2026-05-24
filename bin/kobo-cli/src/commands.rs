@@ -386,7 +386,11 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             plan,
             changed,
         } => watch::cmd_watch(file.as_deref(), simple, build, plan, changed.as_deref()),
-        KoboCommand::Explain { code, verbose } => explain::cmd_explain(&code, verbose),
+        KoboCommand::Explain {
+            code,
+            location,
+            verbose,
+        } => explain::cmd_explain(&code, location.as_deref(), verbose),
     }
 }
 

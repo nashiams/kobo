@@ -183,6 +183,7 @@ pub fn codegen_file(
         &anchors,
         &mut entries,
     );
+    sourcemap::add_trace_anchor_entries(&mut entries, kir.scenario_programs());
     let (rs_source, error_policy_sites) =
         error_policy::resolve_marked_error_policy_sites(rs_source, &lowered.error_policy_markers);
     let mut source_map = wrap_source_map(kobo_path, rs_path, entries);

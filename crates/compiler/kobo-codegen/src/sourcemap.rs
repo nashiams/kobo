@@ -135,6 +135,44 @@ pub fn wrap_source_map(
     }
 }
 
+pub(crate) fn add_trace_anchor_entries(
+    entries: &mut Vec<SourceMapEntry>,
+    programs: &[ScenarioProgram],
+) {
+    for program in programs {
+        let template_by_binding = template_by_binding(program);
+        for (order, operation) in program.operations.iter().enumerate() {
+            let Some(event) = lowering_event_from_operation(&operation.kind, &template_by_binding)
+            else {
+                continue;
+            };
+            if entries.iter().any(|entry| {
+                entry.kobo_span == operation.span || entry.kobo_span.overlaps(operation.span)
+            }) {
+                continue;
+            }
+            let Some(anchor) =
+                trace_anchor_source(entries, operation.span, event.binding.as_deref())
+            else {
+                continue;
+            };
+            entries.push(SourceMapEntry {
+                id: format!("trace-map-{}-{order}", program.target),
+                binding_name: event
+                    .binding
+                    .clone()
+                    .unwrap_or_else(|| event.kind.to_owned()),
+                rs_span: anchor.rs_span.clone(),
+                kobo_span: operation.span,
+                ownership_tier: anchor.ownership_tier.clone(),
+                solver_outcome: anchor.solver_outcome.clone(),
+                decision_source: anchor.decision_source.clone(),
+                solver_node_id: anchor.solver_node_id,
+            });
+        }
+    }
+}
+
 pub(crate) fn build_lowering_trace(
     programs: &[ScenarioProgram],
     source_map: &KoboSourceMap,
@@ -150,11 +188,7 @@ pub(crate) fn build_lowering_trace(
                 .filter_map(move |(order, operation)| {
                     let event =
                         lowering_event_from_operation(&operation.kind, &template_by_binding)?;
-                    let anchor = anchor_for_trace_event(
-                        source_map,
-                        operation.span,
-                        event.binding.as_deref(),
-                    )?;
+                    let anchor = anchor_for_trace_event(source_map, operation.span)?;
                     Some(LoweringTraceEvent {
                         id: format!("lowering-{}-{order}", program.target),
                         core_event_id: core_event_id_for_operation(order, &operation.kind),
@@ -280,26 +314,34 @@ fn core_terminator_trace_kind(kind: &ScenarioCoreTerminatorKind) -> &'static str
 fn anchor_for_trace_event<'a>(
     source_map: &'a KoboSourceMap,
     span: KoboSpan,
-    binding: Option<&str>,
 ) -> Option<&'a SourceMapEntry> {
     source_map
         .x_kobo_mappings
         .iter()
-        .find(|entry| entry.kobo_span.overlaps(span) || entry.kobo_span == span)
+        .find(|entry| entry.kobo_span == span || entry.kobo_span.overlaps(span))
+}
+
+fn trace_anchor_source<'a>(
+    entries: &'a [SourceMapEntry],
+    span: KoboSpan,
+    binding: Option<&str>,
+) -> Option<&'a SourceMapEntry> {
+    entries
+        .iter()
+        .find(|entry| entry.kobo_span == span || entry.kobo_span.overlaps(span))
         .or_else(|| {
             binding.and_then(|binding| {
-                source_map
-                    .x_kobo_mappings
-                    .iter()
-                    .find(|entry| entry.binding_name == binding)
+                entries.iter().find(|entry| {
+                    entry.kobo_span.file_id == span.file_id && entry.binding_name == binding
+                })
             })
         })
         .or_else(|| {
-            source_map
-                .x_kobo_mappings
-                .iter()
-                .filter(|entry| entry.kobo_span.file_id == span.file_id)
-                .min_by_key(|entry| entry.kobo_span.start.abs_diff(span.start))
+            binding.is_none().then(|| {
+                entries
+                    .iter()
+                    .find(|entry| entry.kobo_span.file_id == span.file_id)
+            })?
         })
 }
 
@@ -366,7 +408,9 @@ mod lowering_trace_tests {
         ScenarioOpKind, ScenarioProgram,
     };
 
-    use super::{build_lowering_trace, wrap_source_map, RsSpan, SourceMapEntry};
+    use super::{
+        add_trace_anchor_entries, build_lowering_trace, wrap_source_map, RsSpan, SourceMapEntry,
+    };
 
     #[test]
     fn lowering_trace_schema_covers_translation_event_kinds() {
@@ -420,6 +464,99 @@ mod lowering_trace_tests {
                 "missing lowering trace kind {kind}: {kinds:?}"
             );
         }
+    }
+
+    #[test]
+    fn lowering_trace_does_not_invent_anchor_from_same_binding() {
+        let file_id = FileId(1);
+        let mapped_span = kobo_ir::KoboSpan::new(10, 20, file_id);
+        let unmapped_span = kobo_ir::KoboSpan::new(40, 50, file_id);
+        let source_map = wrap_source_map(
+            Path::new("src/main.kobo"),
+            Path::new("src/main.rs"),
+            vec![SourceMapEntry {
+                id: "map-0".to_owned(),
+                binding_name: "delivery".to_owned(),
+                kobo_span: mapped_span,
+                rs_span: RsSpan {
+                    line: 1,
+                    column_start: 1,
+                    column_end: 8,
+                },
+                ownership_tier: "plain".to_owned(),
+                solver_outcome: None,
+                decision_source: None,
+                solver_node_id: None,
+            }],
+        );
+        let program = ScenarioProgram {
+            file_id,
+            target: "trace_case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span: unmapped_span,
+                kind: ScenarioOpKind::Discharge {
+                    binding: "delivery".to_owned(),
+                    action: "ack".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        let trace = build_lowering_trace(&[program], &source_map);
+
+        assert!(
+            trace.is_empty(),
+            "unmapped proof events must not reuse a same-binding anchor: {trace:?}"
+        );
+    }
+
+    #[test]
+    fn trace_anchor_entries_make_event_spans_explicit() {
+        let file_id = FileId(1);
+        let mapped_span = kobo_ir::KoboSpan::new(10, 20, file_id);
+        let event_span = kobo_ir::KoboSpan::new(40, 50, file_id);
+        let mut entries = vec![SourceMapEntry {
+            id: "map-0".to_owned(),
+            binding_name: "delivery".to_owned(),
+            kobo_span: mapped_span,
+            rs_span: RsSpan {
+                line: 1,
+                column_start: 1,
+                column_end: 8,
+            },
+            ownership_tier: "plain".to_owned(),
+            solver_outcome: None,
+            decision_source: None,
+            solver_node_id: None,
+        }];
+        let program = ScenarioProgram {
+            file_id,
+            target: "trace_case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span: event_span,
+                kind: ScenarioOpKind::Discharge {
+                    binding: "delivery".to_owned(),
+                    action: "ack".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        add_trace_anchor_entries(&mut entries, std::slice::from_ref(&program));
+        let source_map = wrap_source_map(
+            Path::new("src/main.kobo"),
+            Path::new("src/main.rs"),
+            entries,
+        );
+        let trace = build_lowering_trace(&[program], &source_map);
+
+        assert_eq!(trace.len(), 1);
+        assert_eq!(trace[0].source_map_entry_id, "trace-map-trace_case-0");
+        assert_eq!(trace[0].kobo_span, event_span);
     }
 
     fn trace_kind_operations(span: kobo_ir::KoboSpan) -> Vec<ScenarioOp> {

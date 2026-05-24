@@ -125,9 +125,9 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                         span_end,
                     })
                 }
-                ScenarioOpKind::LoopStart
-                | ScenarioOpKind::LoopContinue
-                | ScenarioOpKind::LoopBreak => None,
+                ScenarioOpKind::LoopStart { .. }
+                | ScenarioOpKind::LoopContinue { .. }
+                | ScenarioOpKind::LoopBreak { .. } => None,
                 ScenarioOpKind::CoreTerminator { .. } => None,
                 ScenarioOpKind::Return => None,
             }

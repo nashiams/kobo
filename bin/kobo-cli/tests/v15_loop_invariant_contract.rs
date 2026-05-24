@@ -160,6 +160,39 @@ fn {scenario_name}() {{
     )
 }
 
+fn labeled_outer_break_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    'outer: loop {{
+        loop {{
+            let delivery = queue.recv();
+            delivery.ack();
+            break 'outer;
+        }}
+    }}
+}}
+"#
+    )
+}
+
 fn loop_control_flow_source(scenario_name: &str, control_flow: &str) -> String {
     format!(
         r#"
@@ -416,6 +449,40 @@ fn break_edges_are_loop_exits_not_back_edges() {
             .iter()
             .any(|fact| fact["exit_target"] == "break_exit"),
         "a final break should retain a modeled break_exit target: {artifact}"
+    );
+}
+
+#[test]
+fn labeled_break_targets_the_named_outer_loop() {
+    let project = TestProject::new("v15-loop-invariant-labeled-break");
+    let artifact_path = emit_artifact(
+        &project,
+        &labeled_outer_break_source("labeled_outer_break_case"),
+        "labeled_outer_break_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let exit_facts = artifact["core"]["loop_exit_facts"]
+        .as_array()
+        .expect("loop exit facts should be present");
+    let outer_exit = exit_facts
+        .iter()
+        .find(|fact| fact["loop_label"] == "outer")
+        .unwrap_or_else(|| panic!("labeled break must name the outer loop: {artifact}"));
+
+    assert_eq!(outer_exit["exit_kind"], "break");
+    assert!(
+        artifact["core"]["cfg_edges"]
+            .as_array()
+            .expect("Core edges should be present")
+            .iter()
+            .all(|edge| {
+                edge["to"]
+                    .as_str()
+                    .is_some_and(|target| !target.starts_with("loop_exit:"))
+                    && edge["loop_id"].as_str().is_some_and(|id| !id.is_empty())
+                        == edge["loop_edge_kind"].as_str().is_some()
+            }),
+        "loop control metadata should be typed on Core edges, not encoded in the target: {artifact}"
     );
 }
 

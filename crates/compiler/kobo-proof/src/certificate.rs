@@ -191,6 +191,14 @@ pub struct CoreCfgEdge {
     pub from: String,
     pub to: String,
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_edge_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_entry_block: Option<String>,
     pub source_span: SourceSpan,
 }
 
@@ -199,6 +207,9 @@ pub struct CoreCfgEdge {
 pub struct CoreLoopBackEdgeFact {
     pub id: String,
     pub function: String,
+    pub loop_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_label: Option<String>,
     pub entry_block: String,
     pub back_edge_source: String,
     pub back_edge_target: String,
@@ -210,8 +221,12 @@ pub struct CoreLoopBackEdgeFact {
 pub struct CoreLoopExitFact {
     pub id: String,
     pub function: String,
+    pub loop_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_label: Option<String>,
     pub entry_block: String,
     pub exit_source: String,
+    pub exit_kind: String,
     pub exit_target: String,
     pub source_span: SourceSpan,
 }

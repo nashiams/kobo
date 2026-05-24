@@ -95,7 +95,7 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
             operation,
             next.as_deref(),
             modeled_ops.len(),
-            loop_entry_index(&modeled_ops, index),
+            &modeled_ops,
         );
         let successors = if terminators.is_empty() {
             next.iter().cloned().collect::<Vec<_>>()
@@ -103,7 +103,7 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
             terminators
                 .iter()
                 .flat_map(|terminator| terminator.edges.iter())
-                .filter_map(|edge| edge.strip_prefix("goto:").map(str::to_owned))
+                .filter_map(|edge| core_successor_target(edge))
                 .collect::<Vec<_>>()
         };
         if terminators.is_empty() {
@@ -243,11 +243,11 @@ fn apply_kir_cfg_successors(
 fn uses_scenario_control_successors(kind: &ScenarioOpKind) -> bool {
     matches!(
         kind,
-        ScenarioOpKind::LoopStart
+        ScenarioOpKind::LoopStart { .. }
             | ScenarioOpKind::Loop
             | ScenarioOpKind::LoopBackEdge { .. }
-            | ScenarioOpKind::LoopContinue
-            | ScenarioOpKind::LoopBreak
+            | ScenarioOpKind::LoopContinue { .. }
+            | ScenarioOpKind::LoopBreak { .. }
     )
 }
 
@@ -403,10 +403,10 @@ fn statement_from_operation(index: usize, operation: &ScenarioOp) -> Option<Core
         | ScenarioOpKind::Select { .. }
         | ScenarioOpKind::RawNondeterminism { .. }
         | ScenarioOpKind::UncontrolledEffect { .. }
-        | ScenarioOpKind::LoopStart
+        | ScenarioOpKind::LoopStart { .. }
         | ScenarioOpKind::LoopBackEdge { .. }
-        | ScenarioOpKind::LoopContinue
-        | ScenarioOpKind::LoopBreak
+        | ScenarioOpKind::LoopContinue { .. }
+        | ScenarioOpKind::LoopBreak { .. }
         | ScenarioOpKind::Loop
         | ScenarioOpKind::Return => None,
     }
@@ -417,7 +417,7 @@ fn terminators_from_operation(
     operation: &ScenarioOp,
     next: Option<&str>,
     block_count: usize,
-    loop_entry_index: usize,
+    modeled_ops: &[&ScenarioOp],
 ) -> Vec<CoreTerminator> {
     match &operation.kind {
         ScenarioOpKind::CoreTerminator {
@@ -456,6 +456,7 @@ fn terminators_from_operation(
             }]
         }
         ScenarioOpKind::Loop => {
+            let loop_entry_index = legacy_loop_entry_index(modeled_ops, index);
             let mut edges = vec![format!("goto:bb{loop_entry_index}")];
             if let Some(next) = next {
                 edges.push(format!("goto:{next}"));
@@ -469,11 +470,14 @@ fn terminators_from_operation(
                 source_span: operation.span,
             }]
         }
-        ScenarioOpKind::LoopBackEdge { can_exit } => {
-            let mut edges = vec![format!("goto:bb{loop_entry_index}")];
+        ScenarioOpKind::LoopBackEdge { loop_id, can_exit } => {
+            let entry_block = loop_entry_block_for_id(modeled_ops, index, loop_id);
+            let mut edges = vec![format!("loop_back:{loop_id}:{entry_block}")];
             if *can_exit {
                 if let Some(next) = next {
-                    edges.push(format!("loop_exit:condition:bb{loop_entry_index}:{next}"));
+                    edges.push(format!(
+                        "loop_exit:condition:{loop_id}:{entry_block}:{next}"
+                    ));
                 }
             }
             vec![CoreTerminator {
@@ -485,23 +489,27 @@ fn terminators_from_operation(
                 source_span: operation.span,
             }]
         }
-        ScenarioOpKind::LoopContinue => vec![CoreTerminator {
+        ScenarioOpKind::LoopContinue { loop_id } => vec![CoreTerminator {
             id: format!("term-{index}"),
             kind: CoreTerminatorKind::Goto,
             boundary: None,
             policy: None,
-            edges: vec![format!("goto:bb{loop_entry_index}")],
+            edges: vec![format!(
+                "loop_continue:{loop_id}:{}",
+                loop_entry_block_for_id(modeled_ops, index, loop_id)
+            )],
             source_span: operation.span,
         }],
-        ScenarioOpKind::LoopBreak => {
+        ScenarioOpKind::LoopBreak { loop_id } => {
             let exit_target = next.unwrap_or("break_exit");
+            let entry_block = loop_entry_block_for_id(modeled_ops, index, loop_id);
             vec![CoreTerminator {
                 id: format!("term-{index}-break"),
                 kind: CoreTerminatorKind::Goto,
                 boundary: None,
                 policy: None,
                 edges: vec![format!(
-                    "loop_exit:break:bb{loop_entry_index}:{exit_target}"
+                    "loop_exit:break:{loop_id}:{entry_block}:{exit_target}"
                 )],
                 source_span: operation.span,
             }]
@@ -510,17 +518,57 @@ fn terminators_from_operation(
     }
 }
 
-fn loop_entry_index(modeled_ops: &[&ScenarioOp], loop_index: usize) -> usize {
+fn legacy_loop_entry_index(modeled_ops: &[&ScenarioOp], loop_index: usize) -> usize {
     modeled_ops[..loop_index]
         .iter()
         .rposition(|operation| {
             matches!(
                 operation.kind,
-                ScenarioOpKind::LoopStart | ScenarioOpKind::Loop
+                ScenarioOpKind::LoopStart { .. } | ScenarioOpKind::Loop
             )
         })
         .map(|index| index + 1)
         .unwrap_or(0)
+}
+
+fn loop_entry_block_for_id(
+    modeled_ops: &[&ScenarioOp],
+    loop_index: usize,
+    loop_id: &str,
+) -> String {
+    let entry_index = modeled_ops[..loop_index]
+        .iter()
+        .rposition(|operation| match &operation.kind {
+            ScenarioOpKind::LoopStart {
+                loop_id: candidate, ..
+            } => candidate == loop_id,
+            _ => false,
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    format!("bb{entry_index}")
+}
+
+fn core_successor_target(edge: &str) -> Option<String> {
+    if let Some(target) = edge.strip_prefix("goto:") {
+        return Some(target.to_owned());
+    }
+    if let Some(payload) = edge.strip_prefix("loop_back:") {
+        return payload
+            .rsplit_once(':')
+            .map(|(_, target)| target.to_owned());
+    }
+    if let Some(payload) = edge.strip_prefix("loop_continue:") {
+        return payload
+            .rsplit_once(':')
+            .map(|(_, target)| target.to_owned());
+    }
+    if let Some(payload) = edge.strip_prefix("loop_exit:") {
+        return payload
+            .rsplit_once(':')
+            .map(|(_, target)| target.to_owned());
+    }
+    None
 }
 
 fn select_branch_edges(

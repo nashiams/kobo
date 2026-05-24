@@ -304,13 +304,13 @@ fn core_successor_target(target: &str) -> String {
     let Some(payload) = target.strip_prefix("loop_exit:") else {
         return target.to_owned();
     };
-    let mut parts = payload.splitn(3, ':');
-    let kind = parts.next().unwrap_or("break");
-    let _entry_block = parts.next();
-    parts
-        .next()
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("{kind}_exit"))
+    let parts = payload.split(':').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [_, _, _, exit_target] => (*exit_target).to_owned(),
+        [_, _, exit_target] => (*exit_target).to_owned(),
+        [kind, ..] => format!("{kind}_exit"),
+        [] => "break_exit".to_owned(),
+    }
 }
 
 fn format_env(env: &ObligationEnv) -> String {

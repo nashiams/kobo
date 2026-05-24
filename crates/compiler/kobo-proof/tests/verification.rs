@@ -41,6 +41,10 @@ fn valid_certificate() -> ProofCertificate {
         from: "bb0".to_owned(),
         to: "bb1".to_owned(),
         kind: "goto".to_owned(),
+        loop_id: None,
+        loop_label: None,
+        loop_edge_kind: None,
+        loop_entry_block: None,
         source_span: span(),
     }];
     let template_schema = TemplateSchemaEvidence {

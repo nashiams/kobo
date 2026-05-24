@@ -79,12 +79,20 @@ pub enum ScenarioOpKind {
         policy: Option<ScenarioBoundaryPolicy>,
         edges: Vec<String>,
     },
-    LoopStart,
+    LoopStart {
+        loop_id: String,
+        label: Option<String>,
+    },
     LoopBackEdge {
+        loop_id: String,
         can_exit: bool,
     },
-    LoopContinue,
-    LoopBreak,
+    LoopContinue {
+        loop_id: String,
+    },
+    LoopBreak {
+        loop_id: String,
+    },
     Loop,
     Return,
 }

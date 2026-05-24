@@ -1962,10 +1962,10 @@ fn terminal_failure_events(
             | ScenarioOpKind::UncontrolledEffect { .. }
             | ScenarioOpKind::ExternalBoundary { .. }
             | ScenarioOpKind::CoreTerminator { .. }
-            | ScenarioOpKind::LoopStart
+            | ScenarioOpKind::LoopStart { .. }
             | ScenarioOpKind::LoopBackEdge { .. }
-            | ScenarioOpKind::LoopContinue
-            | ScenarioOpKind::LoopBreak
+            | ScenarioOpKind::LoopContinue { .. }
+            | ScenarioOpKind::LoopBreak { .. }
             | ScenarioOpKind::Loop => {}
             ScenarioOpKind::MoveBinding { .. } | ScenarioOpKind::Return => {}
         }

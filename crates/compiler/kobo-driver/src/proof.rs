@@ -60,13 +60,46 @@ struct BoundedHistoryExploration {
     is_complete: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParsedLoopEdgeKind {
+    BackEdge,
+    Continue,
+    Break,
+    Condition,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedCoreEdge {
+    target: String,
+    loop_id: Option<String>,
+    loop_edge_kind: Option<ParsedLoopEdgeKind>,
+    loop_entry_block: Option<String>,
+}
+
+impl ParsedLoopEdgeKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::BackEdge => "back_edge",
+            Self::Continue => "continue",
+            Self::Break => "break",
+            Self::Condition => "condition",
+        }
+    }
+}
+
 pub fn emit_proof_certificate(
     input: ProofEmissionInput<'_>,
 ) -> Result<ProofCertificate, ProofEmissionError> {
     let source_path = input.source_path.display().to_string();
     let core_program = lower_core_program(input.program);
     let cfg_nodes = core_cfg_nodes(&source_path, input.source, &core_program.functions);
-    let cfg_edges = core_cfg_edges(&source_path, input.source, &core_program.functions);
+    let loop_labels = loop_labels_by_id(input.program);
+    let cfg_edges = core_cfg_edges(
+        &source_path,
+        input.source,
+        &core_program.functions,
+        &loop_labels,
+    );
     let loop_facts = core_loop_facts(&cfg_edges);
     let loop_exit_facts = core_loop_exit_facts(&cfg_edges);
     let (template_hashes, template_schemas) =
@@ -196,11 +229,19 @@ pub fn emit_proof_certificate(
 fn core_loop_facts(edges: &[CoreCfgEdge]) -> Vec<CoreLoopBackEdgeFact> {
     edges
         .iter()
-        .filter(|edge| is_back_edge(edge))
+        .filter(|edge| is_loop_back_edge(edge))
         .map(|edge| CoreLoopBackEdgeFact {
-            id: format!("loop-{}-{}-{}", edge.function, edge.from, edge.to),
+            id: format!("loop-{}-{}", edge.function, edge.id),
             function: edge.function.clone(),
-            entry_block: edge.to.clone(),
+            loop_id: edge
+                .loop_id
+                .clone()
+                .unwrap_or_else(|| format!("legacy-{}-{}", edge.function, edge.to)),
+            loop_label: edge.loop_label.clone(),
+            entry_block: edge
+                .loop_entry_block
+                .clone()
+                .unwrap_or_else(|| edge.to.clone()),
             back_edge_source: edge.from.clone(),
             back_edge_target: edge.to.clone(),
             source_span: edge.source_span.clone(),
@@ -212,32 +253,43 @@ fn core_loop_exit_facts(edges: &[CoreCfgEdge]) -> Vec<CoreLoopExitFact> {
     edges
         .iter()
         .filter_map(|edge| {
-            let (exit_target, entry_block) = loop_exit_target(&edge.to)?;
+            let exit_kind = loop_exit_kind(edge)?;
+            let entry_block = edge.loop_entry_block.clone()?;
             Some(CoreLoopExitFact {
-                id: format!("loop-exit-{}-{}-{}", edge.function, edge.from, entry_block),
+                id: format!("loop-exit-{}-{}", edge.function, edge.id),
                 function: edge.function.clone(),
+                loop_id: edge
+                    .loop_id
+                    .clone()
+                    .unwrap_or_else(|| format!("legacy-{}-{entry_block}", edge.function)),
+                loop_label: edge.loop_label.clone(),
                 entry_block,
                 exit_source: edge.from.clone(),
-                exit_target,
+                exit_kind: exit_kind.to_owned(),
+                exit_target: edge.to.clone(),
                 source_span: edge.source_span.clone(),
             })
         })
         .collect()
 }
 
-fn loop_exit_target(target: &str) -> Option<(String, String)> {
-    let payload = target.strip_prefix("loop_exit:")?;
-    let mut parts = payload.splitn(3, ':');
-    let kind = parts.next()?;
-    let entry_block = parts.next()?.to_owned();
-    let exit_target = parts
-        .next()
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("{kind}_exit"));
-    Some((exit_target, entry_block))
+fn is_loop_back_edge(edge: &CoreCfgEdge) -> bool {
+    match edge.loop_edge_kind.as_deref() {
+        Some("back_edge" | "continue") => true,
+        Some(_) => false,
+        None => is_legacy_back_edge(edge),
+    }
 }
 
-fn is_back_edge(edge: &CoreCfgEdge) -> bool {
+fn loop_exit_kind(edge: &CoreCfgEdge) -> Option<&'static str> {
+    match edge.loop_edge_kind.as_deref() {
+        Some("break") => Some("break"),
+        Some("condition") => Some("condition"),
+        _ => None,
+    }
+}
+
+fn is_legacy_back_edge(edge: &CoreCfgEdge) -> bool {
     let Some(source_index) = block_index(&edge.from) else {
         return false;
     };
@@ -1170,7 +1222,12 @@ fn core_cfg_nodes(source_path: &str, source: &str, functions: &[CoreFunction]) -
         .collect()
 }
 
-fn core_cfg_edges(source_path: &str, source: &str, functions: &[CoreFunction]) -> Vec<CoreCfgEdge> {
+fn core_cfg_edges(
+    source_path: &str,
+    source: &str,
+    functions: &[CoreFunction],
+    loop_labels: &BTreeMap<String, Option<String>>,
+) -> Vec<CoreCfgEdge> {
     functions
         .iter()
         .flat_map(|function| {
@@ -1180,28 +1237,132 @@ fn core_cfg_edges(source_path: &str, source: &str, functions: &[CoreFunction]) -
                         .edges
                         .iter()
                         .enumerate()
-                        .map(move |(edge_index, edge)| CoreCfgEdge {
-                            id: format!(
-                                "{}:{}:{}:{edge_index}",
-                                function.name, block.id, terminator.id
-                            ),
-                            function: function.name.clone(),
-                            from: block.id.clone(),
-                            to: edge
-                                .strip_prefix("goto:")
-                                .unwrap_or(edge.as_str())
-                                .to_owned(),
-                            kind: terminator.kind.as_str().to_owned(),
-                            source_span: source_span_from_kobo(
-                                source_path,
-                                source,
-                                terminator.source_span,
-                            ),
+                        .map(move |(edge_index, edge)| {
+                            let parsed_edge = parse_core_edge(edge);
+                            let loop_label = parsed_edge
+                                .loop_id
+                                .as_deref()
+                                .and_then(|loop_id| loop_labels.get(loop_id))
+                                .cloned()
+                                .flatten();
+                            CoreCfgEdge {
+                                id: format!(
+                                    "{}:{}:{}:{edge_index}",
+                                    function.name, block.id, terminator.id
+                                ),
+                                function: function.name.clone(),
+                                from: block.id.clone(),
+                                to: parsed_edge.target,
+                                kind: terminator.kind.as_str().to_owned(),
+                                loop_id: parsed_edge.loop_id,
+                                loop_label,
+                                loop_edge_kind: parsed_edge
+                                    .loop_edge_kind
+                                    .map(|kind| kind.as_str().to_owned()),
+                                loop_entry_block: parsed_edge.loop_entry_block,
+                                source_span: source_span_from_kobo(
+                                    source_path,
+                                    source,
+                                    terminator.source_span,
+                                ),
+                            }
                         })
                 })
             })
         })
         .collect()
+}
+
+fn loop_labels_by_id(program: &ScenarioProgram) -> BTreeMap<String, Option<String>> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::LoopStart { loop_id, label } => Some((loop_id.clone(), label.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn parse_core_edge(edge: &str) -> ParsedCoreEdge {
+    if let Some(target) = edge.strip_prefix("goto:") {
+        return ParsedCoreEdge::plain(target);
+    }
+    if let Some(payload) = edge.strip_prefix("loop_back:") {
+        return parse_loop_target_edge(payload, ParsedLoopEdgeKind::BackEdge, edge);
+    }
+    if let Some(payload) = edge.strip_prefix("loop_continue:") {
+        return parse_loop_target_edge(payload, ParsedLoopEdgeKind::Continue, edge);
+    }
+    if let Some(payload) = edge.strip_prefix("loop_exit:") {
+        return parse_loop_exit_edge(payload, edge);
+    }
+    ParsedCoreEdge::plain(edge)
+}
+
+fn parse_loop_target_edge(
+    payload: &str,
+    kind: ParsedLoopEdgeKind,
+    fallback: &str,
+) -> ParsedCoreEdge {
+    let Some((loop_id, target)) = payload.rsplit_once(':') else {
+        return ParsedCoreEdge::plain(fallback);
+    };
+    ParsedCoreEdge {
+        target: target.to_owned(),
+        loop_id: Some(loop_id.to_owned()),
+        loop_edge_kind: Some(kind),
+        loop_entry_block: Some(target.to_owned()),
+    }
+}
+
+fn parse_loop_exit_edge(payload: &str, fallback: &str) -> ParsedCoreEdge {
+    let parts = payload.splitn(4, ':').collect::<Vec<_>>();
+    if parts.len() == 4 {
+        let loop_edge_kind = parsed_exit_kind(parts[0]);
+        return ParsedCoreEdge {
+            target: parts[3].to_owned(),
+            loop_id: Some(parts[1].to_owned()),
+            loop_edge_kind,
+            loop_entry_block: Some(parts[2].to_owned()),
+        };
+    }
+    parse_legacy_loop_exit_edge(payload).unwrap_or_else(|| ParsedCoreEdge::plain(fallback))
+}
+
+fn parse_legacy_loop_exit_edge(payload: &str) -> Option<ParsedCoreEdge> {
+    let mut parts = payload.splitn(3, ':');
+    let kind = parts.next()?;
+    let entry_block = parts.next()?.to_owned();
+    let target = parts
+        .next()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{kind}_exit"));
+    Some(ParsedCoreEdge {
+        target,
+        loop_id: None,
+        loop_edge_kind: parsed_exit_kind(kind),
+        loop_entry_block: Some(entry_block),
+    })
+}
+
+fn parsed_exit_kind(kind: &str) -> Option<ParsedLoopEdgeKind> {
+    match kind {
+        "break" => Some(ParsedLoopEdgeKind::Break),
+        "condition" => Some(ParsedLoopEdgeKind::Condition),
+        _ => None,
+    }
+}
+
+impl ParsedCoreEdge {
+    fn plain(target: &str) -> Self {
+        Self {
+            target: target.to_owned(),
+            loop_id: None,
+            loop_edge_kind: None,
+            loop_entry_block: None,
+        }
+    }
 }
 
 fn block_span(block: &CoreBlock) -> KoboSpan {
@@ -2224,13 +2385,7 @@ fn block_successor_targets(block: &CoreBlock) -> Vec<String> {
 }
 
 fn core_successor_target(edge: &str) -> String {
-    if let Some(target) = edge.strip_prefix("goto:") {
-        return target.to_owned();
-    }
-    if let Some((target, _)) = loop_exit_target(edge) {
-        return target;
-    }
-    edge.to_owned()
+    parse_core_edge(edge).target
 }
 
 fn modeled_exit_target(target: &str) -> bool {

@@ -1,9 +1,11 @@
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, parse_certificate_json, stable_hash,
-    template_schema_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind,
-    ObligationState, ObligationStatus, ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan,
-    TemplateSchemaEvidence, VerificationContext, VerificationError,
+    certificate_material_hash, core_material_hash, normalized_bound_hash, parse_certificate_json,
+    stable_hash, template_schema_hash, verify_certificate, ArtifactKind, AsyncModelEvidence,
+    BoundDeclaration, BoundDimension, BoundSource, BoundedCompleteness, BoundedHistoryEvidence,
+    BoundedProofEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence,
+    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, ProofCertificate,
+    ReplayGrade, SourceEvidence, SourceSpan, TemplateSchemaEvidence, VerificationContext,
+    VerificationError,
 };
 use serde_json::Value;
 
@@ -162,6 +164,73 @@ fn certificate_with_single_event_kind(kind: ObligationEventKind) -> ProofCertifi
     }];
     rehash(&mut certificate);
     certificate
+}
+
+fn bounded_history(
+    id: &str,
+    scheduler: &str,
+    fault: &str,
+    cancellation: &str,
+) -> BoundedHistoryEvidence {
+    let material = format!("{id}:{scheduler}:{fault}:{cancellation}");
+    BoundedHistoryEvidence {
+        id: id.to_owned(),
+        scheduler: scheduler.to_owned(),
+        fault: fault.to_owned(),
+        cancellation: cancellation.to_owned(),
+        history_hash: stable_hash(&material),
+    }
+}
+
+fn complete_bounded_evidence() -> BoundedProofEvidence {
+    let mut evidence = BoundedProofEvidence {
+        id: "bounded-proof_case-0".to_owned(),
+        function: "proof_case".to_owned(),
+        loop_ids: Vec::new(),
+        bounds: vec![
+            BoundDeclaration {
+                dimension: BoundDimension::SchedulerHistories,
+                value: 4,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+            BoundDeclaration {
+                dimension: BoundDimension::LoopIterations,
+                value: 1,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+            BoundDeclaration {
+                dimension: BoundDimension::FaultInjectionChoices,
+                value: 2,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+            BoundDeclaration {
+                dimension: BoundDimension::CancellationPoints,
+                value: 1,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+        ],
+        normalized_bound_hash: String::new(),
+        enumerated_history_count: 4,
+        expected_complete_history_count: Some(4),
+        scheduler_dimensions: vec!["fifo".to_owned(), "round_robin".to_owned()],
+        fault_dimensions: vec!["none".to_owned(), "timeout".to_owned()],
+        cancellation_points: vec!["none".to_owned()],
+        canonical_histories: vec![
+            bounded_history("history-proof_case-0", "fifo", "none", "none"),
+            bounded_history("history-proof_case-1", "round_robin", "none", "none"),
+            bounded_history("history-proof_case-2", "fifo", "timeout", "none"),
+            bounded_history("history-proof_case-3", "round_robin", "timeout", "none"),
+        ],
+        pruned_histories: Vec::new(),
+        completeness: BoundedCompleteness::Complete,
+        wording: "bounded proof: all 4 histories explored under declared bounds".to_owned(),
+    };
+    evidence.normalized_bound_hash = normalized_bound_hash(&evidence);
+    evidence
 }
 
 fn context() -> VerificationContext {
@@ -644,34 +713,57 @@ fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
 
 #[test]
 fn incomplete_bounded_enumeration_cannot_claim_bounded_proof() {
-    let source = mutate_json(valid_certificate(), |value| {
-        value["bounded_evidence"] = serde_json::json!([{
-            "id": "bounded-proof_case-0",
-            "function": "proof_case",
-            "bounds": [{
-                "dimension": "scheduler_histories",
-                "value": 384,
-                "source": "ward",
-                "proof_relevant": true
-            }],
-            "normalized_bound_hash": "bound-hash",
-            "enumerated_history_count": 128,
-            "expected_complete_history_count": 384,
-            "scheduler_dimensions": ["ready_queue_order"],
-            "fault_dimensions": ["timeout"],
-            "cancellation_points": ["await-recv"],
-            "pruned_histories": [],
-            "completeness": "sampled",
-            "wording": "bounded proof: all 128 histories explored under declared bounds"
-        }]);
-    });
-    let certificate = parse_certificate_json(&source).expect("v15 bounded fields should parse");
+    let mut certificate = valid_certificate();
+    let mut evidence = complete_bounded_evidence();
+    evidence.enumerated_history_count = 2;
+    evidence.canonical_histories.truncate(2);
+    evidence.completeness = BoundedCompleteness::Sampled;
+    evidence.wording = "bounded proof: all 2 histories explored under declared bounds".to_owned();
+    evidence.normalized_bound_hash = normalized_bound_hash(&evidence);
+    certificate.bounded_evidence = vec![evidence];
+    rehash(&mut certificate);
 
     let error = verify_certificate(&certificate, &context()).unwrap_err();
 
     assert!(matches!(
         error,
         VerificationError::IncompleteBoundedEnumeration { ref evidence_id, .. }
+            if evidence_id == "bounded-proof_case-0"
+    ));
+}
+
+#[test]
+fn bounded_evidence_rejects_forged_normalized_bound_hash() {
+    let mut certificate = valid_certificate();
+    certificate.bounded_evidence = vec![complete_bounded_evidence()];
+    certificate.bounded_evidence[0].normalized_bound_hash = "forged-bound-hash".to_owned();
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::BoundedEvidenceHashMismatch { ref evidence_id, .. }
+            if evidence_id == "bounded-proof_case-0"
+    ));
+}
+
+#[test]
+fn complete_bounded_evidence_rejects_missing_fault_bound() {
+    let mut certificate = valid_certificate();
+    let mut evidence = complete_bounded_evidence();
+    evidence
+        .bounds
+        .retain(|bound| bound.dimension != BoundDimension::FaultInjectionChoices);
+    evidence.normalized_bound_hash = normalized_bound_hash(&evidence);
+    certificate.bounded_evidence = vec![evidence];
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::MissingBoundedProofDimension { ref evidence_id }
             if evidence_id == "bounded-proof_case-0"
     ));
 }

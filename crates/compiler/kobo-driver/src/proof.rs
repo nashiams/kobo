@@ -8,20 +8,21 @@ use kobo_ir::{
     CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
-    trace_material_hash, AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundDeclaration,
-    BoundDimension, BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedCompleteness,
-    BoundedHistoryEvidence, BoundedProofEvidence, CancelEdgeEvidence, CandidateAdmissionEvidence,
-    CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact,
-    CoreTraceEvent, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
-    FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence, InvariantConfidence,
-    InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier,
-    LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
-    OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
-    SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
-    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
-    TranslationValidationEvidence, TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION,
-    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    certificate_material_hash, core_material_hash, normalized_bound_hash, stable_hash,
+    template_schema_hash, trace_material_hash, AdapterConfidence, AdapterEvidence,
+    AsyncModelEvidence, BoundDeclaration, BoundDimension, BoundSource, BoundaryAssumption,
+    BoundaryPolicy, BoundedCompleteness, BoundedHistoryEvidence, BoundedProofEvidence,
+    CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
+    CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreTraceEvent, CoverageLoss, FunctionSummary,
+    FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence,
+    InvariantConfidence, InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource,
+    InvariantTier, LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState,
+    ObligationStatus, OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence,
+    SelectPathEvidence, SourceEvidence, SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan,
+    SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateSchemaEvidence,
+    TimeoutCancelEdgeEvidence, TraceEventKind, TranslationValidationEvidence,
+    TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE,
+    PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -504,7 +505,7 @@ fn bounded_evidence_from_fields(
         &fault_dimensions,
         &cancellation_points,
     );
-    BoundedProofEvidence {
+    let mut evidence = BoundedProofEvidence {
         id: format!("bounded-{}", program.target),
         function: program.target.clone(),
         loop_ids: loop_facts
@@ -512,11 +513,7 @@ fn bounded_evidence_from_fields(
             .filter(|fact| fact.function == program.target)
             .map(|fact| fact.id.clone())
             .collect(),
-        normalized_bound_hash: stable_hash(&format!(
-            "{}:{}:{expected_complete_history_count:?}:{scheduler_dimensions:?}:{fault_dimensions:?}:{cancellation_points:?}",
-            program.target,
-            exploration.enumerated_history_count,
-        )),
+        normalized_bound_hash: String::new(),
         bounds,
         enumerated_history_count: exploration.enumerated_history_count,
         expected_complete_history_count,
@@ -527,7 +524,9 @@ fn bounded_evidence_from_fields(
         pruned_histories: exploration.pruned_histories,
         completeness,
         wording,
-    }
+    };
+    evidence.normalized_bound_hash = normalized_bound_hash(&evidence);
+    evidence
 }
 
 fn bounded_history_exploration(

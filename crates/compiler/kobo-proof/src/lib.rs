@@ -12,6 +12,7 @@ mod trace;
 mod translation;
 mod verify;
 
+pub use bounded::normalized_bound_hash;
 pub use certificate::{
     AdapterConfidence, AdapterEvidence, ArtifactKind, AsyncModelEvidence, BoundDeclaration,
     BoundDimension, BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedCompleteness,

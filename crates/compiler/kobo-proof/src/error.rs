@@ -99,6 +99,12 @@ pub enum VerificationError {
         expected: u64,
         observed: u64,
     },
+    #[error("bounded evidence {evidence_id} normalized bound hash mismatch: expected {expected}, observed {observed}")]
+    BoundedEvidenceHashMismatch {
+        evidence_id: String,
+        expected: String,
+        observed: String,
+    },
     #[error("translation validation is missing generated event for Core event {core_event_id}")]
     TranslationTraceMissingEvent { core_event_id: String },
     #[error("translation validation has extra generated event {generated_event_id}")]

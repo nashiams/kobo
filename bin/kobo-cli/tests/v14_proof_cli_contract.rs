@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use kobo_proof::{certificate_material_hash, ArtifactKind, ProofCertificate};
 use serde_json::Value;
 use v09_common::{
     assert_failure, assert_success, first_json, path_arg, run_kobo_with_timeout, s, CliOutput,
@@ -79,7 +80,7 @@ fn proof_emit_writes_kproof_with_required_schema() {
     let (_project, _source_file, artifact_path) = emit_project("v14-proof-emit", "proof_emit_case");
     let artifact = read_json(&artifact_path);
 
-    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(artifact["schema_version"], 2);
     assert_eq!(artifact["artifact_kind"], "kproof");
     assert_eq!(artifact["semantic_schema"], ".kproof");
     assert_eq!(artifact["claim_scope"], "modeled_core_obligation_flow_only");
@@ -124,6 +125,38 @@ fn proof_verify_rejects_tampered_artifact() {
     assert!(
         output.combined().contains("core hash"),
         "tamper rejection should name the failing check: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn proof_verify_rejects_artifact_kind_path_mismatch() {
+    let (project, _source_file, artifact_path) =
+        emit_project("v14-proof-verify-kind-mismatch", "proof_verify_kind_case");
+    let mut certificate: ProofCertificate =
+        serde_json::from_str(&fs::read_to_string(&artifact_path).expect("artifact should read"))
+            .expect("artifact should parse as certificate");
+    certificate.artifact_kind = ArtifactKind::KwitProofJson;
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("mismatched artifact should still hash");
+    fs::write(
+        &artifact_path,
+        serde_json::to_string_pretty(&certificate).unwrap(),
+    )
+    .expect("mismatched artifact should write");
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "proof verify should reject certificate artifact_kind that disagrees with the file path",
+    );
+    assert!(
+        output.combined().contains("artifact_kind"),
+        "artifact kind mismatch should name the header field: {}",
         output.combined()
     );
 }

@@ -33,6 +33,10 @@ pub(super) fn cmd_emit(
 
 pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
     let certificate = read_certificate(artifact)?;
+    if let Err(error) = verify_artifact_kind_matches_path(artifact, &certificate) {
+        emit_rejected(artifact, &error, json)?;
+        anyhow::bail!("{error}");
+    }
     let source = read_certificate_source(artifact, &certificate)?;
     match verify_certificate(
         &certificate,
@@ -49,6 +53,21 @@ pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
             anyhow::bail!("{error}")
         }
     }
+}
+
+fn verify_artifact_kind_matches_path(
+    artifact: &Path,
+    certificate: &ProofCertificate,
+) -> Result<(), VerificationError> {
+    let expected = artifact_kind_for_path(artifact);
+    if certificate.artifact_kind == expected {
+        return Ok(());
+    }
+    Err(VerificationError::UnsupportedCertificateHeader {
+        field: "artifact_kind".to_owned(),
+        expected: artifact_kind_name(&expected).to_owned(),
+        observed: artifact_kind_name(&certificate.artifact_kind).to_owned(),
+    })
 }
 
 pub(super) fn emit_check_proof(
@@ -208,5 +227,12 @@ fn artifact_kind_for_path(path: &Path) -> ArtifactKind {
         ArtifactKind::KwitProofJson
     } else {
         ArtifactKind::Kproof
+    }
+}
+
+fn artifact_kind_name(kind: &ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Kproof => "kproof",
+        ArtifactKind::KwitProofJson => "kwit.proof.json",
     }
 }

@@ -150,10 +150,10 @@ pub struct AcknowledgedDebtRecord {
 /// Complete ownership cost report for a compiled source tree.
 ///
 /// Built from frozen KIR by `kobo-debt::build_debt_report()`.
-/// The JSON schema is stable from v0.4 forward; `schema_version = 1`.
+/// The ownership debt JSON schema uses `schema_version = 1`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DebtReport {
-    /// Always `1` in v0.4. Bump on breaking JSON schema changes. (Trap 18)
+    /// Always `1`. Bump on breaking JSON schema changes. (Trap 18)
     pub schema_version: u32,
     pub file_count: usize,
     pub line_count: usize,

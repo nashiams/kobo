@@ -6,6 +6,12 @@ pub enum VerificationError {
     SourceHashMismatch { expected: String, observed: String },
     #[error("core hash mismatch: expected {expected}, observed {observed}")]
     CoreHashMismatch { expected: String, observed: String },
+    #[error("unsupported certificate header {field}: expected {expected}, observed {observed}")]
+    UnsupportedCertificateHeader {
+        field: String,
+        expected: String,
+        observed: String,
+    },
     #[error("missing cancel edge for suspension block {block}")]
     MissingCancelEdge { block: String },
     #[error("missing async cancel evidence for suspension block {block}")]

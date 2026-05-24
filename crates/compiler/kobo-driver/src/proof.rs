@@ -14,7 +14,8 @@ use kobo_proof::{
     FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
     ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence,
     SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence,
-    TemplateSchemaEvidence, TimeoutCancelEdgeEvidence,
+    TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, PROOF_CERTIFICATE_SCHEMA_VERSION,
+    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -83,11 +84,11 @@ pub fn emit_proof_certificate(
     let coverage_loss = coverage_loss(input.program);
 
     let mut certificate = ProofCertificate {
-        schema_version: 2,
-        proof_target_version: "kobo-core-obligation-flow-1".to_owned(),
-        semantic_schema: ".kproof".to_owned(),
+        schema_version: PROOF_CERTIFICATE_SCHEMA_VERSION,
+        proof_target_version: PROOF_TARGET_VERSION.to_owned(),
+        semantic_schema: PROOF_SEMANTIC_SCHEMA.to_owned(),
         artifact_kind: input.artifact_kind,
-        claim_scope: "modeled_core_obligation_flow_only".to_owned(),
+        claim_scope: PROOF_CLAIM_SCOPE.to_owned(),
         compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
         source: SourceEvidence {
             path: source_path,

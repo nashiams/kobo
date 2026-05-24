@@ -16,6 +16,8 @@ pub use certificate::{
     ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate,
     ReplayGrade, SelectPathEvidence, SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence,
     SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence,
+    PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
+    PROOF_TARGET_VERSION,
 };
 pub use error::VerificationError;
 pub use hash::{certificate_material_hash, core_material_hash, stable_hash, template_schema_hash};

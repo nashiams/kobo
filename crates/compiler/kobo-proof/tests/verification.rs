@@ -139,8 +139,12 @@ fn context() -> VerificationContext {
     }
 }
 
+fn rehash(certificate: &mut ProofCertificate) {
+    certificate.certificate_material_hash = certificate_material_hash(certificate).unwrap();
+}
+
 fn mutate_json(mut certificate: ProofCertificate, mutate: impl FnOnce(&mut Value)) -> String {
-    certificate.certificate_material_hash = certificate_material_hash(&certificate).unwrap();
+    rehash(&mut certificate);
     let mut value = serde_json::to_value(certificate).unwrap();
     mutate(&mut value);
     serde_json::to_string(&value).unwrap()
@@ -176,6 +180,36 @@ fn core_hash_mismatch_rejected() {
 }
 
 #[test]
+fn unsupported_certificate_schema_rejected_before_hash_replay() {
+    let mut certificate = valid_certificate();
+    certificate.schema_version = 99;
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateHeader { ref field, .. }
+            if field == "schema_version"
+    ));
+}
+
+#[test]
+fn unsupported_claim_scope_rejected_even_with_matching_material_hash() {
+    let mut certificate = valid_certificate();
+    certificate.claim_scope = "whole_program_total_correctness".to_owned();
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateHeader { ref field, .. }
+            if field == "claim_scope"
+    ));
+}
+
+#[test]
 fn unknown_event_kind_rejected() {
     let source = mutate_json(valid_certificate(), |value| {
         value["obligation_events"][0]["kind"] = Value::String("teleport".to_owned());
@@ -184,6 +218,24 @@ fn unknown_event_kind_rejected() {
     let error = parse_certificate_json(&source).unwrap_err();
 
     assert!(matches!(error, VerificationError::UnknownEventKind { .. }));
+}
+
+#[test]
+fn missing_template_schema_fields_are_rejected() {
+    let source = mutate_json(valid_certificate(), |value| {
+        let template = value["template_schemas"][0]
+            .as_object_mut()
+            .expect("template schema entry should be an object");
+        template.remove("template_schema");
+        template.remove("schema_version");
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(
+        error.to_string().contains("missing field"),
+        "missing public schema fields should not be silently defaulted: {error}"
+    );
 }
 
 #[test]

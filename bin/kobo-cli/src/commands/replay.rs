@@ -631,43 +631,49 @@ fn backend_version_json(backend: &str) -> Value {
 }
 
 fn checkpoint_replay_json(enabled: bool, run: &kobo_sim_core::FullDepthRun) -> Value {
+    let checkpoint_path = run
+        .harness_manifest
+        .as_ref()
+        .and_then(|manifest| manifest.checkpoint_path.as_deref());
+    let checkpoint_artifact_hash = run
+        .harness_manifest
+        .as_ref()
+        .and_then(|manifest| manifest.checkpoint_artifact_hash.as_deref());
+    let artifact_validated =
+        enabled && checkpoint_path.is_some() && checkpoint_artifact_hash.is_some();
     serde_json::json!({
-        "enabled": enabled,
-        "semantic_trace_hash": if enabled {
+        "enabled": artifact_validated,
+        "semantic_trace_hash": if artifact_validated {
             Some(run.digest.semantic_trace_hash.as_str())
         } else {
             None
         },
-        "harness_trace_hash": if enabled {
+        "harness_trace_hash": if artifact_validated {
             Some(run.digest.harness_trace_hash.as_str())
         } else {
             None
         },
-        "event_count": if enabled {
+        "event_count": if artifact_validated {
             Some(run.events.len())
         } else {
             None
         },
-        "checkpoint_path": if enabled {
-            run.harness_manifest
-                .as_ref()
-                .and_then(|manifest| manifest.checkpoint_path.as_deref())
+        "checkpoint_path": if artifact_validated {
+            checkpoint_path
         } else {
             None
         },
-        "checkpoint_artifact_hash": if enabled {
-            run.harness_manifest
-                .as_ref()
-                .and_then(|manifest| manifest.checkpoint_artifact_hash.as_deref())
+        "checkpoint_artifact_hash": if artifact_validated {
+            checkpoint_artifact_hash
         } else {
             None
         },
-        "artifact_validation": if enabled {
+        "artifact_validation": if artifact_validated {
             Some("loom-checkpoint-hash")
         } else {
             None
         },
-        "source": if enabled {
+        "source": if artifact_validated {
             Some("loom-builder-checkpoint")
         } else {
             None

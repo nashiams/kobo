@@ -1215,6 +1215,66 @@ fn configured_checkpoint_route() {
 }
 
 #[test]
+fn semantic_engine_does_not_claim_checkpoint_artifact_validation() {
+    let project = TestProject::new("v10-semantic-checkpoint-no-artifact-claim");
+    project.write(
+        "Kobo.toml",
+        r#"[sim.backend.loom]
+enabled = true
+checkpoint_replay = true
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn semantic_checkpoint_route() {
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--engine"),
+            s("semantic"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "semantic-only checkpoint config should still run without claiming a Loom artifact",
+    );
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    assert_eq!(
+        witness["checkpoint_replay"]["enabled"], false,
+        "semantic-only execution should not claim checkpoint replay without a Loom artifact: {witness}"
+    );
+    assert_eq!(
+        witness["checkpoint_replay"]["artifact_validation"],
+        Value::Null
+    );
+    assert_eq!(witness["checkpoint_replay"]["checkpoint_path"], Value::Null);
+    assert_eq!(
+        witness["execution_digest"]["harness_engine"], "none",
+        "test fixture should exercise the semantic-only path"
+    );
+}
+
+#[test]
 fn sim_config_default_profile_runs_without_cli_sim_flag() {
     let project = TestProject::new("v10-sim-default-profile");
     project.write(

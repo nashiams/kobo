@@ -14,7 +14,7 @@ pub mod storage;
 
 pub use bounded::{
     bounded_history_material, enumerate_bounded_histories, explore_bounded_histories,
-    BoundedExploration, BoundedHistory,
+    BoundedExploration, BoundedHistory, BoundedStateDimensions,
 };
 pub use core::{
     run_compiler_semantics, run_full_depth, run_full_depth_from_program,

@@ -399,6 +399,16 @@ pub struct BoundedHistoryEvidence {
     pub scheduler: String,
     pub fault: String,
     pub cancellation: String,
+    #[serde(default)]
+    pub queue_capacity: u64,
+    #[serde(default)]
+    pub message_count: u64,
+    #[serde(default)]
+    pub retry_attempts: u64,
+    #[serde(default)]
+    pub timeout_path: u64,
+    #[serde(default)]
+    pub external_boundary_recording: u64,
     pub history_hash: String,
 }
 

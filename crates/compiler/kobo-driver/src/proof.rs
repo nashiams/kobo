@@ -127,12 +127,6 @@ impl RequiredBoundDimensions {
             && self.external_boundary_recordings.is_some()
     }
 
-    fn has_single_path_state_dimensions(&self) -> bool {
-        self.required_values()
-            .into_iter()
-            .all(|value| value.is_some_and(|value| value <= 1))
-    }
-
     fn push_declarations(&self, bounds: &mut Vec<BoundDeclaration>) {
         push_bound_if_declared(bounds, BoundDimension::QueueCapacity, self.queue_capacity);
         push_bound_if_declared(bounds, BoundDimension::MessageCount, self.message_count);
@@ -145,14 +139,14 @@ impl RequiredBoundDimensions {
         );
     }
 
-    fn required_values(&self) -> [Option<u64>; 5] {
-        [
+    fn state_dimensions(&self) -> kobo_sim_core::BoundedStateDimensions {
+        kobo_sim_core::BoundedStateDimensions::from_bounds(
             self.queue_capacity,
             self.message_count,
             self.retry_attempts,
             self.timeout_paths,
             self.external_boundary_recordings,
-        ]
+        )
     }
 }
 
@@ -651,6 +645,7 @@ fn bounded_evidence_from_fields(
         &scheduler_dimensions,
         &fault_dimensions,
         &cancellation_points,
+        &required_dimensions,
     );
     let expected_complete_history_count = Some(exploration.expected_complete_history_count);
     let declared_expected = numeric_field(fields, "expected");
@@ -716,6 +711,7 @@ fn bounded_history_exploration(
     scheduler_dimensions: &[String],
     fault_dimensions: &[String],
     cancellation_points: &[String],
+    required_dimensions: &RequiredBoundDimensions,
 ) -> BoundedHistoryExploration {
     let sim_exploration = kobo_sim_core::explore_bounded_histories(
         function,
@@ -723,6 +719,7 @@ fn bounded_history_exploration(
         scheduler_dimensions,
         fault_dimensions,
         cancellation_points,
+        &required_dimensions.state_dimensions(),
     );
     let mut histories = sim_exploration.histories;
     let original_history_count = histories.len() as u64;
@@ -765,6 +762,11 @@ fn canonical_histories(
             scheduler: history.scheduler,
             fault: history.fault,
             cancellation: history.cancellation,
+            queue_capacity: history.queue_capacity,
+            message_count: history.message_count,
+            retry_attempts: history.retry_attempts,
+            timeout_path: history.timeout_path,
+            external_boundary_recording: history.external_boundary_recording,
             history_hash: history.history_hash,
         })
         .collect()
@@ -792,7 +794,6 @@ fn effective_bounded_completeness(
         || cancellation_points.is_empty()
         || loop_iteration_bound != 1
         || !required_dimensions.has_all_required_dimensions()
-        || !required_dimensions.has_single_path_state_dimensions()
     {
         return BoundedCompleteness::Incomplete;
     }

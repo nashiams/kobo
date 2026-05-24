@@ -85,7 +85,10 @@ fn verify_bound_declarations(evidence: &BoundedProofEvidence) -> Result<(), Veri
     let expected = evidence
         .expected_complete_history_count
         .unwrap_or(evidence.enumerated_history_count);
-    if has_complete_product_bounds(evidence, expected) && has_required_state_bounds(evidence) {
+    if has_complete_product_bounds(evidence, expected)
+        && has_required_state_bounds(evidence)
+        && expected == declared_history_product(evidence)
+    {
         return Ok(());
     }
     Err(VerificationError::MissingBoundedProofDimension {
@@ -100,7 +103,6 @@ fn verify_complete_dimensions(evidence: &BoundedProofEvidence) -> Result<(), Ver
     if !evidence.scheduler_dimensions.is_empty()
         && !evidence.fault_dimensions.is_empty()
         && !evidence.cancellation_points.is_empty()
-        && has_single_path_state_bounds(evidence)
         && evidence.pruned_histories.is_empty()
     {
         return Ok(());
@@ -208,12 +210,6 @@ fn has_required_state_bounds(evidence: &BoundedProofEvidence) -> bool {
         .all(|dimension| bound_value(&evidence.bounds, dimension).is_some())
 }
 
-fn has_single_path_state_bounds(evidence: &BoundedProofEvidence) -> bool {
-    required_state_dimensions()
-        .into_iter()
-        .all(|dimension| bound_value(&evidence.bounds, dimension).is_some_and(|value| value <= 1))
-}
-
 fn required_state_dimensions() -> [BoundDimension; 5] {
     [
         BoundDimension::QueueCapacity,
@@ -231,15 +227,47 @@ fn bound_value(bounds: &[BoundDeclaration], dimension: BoundDimension) -> Option
         .map(|bound| bound.value)
 }
 
+fn declared_history_product(evidence: &BoundedProofEvidence) -> u64 {
+    let scheduler = evidence.scheduler_dimensions.len() as u64;
+    let fault = evidence.fault_dimensions.len() as u64;
+    let cancellation = evidence.cancellation_points.len() as u64;
+    let state = required_state_dimensions()
+        .into_iter()
+        .filter_map(|dimension| bound_value(&evidence.bounds, dimension))
+        .map(numeric_bound_cardinality)
+        .fold(1_u64, u64::saturating_mul);
+    scheduler
+        .saturating_mul(fault)
+        .saturating_mul(cancellation)
+        .saturating_mul(state)
+}
+
+const fn numeric_bound_cardinality(value: u64) -> u64 {
+    if value == 0 {
+        1
+    } else {
+        value
+    }
+}
+
 fn verify_history_hashes(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {
     let mut ids = BTreeSet::new();
+    let mut dimension_keys = BTreeSet::new();
     for history in &evidence.canonical_histories {
-        let material = format!(
-            "{}:{}:{}:{}",
-            history.id, history.scheduler, history.fault, history.cancellation
-        );
+        if !history_dimensions_match_bounds(evidence, history) {
+            return Err(VerificationError::IncompleteBoundedEnumeration {
+                evidence_id: evidence.id.clone(),
+                completeness: evidence.completeness.as_str().to_owned(),
+                wording: evidence.wording.clone(),
+            });
+        }
+        let material = history_material(history);
+        let dimension_key = history_dimension_key(history);
         let expected = stable_hash(&material);
-        if history.history_hash != expected || !ids.insert(history.id.as_str()) {
+        if history.history_hash != expected
+            || !ids.insert(history.id.as_str())
+            || !dimension_keys.insert(dimension_key)
+        {
             return Err(VerificationError::IncompleteBoundedEnumeration {
                 evidence_id: evidence.id.clone(),
                 completeness: evidence.completeness.as_str().to_owned(),
@@ -248,6 +276,81 @@ fn verify_history_hashes(evidence: &BoundedProofEvidence) -> Result<(), Verifica
         }
     }
     Ok(())
+}
+
+fn history_dimensions_match_bounds(
+    evidence: &BoundedProofEvidence,
+    history: &crate::BoundedHistoryEvidence,
+) -> bool {
+    evidence
+        .scheduler_dimensions
+        .iter()
+        .any(|dimension| dimension == &history.scheduler)
+        && evidence
+            .fault_dimensions
+            .iter()
+            .any(|dimension| dimension == &history.fault)
+        && evidence
+            .cancellation_points
+            .iter()
+            .any(|dimension| dimension == &history.cancellation)
+        && numeric_history_value_matches_bound(
+            history.queue_capacity,
+            bound_value(&evidence.bounds, BoundDimension::QueueCapacity),
+        )
+        && numeric_history_value_matches_bound(
+            history.message_count,
+            bound_value(&evidence.bounds, BoundDimension::MessageCount),
+        )
+        && numeric_history_value_matches_bound(
+            history.retry_attempts,
+            bound_value(&evidence.bounds, BoundDimension::RetryAttempts),
+        )
+        && numeric_history_value_matches_bound(
+            history.timeout_path,
+            bound_value(&evidence.bounds, BoundDimension::TimeoutPaths),
+        )
+        && numeric_history_value_matches_bound(
+            history.external_boundary_recording,
+            bound_value(&evidence.bounds, BoundDimension::ExternalBoundaryRecordings),
+        )
+}
+
+const fn numeric_history_value_matches_bound(value: u64, bound: Option<u64>) -> bool {
+    match bound {
+        Some(0) => value == 0,
+        Some(bound) => value >= 1 && value <= bound,
+        None => false,
+    }
+}
+
+fn history_material(history: &crate::BoundedHistoryEvidence) -> String {
+    format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        history.id,
+        history.scheduler,
+        history.fault,
+        history.cancellation,
+        history.queue_capacity,
+        history.message_count,
+        history.retry_attempts,
+        history.timeout_path,
+        history.external_boundary_recording,
+    )
+}
+
+fn history_dimension_key(history: &crate::BoundedHistoryEvidence) -> String {
+    format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}",
+        history.scheduler,
+        history.fault,
+        history.cancellation,
+        history.queue_capacity,
+        history.message_count,
+        history.retry_attempts,
+        history.timeout_path,
+        history.external_boundary_recording,
+    )
 }
 
 fn normalized_bound_material(evidence: &BoundedProofEvidence) -> String {

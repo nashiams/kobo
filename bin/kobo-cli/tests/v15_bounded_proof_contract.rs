@@ -136,6 +136,55 @@ fn complete_finite_state_space_emits_bounded_proof_wording() {
 }
 
 #[test]
+fn complete_finite_state_space_enumerates_all_proof_relevant_dimensions() {
+    let project = TestProject::new("v15-bounded-all-dimensions");
+    let source = r#"
+#[kobo::bounded(histories = "32", expected = "32", completeness = "complete", scheduler = "fifo|round_robin", fault = "none", cancellation = "none", queue_capacity = "2", message_count = "2", retry_attempts = "2", timeout_paths = "2", external_boundary_recordings = "1")]
+#[kobo::scenario(profile = "sync")]
+fn bounded_all_dimensions_case() {
+    let _unit = ();
+}
+"#;
+    let artifact_path = emit_artifact(&project, source, "bounded_all_dimensions_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
+    assert_eq!(
+        artifact["bounded_evidence"][0]["expected_complete_history_count"],
+        32
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["enumerated_history_count"],
+        32
+    );
+    let histories = artifact["bounded_evidence"][0]["canonical_histories"]
+        .as_array()
+        .expect("complete bounded evidence should record histories");
+    let combinations = histories
+        .iter()
+        .map(|history| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                history["queue_capacity"],
+                history["message_count"],
+                history["retry_attempts"],
+                history["timeout_path"],
+                history["external_boundary_recording"]
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        combinations.len(),
+        16,
+        "canonical histories must vary every finite state dimension: {artifact}"
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["wording"],
+        "bounded proof: all 32 histories explored under declared bounds"
+    );
+}
+
+#[test]
 fn sampled_histories_emit_evidence_only_wording() {
     let project = TestProject::new("v15-bounded-sampled");
     let artifact_path = emit_artifact(
@@ -442,6 +491,11 @@ fn complete_bounded_evidence_records_canonical_histories() {
                 && history["cancellation"]
                     .as_str()
                     .is_some_and(|id| !id.is_empty())
+                && history["queue_capacity"].as_u64().is_some()
+                && history["message_count"].as_u64().is_some()
+                && history["retry_attempts"].as_u64().is_some()
+                && history["timeout_path"].as_u64().is_some()
+                && history["external_boundary_recording"].as_u64().is_some()
                 && history["history_hash"]
                     .as_str()
                     .is_some_and(|hash| !hash.is_empty())

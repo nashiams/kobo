@@ -181,12 +181,24 @@ fn bounded_history(
     fault: &str,
     cancellation: &str,
 ) -> BoundedHistoryEvidence {
-    let material = format!("{id}:{scheduler}:{fault}:{cancellation}");
+    let queue_capacity = 1;
+    let message_count = 1;
+    let retry_attempts = 1;
+    let timeout_path = 1;
+    let external_boundary_recording = 0;
+    let material = format!(
+        "{id}:{scheduler}:{fault}:{cancellation}:{queue_capacity}:{message_count}:{retry_attempts}:{timeout_path}:{external_boundary_recording}"
+    );
     BoundedHistoryEvidence {
         id: id.to_owned(),
         scheduler: scheduler.to_owned(),
         fault: fault.to_owned(),
         cancellation: cancellation.to_owned(),
+        queue_capacity,
+        message_count,
+        retry_attempts,
+        timeout_path,
+        external_boundary_recording,
         history_hash: stable_hash(&material),
     }
 }

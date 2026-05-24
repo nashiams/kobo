@@ -472,6 +472,7 @@ fn verify_core_hash(certificate: &ProofCertificate) -> Result<(), VerificationEr
         &certificate.core.cfg_nodes,
         &certificate.core.cfg_edges,
         &certificate.core.loop_facts,
+        &certificate.core.loop_exit_facts,
         &certificate.core.async_model,
     )
     .map_err(|error| VerificationError::Parse {

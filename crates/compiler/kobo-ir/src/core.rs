@@ -245,7 +245,7 @@ fn uses_scenario_control_successors(kind: &ScenarioOpKind) -> bool {
         kind,
         ScenarioOpKind::LoopStart
             | ScenarioOpKind::Loop
-            | ScenarioOpKind::LoopBackEdge
+            | ScenarioOpKind::LoopBackEdge { .. }
             | ScenarioOpKind::LoopContinue
             | ScenarioOpKind::LoopBreak
     )
@@ -404,7 +404,7 @@ fn statement_from_operation(index: usize, operation: &ScenarioOp) -> Option<Core
         | ScenarioOpKind::RawNondeterminism { .. }
         | ScenarioOpKind::UncontrolledEffect { .. }
         | ScenarioOpKind::LoopStart
-        | ScenarioOpKind::LoopBackEdge
+        | ScenarioOpKind::LoopBackEdge { .. }
         | ScenarioOpKind::LoopContinue
         | ScenarioOpKind::LoopBreak
         | ScenarioOpKind::Loop
@@ -469,7 +469,23 @@ fn terminators_from_operation(
                 source_span: operation.span,
             }]
         }
-        ScenarioOpKind::LoopBackEdge | ScenarioOpKind::LoopContinue => vec![CoreTerminator {
+        ScenarioOpKind::LoopBackEdge { can_exit } => {
+            let mut edges = vec![format!("goto:bb{loop_entry_index}")];
+            if *can_exit {
+                if let Some(next) = next {
+                    edges.push(format!("loop_exit:condition:bb{loop_entry_index}:{next}"));
+                }
+            }
+            vec![CoreTerminator {
+                id: format!("term-{index}"),
+                kind: CoreTerminatorKind::Goto,
+                boundary: None,
+                policy: None,
+                edges,
+                source_span: operation.span,
+            }]
+        }
+        ScenarioOpKind::LoopContinue => vec![CoreTerminator {
             id: format!("term-{index}"),
             kind: CoreTerminatorKind::Goto,
             boundary: None,
@@ -478,17 +494,15 @@ fn terminators_from_operation(
             source_span: operation.span,
         }],
         ScenarioOpKind::LoopBreak => {
-            let mut edges = vec![format!("goto:bb{loop_entry_index}")];
-            edges.push(
-                next.map(|next| format!("goto:{next}"))
-                    .unwrap_or_else(|| "break_exit".to_owned()),
-            );
+            let exit_target = next.unwrap_or("break_exit");
             vec![CoreTerminator {
                 id: format!("term-{index}-break"),
                 kind: CoreTerminatorKind::Goto,
                 boundary: None,
                 policy: None,
-                edges,
+                edges: vec![format!(
+                    "loop_exit:break:bb{loop_entry_index}:{exit_target}"
+                )],
                 source_span: operation.span,
             }]
         }

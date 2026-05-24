@@ -965,7 +965,7 @@ impl<'a> ScenarioLowerer<'a> {
                 if self.execute_block(&expr_for.body, env) == BlockFlow::Fallthrough {
                     self.operations.push(ScenarioOp {
                         span: self.span(expr_for),
-                        kind: ScenarioOpKind::LoopBackEdge,
+                        kind: ScenarioOpKind::LoopBackEdge { can_exit: true },
                     });
                 }
             }
@@ -987,7 +987,7 @@ impl<'a> ScenarioLowerer<'a> {
                 if self.execute_block(&expr_loop.body, env) == BlockFlow::Fallthrough {
                     self.operations.push(ScenarioOp {
                         span: self.span(expr_loop),
-                        kind: ScenarioOpKind::LoopBackEdge,
+                        kind: ScenarioOpKind::LoopBackEdge { can_exit: false },
                     });
                 }
             }
@@ -1038,7 +1038,7 @@ impl<'a> ScenarioLowerer<'a> {
                 if self.execute_block(&expr_while.body, env) == BlockFlow::Fallthrough {
                     self.operations.push(ScenarioOp {
                         span: self.span(expr_while),
-                        kind: ScenarioOpKind::LoopBackEdge,
+                        kind: ScenarioOpKind::LoopBackEdge { can_exit: true },
                     });
                 }
             }

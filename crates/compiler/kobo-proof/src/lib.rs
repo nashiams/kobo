@@ -18,7 +18,7 @@ pub use certificate::{
     BoundDimension, BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedCompleteness,
     BoundedHistoryEvidence, BoundedProofEvidence, CancelEdgeEvidence, CandidateAdmissionEvidence,
     CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact,
-    CoreTraceEvent, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
+    CoreLoopExitFact, CoreTraceEvent, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
     FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence, InvariantConfidence,
     InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier,
     LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,

@@ -80,7 +80,9 @@ pub enum ScenarioOpKind {
         edges: Vec<String>,
     },
     LoopStart,
-    LoopBackEdge,
+    LoopBackEdge {
+        can_exit: bool,
+    },
     LoopContinue,
     LoopBreak,
     Loop,

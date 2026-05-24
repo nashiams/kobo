@@ -333,15 +333,23 @@ fn complete_bounded_evidence_names_every_loop_fact() {
     let loop_ids = artifact["bounded_evidence"][0]["loop_ids"]
         .as_array()
         .expect("bounded evidence should carry loop IDs");
-    let fact_ids = artifact["core"]["loop_facts"]
+    let mut fact_ids = artifact["core"]["loop_facts"]
         .as_array()
-        .expect("Core evidence should carry loop facts");
+        .expect("Core evidence should carry loop facts")
+        .to_vec();
+    fact_ids.extend(
+        artifact["core"]["loop_exit_facts"]
+            .as_array()
+            .expect("Core evidence should carry loop exit facts")
+            .iter()
+            .cloned(),
+    );
 
     assert!(
         fact_ids.len() >= 2,
         "fixture should produce multiple concrete loop facts: {artifact}"
     );
-    for fact in fact_ids {
+    for fact in &fact_ids {
         let fact_id = fact["id"].as_str().expect("loop fact should have an ID");
         assert!(
             loop_ids.iter().any(|loop_id| loop_id == fact_id),

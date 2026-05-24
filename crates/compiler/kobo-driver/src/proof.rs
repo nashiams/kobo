@@ -13,16 +13,17 @@ use kobo_proof::{
     AsyncModelEvidence, BoundDeclaration, BoundDimension, BoundSource, BoundaryAssumption,
     BoundaryPolicy, BoundedCompleteness, BoundedHistoryEvidence, BoundedProofEvidence,
     CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreTraceEvent, CoverageLoss, FunctionSummary,
-    FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence,
-    InvariantConfidence, InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource,
-    InvariantTier, LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState,
-    ObligationStatus, OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence,
-    SelectPathEvidence, SourceEvidence, SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan,
-    SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateSchemaEvidence,
-    TimeoutCancelEdgeEvidence, TraceEventKind, TraceMismatchEvidence, TraceMismatchKind,
-    TranslationValidationEvidence, TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION,
-    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent,
+    CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
+    GeneratedTraceEvent, HashEvidence, InvariantConfidence, InvariantPreservation,
+    InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier, LoopInvariantEvidence,
+    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry,
+    ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
+    SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
+    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
+    TraceMismatchEvidence, TraceMismatchKind, TranslationValidationEvidence,
+    TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE,
+    PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -67,6 +68,7 @@ pub fn emit_proof_certificate(
     let cfg_nodes = core_cfg_nodes(&source_path, input.source, &core_program.functions);
     let cfg_edges = core_cfg_edges(&source_path, input.source, &core_program.functions);
     let loop_facts = core_loop_facts(&cfg_edges);
+    let loop_exit_facts = core_loop_exit_facts(&cfg_edges);
     let (template_hashes, template_schemas) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
@@ -84,6 +86,7 @@ pub fn emit_proof_certificate(
         &cfg_nodes,
         &cfg_edges,
         &loop_facts,
+        &loop_exit_facts,
         &async_model,
     )?;
     let mut adapter_confidence = adapter_evidence(
@@ -118,7 +121,13 @@ pub fn emit_proof_certificate(
         &template_hashes,
         user_loop_invariant.as_ref(),
     );
-    let bounded_evidence = bounded_evidence(&source_path, input.source, input.program, &loop_facts);
+    let bounded_evidence = bounded_evidence(
+        &source_path,
+        input.source,
+        input.program,
+        &loop_facts,
+        &loop_exit_facts,
+    );
     let core_obligation_trace = core_trace_evidence(
         input.program,
         &obligation_events,
@@ -156,6 +165,7 @@ pub fn emit_proof_certificate(
             cfg_nodes,
             cfg_edges,
             loop_facts,
+            loop_exit_facts,
             async_model,
         },
         replay_grade,
@@ -196,6 +206,35 @@ fn core_loop_facts(edges: &[CoreCfgEdge]) -> Vec<CoreLoopBackEdgeFact> {
             source_span: edge.source_span.clone(),
         })
         .collect()
+}
+
+fn core_loop_exit_facts(edges: &[CoreCfgEdge]) -> Vec<CoreLoopExitFact> {
+    edges
+        .iter()
+        .filter_map(|edge| {
+            let (exit_target, entry_block) = loop_exit_target(&edge.to)?;
+            Some(CoreLoopExitFact {
+                id: format!("loop-exit-{}-{}-{}", edge.function, edge.from, entry_block),
+                function: edge.function.clone(),
+                entry_block,
+                exit_source: edge.from.clone(),
+                exit_target,
+                source_span: edge.source_span.clone(),
+            })
+        })
+        .collect()
+}
+
+fn loop_exit_target(target: &str) -> Option<(String, String)> {
+    let payload = target.strip_prefix("loop_exit:")?;
+    let mut parts = payload.splitn(3, ':');
+    let kind = parts.next()?;
+    let entry_block = parts.next()?.to_owned();
+    let exit_target = parts
+        .next()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{kind}_exit"));
+    Some((exit_target, entry_block))
 }
 
 fn is_back_edge(edge: &CoreCfgEdge) -> bool {
@@ -409,6 +448,7 @@ fn bounded_evidence(
     source: &str,
     program: &ScenarioProgram,
     loop_facts: &[CoreLoopBackEdgeFact],
+    loop_exit_facts: &[CoreLoopExitFact],
 ) -> Vec<BoundedProofEvidence> {
     let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
@@ -418,7 +458,14 @@ fn bounded_evidence(
         .filter_map(|item| match item {
             syn::Item::Fn(function) if function.sig.ident == program.target => {
                 bounded_attr(function).map(|fields| {
-                    bounded_evidence_from_fields(source_path, source, program, loop_facts, &fields)
+                    bounded_evidence_from_fields(
+                        source_path,
+                        source,
+                        program,
+                        loop_facts,
+                        loop_exit_facts,
+                        &fields,
+                    )
                 })
             }
             _ => None,
@@ -467,6 +514,7 @@ fn bounded_evidence_from_fields(
     _source: &str,
     program: &ScenarioProgram,
     loop_facts: &[CoreLoopBackEdgeFact],
+    loop_exit_facts: &[CoreLoopExitFact],
     fields: &BTreeMap<String, String>,
 ) -> BoundedProofEvidence {
     let history_bound = numeric_field(fields, "histories").unwrap_or_default();
@@ -512,6 +560,12 @@ fn bounded_evidence_from_fields(
             .iter()
             .filter(|fact| fact.function == program.target)
             .map(|fact| fact.id.clone())
+            .chain(
+                loop_exit_facts
+                    .iter()
+                    .filter(|fact| fact.function == program.target)
+                    .map(|fact| fact.id.clone()),
+            )
             .collect(),
         normalized_bound_hash: String::new(),
         bounds,
@@ -2165,8 +2219,18 @@ fn block_successor_targets(block: &CoreBlock) -> Vec<String> {
         .terminators
         .iter()
         .flat_map(|terminator| terminator.edges.iter())
-        .map(|edge| edge.strip_prefix("goto:").unwrap_or(edge).to_owned())
+        .map(|edge| core_successor_target(edge))
         .collect()
+}
+
+fn core_successor_target(edge: &str) -> String {
+    if let Some(target) = edge.strip_prefix("goto:") {
+        return target.to_owned();
+    }
+    if let Some((target, _)) = loop_exit_target(edge) {
+        return target;
+    }
+    edge.to_owned()
 }
 
 fn modeled_exit_target(target: &str) -> bool {

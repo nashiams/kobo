@@ -17,9 +17,42 @@ pub(crate) fn verify_bounded_evidence(
         verify_proof_relevant_bounds(evidence)?;
         verify_bound_declarations(evidence)?;
         verify_complete_dimensions(evidence)?;
+        verify_complete_loop_coverage(certificate, evidence)?;
         verify_bounded_wording(evidence)?;
         verify_complete_history_count(evidence)?;
         verify_canonical_histories(evidence)?;
+    }
+    Ok(())
+}
+
+fn verify_complete_loop_coverage(
+    certificate: &ProofCertificate,
+    evidence: &BoundedProofEvidence,
+) -> Result<(), VerificationError> {
+    if evidence.completeness != BoundedCompleteness::Complete {
+        return Ok(());
+    }
+    let required_loop_ids = certificate
+        .core
+        .loop_facts
+        .iter()
+        .filter(|fact| fact.function == evidence.function)
+        .map(|fact| fact.id.as_str())
+        .chain(
+            certificate
+                .core
+                .loop_exit_facts
+                .iter()
+                .filter(|fact| fact.function == evidence.function)
+                .map(|fact| fact.id.as_str()),
+        );
+    for loop_id in required_loop_ids {
+        if evidence.loop_ids.iter().any(|id| id == loop_id) {
+            continue;
+        }
+        return Err(VerificationError::MissingLoopBackEdgeFact {
+            loop_id: loop_id.to_owned(),
+        });
     }
     Ok(())
 }

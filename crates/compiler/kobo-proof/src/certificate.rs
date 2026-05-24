@@ -60,6 +60,8 @@ pub struct CoreEvidence {
     pub cfg_edges: Vec<CoreCfgEdge>,
     #[serde(default)]
     pub loop_facts: Vec<CoreLoopBackEdgeFact>,
+    #[serde(default)]
+    pub loop_exit_facts: Vec<CoreLoopExitFact>,
     pub async_model: AsyncModelEvidence,
 }
 
@@ -200,6 +202,17 @@ pub struct CoreLoopBackEdgeFact {
     pub entry_block: String,
     pub back_edge_source: String,
     pub back_edge_target: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreLoopExitFact {
+    pub id: String,
+    pub function: String,
+    pub entry_block: String,
+    pub exit_source: String,
+    pub exit_target: String,
     pub source_span: SourceSpan,
 }
 

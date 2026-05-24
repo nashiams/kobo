@@ -513,6 +513,7 @@ fn rewrite_valid_certificate(path: &Path, mutate: impl FnOnce(&mut Value)) {
         &certificate.core.cfg_nodes,
         &certificate.core.cfg_edges,
         &certificate.core.loop_facts,
+        &certificate.core.loop_exit_facts,
         &certificate.core.async_model,
     )
     .expect("core hash should recompute");

@@ -101,6 +101,7 @@ fn valid_certificate() -> ProofCertificate {
                 &cfg_nodes,
                 &cfg_edges,
                 &[],
+                &[],
                 &AsyncModelEvidence::default(),
             )
             .unwrap(),
@@ -108,6 +109,7 @@ fn valid_certificate() -> ProofCertificate {
             cfg_nodes,
             cfg_edges,
             loop_facts: Vec::new(),
+            loop_exit_facts: Vec::new(),
             async_model: AsyncModelEvidence::default(),
         },
         replay_grade: ReplayGrade::Partial,

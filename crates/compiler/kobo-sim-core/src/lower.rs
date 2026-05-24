@@ -119,7 +119,7 @@ pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> 
                     span_start,
                     span_end,
                 }),
-                ScenarioOpKind::Loop | ScenarioOpKind::LoopBackEdge => {
+                ScenarioOpKind::Loop | ScenarioOpKind::LoopBackEdge { .. } => {
                     Some(ScenarioOperation::Loop {
                         span_start,
                         span_end,

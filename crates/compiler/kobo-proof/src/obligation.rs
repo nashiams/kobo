@@ -116,22 +116,23 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
             .unwrap_or_default();
         let mut has_block_successor = false;
         for edge in outgoing {
-            if modeled_exit_target(edge.to.as_str()) {
+            let target = core_successor_target(edge.to.as_str());
+            if modeled_exit_target(target.as_str()) {
                 reject_unresolved_exit_on_edge(&edge.id, &exit_env)?;
                 terminal_envs.push(exit_env.clone());
                 continue;
             }
-            if !edge.to.starts_with("bb") {
+            if !target.starts_with("bb") {
                 continue;
             }
             has_block_successor = true;
-            if !nodes.contains_key(edge.to.as_str()) {
+            if !nodes.contains_key(target.as_str()) {
                 return Err(VerificationError::CfgEdgeTransitionMismatch {
                     edge: edge.id.clone(),
-                    reason: format!("unknown target block {}", edge.to),
+                    reason: format!("unknown target block {target}"),
                 });
             }
-            match block_entry_envs.get(edge.to.as_str()) {
+            match block_entry_envs.get(target.as_str()) {
                 Some(existing) if existing == &exit_env => {}
                 Some(_) if is_invariant_back_edge(certificate, edge) => {}
                 Some(existing) => {
@@ -139,15 +140,15 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
                         edge: edge.id.clone(),
                         reason: format!(
                             "target block {} expects {}, observed {}",
-                            edge.to,
+                            target,
                             format_env(existing),
                             format_env(&exit_env)
                         ),
                     });
                 }
                 None => {
-                    block_entry_envs.insert(edge.to.clone(), exit_env.clone());
-                    queued.push_back(edge.to.clone());
+                    block_entry_envs.insert(target.clone(), exit_env.clone());
+                    queued.push_back(target);
                 }
             }
         }
@@ -297,6 +298,19 @@ fn reject_unresolved_exit_on_edge(
 
 fn modeled_exit_target(target: &str) -> bool {
     matches!(target, "return" | "error_exit" | "panic" | "break_exit")
+}
+
+fn core_successor_target(target: &str) -> String {
+    let Some(payload) = target.strip_prefix("loop_exit:") else {
+        return target.to_owned();
+    };
+    let mut parts = payload.splitn(3, ':');
+    let kind = parts.next().unwrap_or("break");
+    let _entry_block = parts.next();
+    parts
+        .next()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{kind}_exit"))
 }
 
 fn format_env(env: &ObligationEnv) -> String {

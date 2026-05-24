@@ -349,7 +349,7 @@ impl FunctionSummaryBuilder {
                 | ScenarioOpKind::NetworkEvent { .. }
                 | ScenarioOpKind::Select { .. }
                 | ScenarioOpKind::LoopStart
-                | ScenarioOpKind::LoopBackEdge
+                | ScenarioOpKind::LoopBackEdge { .. }
                 | ScenarioOpKind::LoopContinue
                 | ScenarioOpKind::LoopBreak
                 | ScenarioOpKind::Loop => {}
@@ -441,7 +441,7 @@ fn operation_coverage_label(operation: &kobo_ir::ScenarioOp) -> String {
             format!("core-terminator.{}", kind.as_str())
         }
         ScenarioOpKind::LoopStart => "loop-start".to_owned(),
-        ScenarioOpKind::LoopBackEdge => "loop-back-edge".to_owned(),
+        ScenarioOpKind::LoopBackEdge { .. } => "loop-back-edge".to_owned(),
         ScenarioOpKind::LoopContinue => "loop-continue".to_owned(),
         ScenarioOpKind::LoopBreak => "loop-break".to_owned(),
         ScenarioOpKind::Loop => "loop".to_owned(),

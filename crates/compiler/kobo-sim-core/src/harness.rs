@@ -1963,7 +1963,7 @@ fn terminal_failure_events(
             | ScenarioOpKind::ExternalBoundary { .. }
             | ScenarioOpKind::CoreTerminator { .. }
             | ScenarioOpKind::LoopStart
-            | ScenarioOpKind::LoopBackEdge
+            | ScenarioOpKind::LoopBackEdge { .. }
             | ScenarioOpKind::LoopContinue
             | ScenarioOpKind::LoopBreak
             | ScenarioOpKind::Loop => {}

@@ -124,6 +124,42 @@ fn {scenario_name}() {{
     )
 }
 
+fn two_queue_while_loops_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+fn choose() -> bool {{ true }}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    while choose() {{
+        let first = queue.recv();
+        first.ack();
+    }}
+    while choose() {{
+        let second = queue.recv();
+        second.ack();
+    }}
+}}
+"#
+    )
+}
+
 fn loop_control_flow_source(scenario_name: &str, control_flow: &str) -> String {
     format!(
         r#"
@@ -337,6 +373,53 @@ fn early_break_before_discharge_rejects_loop_proof() {
 }
 
 #[test]
+fn break_edges_are_loop_exits_not_back_edges() {
+    let project = TestProject::new("v15-loop-invariant-break-exit");
+    let artifact_path = emit_artifact(
+        &project,
+        &two_queue_loops_source("break_exit_case"),
+        "break_exit_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let loop_facts = artifact["core"]["loop_facts"]
+        .as_array()
+        .expect("loop facts should be present");
+    let exit_facts = artifact["core"]["loop_exit_facts"]
+        .as_array()
+        .expect("loop exit facts should be present");
+
+    assert!(
+        loop_facts
+            .iter()
+            .all(|fact| fact["source_span"]["snippet"] != "break;"),
+        "break statements must not be represented as loop back-edges: {artifact}"
+    );
+    assert_eq!(
+        exit_facts.len(),
+        2,
+        "each break statement should produce a distinct loop exit fact: {artifact}"
+    );
+    assert!(
+        exit_facts
+            .iter()
+            .all(|fact| fact["exit_target"] != fact["entry_block"]),
+        "break loop exits should target the post-loop block or modeled function exit, not the loop entry: {artifact}"
+    );
+    assert!(
+        exit_facts.iter().any(|fact| fact["exit_target"]
+            .as_str()
+            .is_some_and(|target| target.starts_with("bb"))),
+        "a break followed by more code must target the post-loop block: {artifact}"
+    );
+    assert!(
+        exit_facts
+            .iter()
+            .any(|fact| fact["exit_target"] == "break_exit"),
+        "a final break should retain a modeled break_exit target: {artifact}"
+    );
+}
+
+#[test]
 fn while_loop_records_back_edge_facts() {
     let project = TestProject::new("v15-loop-invariant-while");
     let artifact_path = emit_artifact(
@@ -534,7 +617,7 @@ fn multiple_loops_scope_invariants_to_each_back_edge() {
     let project = TestProject::new("v15-loop-invariant-scoped");
     let artifact_path = emit_artifact(
         &project,
-        &two_queue_loops_source("multi_loop_scope_case"),
+        &two_queue_while_loops_source("multi_loop_scope_case"),
         "multi_loop_scope_case",
     );
     let artifact = read_json(&artifact_path);

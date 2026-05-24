@@ -12,7 +12,10 @@ pub mod scheduler;
 mod source;
 pub mod storage;
 
-pub use bounded::{bounded_history_material, enumerate_bounded_histories, BoundedHistory};
+pub use bounded::{
+    bounded_history_material, enumerate_bounded_histories, explore_bounded_histories,
+    BoundedExploration, BoundedHistory,
+};
 pub use core::{
     run_compiler_semantics, run_full_depth, run_full_depth_from_program,
     run_semantics_from_program, BoundaryDecision, BoundaryIoCapture, BoundaryIoField,

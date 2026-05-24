@@ -33,7 +33,7 @@ fn bounded_source_with_unique_histories(
 ) -> String {
     format!(
         r#"
-#[kobo::bounded(histories = "{histories}", unique_histories = "{unique_histories}", expected = "{expected}", completeness = "complete", scheduler = "ready_queue_order", fault = "timeout_or_success", cancellation = "await_recv")]
+#[kobo::bounded(histories = "{histories}", unique_histories = "{unique_histories}", expected = "{expected}", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none")]
 #[kobo::scenario(profile = "sync")]
 fn {scenario_name}() {{
     let _unit = ();
@@ -67,11 +67,11 @@ fn complete_finite_state_space_emits_bounded_proof_wording() {
         &bounded_source(
             "bounded_complete_case",
             "complete",
-            384,
-            384,
-            Some("ready_queue_order"),
-            Some("timeout_or_success"),
-            Some("await_recv"),
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
         ),
         "bounded_complete_case",
     );
@@ -80,11 +80,11 @@ fn complete_finite_state_space_emits_bounded_proof_wording() {
     assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
     assert_eq!(
         artifact["bounded_evidence"][0]["enumerated_history_count"],
-        384
+        4
     );
     assert_eq!(
         artifact["bounded_evidence"][0]["wording"],
-        "bounded proof: all 384 histories explored under declared bounds"
+        "bounded proof: all 4 histories explored under declared bounds"
     );
 }
 
@@ -96,11 +96,11 @@ fn sampled_histories_emit_evidence_only_wording() {
         &bounded_source(
             "bounded_sampled_case",
             "sampled",
-            128,
-            384,
-            Some("ready_queue_order"),
-            Some("timeout_or_success"),
-            Some("await_recv"),
+            2,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
         ),
         "bounded_sampled_case",
     );
@@ -123,11 +123,11 @@ fn timeout_cutoff_cannot_claim_bounded_proof() {
         &bounded_source(
             "bounded_timeout_case",
             "timeout",
-            384,
-            384,
-            Some("ready_queue_order"),
-            Some("timeout_or_success"),
-            Some("await_recv"),
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
         ),
         "bounded_timeout_case",
     );
@@ -204,7 +204,7 @@ fn duplicate_histories_do_not_inflate_bounded_completeness() {
     let project = TestProject::new("v15-bounded-duplicate-histories");
     let artifact_path = emit_artifact(
         &project,
-        &bounded_source_with_unique_histories("bounded_duplicate_case", 384, 128, 384),
+        &bounded_source_with_unique_histories("bounded_duplicate_case", 4, 2, 4),
         "bounded_duplicate_case",
     );
     let artifact = read_json(&artifact_path);
@@ -215,7 +215,7 @@ fn duplicate_histories_do_not_inflate_bounded_completeness() {
     );
     assert_eq!(
         artifact["bounded_evidence"][0]["enumerated_history_count"],
-        128
+        2
     );
     assert!(
         artifact["bounded_evidence"][0]["pruned_histories"]
@@ -241,8 +241,8 @@ fn proof_verify_json_and_text_report_same_bounded_wording() {
             "complete",
             12,
             12,
-            Some("single_thread"),
-            Some("none"),
+            Some("single_thread|work_stealing|priority|random"),
+            Some("none|timeout|crash"),
             Some("none"),
         ),
         "bounded_cli_case",
@@ -288,8 +288,8 @@ fn complete_bounded_evidence_requires_exact_proof_wording() {
             "complete",
             12,
             12,
-            Some("single_thread"),
-            Some("none"),
+            Some("single_thread|work_stealing|priority|random"),
+            Some("none|timeout|crash"),
             Some("none"),
         ),
         "bounded_wording_tamper_case",

@@ -49,6 +49,15 @@ struct UserLoopInvariantDirective {
     source_span: SourceSpan,
 }
 
+#[derive(Debug)]
+struct BoundedHistoryExploration {
+    histories: Vec<kobo_sim_core::BoundedHistory>,
+    enumerated_history_count: u64,
+    expected_complete_history_count: u64,
+    pruned_histories: Vec<PrunedHistoryEvidence>,
+    is_complete: bool,
+}
+
 pub fn emit_proof_certificate(
     input: ProofEmissionInput<'_>,
 ) -> Result<ProofCertificate, ProofEmissionError> {
@@ -459,58 +468,42 @@ fn bounded_evidence_from_fields(
     loop_facts: &[CoreLoopBackEdgeFact],
     fields: &BTreeMap<String, String>,
 ) -> BoundedProofEvidence {
-    let observed_history_count = numeric_field(fields, "histories").unwrap_or_default();
-    let enumerated_history_count = numeric_field(fields, "unique_histories")
-        .map(|unique| unique.min(observed_history_count))
-        .unwrap_or(observed_history_count);
+    let history_bound = numeric_field(fields, "histories").unwrap_or_default();
     let scheduler_dimensions = dimension_values(fields, "scheduler");
     let fault_dimensions = dimension_values(fields, "fault");
     let cancellation_points = dimension_values(fields, "cancellation");
-    let expected_complete_history_count = numeric_field(fields, "expected").or_else(|| {
-        derived_complete_history_count(
-            &scheduler_dimensions,
-            &fault_dimensions,
-            &cancellation_points,
-        )
-    });
+    let exploration = bounded_history_exploration(
+        &program.target,
+        history_bound,
+        numeric_field(fields, "unique_histories"),
+        &scheduler_dimensions,
+        &fault_dimensions,
+        &cancellation_points,
+    );
+    let expected_complete_history_count = Some(exploration.expected_complete_history_count);
+    let declared_expected = numeric_field(fields, "expected");
     let declared_completeness =
         bounded_completeness(fields.get("completeness").map(String::as_str));
     let completeness = effective_bounded_completeness(
         declared_completeness,
-        enumerated_history_count,
-        expected_complete_history_count,
+        declared_expected,
+        &exploration,
         &scheduler_dimensions,
         &fault_dimensions,
         &cancellation_points,
     );
     let wording = bounded_wording(
         &completeness,
-        enumerated_history_count,
+        exploration.enumerated_history_count,
         expected_complete_history_count,
     );
-    let canonical_histories = canonical_histories(
-        &program.target,
-        enumerated_history_count,
-        &scheduler_dimensions,
-        &fault_dimensions,
-        &cancellation_points,
-    );
+    let canonical_histories = canonical_histories(exploration.histories);
     let bounds = bound_declarations(
-        expected_complete_history_count.unwrap_or(enumerated_history_count),
+        exploration.expected_complete_history_count,
         &scheduler_dimensions,
         &fault_dimensions,
         &cancellation_points,
     );
-    let pruned_histories = (observed_history_count > enumerated_history_count)
-        .then(|| PrunedHistoryEvidence {
-            id: format!("pruned-{}", program.target),
-            reason: format!(
-                "{} duplicate histories collapsed before completeness evaluation",
-                observed_history_count - enumerated_history_count
-            ),
-        })
-        .into_iter()
-        .collect();
     BoundedProofEvidence {
         id: format!("bounded-{}", program.target),
         function: program.target.clone(),
@@ -520,51 +513,88 @@ fn bounded_evidence_from_fields(
             .map(|fact| fact.id.clone())
             .collect(),
         normalized_bound_hash: stable_hash(&format!(
-            "{}:{enumerated_history_count}:{expected_complete_history_count:?}:{scheduler_dimensions:?}:{fault_dimensions:?}:{cancellation_points:?}",
+            "{}:{}:{expected_complete_history_count:?}:{scheduler_dimensions:?}:{fault_dimensions:?}:{cancellation_points:?}",
             program.target,
+            exploration.enumerated_history_count,
         )),
         bounds,
-        enumerated_history_count,
+        enumerated_history_count: exploration.enumerated_history_count,
         expected_complete_history_count,
         scheduler_dimensions,
         fault_dimensions,
         cancellation_points,
         canonical_histories,
-        pruned_histories,
+        pruned_histories: exploration.pruned_histories,
         completeness,
         wording,
     }
 }
 
-fn canonical_histories(
+fn bounded_history_exploration(
     function: &str,
-    enumerated_history_count: u64,
+    history_bound: u64,
+    unique_history_count: Option<u64>,
     scheduler_dimensions: &[String],
     fault_dimensions: &[String],
     cancellation_points: &[String],
-) -> Vec<BoundedHistoryEvidence> {
-    kobo_sim_core::enumerate_bounded_histories(
+) -> BoundedHistoryExploration {
+    let sim_exploration = kobo_sim_core::explore_bounded_histories(
         function,
-        enumerated_history_count,
+        history_bound,
         scheduler_dimensions,
         fault_dimensions,
         cancellation_points,
-    )
-    .into_iter()
-    .map(|history| BoundedHistoryEvidence {
-        id: history.id,
-        scheduler: history.scheduler,
-        fault: history.fault,
-        cancellation: history.cancellation,
-        history_hash: history.history_hash,
-    })
-    .collect()
+    );
+    let mut histories = sim_exploration.histories;
+    let original_history_count = histories.len() as u64;
+    let mut pruned_histories = Vec::new();
+    if let Some(unique_history_count) = unique_history_count {
+        if unique_history_count < original_history_count {
+            histories.truncate(unique_history_count as usize);
+            pruned_histories.push(PrunedHistoryEvidence {
+                id: format!("pruned-{function}"),
+                reason: format!(
+                    "{} duplicate histories collapsed before completeness evaluation",
+                    original_history_count - unique_history_count
+                ),
+            });
+        } else if unique_history_count > original_history_count {
+            pruned_histories.push(PrunedHistoryEvidence {
+                id: format!("pruned-{function}"),
+                reason: format!(
+                    "declared unique history count {unique_history_count} exceeds {original_history_count} explored histories"
+                ),
+            });
+        }
+    }
+    BoundedHistoryExploration {
+        enumerated_history_count: histories.len() as u64,
+        expected_complete_history_count: sim_exploration.expected_history_count,
+        histories,
+        is_complete: sim_exploration.is_complete && pruned_histories.is_empty(),
+        pruned_histories,
+    }
+}
+
+fn canonical_histories(
+    histories: Vec<kobo_sim_core::BoundedHistory>,
+) -> Vec<BoundedHistoryEvidence> {
+    histories
+        .into_iter()
+        .map(|history| BoundedHistoryEvidence {
+            id: history.id,
+            scheduler: history.scheduler,
+            fault: history.fault,
+            cancellation: history.cancellation,
+            history_hash: history.history_hash,
+        })
+        .collect()
 }
 
 fn effective_bounded_completeness(
     declared: BoundedCompleteness,
-    enumerated_history_count: u64,
-    expected_complete_history_count: Option<u64>,
+    declared_expected: Option<u64>,
+    exploration: &BoundedHistoryExploration,
     scheduler_dimensions: &[String],
     fault_dimensions: &[String],
     cancellation_points: &[String],
@@ -572,7 +602,10 @@ fn effective_bounded_completeness(
     if declared != BoundedCompleteness::Complete {
         return declared;
     }
-    if expected_complete_history_count != Some(enumerated_history_count)
+    if !exploration.is_complete
+        || declared_expected
+            .is_some_and(|expected| expected != exploration.expected_complete_history_count)
+        || exploration.expected_complete_history_count != exploration.enumerated_history_count
         || scheduler_dimensions.is_empty()
         || fault_dimensions.is_empty()
         || cancellation_points.is_empty()
@@ -865,24 +898,6 @@ fn dimension_values(fields: &BTreeMap<String, String>, key: &str) -> Vec<String>
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect()
-}
-
-fn derived_complete_history_count(
-    scheduler_dimensions: &[String],
-    fault_dimensions: &[String],
-    cancellation_points: &[String],
-) -> Option<u64> {
-    if scheduler_dimensions.is_empty()
-        || fault_dimensions.is_empty()
-        || cancellation_points.is_empty()
-    {
-        return None;
-    }
-    Some(
-        scheduler_dimensions.len() as u64
-            * fault_dimensions.len() as u64
-            * cancellation_points.len() as u64,
-    )
 }
 
 fn bounded_completeness(value: Option<&str>) -> BoundedCompleteness {

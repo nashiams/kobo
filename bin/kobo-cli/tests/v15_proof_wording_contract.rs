@@ -19,9 +19,9 @@ fn cli_text_and_json_agree_on_bounded_proof_wording() {
             "complete",
             24,
             24,
-            Some("single_thread"),
-            Some("none"),
-            Some("none"),
+            Some("single_thread|work_stealing|priority|random"),
+            Some("none|timeout|crash"),
+            Some("none|await_recv"),
         ),
         "wording_bounded_case",
     );

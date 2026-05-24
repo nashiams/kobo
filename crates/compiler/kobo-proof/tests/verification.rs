@@ -171,6 +171,55 @@ fn context() -> VerificationContext {
     }
 }
 
+fn context_with_source_map(source_map: serde_json::Value) -> VerificationContext {
+    VerificationContext {
+        source: SOURCE.to_owned(),
+        source_map: Some(serde_json::to_string(&source_map).unwrap()),
+    }
+}
+
+fn single_create_source_map() -> serde_json::Value {
+    let kobo_span = serde_json::json!({
+        "start": 0,
+        "end": SOURCE.len(),
+        "file_id": 0
+    });
+    let rs_span = serde_json::json!({
+        "line": 1,
+        "column_start": 0,
+        "column_end": 8
+    });
+    serde_json::json!({
+        "version": 3,
+        "file": "src/main.rs",
+        "sources": ["src/main.kobo"],
+        "x_kobo_mappings": [
+            {
+                "id": "map-0",
+                "binding_name": "delivery",
+                "rs_span": rs_span,
+                "kobo_span": kobo_span,
+                "ownership_tier": "linear"
+            }
+        ],
+        "lowering_trace": [
+            {
+                "id": "lowering-proof_case-0",
+                "function": "proof_case",
+                "kind": "create",
+                "binding": "delivery",
+                "order": 0,
+                "source_map_entry_id": "map-0",
+                "rs_span": rs_span,
+                "kobo_span": kobo_span,
+                "lowering_phase": "obligation_lowering",
+                "template_id": "queue_delivery",
+                "template_version": "0.1"
+            }
+        ]
+    })
+}
+
 fn rehash(certificate: &mut ProofCertificate) {
     certificate.certificate_material_hash = certificate_material_hash(certificate).unwrap();
 }
@@ -681,11 +730,18 @@ fn translation_validation_rejects_dropped_discharge_event() {
     });
     let certificate = parse_certificate_json(&source).expect("v15 trace fields should parse");
 
-    let error = verify_certificate(&certificate, &context()).unwrap_err();
+    let error = verify_certificate(
+        &certificate,
+        &context_with_source_map(single_create_source_map()),
+    )
+    .unwrap_err();
 
-    assert!(matches!(
-        error,
-        VerificationError::TranslationTraceMissingEvent { ref core_event_id }
-            if core_event_id == "core-discharge-delivery"
-    ));
+    assert!(
+        matches!(
+            error,
+            VerificationError::TranslationTraceMissingEvent { ref core_event_id }
+                if core_event_id == "core-discharge-delivery"
+        ),
+        "expected dropped discharge to fail as missing generated event, got {error:?}"
+    );
 }

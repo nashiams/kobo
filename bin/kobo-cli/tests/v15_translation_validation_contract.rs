@@ -45,6 +45,38 @@ fn {scenario_name}() {{
     )
 }
 
+fn error_exit_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+fn fallible() -> Result<(), ()> {{ Ok(()) }}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() -> Result<(), ()> {{
+    let queue = Queue {{}};
+    let delivery = queue.recv();
+    delivery.ack();
+    fallible()?;
+    Ok(())
+}}
+"#
+    )
+}
+
 #[test]
 fn generated_rust_trace_matches_core_trace_and_validates() {
     let project = TestProject::new("v15-translation-valid");
@@ -317,6 +349,92 @@ fn fake_source_map_anchor_id_is_rejected_even_when_hashes_are_recomputed() {
     assert!(
         output.combined().contains("source-map anchor"),
         "failure should name source-map anchor validation: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn generated_trace_preserves_real_error_exit_terminator_events() {
+    let project = TestProject::new("v15-translation-error-exit-event");
+    let artifact_path = emit_artifact(
+        &project,
+        &error_exit_source("translation_error_exit_event_case"),
+        "translation_error_exit_event_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert!(
+        artifact["core_obligation_trace"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event["kind"] == "error_exit")),
+        "Core trace must include real error-exit terminator events: {artifact}"
+    );
+    assert!(
+        artifact["generated_rust_trace"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event["kind"] == "error_exit")),
+        "generated trace must preserve real error-exit terminator events: {artifact}"
+    );
+}
+
+#[test]
+fn missing_source_map_rejects_generated_trace_validation() {
+    let project = TestProject::new("v15-translation-missing-map");
+    let artifact_path = emit_queue_artifact(&project, "translation_missing_map_case");
+    let map_path = project
+        .find_files_with_ext("map")
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == "main.kobo.map"))
+        .expect("proof emit should write a source map");
+    std::fs::remove_file(&map_path).expect("source map should be removable");
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "missing source map should reject generated trace validation",
+    );
+    assert!(
+        output.combined().contains("source-map anchor")
+            || output.combined().contains("translation validation"),
+        "failure should name source-map or translation validation: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn source_map_lowering_trace_tamper_rejects_validation() {
+    let project = TestProject::new("v15-translation-lowering-trace-tamper");
+    let artifact_path = emit_queue_artifact(&project, "translation_lowering_tamper_case");
+    let map_path = project
+        .find_files_with_ext("map")
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == "main.kobo.map"))
+        .expect("proof emit should write a source map");
+    let mut source_map = read_json(&map_path);
+    source_map["lowering_trace"]
+        .as_array_mut()
+        .expect("lowering trace should be mutable")
+        .retain(|event| event["kind"] != "discharge");
+    write_json(&map_path, &source_map);
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "tampered source-map lowering trace should reject validation",
+    );
+    assert!(
+        output.combined().contains("missing generated event")
+            || output.combined().contains("source-map anchor")
+            || output.combined().contains("translation validation"),
+        "failure should name lowering-trace mismatch: {}",
         output.combined()
     );
 }

@@ -42,6 +42,23 @@ fn {scenario_name}() {{
     )
 }
 
+fn bounded_source_with_two_loops(scenario_name: &str) -> String {
+    format!(
+        r#"
+#[kobo::bounded(histories = "1", expected = "1", completeness = "complete", scheduler = "single_thread", fault = "none", cancellation = "none")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    loop {{
+        break;
+    }}
+    loop {{
+        break;
+    }}
+}}
+"#
+    )
+}
+
 #[test]
 fn complete_finite_state_space_emits_bounded_proof_wording() {
     let project = TestProject::new("v15-bounded-complete");
@@ -300,6 +317,72 @@ fn complete_bounded_evidence_requires_exact_proof_wording() {
     assert!(
         output.combined().contains("bounded evidence"),
         "failure should name bounded wording mismatch: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn complete_bounded_evidence_names_every_loop_fact() {
+    let project = TestProject::new("v15-bounded-loop-ids");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_with_two_loops("bounded_loop_ids_case"),
+        "bounded_loop_ids_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let loop_ids = artifact["bounded_evidence"][0]["loop_ids"]
+        .as_array()
+        .expect("bounded evidence should carry loop IDs");
+    let fact_ids = artifact["core"]["loop_facts"]
+        .as_array()
+        .expect("Core evidence should carry loop facts");
+
+    assert!(
+        fact_ids.len() >= 2,
+        "fixture should produce multiple concrete loop facts: {artifact}"
+    );
+    for fact in fact_ids {
+        let fact_id = fact["id"].as_str().expect("loop fact should have an ID");
+        assert!(
+            loop_ids.iter().any(|loop_id| loop_id == fact_id),
+            "bounded evidence must name loop fact {fact_id}: {artifact}"
+        );
+    }
+}
+
+#[test]
+fn complete_bounded_evidence_missing_loop_id_cannot_cover_loop_fact() {
+    let project = TestProject::new("v15-bounded-missing-loop-id");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_with_two_loops("bounded_missing_loop_id_case"),
+        "bounded_missing_loop_id_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.bounded_evidence[0].loop_ids.pop();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "complete bounded evidence missing a loop ID should reject proof",
+    );
+    assert!(
+        output
+            .combined()
+            .contains("missing a proof-grade back-edge fact"),
+        "failure should name the uncovered loop fact: {}",
         output.combined()
     );
 }

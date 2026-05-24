@@ -4,7 +4,7 @@
 // Token-level precision requires post-format scanning; not implemented in v0.2.
 // Upgrade path: replace line-level binding lookup with token scanning when it lands.
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use kobo_ir::{
     KoboSpan, OwnershipTier, ScenarioCoreTerminatorKind, ScenarioLifecycleTemplate,
@@ -141,12 +141,14 @@ pub(crate) fn build_lowering_trace(
     programs
         .iter()
         .flat_map(|program| {
+            let template_by_binding = template_by_binding(program);
             program
                 .operations
                 .iter()
                 .enumerate()
                 .filter_map(move |(order, operation)| {
-                    let event = lowering_event_from_operation(&operation.kind)?;
+                    let event =
+                        lowering_event_from_operation(&operation.kind, &template_by_binding)?;
                     let anchor = anchor_for_trace_event(
                         source_map,
                         operation.span,
@@ -176,30 +178,33 @@ struct TraceEventSource<'a> {
     template: Option<&'a ScenarioLifecycleTemplate>,
 }
 
-fn lowering_event_from_operation(kind: &ScenarioOpKind) -> Option<TraceEventSource<'_>> {
+fn lowering_event_from_operation<'a>(
+    kind: &'a ScenarioOpKind,
+    template_by_binding: &BTreeMap<&'a str, &'a ScenarioLifecycleTemplate>,
+) -> Option<TraceEventSource<'a>> {
     match kind {
         ScenarioOpKind::CreateObligation {
             binding, template, ..
         } => Some(TraceEventSource {
             kind: "create",
             binding: Some(binding.clone()),
-            template: template.as_ref(),
+            template: template
+                .as_ref()
+                .or_else(|| template_by_binding.get(binding.as_str()).copied()),
         }),
-        ScenarioOpKind::Discharge { binding, .. } => Some(TraceEventSource {
-            kind: "discharge",
-            binding: Some(binding.clone()),
-            template: None,
-        }),
-        ScenarioOpKind::Transfer { binding, .. } => Some(TraceEventSource {
-            kind: "transfer",
-            binding: Some(binding.clone()),
-            template: None,
-        }),
-        ScenarioOpKind::MoveBinding { binding } => Some(TraceEventSource {
-            kind: "move",
-            binding: Some(binding.clone()),
-            template: None,
-        }),
+        ScenarioOpKind::Discharge { binding, .. } => Some(binding_event_source(
+            "discharge",
+            binding,
+            template_by_binding,
+        )),
+        ScenarioOpKind::Transfer { binding, .. } => Some(binding_event_source(
+            "transfer",
+            binding,
+            template_by_binding,
+        )),
+        ScenarioOpKind::MoveBinding { binding } => {
+            Some(binding_event_source("move", binding, template_by_binding))
+        }
         ScenarioOpKind::ExternalBoundary { .. } => Some(TraceEventSource {
             kind: "escape",
             binding: None,
@@ -217,6 +222,33 @@ fn lowering_event_from_operation(kind: &ScenarioOpKind) -> Option<TraceEventSour
         }),
         _ => None,
     }
+}
+
+fn binding_event_source<'a>(
+    kind: &'static str,
+    binding: &'a str,
+    template_by_binding: &BTreeMap<&'a str, &'a ScenarioLifecycleTemplate>,
+) -> TraceEventSource<'a> {
+    TraceEventSource {
+        kind,
+        binding: Some(binding.to_owned()),
+        template: template_by_binding.get(binding).copied(),
+    }
+}
+
+fn template_by_binding(program: &ScenarioProgram) -> BTreeMap<&str, &ScenarioLifecycleTemplate> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::CreateObligation {
+                binding,
+                template: Some(template),
+                ..
+            } => Some((binding.as_str(), template)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn core_terminator_trace_kind(kind: &ScenarioCoreTerminatorKind) -> &'static str {

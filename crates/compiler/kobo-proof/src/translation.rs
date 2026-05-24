@@ -21,12 +21,8 @@ pub(crate) fn verify_translation_validation(
         return Ok(());
     }
     let generated_by_core_id = generated_trace_by_core_id(&certificate.generated_rust_trace)?;
-    let source_map = source_map_json.and_then(parse_source_map_anchors);
-    verify_core_events_have_generated_matches(
-        certificate,
-        &generated_by_core_id,
-        source_map.as_ref(),
-    )?;
+    let source_map = parse_required_source_map(source_map_json, &certificate.generated_rust_trace)?;
+    verify_core_events_have_generated_matches(certificate, &generated_by_core_id, &source_map)?;
     verify_generated_events_have_core_matches(certificate)?;
     verify_trace_hashes(certificate)?;
     verify_trace_status(certificate, TranslationValidationStatus::Validated)
@@ -69,8 +65,9 @@ fn generated_trace_by_core_id(
 fn verify_core_events_have_generated_matches(
     certificate: &ProofCertificate,
     generated_by_core_id: &BTreeMap<&str, &GeneratedTraceEvent>,
-    source_map: Option<&BTreeMap<String, SourceMapAnchorRecord>>,
+    source_map: &SourceMapValidation,
 ) -> Result<(), VerificationError> {
+    let mut used_lowering_records = BTreeSet::new();
     for core_event in trace::sorted_core_trace(&certificate.core_obligation_trace) {
         let Some(generated_event) = generated_by_core_id.get(core_event.id.as_str()) else {
             return Err(VerificationError::TranslationTraceMissingEvent {
@@ -78,7 +75,8 @@ fn verify_core_events_have_generated_matches(
             });
         };
         verify_event_identity(core_event, generated_event)?;
-        verify_source_map_anchor(generated_event, source_map)?;
+        verify_source_map_anchor(generated_event, &source_map.anchors)?;
+        verify_lowering_trace_record(generated_event, source_map, &mut used_lowering_records)?;
     }
     Ok(())
 }
@@ -149,17 +147,12 @@ fn verify_event_identity(
 
 fn verify_source_map_anchor(
     generated_event: &GeneratedTraceEvent,
-    source_map: Option<&BTreeMap<String, SourceMapAnchorRecord>>,
+    source_map: &BTreeMap<String, SourceMapAnchorRecord>,
 ) -> Result<(), VerificationError> {
     if generated_event.source_map_anchor.status == SourceMapAnchorStatus::Mapped
         && !generated_event.source_map_anchor.id.is_empty()
     {
-        if let Some(source_map) = source_map {
-            return verify_source_map_anchor_record(generated_event, source_map);
-        }
-        if generated_event.source_map_anchor.id.starts_with("map-") {
-            return Ok(());
-        }
+        return verify_source_map_anchor_record(generated_event, source_map);
     }
     Err(VerificationError::TranslationSourceMapAnchorMismatch {
         generated_event_id: generated_event.id.clone(),
@@ -177,9 +170,50 @@ struct SourceMapAnchorRecord {
     rs_end: usize,
 }
 
-fn parse_source_map_anchors(
-    source_map_json: &str,
-) -> Option<BTreeMap<String, SourceMapAnchorRecord>> {
+#[derive(Clone, Debug)]
+struct LoweringTraceRecord {
+    kind: String,
+    binding: Option<String>,
+    source_map_entry_id: String,
+    rs_line: usize,
+    rs_start: usize,
+    rs_end: usize,
+    kobo_start: usize,
+    kobo_end: usize,
+    lowering_phase: String,
+    template_id: Option<String>,
+    template_version: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SourceMapValidation {
+    anchors: BTreeMap<String, SourceMapAnchorRecord>,
+    lowering_trace: Vec<LoweringTraceRecord>,
+}
+
+fn parse_required_source_map(
+    source_map_json: Option<&str>,
+    generated_trace: &[GeneratedTraceEvent],
+) -> Result<SourceMapValidation, VerificationError> {
+    let Some(source_map_json) = source_map_json else {
+        let generated_event = &generated_trace[0];
+        return Err(VerificationError::TranslationSourceMapAnchorMismatch {
+            generated_event_id: generated_event.id.clone(),
+            anchor_id: generated_event.source_map_anchor.id.clone(),
+            status: "missing source map".to_owned(),
+        });
+    };
+    parse_source_map(source_map_json).ok_or_else(|| {
+        let generated_event = &generated_trace[0];
+        VerificationError::TranslationSourceMapAnchorMismatch {
+            generated_event_id: generated_event.id.clone(),
+            anchor_id: generated_event.source_map_anchor.id.clone(),
+            status: "invalid source map".to_owned(),
+        }
+    })
+}
+
+fn parse_source_map(source_map_json: &str) -> Option<SourceMapValidation> {
     let value: serde_json::Value = serde_json::from_str(source_map_json).ok()?;
     let mappings = value["x_kobo_mappings"].as_array()?;
     let mut anchors = BTreeMap::new();
@@ -196,7 +230,31 @@ fn parse_source_map_anchors(
             },
         );
     }
-    Some(anchors)
+    let lowering_trace = value["lowering_trace"]
+        .as_array()?
+        .iter()
+        .map(parse_lowering_trace_record)
+        .collect::<Option<Vec<_>>>()?;
+    Some(SourceMapValidation {
+        anchors,
+        lowering_trace,
+    })
+}
+
+fn parse_lowering_trace_record(value: &serde_json::Value) -> Option<LoweringTraceRecord> {
+    Some(LoweringTraceRecord {
+        kind: value["kind"].as_str()?.to_owned(),
+        binding: value["binding"].as_str().map(str::to_owned),
+        source_map_entry_id: value["source_map_entry_id"].as_str()?.to_owned(),
+        rs_line: value["rs_span"]["line"].as_u64()? as usize,
+        rs_start: value["rs_span"]["column_start"].as_u64()? as usize,
+        rs_end: value["rs_span"]["column_end"].as_u64()? as usize,
+        kobo_start: value["kobo_span"]["start"].as_u64()? as usize,
+        kobo_end: value["kobo_span"]["end"].as_u64()? as usize,
+        lowering_phase: value["lowering_phase"].as_str()?.to_owned(),
+        template_id: value["template_id"].as_str().map(str::to_owned),
+        template_version: value["template_version"].as_str().map(str::to_owned),
+    })
 }
 
 fn verify_source_map_anchor_record(
@@ -224,6 +282,49 @@ fn verify_source_map_anchor_record(
         anchor_id: generated_event.source_map_anchor.id.clone(),
         status: "stale".to_owned(),
     })
+}
+
+fn verify_lowering_trace_record(
+    generated_event: &GeneratedTraceEvent,
+    source_map: &SourceMapValidation,
+    used_lowering_records: &mut BTreeSet<usize>,
+) -> Result<(), VerificationError> {
+    if let Some((index, _)) =
+        source_map
+            .lowering_trace
+            .iter()
+            .enumerate()
+            .find(|(index, record)| {
+                !used_lowering_records.contains(index)
+                    && lowering_trace_record_matches(generated_event, record)
+            })
+    {
+        used_lowering_records.insert(index);
+        return Ok(());
+    }
+    Err(VerificationError::TranslationSourceMapAnchorMismatch {
+        generated_event_id: generated_event.id.clone(),
+        anchor_id: generated_event.source_map_anchor.id.clone(),
+        status: "missing lowering trace event".to_owned(),
+    })
+}
+
+fn lowering_trace_record_matches(
+    generated_event: &GeneratedTraceEvent,
+    record: &LoweringTraceRecord,
+) -> bool {
+    let anchor = &generated_event.source_map_anchor;
+    record.kind == generated_event.kind.as_str()
+        && record.binding == generated_event.binding
+        && record.source_map_entry_id == anchor.id
+        && record.rs_line == anchor.generated_span.line
+        && record.rs_start == anchor.generated_span.start
+        && record.rs_end == anchor.generated_span.end
+        && record.kobo_start == anchor.kobo_span.start
+        && record.kobo_end == anchor.kobo_span.end
+        && record.lowering_phase == generated_event.lowering_phase
+        && record.template_id == generated_event.template_id
+        && record.template_version == generated_event.template_version
 }
 
 fn verify_trace_status(

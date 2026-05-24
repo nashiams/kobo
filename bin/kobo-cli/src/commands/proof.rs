@@ -21,8 +21,9 @@ pub(super) fn cmd_emit(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| file.with_extension("kproof"));
     let artifact_kind = artifact_kind_for_path(&artifact_path)?;
-    let (certificate, source) = emit_certificate(file, target, replay_grade, artifact_kind)?;
-    verify_before_write(&certificate, &source)?;
+    let (certificate, source, source_map) =
+        emit_certificate(file, target, replay_grade, artifact_kind)?;
+    verify_before_write(&certificate, &source, Some(&source_map))?;
     write_certificate(&artifact_path, &certificate)?;
     println!(
         "proof emitted: {} (claim: modeled Core obligation flow)",
@@ -88,8 +89,9 @@ pub(super) fn emit_check_proof(
     replay_grade: ProofReplayGradeArg,
 ) -> anyhow::Result<()> {
     let artifact_path = file.with_extension("kproof");
-    let (certificate, source) = emit_certificate(file, None, replay_grade, ArtifactKind::Kproof)?;
-    verify_before_write(&certificate, &source)?;
+    let (certificate, source, source_map) =
+        emit_certificate(file, None, replay_grade, ArtifactKind::Kproof)?;
+    verify_before_write(&certificate, &source, Some(&source_map))?;
     write_certificate(&artifact_path, &certificate)?;
     eprintln!("proof emitted: {}", artifact_path.display());
     Ok(())
@@ -100,7 +102,7 @@ fn emit_certificate(
     target: Option<&str>,
     replay_grade: ProofReplayGradeArg,
     artifact_kind: ArtifactKind,
-) -> anyhow::Result<(ProofCertificate, String)> {
+) -> anyhow::Result<(ProofCertificate, String, String)> {
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read source {}", file.display()))?;
     let mut session = build_session(file, None)?;
@@ -122,7 +124,7 @@ fn emit_certificate(
             artifact_kind,
             source_map: Some(&artifacts.source_map),
         })?;
-    Ok((certificate, source))
+    Ok((certificate, source, artifacts.source_map.to_json_string()?))
 }
 
 fn select_scenario_program<'a>(
@@ -142,12 +144,16 @@ fn select_scenario_program<'a>(
     }
 }
 
-fn verify_before_write(certificate: &ProofCertificate, source: &str) -> anyhow::Result<()> {
+fn verify_before_write(
+    certificate: &ProofCertificate,
+    source: &str,
+    source_map: Option<&str>,
+) -> anyhow::Result<()> {
     verify_certificate(
         certificate,
         &VerificationContext {
             source: source.to_owned(),
-            source_map: None,
+            source_map: source_map.map(str::to_owned),
         },
     )
     .map(|_| ())

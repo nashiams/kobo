@@ -326,6 +326,8 @@ pub struct InvariantTemplateEvidence {
 pub struct BoundedProofEvidence {
     pub id: String,
     pub function: String,
+    #[serde(default)]
+    pub loop_ids: Vec<String>,
     pub bounds: Vec<BoundDeclaration>,
     pub normalized_bound_hash: String,
     pub enumerated_history_count: u64,

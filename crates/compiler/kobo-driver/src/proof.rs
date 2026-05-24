@@ -108,7 +108,7 @@ pub fn emit_proof_certificate(
         &template_hashes,
         user_loop_invariant.as_ref(),
     );
-    let bounded_evidence = bounded_evidence(&source_path, input.source, input.program);
+    let bounded_evidence = bounded_evidence(&source_path, input.source, input.program, &loop_facts);
     let core_obligation_trace = core_trace_evidence(
         input.program,
         &obligation_events,
@@ -398,6 +398,7 @@ fn bounded_evidence(
     source_path: &str,
     source: &str,
     program: &ScenarioProgram,
+    loop_facts: &[CoreLoopBackEdgeFact],
 ) -> Vec<BoundedProofEvidence> {
     let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
@@ -407,7 +408,7 @@ fn bounded_evidence(
         .filter_map(|item| match item {
             syn::Item::Fn(function) if function.sig.ident == program.target => {
                 bounded_attr(function).map(|fields| {
-                    bounded_evidence_from_fields(source_path, source, program, &fields)
+                    bounded_evidence_from_fields(source_path, source, program, loop_facts, &fields)
                 })
             }
             _ => None,
@@ -455,6 +456,7 @@ fn bounded_evidence_from_fields(
     _source_path: &str,
     _source: &str,
     program: &ScenarioProgram,
+    loop_facts: &[CoreLoopBackEdgeFact],
     fields: &BTreeMap<String, String>,
 ) -> BoundedProofEvidence {
     let observed_history_count = numeric_field(fields, "histories").unwrap_or_default();
@@ -505,6 +507,11 @@ fn bounded_evidence_from_fields(
     BoundedProofEvidence {
         id: format!("bounded-{}", program.target),
         function: program.target.clone(),
+        loop_ids: loop_facts
+            .iter()
+            .filter(|fact| fact.function == program.target)
+            .map(|fact| fact.id.clone())
+            .collect(),
         normalized_bound_hash: stable_hash(&format!(
             "{}:{enumerated_history_count}:{expected_complete_history_count:?}:{scheduler_dimensions:?}:{fault_dimensions:?}:{cancellation_points:?}",
             program.target,

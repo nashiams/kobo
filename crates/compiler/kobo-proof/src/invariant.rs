@@ -34,6 +34,7 @@ fn verify_every_loop_fact_has_proof(
         let has_complete_bounded_evidence = certificate.bounded_evidence.iter().any(|evidence| {
             evidence.function == fact.function
                 && evidence.completeness == BoundedCompleteness::Complete
+                && evidence.loop_ids.iter().any(|loop_id| loop_id == &fact.id)
         });
         if has_invariant || has_complete_bounded_evidence {
             continue;

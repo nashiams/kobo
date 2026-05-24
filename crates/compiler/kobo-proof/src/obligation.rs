@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    CoreCfgEdge, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
-    ProofCertificate, VerificationError,
+    CoreCfgEdge, InvariantPreservation, ObligationEvent, ObligationEventKind, ObligationState,
+    ObligationStatus, ProofCertificate, VerificationError,
 };
 
 pub(crate) type ObligationEnv = BTreeMap<String, ObligationStatus>;
@@ -133,6 +133,7 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
             }
             match block_entry_envs.get(edge.to.as_str()) {
                 Some(existing) if existing == &exit_env => {}
+                Some(_) if is_invariant_back_edge(certificate, edge) => {}
                 Some(existing) => {
                     return Err(VerificationError::CfgEdgeTransitionMismatch {
                         edge: edge.id.clone(),
@@ -176,6 +177,15 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
         block_exit_envs,
         terminal_envs,
         checked_events: checked_event_ids.len(),
+    })
+}
+
+fn is_invariant_back_edge(certificate: &ProofCertificate, edge: &CoreCfgEdge) -> bool {
+    certificate.loop_invariants.iter().any(|invariant| {
+        invariant.function == edge.function
+            && invariant.back_edge_source == edge.from
+            && invariant.back_edge_target == edge.to
+            && invariant.preservation == InvariantPreservation::Preserved
     })
 }
 

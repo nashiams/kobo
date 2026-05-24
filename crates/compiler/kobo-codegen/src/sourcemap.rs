@@ -21,6 +21,8 @@ pub struct RsSpan {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceMapEntry {
+    pub id: String,
+    pub binding_name: String,
     pub rs_span: RsSpan,
     pub kobo_span: KoboSpan,
     pub ownership_tier: String,
@@ -75,6 +77,8 @@ pub(crate) fn build_source_map_entries(
         });
 
         entries.push(SourceMapEntry {
+            id: format!("map-{}", site.node.0),
+            binding_name: site.binding_name.clone(),
             rs_span: RsSpan {
                 line: anchor.line,
                 column_start: anchor.column_start,

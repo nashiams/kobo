@@ -15,6 +15,8 @@ pub struct VerificationReport {
     pub core_hash: String,
     pub checked_obligation_events: usize,
     pub certificate_material_hash: String,
+    pub translation_validation_status: String,
+    pub bounded_wording: Vec<String>,
 }
 
 pub fn parse_certificate_json(source: &str) -> Result<ProofCertificate, VerificationError> {
@@ -48,6 +50,16 @@ pub fn verify_certificate(
         core_hash: certificate.core.hash.clone(),
         checked_obligation_events,
         certificate_material_hash: certificate_hash,
+        translation_validation_status: certificate
+            .translation_validation
+            .status
+            .as_str()
+            .to_owned(),
+        bounded_wording: certificate
+            .bounded_evidence
+            .iter()
+            .map(|evidence| evidence.wording.clone())
+            .collect(),
     })
 }
 

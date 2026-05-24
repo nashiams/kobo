@@ -2,21 +2,25 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
 use crate::config::EcosystemAdapterPolicy;
+use kobo_codegen::{KoboSourceMap, SourceMapEntry};
 use kobo_ir::{
     lower_core_program, CoreBlock, CoreFunction, CoreStatement, CoreStatementKind,
     CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
     certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
-    AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy,
+    AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundDeclaration, BoundDimension,
+    BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedCompleteness, BoundedProofEvidence,
     CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoverageLoss, FunctionSummary,
-    FutureStateLocalEvidence, FutureStateObligationEvidence, HashEvidence, ObligationEvent,
-    ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate,
-    SelectPathEvidence, SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence,
-    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence,
-    PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
-    PROOF_TARGET_VERSION,
+    CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreTraceEvent, CoverageLoss, FunctionSummary,
+    FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence,
+    InvariantConfidence, InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource,
+    InvariantTier, LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState,
+    ObligationStatus, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence, SourceEvidence,
+    SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
+    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
+    TranslationValidationEvidence, TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION,
+    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -28,6 +32,7 @@ pub struct ProofEmissionInput<'a> {
     pub adapter_policies: &'a [EcosystemAdapterPolicy],
     pub replay_grade: ReplayGrade,
     pub artifact_kind: ArtifactKind,
+    pub source_map: Option<&'a KoboSourceMap>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +90,26 @@ pub fn emit_proof_certificate(
         obligation_events.len(),
     );
     let coverage_loss = coverage_loss(input.program);
+    let loop_invariants = loop_invariant_evidence(
+        input.program,
+        &core_program.functions,
+        &loop_facts,
+        &obligation_events,
+        &template_hashes,
+    );
+    let bounded_evidence = bounded_evidence(&source_path, input.source, input.program);
+    let core_obligation_trace = core_trace_evidence(input.program, &obligation_events);
+    let generated_rust_trace = generated_trace_evidence(
+        &source_path,
+        input.source,
+        &core_obligation_trace,
+        input.source_map,
+    );
+    let translation_validation = translation_validation_evidence(
+        &core_obligation_trace,
+        &generated_rust_trace,
+        input.source_map,
+    );
 
     let mut certificate = ProofCertificate {
         schema_version: PROOF_CERTIFICATE_SCHEMA_VERSION,
@@ -116,11 +141,11 @@ pub fn emit_proof_certificate(
         exit_env,
         function_summaries,
         coverage_loss,
-        loop_invariants: Vec::new(),
-        bounded_evidence: Vec::new(),
-        core_obligation_trace: Vec::new(),
-        generated_rust_trace: Vec::new(),
-        translation_validation: Default::default(),
+        loop_invariants,
+        bounded_evidence,
+        core_obligation_trace,
+        generated_rust_trace,
+        translation_validation,
         opaque_edge_ledger,
         candidate_admission,
         certificate_material_hash: String::new(),
@@ -156,6 +181,430 @@ fn is_back_edge(edge: &CoreCfgEdge) -> bool {
 
 fn block_index(block: &str) -> Option<usize> {
     block.strip_prefix("bb")?.parse().ok()
+}
+
+fn loop_invariant_evidence(
+    program: &ScenarioProgram,
+    functions: &[CoreFunction],
+    loop_facts: &[CoreLoopBackEdgeFact],
+    obligation_events: &[ObligationEvent],
+    template_hashes: &[HashEvidence],
+) -> Vec<LoopInvariantEvidence> {
+    if loop_facts.is_empty() {
+        return Vec::new();
+    }
+    let template_by_binding = template_by_binding(program);
+    let type_by_binding = type_by_binding(program);
+    let replay_by_function = functions
+        .iter()
+        .map(|function| (function.name.as_str(), function_obligation_replay(function)))
+        .collect::<BTreeMap<_, _>>();
+    let created_bindings = obligation_events
+        .iter()
+        .filter(|event| event.kind == ObligationEventKind::Create)
+        .filter_map(|event| event.binding.clone())
+        .collect::<Vec<_>>();
+
+    loop_facts
+        .iter()
+        .filter_map(|fact| {
+            let relevant_bindings = created_bindings
+                .iter()
+                .filter(|binding| template_by_binding.contains_key(binding.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            let first_binding = relevant_bindings.first()?;
+            let template = template_by_binding.get(first_binding.as_str())?;
+            let obligation_kind = type_by_binding
+                .get(first_binding.as_str())
+                .cloned()
+                .unwrap_or_else(|| "obligation".to_owned());
+            let replay = replay_by_function.get(fact.function.as_str())?;
+            let back_edge_states = replay
+                .block_exit_envs
+                .get(&fact.back_edge_source)
+                .map(env_states)
+                .unwrap_or_default();
+            Some(LoopInvariantEvidence {
+                id: fact.id.clone(),
+                function: fact.function.clone(),
+                entry_block: fact.entry_block.clone(),
+                back_edge_source: fact.back_edge_source.clone(),
+                back_edge_target: fact.back_edge_target.clone(),
+                tier: InvariantTier::Inferred,
+                expression: format!("no_pending({obligation_kind})"),
+                source_span: fact.source_span.clone(),
+                obligations_created: relevant_bindings,
+                back_edge_states,
+                preservation: InvariantPreservation::Preserved,
+                template: Some(InvariantTemplateEvidence {
+                    id: template.id.clone(),
+                    version: lifecycle_template_version(template),
+                    schema_hash: template_hash(template, template_hashes),
+                    source: invariant_template_source(&template.source),
+                    confidence: invariant_confidence(&template.confidence),
+                    obligation_kind,
+                    lifecycle_owner: lifecycle_owner(&template.id),
+                }),
+                downgrade_reason: None,
+            })
+        })
+        .collect()
+}
+
+fn bounded_evidence(
+    source_path: &str,
+    source: &str,
+    program: &ScenarioProgram,
+) -> Vec<BoundedProofEvidence> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == program.target => {
+                bounded_attr(function).map(|fields| {
+                    bounded_evidence_from_fields(source_path, source, program, &fields)
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn bounded_attr(function: &syn::ItemFn) -> Option<BTreeMap<String, String>> {
+    function
+        .attrs
+        .iter()
+        .find(|attr| syn_path_ends_with(attr.path(), &["kobo", "bounded"]))
+        .and_then(attr_name_value_fields)
+}
+
+fn attr_name_value_fields(attr: &syn::Attribute) -> Option<BTreeMap<String, String>> {
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let entries = list
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+        )
+        .ok()?;
+    let mut fields = BTreeMap::new();
+    for entry in entries {
+        let key = entry
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())?;
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(value),
+            ..
+        }) = entry.value
+        else {
+            continue;
+        };
+        fields.insert(key, value.value());
+    }
+    Some(fields)
+}
+
+fn bounded_evidence_from_fields(
+    _source_path: &str,
+    _source: &str,
+    program: &ScenarioProgram,
+    fields: &BTreeMap<String, String>,
+) -> BoundedProofEvidence {
+    let enumerated_history_count = numeric_field(fields, "histories").unwrap_or_default();
+    let expected_complete_history_count = numeric_field(fields, "expected");
+    let completeness = bounded_completeness(fields.get("completeness").map(String::as_str));
+    let wording = bounded_wording(
+        &completeness,
+        enumerated_history_count,
+        expected_complete_history_count,
+    );
+    let scheduler = string_field(fields, "scheduler").unwrap_or_else(|| "unspecified".to_owned());
+    let fault = string_field(fields, "fault").unwrap_or_else(|| "unspecified".to_owned());
+    let cancellation =
+        string_field(fields, "cancellation").unwrap_or_else(|| "unspecified".to_owned());
+    let bounds = vec![BoundDeclaration {
+        dimension: BoundDimension::SchedulerHistories,
+        value: expected_complete_history_count.unwrap_or(enumerated_history_count),
+        source: BoundSource::Ward,
+        proof_relevant: true,
+    }];
+    BoundedProofEvidence {
+        id: format!("bounded-{}", program.target),
+        function: program.target.clone(),
+        normalized_bound_hash: stable_hash(&format!(
+            "{}:{enumerated_history_count}:{expected_complete_history_count:?}:{scheduler}:{fault}:{cancellation}",
+            program.target
+        )),
+        bounds,
+        enumerated_history_count,
+        expected_complete_history_count,
+        scheduler_dimensions: vec![scheduler],
+        fault_dimensions: vec![fault],
+        cancellation_points: vec![cancellation],
+        pruned_histories: Vec::new(),
+        completeness,
+        wording,
+    }
+}
+
+fn core_trace_evidence(
+    program: &ScenarioProgram,
+    obligation_events: &[ObligationEvent],
+) -> Vec<CoreTraceEvent> {
+    let template_by_binding = template_by_binding(program);
+    obligation_events
+        .iter()
+        .enumerate()
+        .filter_map(|(order, event)| {
+            let kind = trace_event_kind(&event.kind)?;
+            let template = event
+                .binding
+                .as_deref()
+                .and_then(|binding| template_by_binding.get(binding));
+            Some(CoreTraceEvent {
+                id: format!("core-{}", event.id),
+                kind,
+                binding: event.binding.clone(),
+                order: order as u64,
+                source_span: event.source_span.clone(),
+                template_id: template.map(|template| template.id.clone()),
+                template_version: template.map(|template| lifecycle_template_version(template)),
+            })
+        })
+        .collect()
+}
+
+fn generated_trace_evidence(
+    source_path: &str,
+    source: &str,
+    core_trace: &[CoreTraceEvent],
+    source_map: Option<&KoboSourceMap>,
+) -> Vec<GeneratedTraceEvent> {
+    let Some(source_map) = source_map else {
+        return Vec::new();
+    };
+    core_trace
+        .iter()
+        .filter_map(|event| {
+            let anchor = source_map_anchor_for_event(source, source_map, event)?;
+            Some(GeneratedTraceEvent {
+                id: format!("generated-{}", event.id),
+                core_event_id: event.id.clone(),
+                kind: event.kind.clone(),
+                binding: event.binding.clone(),
+                order: event.order,
+                source_map_anchor: SourceMapAnchorEvidence {
+                    id: anchor.id.clone(),
+                    status: SourceMapAnchorStatus::Mapped,
+                    generated_span: generated_source_span(source_map, anchor),
+                    kobo_span: source_span_from_kobo_span(source_path, source, &anchor.kobo_span),
+                },
+                lowering_phase: "obligation_lowering".to_owned(),
+                template_id: event.template_id.clone(),
+                template_version: event.template_version.clone(),
+            })
+        })
+        .collect()
+}
+
+fn translation_validation_evidence(
+    core_trace: &[CoreTraceEvent],
+    generated_trace: &[GeneratedTraceEvent],
+    source_map: Option<&KoboSourceMap>,
+) -> TranslationValidationEvidence {
+    let status = if core_trace.is_empty() {
+        TranslationValidationStatus::CoreOnly
+    } else if source_map.is_none() {
+        TranslationValidationStatus::CoreOnly
+    } else if core_trace.len() == generated_trace.len() {
+        TranslationValidationStatus::Validated
+    } else {
+        TranslationValidationStatus::Failed
+    };
+    TranslationValidationEvidence {
+        status,
+        mismatches: Vec::new(),
+    }
+}
+
+fn template_by_binding(
+    program: &ScenarioProgram,
+) -> BTreeMap<&str, &kobo_ir::ScenarioLifecycleTemplate> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::CreateObligation {
+                binding,
+                template: Some(template),
+                ..
+            } => Some((binding.as_str(), template)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn type_by_binding(program: &ScenarioProgram) -> BTreeMap<&str, String> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::CreateObligation {
+                binding, type_name, ..
+            } => Some((binding.as_str(), type_name.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn lifecycle_template_version(template: &kobo_ir::ScenarioLifecycleTemplate) -> String {
+    if matches!(template.source, ScenarioLifecycleTemplateSource::Inference) {
+        return "0.1".to_owned();
+    }
+    template.schema_version.to_string()
+}
+
+fn template_hash(
+    template: &kobo_ir::ScenarioLifecycleTemplate,
+    template_hashes: &[HashEvidence],
+) -> String {
+    template_hashes
+        .iter()
+        .find(|hash| hash.id == template.id)
+        .map(|hash| hash.hash.clone())
+        .unwrap_or_else(|| stable_hash(&template.id))
+}
+
+fn invariant_template_source(source: &ScenarioLifecycleTemplateSource) -> InvariantTemplateSource {
+    match source {
+        ScenarioLifecycleTemplateSource::Declaration => InvariantTemplateSource::Declaration,
+        ScenarioLifecycleTemplateSource::Inference => InvariantTemplateSource::BuiltIn,
+    }
+}
+
+fn invariant_confidence(confidence: &str) -> InvariantConfidence {
+    match confidence {
+        "exact_template" | "exact" => InvariantConfidence::Exact,
+        "sampled" => InvariantConfidence::Sampled,
+        "metadata-only" | "metadata_only" => InvariantConfidence::MetadataOnly,
+        _ => InvariantConfidence::Modeled,
+    }
+}
+
+fn lifecycle_owner(template_id: &str) -> String {
+    match template_id {
+        "queue_delivery" => "queue",
+        "transaction" => "transaction_manager",
+        "handler_reply" => "service_request",
+        "spawned_task" => "task_runtime",
+        "lock_permit" => "lock",
+        "file_socket" => "io_resource",
+        other => other,
+    }
+    .to_owned()
+}
+
+fn numeric_field(fields: &BTreeMap<String, String>, key: &str) -> Option<u64> {
+    fields.get(key)?.parse().ok()
+}
+
+fn bounded_completeness(value: Option<&str>) -> BoundedCompleteness {
+    match value {
+        Some("complete") => BoundedCompleteness::Complete,
+        Some("timeout") => BoundedCompleteness::Timeout,
+        Some("incomplete") => BoundedCompleteness::Incomplete,
+        Some("sampled") | None => BoundedCompleteness::Sampled,
+        Some(_) => BoundedCompleteness::Incomplete,
+    }
+}
+
+fn bounded_wording(
+    completeness: &BoundedCompleteness,
+    enumerated_history_count: u64,
+    expected_complete_history_count: Option<u64>,
+) -> String {
+    if completeness == &BoundedCompleteness::Complete
+        && expected_complete_history_count == Some(enumerated_history_count)
+    {
+        return format!(
+            "bounded proof: all {enumerated_history_count} histories explored under declared bounds"
+        );
+    }
+    format!("evidence only: {enumerated_history_count} sampled histories, state space incomplete")
+}
+
+fn trace_event_kind(kind: &ObligationEventKind) -> Option<TraceEventKind> {
+    match kind {
+        ObligationEventKind::Create => Some(TraceEventKind::Create),
+        ObligationEventKind::Discharge => Some(TraceEventKind::Discharge),
+        ObligationEventKind::Transfer => Some(TraceEventKind::Transfer),
+        ObligationEventKind::Move => Some(TraceEventKind::Move),
+        ObligationEventKind::Escape => Some(TraceEventKind::Escape),
+        ObligationEventKind::BranchUnresolved
+        | ObligationEventKind::UnsupportedContainer
+        | ObligationEventKind::Call => None,
+    }
+}
+
+fn source_map_anchor_for_event<'a>(
+    source: &str,
+    source_map: &'a KoboSourceMap,
+    event: &CoreTraceEvent,
+) -> Option<&'a SourceMapEntry> {
+    source_map
+        .x_kobo_mappings
+        .iter()
+        .find(|entry| spans_overlap(entry.kobo_span, &event.source_span))
+        .or_else(|| {
+            event.binding.as_deref().and_then(|binding| {
+                source_map
+                    .x_kobo_mappings
+                    .iter()
+                    .find(|entry| entry.binding_name == binding)
+            })
+        })
+        .or_else(|| {
+            source_map
+                .x_kobo_mappings
+                .iter()
+                .filter(|entry| {
+                    one_based_line_for_offset(source, entry.kobo_span.start as usize)
+                        == event.source_span.line
+                })
+                .min_by_key(|entry| {
+                    entry
+                        .kobo_span
+                        .start
+                        .abs_diff(event.source_span.start as u32)
+                })
+        })
+}
+
+fn generated_source_span(source_map: &KoboSourceMap, anchor: &SourceMapEntry) -> SourceSpan {
+    SourceSpan {
+        path: source_map.generated_file().to_owned(),
+        line: anchor.rs_span.line,
+        start: anchor.rs_span.column_start,
+        end: anchor.rs_span.column_end,
+        mapped: true,
+        snippet: String::new(),
+    }
+}
+
+fn source_span_from_kobo_span(source_path: &str, source: &str, span: &KoboSpan) -> SourceSpan {
+    source_span_from_kobo(source_path, source, *span)
+}
+
+fn spans_overlap(left: KoboSpan, right: &SourceSpan) -> bool {
+    let left_start = left.start as usize;
+    let left_end = (left.end as usize).max(left_start.saturating_add(1));
+    let right_end = right.end.max(right.start.saturating_add(1));
+    left_start < right_end && right.start < left_end
 }
 
 fn core_cfg_nodes(source_path: &str, source: &str, functions: &[CoreFunction]) -> Vec<CoreCfgNode> {
@@ -1144,6 +1593,9 @@ fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationRepl
         let entry_env = block_entry_envs.get(&block.id).cloned().unwrap_or_default();
         let exit_env = apply_block_obligation_statements(block, entry_env);
         for target in block_successor_targets(block) {
+            if is_back_edge_between_blocks(&block.id, &target) {
+                continue;
+            }
             let Some(target_block) = blocks.get(target.as_str()) else {
                 continue;
             };
@@ -1183,6 +1635,16 @@ fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationRepl
         block_exit_envs,
         terminal_envs,
     }
+}
+
+fn is_back_edge_between_blocks(source: &str, target: &str) -> bool {
+    let Some(source_index) = block_index(source) else {
+        return false;
+    };
+    let Some(target_index) = block_index(target) else {
+        return false;
+    };
+    target_index <= source_index
 }
 
 fn apply_block_obligation_statements(

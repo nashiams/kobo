@@ -210,12 +210,15 @@ fn apply_kir_cfg_successors(
             if *from != cfg_block {
                 continue;
             }
+            if from == to {
+                if let Some(successor) = same_cfg_successor(index, &cfg_to_core_blocks, *to) {
+                    push_unique_successor(&mut successors, successor);
+                }
+                continue;
+            }
             if let Some(core_indexes) = cfg_to_core_blocks.get(to) {
                 for core_index in core_indexes {
-                    let successor = format!("bb{core_index}");
-                    if successor != block.id && !successors.contains(&successor) {
-                        successors.push(successor);
-                    }
+                    push_unique_successor(&mut successors, format!("bb{core_index}"));
                 }
             }
         }
@@ -223,6 +226,27 @@ fn apply_kir_cfg_successors(
             block.successors = successors;
             sync_terminator_successor_edges(block);
         }
+    }
+}
+
+fn same_cfg_successor(
+    index: usize,
+    cfg_to_core_blocks: &BTreeMap<u32, Vec<usize>>,
+    cfg_block: u32,
+) -> Option<String> {
+    let core_indexes = cfg_to_core_blocks.get(&cfg_block)?;
+    let position = core_indexes
+        .iter()
+        .position(|core_index| *core_index == index)?;
+    let target = core_indexes
+        .get(position + 1)
+        .or_else(|| core_indexes.first())?;
+    Some(format!("bb{target}"))
+}
+
+fn push_unique_successor(successors: &mut Vec<String>, successor: String) {
+    if !successors.contains(&successor) {
+        successors.push(successor);
     }
 }
 
@@ -489,5 +513,72 @@ impl CoreTerminatorKind {
             Self::Await => "await",
             Self::OpaqueBoundary => "opaque_boundary",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        FileId, ScenarioCoreCfgBlock, ScenarioCoreCfgEdge, ScenarioCoreCfgFacts,
+        ScenarioCoverageFacts,
+    };
+
+    use super::*;
+
+    #[test]
+    fn kir_self_loop_cfg_preserves_operation_order_instead_of_complete_graph() {
+        let program = ScenarioProgram {
+            file_id: FileId(0),
+            target: "queue_loop_case".to_owned(),
+            source_hash: "hash".to_owned(),
+            operations: vec![
+                ScenarioOp {
+                    span: span(10, 20),
+                    kind: ScenarioOpKind::CreateObligation {
+                        binding: "delivery".to_owned(),
+                        type_name: "Delivery".to_owned(),
+                        actions: vec!["ack".to_owned()],
+                        template: None,
+                    },
+                },
+                ScenarioOp {
+                    span: span(21, 30),
+                    kind: ScenarioOpKind::Discharge {
+                        binding: "delivery".to_owned(),
+                        action: "ack".to_owned(),
+                    },
+                },
+                ScenarioOp {
+                    span: span(31, 40),
+                    kind: ScenarioOpKind::Loop,
+                },
+            ],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts {
+                core_cfg: Some(ScenarioCoreCfgFacts {
+                    blocks: vec![ScenarioCoreCfgBlock {
+                        id: 6,
+                        kir_nodes: vec![20, 21, 22],
+                        span_start: 10,
+                        span_end: 40,
+                    }],
+                    edges: vec![ScenarioCoreCfgEdge { from: 6, to: 6 }],
+                }),
+                ..ScenarioCoverageFacts::default()
+            },
+        };
+
+        let core = lower_program(&program);
+        let blocks = &core.functions[0].blocks;
+        assert_eq!(blocks[0].successors, vec!["bb1"]);
+        assert_eq!(blocks[1].successors, vec!["bb2"]);
+        assert_eq!(blocks[2].successors, vec!["bb0"]);
+        assert_eq!(blocks[0].terminators[0].edges, vec!["goto:bb1"]);
+        assert_eq!(blocks[1].terminators[0].edges, vec!["goto:bb2"]);
+        assert_eq!(blocks[2].terminators[0].edges, vec!["goto:bb0"]);
+    }
+
+    fn span(start: u32, end: u32) -> KoboSpan {
+        KoboSpan::new(start, end, FileId(0))
     }
 }

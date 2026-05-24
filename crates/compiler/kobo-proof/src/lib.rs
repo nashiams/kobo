@@ -1,7 +1,7 @@
 mod adapter;
 mod async_model;
-mod bounded;
 mod boundary;
+mod bounded;
 mod candidate;
 mod certificate;
 mod error;
@@ -13,8 +13,8 @@ mod translation;
 mod verify;
 
 pub use certificate::{
-    AdapterConfidence, AdapterEvidence, ArtifactKind, AsyncModelEvidence, BoundaryAssumption,
-    BoundaryPolicy, BoundDeclaration, BoundDimension, BoundSource, BoundedCompleteness,
+    AdapterConfidence, AdapterEvidence, ArtifactKind, AsyncModelEvidence, BoundDeclaration,
+    BoundDimension, BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedCompleteness,
     BoundedProofEvidence, CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact,
     CoreCfgEdge, CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreTraceEvent, CoverageLoss,
     FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent,
@@ -25,9 +25,8 @@ pub use certificate::{
     SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
     SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
     TraceMismatchEvidence, TraceMismatchKind, TranslationValidationEvidence,
-    TranslationValidationStatus,
-    PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
-    PROOF_TARGET_VERSION,
+    TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE,
+    PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 pub use error::VerificationError;
 pub use hash::{certificate_material_hash, core_material_hash, stable_hash, template_schema_hash};

@@ -11,6 +11,14 @@ pub(crate) fn verify_translation_validation(
     if certificate.core_obligation_trace.is_empty() && certificate.generated_rust_trace.is_empty() {
         return verify_empty_trace_status(certificate);
     }
+    if certificate.generated_rust_trace.is_empty()
+        && matches!(
+            certificate.translation_validation.status,
+            TranslationValidationStatus::CoreOnly | TranslationValidationStatus::NotGenerated
+        )
+    {
+        return Ok(());
+    }
     let generated_by_core_id = generated_trace_by_core_id(&certificate.generated_rust_trace)?;
     verify_core_events_have_generated_matches(certificate, &generated_by_core_id)?;
     verify_generated_events_have_core_matches(certificate)?;
@@ -131,7 +139,9 @@ fn verify_event_identity(
     Ok(())
 }
 
-fn verify_source_map_anchor(generated_event: &GeneratedTraceEvent) -> Result<(), VerificationError> {
+fn verify_source_map_anchor(
+    generated_event: &GeneratedTraceEvent,
+) -> Result<(), VerificationError> {
     if generated_event.source_map_anchor.status == SourceMapAnchorStatus::Mapped
         && !generated_event.source_map_anchor.id.is_empty()
     {
@@ -140,11 +150,7 @@ fn verify_source_map_anchor(generated_event: &GeneratedTraceEvent) -> Result<(),
     Err(VerificationError::TranslationSourceMapAnchorMismatch {
         generated_event_id: generated_event.id.clone(),
         anchor_id: generated_event.source_map_anchor.id.clone(),
-        status: generated_event
-            .source_map_anchor
-            .status
-            .as_str()
-            .to_owned(),
+        status: generated_event.source_map_anchor.status.as_str().to_owned(),
     })
 }
 

@@ -11,9 +11,7 @@ pub(crate) fn verify_bounded_evidence(
     Ok(())
 }
 
-fn verify_proof_relevant_bounds(
-    evidence: &BoundedProofEvidence,
-) -> Result<(), VerificationError> {
+fn verify_proof_relevant_bounds(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {
     if evidence.bounds.iter().any(|bound| bound.proof_relevant) {
         return Ok(());
     }

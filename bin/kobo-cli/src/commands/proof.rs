@@ -119,6 +119,7 @@ fn emit_certificate(
             adapter_policies: &session.config.ecosystem_policy.adapters,
             replay_grade: replay_grade.proof_grade(),
             artifact_kind,
+            source_map: Some(&artifacts.source_map),
         })?;
     Ok((certificate, source))
 }
@@ -202,14 +203,26 @@ fn emit_verified(
                 "core_hash": report.core_hash,
                 "checked_obligation_events": report.checked_obligation_events,
                 "certificate_material_hash": report.certificate_material_hash,
+                "translation_validation_status": &report.translation_validation_status,
+                "bounded_wording": &report.bounded_wording,
             }))?
         );
     } else {
+        let translation = match report.translation_validation_status.as_str() {
+            "validated" => "translation validated",
+            "core_only" => "Core proof only",
+            "not_generated" => "generated Rust trace not present",
+            "failed" => "translation validation failed",
+            other => other,
+        };
         println!(
-            "proof verified: {} ({} obligation event(s) replayed)",
+            "proof verified: {} ({} obligation event(s) replayed, {translation})",
             artifact.display(),
             report.checked_obligation_events
         );
+        for wording in &report.bounded_wording {
+            println!("{wording}");
+        }
     }
     Ok(())
 }

@@ -362,6 +362,8 @@ mod tests {
             sources: vec!["src/main.kobo".to_owned()],
             x_kobo_mappings: vec![
                 SourceMapEntry {
+                    id: "map-1".to_owned(),
+                    binding_name: "left".to_owned(),
                     rs_span: RsSpan {
                         line: 2,
                         column_start: 0,
@@ -374,6 +376,8 @@ mod tests {
                     solver_node_id: None,
                 },
                 SourceMapEntry {
+                    id: "map-2".to_owned(),
+                    binding_name: "right".to_owned(),
                     rs_span: RsSpan {
                         line: 3,
                         column_start: 0,

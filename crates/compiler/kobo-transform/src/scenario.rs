@@ -704,6 +704,7 @@ impl<'a> ScenarioLowerer<'a> {
         if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref(), env) {
             if expr_contains_await(init.expr.as_ref()) {
                 self.record_unsupported_construct("lifecycle_method_await_initializer");
+                self.execute_expr(init.expr.as_ref(), env);
             }
             env.bind_obligation(
                 creation.binding.clone(),
@@ -934,10 +935,13 @@ impl<'a> ScenarioLowerer<'a> {
                 self.execute_expr(index.index.as_ref(), env);
             }
             Expr::Let(expr_let) => self.execute_expr(expr_let.expr.as_ref(), env),
-            Expr::Loop(expr_loop) => self.operations.push(ScenarioOp {
-                span: self.span(expr_loop),
-                kind: ScenarioOpKind::Loop,
-            }),
+            Expr::Loop(expr_loop) => {
+                self.execute_block(&expr_loop.body, env);
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_loop),
+                    kind: ScenarioOpKind::Loop,
+                });
+            }
             Expr::Paren(paren) => self.execute_expr(paren.expr.as_ref(), env),
             Expr::Range(range) => {
                 if let Some(start) = range.start.as_deref() {

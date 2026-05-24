@@ -1322,6 +1322,7 @@ fn write_proof_artifact(
             adapter_policies: &config.ecosystem_policy.adapters,
             replay_grade: proof_replay_grade(&run.replay_guarantee),
             artifact_kind: kobo_driver::proof::ArtifactKind::KwitProofJson,
+            source_map: None,
         })?;
     kobo_proof::verify_certificate(
         &certificate,

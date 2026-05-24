@@ -11,6 +11,7 @@ use crate::{ErrorFormat, GuaranteeProfileArg};
 
 #[derive(Clone, Debug)]
 struct ReleasePolicy {
+    is_configured: bool,
     deny_new_debt: bool,
     strict_paths: Vec<String>,
     deny_downgrade_without_reason: bool,
@@ -26,6 +27,7 @@ pub(super) struct EffectiveGuaranteePolicy {
 impl ReleasePolicy {
     const fn default() -> Self {
         Self {
+            is_configured: false,
             deny_new_debt: true,
             strict_paths: Vec::new(),
             deny_downgrade_without_reason: true,
@@ -33,6 +35,7 @@ impl ReleasePolicy {
     }
 
     fn apply_table(&mut self, table: &toml::map::Map<String, TomlValue>) {
+        self.is_configured = true;
         if let Some(value) = table.get("deny_new_debt").and_then(TomlValue::as_bool) {
             self.deny_new_debt = value;
         }
@@ -63,6 +66,14 @@ impl EffectiveGuaranteePolicy {
 
     pub(super) fn error_policy_name(&self) -> &'static str {
         self.policy.guarantees().errors().as_str()
+    }
+
+    pub(super) const fn has_configured_release_policy(&self) -> bool {
+        self.release.is_configured
+    }
+
+    pub(super) const fn denies_new_debt(&self) -> bool {
+        self.release.is_configured && self.release.deny_new_debt
     }
 }
 
@@ -107,6 +118,14 @@ pub(super) fn load_effective_policy(
                 }
             }
         }
+        if (profile.compiler_profile() == GuaranteeProfile::Release || release.is_configured)
+            && release
+                .strict_paths
+                .iter()
+                .any(|pattern| matches_policy_pattern(&relative, pattern))
+        {
+            raise_policy_to_release_floor(&mut policy);
+        }
     }
 
     Ok(EffectiveGuaranteePolicy {
@@ -114,6 +133,59 @@ pub(super) fn load_effective_policy(
         release,
         downgrade,
     })
+}
+
+pub(super) fn load_configured_release_policy(
+    file: Option<&Path>,
+    base_policy: &GuaranteePolicy,
+) -> anyhow::Result<Option<EffectiveGuaranteePolicy>> {
+    let profile = profile_arg_for(base_policy.profile());
+    let loaded = load_effective_policy(file, profile)?;
+    if loaded.has_configured_release_policy() {
+        Ok(Some(loaded))
+    } else {
+        Ok(None)
+    }
+}
+
+const fn profile_arg_for(profile: GuaranteeProfile) -> GuaranteeProfileArg {
+    match profile {
+        GuaranteeProfile::Dev => GuaranteeProfileArg::Dev,
+        GuaranteeProfile::Checked => GuaranteeProfileArg::Checked,
+        GuaranteeProfile::Release => GuaranteeProfileArg::Release,
+    }
+}
+
+fn raise_policy_to_release_floor(policy: &mut GuaranteePolicy) {
+    let release = GuaranteePolicy::for_profile(GuaranteeProfile::Release);
+    let release_guarantees = release.guarantees();
+    if policy.guarantees().ownership() < release_guarantees.ownership() {
+        policy.guarantees_mut().set_level(
+            GuaranteeDimension::Ownership,
+            release_guarantees.ownership(),
+        );
+    }
+    if policy.guarantees().liveness() < release_guarantees.liveness() {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Liveness, release_guarantees.liveness());
+    }
+    if policy.guarantees().replay() < release_guarantees.replay() {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Replay, release_guarantees.replay());
+    }
+    if policy.guarantees().boundaries() < release_guarantees.boundaries() {
+        policy.guarantees_mut().set_level(
+            GuaranteeDimension::Boundaries,
+            release_guarantees.boundaries(),
+        );
+    }
+    if policy.guarantees().errors() < release_guarantees.errors() {
+        policy
+            .guarantees_mut()
+            .set_errors(release_guarantees.errors());
+    }
 }
 
 pub(super) fn print_policy_json(policy: &EffectiveGuaranteePolicy) -> anyhow::Result<()> {

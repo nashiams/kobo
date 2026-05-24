@@ -933,7 +933,7 @@ fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
             "invalid-kwit-witness-schema",
             "invalid kwit witness schema",
             "A .kwit witness is missing required metadata or uses an unsupported schema version.",
-            "Legacy schema_version 0 witnesses validate metadata only; v0.9 exact replay requires schema_version 1 event history and uses K0104 for divergence.",
+            "Legacy schema_version 0 witnesses validate metadata only; exact replay requires schema_version 1 event history and uses K0104 for divergence.",
             BoundaryPolicy,
             Error,
             Always(Error),

@@ -20,6 +20,9 @@ pub struct ScenarioOptions {
     pub seed: u64,
     pub inject: Option<String>,
     pub event_budget: Option<u64>,
+    pub scheduler: SchedulerPolicy,
+    pub loom_max_branches: Option<u64>,
+    pub loom_checkpoint_replay: bool,
 }
 
 impl Default for ScenarioOptions {
@@ -30,6 +33,51 @@ impl Default for ScenarioOptions {
             seed: 0,
             inject: None,
             event_budget: None,
+            scheduler: SchedulerPolicy::Default,
+            loom_max_branches: None,
+            loom_checkpoint_replay: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchedulerPolicy {
+    Default,
+    RoundRobin,
+    Pct,
+    Exhaustive,
+    SmallRandom,
+}
+
+impl SchedulerPolicy {
+    pub fn from_name(name: Option<&str>) -> Self {
+        match name {
+            Some("round-robin") => Self::RoundRobin,
+            Some("pct") => Self::Pct,
+            Some("exhaustive") => Self::Exhaustive,
+            Some("small-random") => Self::SmallRandom,
+            _ => Self::Default,
+        }
+    }
+
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::RoundRobin => "round-robin",
+            Self::Pct => "pct",
+            Self::Exhaustive => "exhaustive",
+            Self::SmallRandom => "small-random",
+        }
+    }
+
+    pub fn effective_for_profile(&self, sim_profile: &str) -> Self {
+        match self {
+            Self::Default => match sim_profile {
+                "deep" => Self::Pct,
+                "exhaustive" => Self::Exhaustive,
+                _ => Self::RoundRobin,
+            },
+            explicit => explicit.clone(),
         }
     }
 }
@@ -77,7 +125,8 @@ pub struct ScenarioCoverage {
 pub struct ExecutionDigest {
     pub semantic_engine: String,
     pub harness_engine: String,
-    pub model_version: String,
+    pub model_schema: String,
+    pub schema_version: u64,
     pub scenario_ir_hash: String,
     pub operation_count: usize,
     pub semantic_trace_hash: String,
@@ -892,7 +941,8 @@ impl<'a> Runtime<'a> {
             digest: ExecutionDigest {
                 semantic_engine: "driver-kir-scenario".to_owned(),
                 harness_engine: "none".to_owned(),
-                model_version: crate::lower::MODEL_VERSION.to_owned(),
+                model_schema: crate::lower::MODEL_SCHEMA.to_owned(),
+                schema_version: crate::lower::MODEL_SCHEMA_VERSION,
                 scenario_ir_hash,
                 operation_count: lowered.operations.len(),
                 semantic_trace_hash: trace_hash,

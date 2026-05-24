@@ -11,9 +11,10 @@ use kobo_ir::{FileId, GuaranteePolicy, MustCallObligation};
 use kobo_parser::{parse_ward_syntax, WardItem};
 
 use super::{
+    backend_debt::{self, DebtControlSource},
     boundary_projection, ownership_analysis, policy,
     session::{build_session, line_number_for_offset, render_diagnostics},
-    summary_validation,
+    sim_model, summary_validation,
 };
 use crate::{ErrorFormat, GuaranteeProfileArg};
 
@@ -86,6 +87,7 @@ pub(super) fn cmd_inspect(
     harness: bool,
     cargo_dir: Option<&Path>,
     profile: Option<&str>,
+    backend: Option<&str>,
     trait_default: Option<&str>,
     audit: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -103,7 +105,11 @@ pub(super) fn cmd_inspect(
     if sim {
         let source = std::fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
-        let output = simulation_transparency_output(&source, harness);
+        let output = if harness {
+            simulation_harness_output(file, &source, backend, &mut session)?
+        } else {
+            simulation_transparency_output(file, &source, false, backend)?
+        };
         eprintln!(
             "// effective guarantee profile: {}",
             session.guarantee_profile().as_str()
@@ -262,7 +268,13 @@ fn audit_json_output(file: &Path, source: &str) -> anyhow::Result<String> {
     Ok(format!("{}\n", serde_json::to_string(&value)?))
 }
 
-fn simulation_transparency_output(source: &str, harness: bool) -> String {
+fn simulation_transparency_output(
+    file: &Path,
+    source: &str,
+    harness: bool,
+    backend: Option<&str>,
+) -> anyhow::Result<String> {
+    validate_backend_pin(file, source, backend)?;
     let command = if harness {
         "inspect --sim --harness"
     } else {
@@ -270,7 +282,7 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
     };
     let mut output = String::new();
     output.push_str(&format!(
-        "// kobo: {command} v0.10 simulation facade transparency path built on the v0.9 checked simulation MVP\n"
+        "// kobo: {command} simulation contract transparency path for scoped guarantee policy and inspectable harness boundaries\n"
     ));
     output.push_str(
         "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",
@@ -280,6 +292,9 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
     output.push_str("// kobo: possible backend adapter engines: Loom, Shuttle, Turmoil, Madsim, proptest, failpoints\n");
     if harness {
         output.push_str("// kobo: backend adapter boundary: generated harness owns backend-native imports; user source remains normal\n");
+        if let Some(backend) = backend {
+            output.push_str(&format!("// kobo: backend pin: {backend}\n"));
+        }
     } else {
         output.push_str("// kobo: use --harness to inspect generated backend adapter boundaries\n");
     }
@@ -310,7 +325,207 @@ fn simulation_transparency_output(source: &str, harness: bool) -> String {
             candidate.whole_ecosystem_modeling_required
         ));
     }
-    output
+    Ok(output)
+}
+
+fn simulation_harness_output(
+    file: &Path,
+    source: &str,
+    backend: Option<&str>,
+    session: &mut kobo_driver::CompileSession,
+) -> anyhow::Result<String> {
+    let mut output = simulation_transparency_output(file, source, true, backend)?;
+    match generated_harness_inspection(file, source, backend, session) {
+        Ok(Some(inspection)) => {
+            output.push_str(&format!(
+                "// kobo: generated harness manifest: {}\n",
+                inspection.manifest_path
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_rs_path: {}\n",
+                inspection.harness_rs_path
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_manifest_hash: {}\n",
+                inspection.harness_manifest_hash
+            ));
+            output.push_str(&format!(
+                "// kobo: backend_replay_token_hash: {}\n",
+                inspection.backend_replay_token_hash
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_execution_scope: {}\n",
+                inspection.execution_scope
+            ));
+            output.push_str(&format!(
+                "// kobo: harness_event_count: {}\n",
+                inspection.event_count
+            ));
+        }
+        Ok(None) => {
+            output.push_str(
+                "// kobo: generated harness manifest unavailable for this inspection target\n",
+            );
+        }
+        Err(error) if error.to_string().contains("unsupported backend option") => {
+            return Err(error);
+        }
+        Err(error) => {
+            output.push_str(&format!(
+                "// kobo: generated harness manifest unavailable: {error}\n"
+            ));
+        }
+    }
+    Ok(output)
+}
+
+struct HarnessInspection {
+    manifest_path: String,
+    harness_rs_path: String,
+    harness_manifest_hash: String,
+    backend_replay_token_hash: String,
+    execution_scope: String,
+    event_count: usize,
+}
+
+fn generated_harness_inspection(
+    file: &Path,
+    source: &str,
+    backend: Option<&str>,
+    session: &mut kobo_driver::CompileSession,
+) -> anyhow::Result<Option<HarnessInspection>> {
+    let document = sim_model::parse_document(source.to_owned());
+    let Some(target_name) = document
+        .scenarios
+        .first()
+        .map(|scenario| scenario.name.clone())
+    else {
+        return Ok(None);
+    };
+    let inferred_backend_profile = document
+        .scenarios
+        .first()
+        .map(|scenario| scenario.profile.clone())
+        .unwrap_or_else(|| sim_model::target_profile(&document, &target_name, None));
+    let backend_profile = backend
+        .and_then(inspect_profile_for_backend)
+        .map(str::to_owned)
+        .unwrap_or(inferred_backend_profile);
+    if backend.is_none() {
+        if let Some(intent) =
+            backend_debt::configured_reserved_backend_intent(&session.config, &backend_profile)
+        {
+            let debt_path = backend_debt::write_unsupported_backend_debt(
+                file,
+                &target_name,
+                intent.capability,
+                intent.scheduler,
+                DebtControlSource::Config,
+            )?;
+            anyhow::bail!(
+                "{}",
+                backend_debt::unsupported_backend_debt_message(intent.capability, &debt_path)?
+            );
+        }
+    }
+    let artifacts = run_codegen_pipeline(session, file)
+        .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
+    let scenario_program = kobo_driver::build_scenario_program(
+        &artifacts,
+        &target_name,
+        document.source_hash.clone(),
+        &backend_profile,
+    )?;
+    let options = kobo_sim_core::ScenarioOptions {
+        sim_profile: "inspect".to_owned(),
+        profile: backend_profile.clone(),
+        seed: 0,
+        inject: None,
+        event_budget: Some(session.config.runtime_profile.scenario_event_budget),
+        scheduler: kobo_sim_core::SchedulerPolicy::Default,
+        loom_max_branches: session.config.sim.max_branches_for_backend("loom"),
+        loom_checkpoint_replay: session
+            .config
+            .sim
+            .checkpoint_replay_for_backend("loom")
+            .unwrap_or(false),
+    };
+    let run = kobo_sim_core::run_full_depth_from_program(
+        &scenario_program,
+        &artifacts.rs_source,
+        &options,
+        kobo_sim_core::EngineMode::Both,
+    )?;
+    let Some(manifest) = run.harness_manifest else {
+        return Ok(None);
+    };
+    let manifest_json = serde_json::to_string(&manifest)?;
+    let harness_manifest_hash = kobo_sim_core::digest::stable_hash(&manifest_json);
+    let backend_replay_token_hash = kobo_sim_core::digest::stable_hash(&format!(
+        "{}:{}:{}:{}",
+        backend_profile,
+        run.digest.semantic_trace_hash,
+        run.digest.harness_trace_hash,
+        manifest.generated_rust_hash
+    ));
+    let manifest_path = PathBuf::from(&manifest.harness_dir)
+        .join("manifest.json")
+        .display()
+        .to_string();
+    Ok(Some(HarnessInspection {
+        manifest_path,
+        harness_rs_path: manifest.harness_rs_path,
+        harness_manifest_hash,
+        backend_replay_token_hash,
+        execution_scope: manifest.execution_scope,
+        event_count: manifest.event_count,
+    }))
+}
+
+fn inspect_profile_for_backend(backend: &str) -> Option<&'static str> {
+    match backend {
+        "generated-rust-process" => Some("async"),
+        "loom" => Some("sync"),
+        "proptest" => Some("stateful-input"),
+        "failpoints" => Some("failpoint"),
+        "network-loopback" => Some("network"),
+        "storage-filesystem" => Some("sync"),
+        _ => None,
+    }
+}
+
+fn validate_backend_pin(file: &Path, source: &str, backend: Option<&str>) -> anyhow::Result<()> {
+    let Some(backend) = backend else {
+        return Ok(());
+    };
+    let Some(capability) = backend_debt::backend_capability(backend) else {
+        anyhow::bail!(
+            "unsupported backend option `{backend}`; use a stable Kobo profile, inspect the generated backend-native harness, or mark unsupported knobs as scenario debt"
+        );
+    };
+    if !capability.executes_now {
+        let target_name = inspect_target_name(source);
+        let debt_path = backend_debt::write_unsupported_backend_debt(
+            file,
+            &target_name,
+            capability,
+            None,
+            DebtControlSource::InspectHarness,
+        )?;
+        anyhow::bail!(
+            "{}",
+            backend_debt::unsupported_backend_debt_message(capability, &debt_path)?
+        );
+    }
+    Ok(())
+}
+
+fn inspect_target_name(source: &str) -> String {
+    sim_model::parse_document(source.to_owned())
+        .scenarios
+        .first()
+        .map(|scenario| scenario.name.clone())
+        .unwrap_or_else(|| "inspect-target".to_owned())
 }
 
 fn append_scenario_metadata(mut output: String, source: &str) -> String {

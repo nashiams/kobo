@@ -6,6 +6,18 @@ pub enum VerificationError {
     SourceHashMismatch { expected: String, observed: String },
     #[error("core hash mismatch: expected {expected}, observed {observed}")]
     CoreHashMismatch { expected: String, observed: String },
+    #[error("unsupported certificate header {field}: expected {expected}, observed {observed}")]
+    UnsupportedCertificateHeader {
+        field: String,
+        expected: String,
+        observed: String,
+    },
+    #[error("unsupported certificate field {field}: expected {expected}, observed {observed}")]
+    UnsupportedCertificateField {
+        field: String,
+        expected: String,
+        observed: String,
+    },
     #[error("missing cancel edge for suspension block {block}")]
     MissingCancelEdge { block: String },
     #[error("missing async cancel evidence for suspension block {block}")]
@@ -19,8 +31,12 @@ pub enum VerificationError {
     },
     #[error("missing select path evidence for block {block} path {path_kind}")]
     MissingSelectPathEvidence { block: String, path_kind: String },
-    #[error("template {id} has stale version {version}")]
-    StaleTemplateVersion { id: String, version: String },
+    #[error("template {id} has unsupported schema {template_schema}@{schema_version}")]
+    UnsupportedTemplateSchema {
+        id: String,
+        template_schema: String,
+        schema_version: u64,
+    },
     #[error("template hash mismatch for {id}: expected {expected}, observed {observed}")]
     TemplateHashMismatch {
         id: String,

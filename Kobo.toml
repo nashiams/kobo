@@ -2,7 +2,35 @@
 # All fields are optional; defaults shown here.
 
 [kobo]
-mode = "script"
+profile = "dev"
+
+[guarantees]
+ownership = "record"
+liveness = "record"
+replay = "record"
+boundaries = "record"
+errors = "ergonomic"
+
+[sim]
+default_profile = "quick"
+show_backend_choices = false
+
+[sim.profile.quick]
+schedule_budget = 10000
+seed_count = 16
+shrink = "off"
+
+[sim.profile.deep]
+schedule_budget = 1000000
+seed_count = 1024
+shrink = "best-effort"
+
+[sim.backend.loom]
+enabled = true
+scheduler = "exhaustive"
+replay_token = "record"
+max_branches = 100000
+checkpoint_replay = true
 
 [diagnostics]
 hot_borrow_threshold = 10000

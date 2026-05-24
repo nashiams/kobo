@@ -103,13 +103,13 @@ fn backend_registry_discloses_full_depth_for_compiler_owned_and_registered_bound
             "{name} still must not claim arbitrary external crate exploration: {backend}",
         );
         assert_eq!(
-            backend["registered_boundary_exploration"], true,
-            "{name} should be full-depth for registry-validated adapter boundaries: {backend}",
+            backend["registered_boundary_exploration"], false,
+            "{name} should not claim registry-validated native adapter boundaries before an adapter is linked: {backend}",
         );
         assert_contains(
             &backend.to_string(),
-            "full-registered-boundaries",
-            "adapter backends should disclose their registry-validated production scope",
+            "unsupported-native-adapter",
+            "reserved adapter backends should disclose unsupported native scope",
         );
     }
 }

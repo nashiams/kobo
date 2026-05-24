@@ -376,7 +376,8 @@ async fn evidence_case() {
         .find(|obligation| obligation["binding"].as_str() == Some("delivery"))
         .expect("delivery lifecycle evidence should exist");
     assert_eq!(delivery["template_id"], "queue_delivery");
-    assert_eq!(delivery["template_version"], "v0.13.0");
+    assert_eq!(delivery["template_schema"], "lifecycle-template");
+    assert_eq!(delivery["schema_version"], 1);
     assert_eq!(delivery["state"], "discharged");
     assert_eq!(delivery["source_span"]["mapped"], Value::Bool(true));
 }

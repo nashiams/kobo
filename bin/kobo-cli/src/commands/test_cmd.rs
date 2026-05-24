@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -22,7 +23,10 @@ use crate::ErrorFormat;
 use super::formal_core;
 use super::sim_model::{self, ScenarioDocument};
 use super::witness_evidence;
-use super::{declarations, summary_validation};
+use super::{
+    backend_debt::{self, DebtControlSource},
+    declarations, summary_validation,
+};
 
 pub(super) fn cmd_test(
     file: &Path,
@@ -37,9 +41,15 @@ pub(super) fn cmd_test(
     error_format: ErrorFormat,
     target: Option<&str>,
     engine: Option<&str>,
+    expert_options: BackendExpertOptions,
 ) -> anyhow::Result<()> {
-    let sim_profile = parse_sim_profile(sim)?;
-    let seed = seed.unwrap_or(0);
+    let mut session = super::session::build_session(
+        file,
+        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    )?;
+    let sim_profile = parse_sim_profile(sim, &session.config)?;
+    let sim_profile = sim_profile.as_str();
+    let requested_seed = seed.unwrap_or(0);
     let engine = parse_engine(engine.unwrap_or("both"))?;
     let document = sim_model::load_document(file)?;
     let target_name = target
@@ -51,10 +61,67 @@ pub(super) fn cmd_test(
                 .map(|scenario| scenario.name.clone())
         })
         .unwrap_or_else(|| "<missing>".to_owned());
-    let profile_roles = resolve_profile_roles(profile, &document, &target_name);
-    let mut session = super::session::build_session(
-        file,
-        Some(GuaranteePolicy::for_profile(GuaranteeProfile::Checked)),
+    let profile_roles = resolve_profile_roles(profile, &document, &target_name)?;
+    let execution_profile = expert_options.execution_profile(&profile_roles.backend_profile)?;
+    let backend_name = expert_options.backend_name(&execution_profile).to_owned();
+    let effective_scheduler = expert_options
+        .effective_scheduler(&session.config, &execution_profile)
+        .map(str::to_owned);
+    let effective_max_branches = expert_options
+        .max_branches
+        .or_else(|| session.config.sim.max_branches_for_backend(&backend_name));
+    let effective_shrink = session
+        .config
+        .sim
+        .shrink_for(sim_profile)
+        .unwrap_or_else(|| default_shrink_mode(sim_profile))
+        .to_owned();
+    let effective_replay_token = session
+        .config
+        .sim
+        .replay_token_for_backend(&backend_name)
+        .unwrap_or("record")
+        .to_owned();
+    let effective_checkpoint_replay = session
+        .config
+        .sim
+        .checkpoint_replay_for_backend(&backend_name)
+        .unwrap_or(false);
+    if let Some(capability) = backend_debt::unsupported_backend_capability(&backend_name) {
+        let debt_path = backend_debt::write_unsupported_backend_debt(
+            file,
+            &target_name,
+            capability,
+            effective_scheduler.as_deref(),
+            DebtControlSource::TestCommand,
+        )?;
+        anyhow::bail!(
+            "{}",
+            backend_debt::unsupported_backend_debt_message(capability, &debt_path)?
+        );
+    }
+    if expert_options.backend.is_none() {
+        if let Some(intent) =
+            backend_debt::configured_reserved_backend_intent(&session.config, &execution_profile)
+        {
+            let debt_path = backend_debt::write_unsupported_backend_debt(
+                file,
+                &target_name,
+                intent.capability,
+                intent.scheduler,
+                DebtControlSource::Config,
+            )?;
+            anyhow::bail!(
+                "{}",
+                backend_debt::unsupported_backend_debt_message(intent.capability, &debt_path)?
+            );
+        }
+    }
+    expert_options.validate(
+        &execution_profile,
+        sim_profile,
+        effective_scheduler.as_deref(),
+        effective_max_branches,
     )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build compiler scenario artifacts"))?;
@@ -62,33 +129,48 @@ pub(super) fn cmd_test(
         &artifacts,
         &target_name,
         document.source_hash.clone(),
-        &profile_roles.backend_profile,
+        &execution_profile,
     )?;
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
-        profile: profile_roles.backend_profile.clone(),
-        seed,
+        profile: execution_profile,
+        seed: requested_seed,
         inject: inject.map(str::to_owned),
-        event_budget: event_budget.or_else(|| default_budget(sim_profile)),
+        event_budget: event_budget
+            .or(effective_max_branches)
+            .or_else(|| session.config.sim.schedule_budget_for(sim_profile))
+            .or_else(|| default_budget(sim_profile)),
+        scheduler: kobo_sim_core::SchedulerPolicy::from_name(effective_scheduler.as_deref()),
+        loom_max_branches: effective_max_branches,
+        loom_checkpoint_replay: effective_checkpoint_replay,
     };
+    let configured_seed_count = session.config.sim.seed_count_for(sim_profile);
     let fuzz_plan = if fuzz {
-        Some(FuzzPlan::new(seed, &scenario_program)?)
+        Some(FuzzPlan::new(
+            requested_seed,
+            &scenario_program,
+            configured_seed_count.unwrap_or(FuzzPlan::DEFAULT_CASES),
+        )?)
     } else {
         None
     };
-    let mut run = match fuzz_plan.as_ref() {
-        Some(plan) => run_fuzz_portfolio(
+    let (mut run, executed_seed) = match fuzz_plan.as_ref() {
+        Some(plan) => (
+            run_fuzz_portfolio(
+                &scenario_program,
+                &artifacts.rs_source,
+                &options,
+                engine,
+                plan,
+            )?,
+            requested_seed,
+        ),
+        None => run_seed_portfolio(
             &scenario_program,
             &artifacts.rs_source,
             &options,
             engine,
-            plan,
-        )?,
-        None => kobo_sim_core::run_full_depth_from_program(
-            &scenario_program,
-            &artifacts.rs_source,
-            &options,
-            engine,
+            configured_seed_count.unwrap_or(1),
         )?,
     };
     let strict_source_path = sim_model::cli_relative_path(file)?;
@@ -99,7 +181,12 @@ pub(super) fn cmd_test(
         &mut run,
     );
     apply_trace_checks(&strict_source_path, &document.source, &mut run);
-    apply_model_vs_implementation(&strict_source_path, &document.source, seed, &mut run);
+    apply_model_vs_implementation(
+        &strict_source_path,
+        &document.source,
+        executed_seed,
+        &mut run,
+    );
     validate_run_boundary_declarations(file, &session.config, &run)?;
 
     let mut witness_path = None;
@@ -110,18 +197,37 @@ pub(super) fn cmd_test(
             &scenario_program,
             &profile_roles.guarantee_profile,
             sim_profile,
-            seed,
+            executed_seed,
             inject,
             fuzz_plan.as_ref(),
             witness_dir,
             &session.config,
             &artifacts.runtime_evidence,
+            &expert_options,
+            effective_scheduler.as_deref(),
+            effective_max_branches,
+            effective_shrink.as_str(),
+            effective_replay_token.as_str(),
+            effective_checkpoint_replay,
             &run,
         )?);
     }
 
     if events == Some("json") {
-        print_events(file, sim_profile, seed, fuzz_plan.as_ref(), &run)?;
+        print_events(
+            file,
+            sim_profile,
+            executed_seed,
+            fuzz_plan.as_ref(),
+            &expert_options,
+            effective_max_branches,
+            effective_shrink.as_str(),
+            effective_replay_token.as_str(),
+            effective_checkpoint_replay,
+            &session.config,
+            effective_scheduler.as_deref(),
+            &run,
+        )?;
         return Ok(());
     }
 
@@ -136,21 +242,136 @@ pub(super) fn cmd_test(
         anyhow::bail!("{}", failure.message)
     }
 
-    println!(
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "scenario": run.target,
-            "seed": seed,
-            "backend_profile": run.profile,
-            "status": "passed",
-        }))?
-    );
+    let mut response = serde_json::json!({
+        "scenario": run.target,
+        "seed": executed_seed,
+        "sim_profile": sim_profile,
+        "status": "passed",
+    });
+    if session.config.sim.show_backend_choices || expert_options.has_explicit_backend_controls() {
+        let object = response
+            .as_object_mut()
+            .expect("success response should be an object");
+        object.insert("backend_profile".to_owned(), run.profile.clone().into());
+        object.insert(
+            "backend".to_owned(),
+            expert_options.backend_name(&run.profile).into(),
+        );
+        object.insert(
+            "reserved_backend_fit".to_owned(),
+            reserved_backend_fit_json(&run.profile),
+        );
+        object.insert(
+            "scheduler".to_owned(),
+            scheduler_json(
+                sim_profile,
+                executed_seed,
+                &run,
+                effective_scheduler.as_deref(),
+            ),
+        );
+    }
+    println!("{}", serde_json::to_string(&response)?);
     Ok(())
 }
 
 struct ProfileRoles {
     guarantee_profile: String,
     backend_profile: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct BackendExpertOptions {
+    backend: Option<String>,
+    scheduler: Option<String>,
+    max_branches: Option<u64>,
+    backend_native: bool,
+}
+
+impl BackendExpertOptions {
+    pub(super) const fn new(
+        backend: Option<String>,
+        scheduler: Option<String>,
+        max_branches: Option<u64>,
+        backend_native: bool,
+    ) -> Self {
+        Self {
+            backend,
+            scheduler,
+            max_branches,
+            backend_native,
+        }
+    }
+
+    fn backend_name<'a>(&'a self, backend_profile: &'a str) -> &'a str {
+        self.backend
+            .as_deref()
+            .unwrap_or_else(|| backend_for_profile(backend_profile))
+    }
+
+    fn has_explicit_backend_controls(&self) -> bool {
+        self.backend.is_some()
+            || self.scheduler.is_some()
+            || self.max_branches.is_some()
+            || self.backend_native
+    }
+
+    fn execution_profile(&self, scenario_profile: &str) -> anyhow::Result<String> {
+        let Some(backend) = self.backend.as_deref() else {
+            return Ok(scenario_profile.to_owned());
+        };
+        let expected_profile = profile_for_backend(backend)?;
+        if expected_profile != scenario_profile {
+            anyhow::bail!(
+                "unsupported backend option: backend `{backend}` requires simulation profile `{expected_profile}`, but the scenario resolved to `{scenario_profile}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+            );
+        }
+        Ok(expected_profile.to_owned())
+    }
+
+    fn effective_scheduler<'a>(
+        &'a self,
+        config: &'a kobo_driver::KoboConfig,
+        backend_profile: &'a str,
+    ) -> Option<&'a str> {
+        self.scheduler.as_deref().or_else(|| {
+            config
+                .sim
+                .scheduler_for_backend(self.backend_name(backend_profile))
+        })
+    }
+
+    fn validate(
+        &self,
+        backend_profile: &str,
+        sim_profile: &str,
+        effective_scheduler: Option<&str>,
+        effective_max_branches: Option<u64>,
+    ) -> anyhow::Result<()> {
+        let backend_name = self.backend_name(backend_profile);
+        validate_backend_name(backend_name)?;
+        if self.backend.is_some() {
+            validate_backend_executes(backend_name)?;
+        }
+        validate_scheduler_control(backend_name, effective_scheduler, self.backend_native)?;
+        validate_max_branches_control(backend_name, effective_max_branches)?;
+        if self.backend_native && self.backend.is_none() {
+            anyhow::bail!(
+                "unsupported backend option: --backend-native requires --backend; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+            );
+        }
+        if self.backend_native && backend_name != "loom" {
+            anyhow::bail!(
+                "unsupported backend option: --backend-native is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+            );
+        }
+        if effective_max_branches.is_some() && sim_profile != "exhaustive" {
+            anyhow::bail!(
+                "unsupported backend option: max_branches is only available with --sim exhaustive; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+            );
+        }
+        Ok(())
+    }
 }
 
 struct FuzzPlan {
@@ -188,9 +409,11 @@ enum StatefulInputSource {
 }
 
 impl FuzzPlan {
-    fn new(base_seed: u64, program: &ScenarioProgram) -> anyhow::Result<Self> {
+    const DEFAULT_CASES: u64 = 8;
+
+    fn new(base_seed: u64, program: &ScenarioProgram, case_count: u64) -> anyhow::Result<Self> {
         let candidate_sources = stateful_input_sources(program);
-        let cases = (0..8)
+        let cases = (0..case_count)
             .map(|index| FuzzCase::new(base_seed, index, &candidate_sources))
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(Self {
@@ -204,7 +427,7 @@ impl FuzzPlan {
 impl FuzzCase {
     fn new(
         base_seed: u64,
-        index: usize,
+        index: u64,
         candidate_sources: &[StatefulInputSource],
     ) -> anyhow::Result<Self> {
         let seed = derive_fuzz_seed(base_seed, index);
@@ -213,7 +436,8 @@ impl FuzzCase {
         let operations = stateful_operations_from_inputs(generated_inputs, candidate_sources);
         let shrink_candidates = shrink_candidates_from_tree(&mut value_tree, operations.len());
         Ok(Self {
-            index,
+            index: usize::try_from(index)
+                .map_err(|_| anyhow::anyhow!("seed_count is too large for this platform"))?,
             seed,
             operations,
             shrink_candidates,
@@ -241,13 +465,16 @@ impl StatefulInputSource {
     }
 }
 
-fn parse_sim_profile(sim: Option<&str>) -> anyhow::Result<&str> {
+fn parse_sim_profile(
+    sim: Option<&str>,
+    config: &kobo_driver::KoboConfig,
+) -> anyhow::Result<String> {
     match sim {
-        Some(profile @ ("quick" | "deep" | "replay" | "exhaustive")) => Ok(profile),
+        Some(profile @ ("quick" | "deep" | "replay" | "exhaustive")) => Ok(profile.to_owned()),
         Some(other) => anyhow::bail!(
             "kobo test --sim {other} is not available; expected quick, deep, replay, or exhaustive"
         ),
-        None => anyhow::bail!("kobo test requires --sim quick, deep, replay, or exhaustive"),
+        None => Ok(config.sim.default_profile.clone()),
     }
 }
 
@@ -255,28 +482,50 @@ fn resolve_profile_roles(
     cli_profile: Option<&str>,
     document: &ScenarioDocument,
     target_name: &str,
-) -> ProfileRoles {
+) -> anyhow::Result<ProfileRoles> {
     let scenario_profile = document
         .scenarios
         .iter()
         .find(|scenario| scenario.name == target_name)
         .map(|scenario| scenario.profile.clone())
         .unwrap_or_else(|| sim_model::target_profile(document, target_name, None));
+    validate_simulation_profile(&scenario_profile)?;
 
-    match cli_profile {
+    Ok(match cli_profile {
         Some(profile @ ("dev" | "checked" | "release")) => ProfileRoles {
             guarantee_profile: profile.to_owned(),
             backend_profile: scenario_profile,
         },
-        Some(profile) => ProfileRoles {
+        Some(profile) if is_stable_simulation_profile(profile) => ProfileRoles {
             guarantee_profile: "checked".to_owned(),
             backend_profile: profile.to_owned(),
         },
+        Some(profile) => {
+            anyhow::bail!(
+                "unsupported simulation profile `{profile}`; expected sync, async, stateful-input, failpoint, network, distributed, or guarantee profile dev, checked, release"
+            );
+        }
         None => ProfileRoles {
             guarantee_profile: "checked".to_owned(),
             backend_profile: scenario_profile,
         },
+    })
+}
+
+fn validate_simulation_profile(profile: &str) -> anyhow::Result<()> {
+    if is_stable_simulation_profile(profile) {
+        return Ok(());
     }
+    anyhow::bail!(
+        "unsupported simulation profile `{profile}`; expected sync, async, stateful-input, failpoint, network, distributed"
+    )
+}
+
+fn is_stable_simulation_profile(profile: &str) -> bool {
+    matches!(
+        profile,
+        "sync" | "async" | "stateful-input" | "failpoint" | "network" | "distributed"
+    )
 }
 
 fn default_budget(sim_profile: &str) -> Option<u64> {
@@ -286,6 +535,14 @@ fn default_budget(sim_profile: &str) -> Option<u64> {
         "replay" => Some(64),
         "exhaustive" => Some(16),
         _ => None,
+    }
+}
+
+fn default_shrink_mode(sim_profile: &str) -> &'static str {
+    if sim_profile == "deep" {
+        "best-effort"
+    } else {
+        "off"
     }
 }
 
@@ -333,7 +590,8 @@ fn run_fuzz_portfolio(
         digest: kobo_sim_core::ExecutionDigest {
             semantic_engine: "semantic-sim".to_owned(),
             harness_engine: "generated-rust-harness".to_owned(),
-            model_version: "v0.10".to_owned(),
+            model_schema: kobo_sim_core::lower::MODEL_SCHEMA.to_owned(),
+            schema_version: kobo_sim_core::lower::MODEL_SCHEMA_VERSION,
             scenario_ir_hash: scenario_program.source_hash.clone(),
             operation_count: 0,
             semantic_trace_hash: String::new(),
@@ -354,6 +612,75 @@ fn run_fuzz_portfolio(
     });
     attach_fuzz_driver_evidence(&mut run, combined_events, &fuzz_driver_events)?;
     Ok(run)
+}
+
+fn run_seed_portfolio(
+    scenario_program: &kobo_ir::ScenarioProgram,
+    generated_rust: &str,
+    options: &kobo_sim_core::ScenarioOptions,
+    engine: EngineMode,
+    seed_count: u64,
+) -> anyhow::Result<(FullDepthRun, u64)> {
+    if seed_count <= 1 {
+        let run = kobo_sim_core::run_full_depth_from_program(
+            scenario_program,
+            generated_rust,
+            options,
+            engine,
+        )?;
+        return Ok((run, options.seed));
+    }
+
+    let mut combined_events = Vec::new();
+    let mut last_run = None;
+    let mut last_seed = options.seed;
+    for index in 0..seed_count {
+        let seed = options.seed.wrapping_add(index);
+        combined_events.push(seed_case_event(index, seed, seed_count));
+        let mut case_options = options.clone();
+        case_options.seed = seed;
+        let mut run = kobo_sim_core::run_full_depth_from_program(
+            scenario_program,
+            generated_rust,
+            &case_options,
+            engine.clone(),
+        )?;
+        combined_events.extend(run.events.iter().cloned());
+        if run.failure.is_some() {
+            run.events = combined_events;
+            refresh_seed_portfolio_digest(&mut run);
+            return Ok((run, seed));
+        }
+        last_seed = seed;
+        last_run = Some(run);
+    }
+
+    let mut run = last_run.expect("seed_count greater than one should execute at least one seed");
+    run.events = combined_events;
+    refresh_seed_portfolio_digest(&mut run);
+    Ok((run, last_seed))
+}
+
+fn seed_case_event(index: u64, seed: u64, seed_count: u64) -> ScenarioEvent {
+    ScenarioEvent {
+        kind: "scheduler-seed-case".to_owned(),
+        label: Some(format!("index={index};count={seed_count}")),
+        value: Some(seed),
+        io: None,
+    }
+}
+
+fn refresh_seed_portfolio_digest(run: &mut FullDepthRun) {
+    run.digest.semantic_trace_hash = kobo_sim_core::digest::events_hash(&run.events);
+    if !run.digest.harness_trace_hash.is_empty() {
+        run.digest.harness_trace_hash = kobo_sim_core::digest::stable_hash(&format!(
+            "seed-portfolio:{}:{}",
+            run.digest.harness_trace_hash, run.digest.semantic_trace_hash
+        ));
+    }
+    if run.digest.agreement == "matched" {
+        run.digest.agreement = "matched+seed-portfolio".to_owned();
+    }
 }
 
 fn fuzz_driver_events_for_case(case: &FuzzCase, base_seed: u64) -> Vec<ScenarioEvent> {
@@ -532,11 +859,11 @@ fn fuzz_seed_bytes(seed: u64) -> [u8; 32] {
     bytes
 }
 
-fn derive_fuzz_seed(base_seed: u64, index: usize) -> u64 {
+fn derive_fuzz_seed(base_seed: u64, index: u64) -> u64 {
     base_seed
         .wrapping_mul(6_364_136_223_846_793_005)
         .wrapping_add(1_442_695_040_888_963_407)
-        .wrapping_add(index as u64)
+        .wrapping_add(index)
 }
 
 fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
@@ -548,11 +875,90 @@ fn parse_engine(value: &str) -> anyhow::Result<EngineMode> {
     }
 }
 
+fn validate_backend_name(backend: &str) -> anyhow::Result<()> {
+    if backend_debt::backend_capability(backend).is_some() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "unsupported backend option `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+        )
+    }
+}
+
+fn validate_backend_executes(backend: &str) -> anyhow::Result<()> {
+    let Some(capability) = backend_debt::backend_capability(backend) else {
+        validate_backend_name(backend)?;
+        return Ok(());
+    };
+    if capability.executes_now {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "unsupported backend option `{backend}`: {} (adapter is not linked; {}, {}); use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt",
+        capability.role,
+        capability.integration_level,
+        capability.scenario_execution
+    )
+}
+
+fn profile_for_backend(backend: &str) -> anyhow::Result<&'static str> {
+    match backend {
+        "loom" => Ok("sync"),
+        "shuttle" => Ok("async"),
+        "turmoil" => Ok("network"),
+        "madsim" => Ok("distributed"),
+        "proptest" => Ok("stateful-input"),
+        "failpoints" => Ok("failpoint"),
+        _ => anyhow::bail!(
+            "unsupported backend option `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+        ),
+    }
+}
+
+fn validate_scheduler_control(
+    backend: &str,
+    scheduler: Option<&str>,
+    backend_native: bool,
+) -> anyhow::Result<()> {
+    let Some(scheduler) = scheduler else {
+        return Ok(());
+    };
+    match (backend, scheduler) {
+        ("loom", "exhaustive") => Ok(()),
+        ("loom", "small-random") if !backend_native => Ok(()),
+        ("loom", "small-random") => anyhow::bail!(
+            "unsupported backend option: scheduler `small-random` is semantic-only for backend `loom`; use scheduler `exhaustive` for backend-native replay or mark unsupported knobs as scenario debt"
+        ),
+        ("shuttle" | "turmoil" | "madsim", _) => anyhow::bail!(
+            "unsupported backend option: scheduler `{scheduler}` requires native backend `{backend}`, but that adapter is not linked; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+        ),
+        _ => anyhow::bail!(
+            "unsupported backend option: scheduler `{scheduler}` is not supported by backend `{backend}`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+        ),
+    }
+}
+
+fn validate_max_branches_control(backend: &str, max_branches: Option<u64>) -> anyhow::Result<()> {
+    if max_branches.is_none() || backend == "loom" {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "unsupported backend option: --max-branches is only supported by backend `loom`; use a stable Kobo profile, keep the inspected backend-native harness, or mark unsupported knobs as scenario debt"
+    )
+}
+
 fn print_events(
     file: &Path,
     sim_profile: &str,
     seed: u64,
     fuzz_plan: Option<&FuzzPlan>,
+    expert_options: &BackendExpertOptions,
+    effective_max_branches: Option<u64>,
+    effective_shrink: &str,
+    effective_replay_token: &str,
+    effective_checkpoint_replay: bool,
+    config: &kobo_driver::KoboConfig,
+    effective_scheduler: Option<&str>,
     run: &FullDepthRun,
 ) -> anyhow::Result<()> {
     println!(
@@ -562,7 +968,14 @@ fn print_events(
             "file": sim_model::cli_relative_path(file)?,
             "sim_profile": sim_profile,
             "backend_profile": run.profile,
-            "scheduler": scheduler_json(sim_profile, seed, run, None),
+            "backend": expert_options.backend_name(&run.profile),
+            "scheduler": scheduler_json(sim_profile, seed, run, effective_scheduler),
+            "backend_native": expert_options.backend_native,
+            "max_branches": effective_max_branches,
+            "shrink": effective_shrink,
+            "replay_token": effective_replay_token,
+            "checkpoint_replay": effective_checkpoint_replay,
+            "sim_config": sim_config_json(config),
             "fuzz": fuzz_plan_json(fuzz_plan),
             "seed": seed,
             "events": events_json(&run.events),
@@ -583,6 +996,12 @@ fn write_run_witness(
     witness_dir: Option<&Path>,
     config: &kobo_driver::KoboConfig,
     runtime_evidence: &kobo_codegen::RuntimeEvidence,
+    expert_options: &BackendExpertOptions,
+    effective_scheduler: Option<&str>,
+    effective_max_branches: Option<u64>,
+    effective_shrink: &str,
+    effective_replay_token: &str,
+    effective_checkpoint_replay: bool,
     run: &FullDepthRun,
 ) -> anyhow::Result<PathBuf> {
     let directory = witness_directory(file, witness_dir)?;
@@ -597,9 +1016,13 @@ fn write_run_witness(
             one_based_line_for_offset(&document.source, failure.primary_start)
         )
     });
-    let backend_replay_token = replay_token(&document.source_hash, seed, run);
+    let backend_name = expert_options.backend_name(&run.profile);
+    let backend_replay =
+        backend_replay_id(effective_replay_token, &document.source_hash, seed, run);
+    let backend_replay_evidence =
+        backend_replay_evidence_json(effective_replay_token, &document.source_hash, seed, run);
     let coverage = coverage_json(run);
-    let event_stream = shrink_event_stream(run, sim_profile);
+    let event_stream = shrink_event_stream(run, sim_profile, effective_shrink);
     let witness_events = events_json(&event_stream.events);
     let runtime_profile = runtime_profile_json(config, sim_profile, seed, run);
     let runtime_profile_hash =
@@ -639,63 +1062,148 @@ fn write_run_witness(
     let model_vs_implementation =
         model_vs_implementation_json(&source_path, &document.source, seed, run);
     let flagship_demo = flagship_demo_json(scenario_program, run);
+    let backend_controls = serde_json::json!({
+        "backend": backend_name,
+        "reserved_backend_fit": reserved_backend_fit_json(&run.profile),
+        "scheduler": effective_scheduler,
+        "max_branches": effective_max_branches,
+        "backend_native": expert_options.backend_native,
+        "replay_token": effective_replay_token,
+        "checkpoint_replay": effective_checkpoint_replay,
+    });
+    let backend_version = backend_version_json(backend_name);
+    let checkpoint_replay = checkpoint_replay_json(effective_checkpoint_replay, run);
     let mut witness = serde_json::json!({
         "schema_version": 1,
         "kobo_version": env!("CARGO_PKG_VERSION"),
         "target": format!("{}:{}", source_path, run.target),
-        "scenario": {
-            "name": run.target,
-            "profile": run.profile,
-        },
         "sim_profile": sim_profile,
-        "source": {
-            "path": source_path,
-            "hash": document.source_hash,
-        },
         "guarantee_profile": guarantee_profile,
-        "expanded_policy": expanded_policy_json(guarantee_profile),
         "seed": seed,
-        "fuzz": fuzz_plan_json(fuzz_plan),
-        "injections": injections_json(inject),
         "backend_profile": run.profile,
-        "backend": backend_for_profile(&run.profile),
-        "backend_replay": backend_replay_token,
-        "backend_replay_token": backend_replay_token,
-        "ecosystem_scope": ecosystem_scope(run),
-        "full_ecosystem_exploration": full_ecosystem_exploration(run),
-        "replay_contract": replay_contract_json(run),
-        "scheduler": scheduler_json(
-            sim_profile,
-            seed,
-            run,
-            Some(config.runtime_profile.scheduler.as_str()),
-        ),
-        "harness_manifest": run.harness_manifest.clone(),
-        "coverage": coverage,
-        "operation_coverage": witness_evidence::operation_coverage_json(scenario_program, run),
-        "scenario_coverage": scenario_coverage_json(run),
-        "function_summaries": witness_evidence::function_summaries_json(scenario_program, run),
+        "backend": backend_name,
+        "reserved_backend_fit": reserved_backend_fit_json(&run.profile),
+        "backend_replay": backend_replay.clone(),
+        "backend_replay_token": backend_replay,
+        "backend_replay_evidence": backend_replay_evidence,
         "replay_guarantee": run.replay_guarantee.as_str(),
         "exactness": exactness_json(run),
-        "shrink": shrink_json(run, &event_stream),
-        "modeled_boundaries": modeled_boundaries_json(run),
-        "opaque_boundaries": run.opaque_boundaries.clone(),
-        "boundary_policies": boundary_policies_json(run),
-        "ecosystem_boundaries": ecosystem_boundaries_json(file, config, run),
-        "boundary_assumptions": boundary_assumptions_json(run),
-        "obligations": obligations_json(&source_path, &document.source, run),
-        "obligation_events": obligation_events_json(run),
-        "boundary_decisions": boundary_decisions_json(run),
-        "available_boundary_policies": ["typed", "model", "record", "activity", "stub", "outside", "opaque", "debt"],
-        "failure": failure_json(&source_path, &document.source, run, primary_span),
-        "source_spans": source_spans_json(&source_path, &document.source, run),
-        "events": witness_events.clone(),
-        "event_stream": witness_events,
     });
     let object = witness
         .as_object_mut()
         .expect("witness json literal should be an object");
+    object.insert(
+        "scenario".to_owned(),
+        serde_json::json!({
+            "name": run.target,
+            "profile": run.profile,
+        }),
+    );
+    object.insert("backend_controls".to_owned(), backend_controls);
+    object.insert("backend_version".to_owned(), backend_version);
+    object.insert(
+        "source".to_owned(),
+        serde_json::json!({
+            "path": source_path,
+            "hash": document.source_hash,
+        }),
+    );
+    object.insert(
+        "expanded_policy".to_owned(),
+        expanded_policy_json(guarantee_profile),
+    );
+    object.insert("fuzz".to_owned(), fuzz_plan_json(fuzz_plan));
+    object.insert("injections".to_owned(), injections_json(inject));
+    object.insert("checkpoint_replay".to_owned(), checkpoint_replay);
+    object.insert("ecosystem_scope".to_owned(), ecosystem_scope(run).into());
+    object.insert(
+        "full_ecosystem_exploration".to_owned(),
+        full_ecosystem_exploration(run).into(),
+    );
+    object.insert("replay_contract".to_owned(), replay_contract_json(run));
+    object.insert(
+        "scheduler".to_owned(),
+        scheduler_json(
+            sim_profile,
+            seed,
+            run,
+            effective_scheduler.or(Some(config.runtime_profile.scheduler.as_str())),
+        ),
+    );
+    object.insert(
+        "harness_manifest".to_owned(),
+        serde_json::to_value(run.harness_manifest.clone())?,
+    );
+    object.insert("coverage".to_owned(), coverage);
+    object.insert(
+        "operation_coverage".to_owned(),
+        witness_evidence::operation_coverage_json(scenario_program, run),
+    );
+    object.insert("scenario_coverage".to_owned(), scenario_coverage_json(run));
+    object.insert(
+        "function_summaries".to_owned(),
+        witness_evidence::function_summaries_json(scenario_program, run),
+    );
+    object.insert(
+        "shrink".to_owned(),
+        shrink_json(run, effective_shrink, &event_stream),
+    );
+    object.insert(
+        "modeled_boundaries".to_owned(),
+        serde_json::to_value(modeled_boundaries_json(run))?,
+    );
+    object.insert(
+        "opaque_boundaries".to_owned(),
+        serde_json::to_value(run.opaque_boundaries.clone())?,
+    );
+    object.insert(
+        "boundary_policies".to_owned(),
+        serde_json::Value::Array(boundary_policies_json(run)),
+    );
+    object.insert(
+        "ecosystem_boundaries".to_owned(),
+        serde_json::Value::Array(ecosystem_boundaries_json(file, config, run)),
+    );
+    object.insert(
+        "boundary_assumptions".to_owned(),
+        serde_json::Value::Array(boundary_assumptions_json(run)),
+    );
+    object.insert(
+        "obligations".to_owned(),
+        serde_json::Value::Array(obligations_json(&source_path, &document.source, run)),
+    );
+    object.insert(
+        "obligation_events".to_owned(),
+        serde_json::Value::Array(obligation_events_json(run)),
+    );
+    object.insert(
+        "boundary_decisions".to_owned(),
+        serde_json::Value::Array(boundary_decisions_json(run)),
+    );
+    object.insert(
+        "available_boundary_policies".to_owned(),
+        serde_json::json!([
+            "typed", "model", "record", "activity", "stub", "outside", "opaque", "debt"
+        ]),
+    );
+    object.insert(
+        "failure".to_owned(),
+        failure_json(&source_path, &document.source, run, primary_span),
+    );
+    object.insert(
+        "source_spans".to_owned(),
+        serde_json::Value::Array(source_spans_json(&source_path, &document.source, run)),
+    );
+    object.insert(
+        "events".to_owned(),
+        serde_json::Value::Array(witness_events.clone()),
+    );
+    object.insert(
+        "event_stream".to_owned(),
+        serde_json::Value::Array(witness_events),
+    );
     object.insert("runtime_profile".to_owned(), runtime_profile);
+    object.insert("sim_config".to_owned(), sim_config_json(config));
     object.insert(
         "execution_digest".to_owned(),
         execution_digest_json(run, &runtime_profile_hash),
@@ -757,7 +1265,8 @@ fn write_run_witness(
         serde_json::json!({
             "mode": "observe",
             "source": "scenario_program",
-            "template_version": "v0.13.0",
+            "template_schema": "lifecycle-template",
+            "schema_version": 1,
             "obligations": inferred_obligations,
         }),
     );
@@ -1147,7 +1656,8 @@ fn execution_digest_json(run: &FullDepthRun, runtime_profile_hash: &str) -> serd
         "engine": "semantic-sim",
         "semantic_engine": run.digest.semantic_engine,
         "harness_engine": run.digest.harness_engine,
-        "model_version": run.digest.model_version,
+        "model_schema": run.digest.model_schema,
+        "schema_version": run.digest.schema_version,
         "scenario_ir_hash": run.digest.scenario_ir_hash,
         "operation_count": run.digest.operation_count,
         "event_hash": run.digest.semantic_trace_hash,
@@ -1161,6 +1671,70 @@ fn execution_digest_json(run: &FullDepthRun, runtime_profile_hash: &str) -> serd
         "harness_exit_code": run.digest.harness_exit_code,
         "harness_event_count": run.digest.harness_event_count,
         "runtime_profile_hash": runtime_profile_hash,
+    })
+}
+
+fn backend_version_json(backend: &str) -> serde_json::Value {
+    let capability = kobo_sim_core::backend::capabilities()
+        .iter()
+        .find(|capability| capability.name == backend);
+    serde_json::json!({
+        "backend": backend,
+        "adapter_source": "kobo-sim-core",
+        "adapter_version": env!("CARGO_PKG_VERSION"),
+        "integration_level": capability.map(|capability| capability.integration_level),
+        "scenario_execution": capability.map(|capability| capability.scenario_execution),
+    })
+}
+
+fn checkpoint_replay_json(enabled: bool, run: &FullDepthRun) -> serde_json::Value {
+    let checkpoint_path = run
+        .harness_manifest
+        .as_ref()
+        .and_then(|manifest| manifest.checkpoint_path.as_deref());
+    let checkpoint_artifact_hash = run
+        .harness_manifest
+        .as_ref()
+        .and_then(|manifest| manifest.checkpoint_artifact_hash.as_deref());
+    let artifact_validated =
+        enabled && checkpoint_path.is_some() && checkpoint_artifact_hash.is_some();
+    serde_json::json!({
+        "enabled": artifact_validated,
+        "semantic_trace_hash": if artifact_validated {
+            Some(run.digest.semantic_trace_hash.as_str())
+        } else {
+            None
+        },
+        "harness_trace_hash": if artifact_validated {
+            Some(run.digest.harness_trace_hash.as_str())
+        } else {
+            None
+        },
+        "event_count": if artifact_validated {
+            Some(run.events.len())
+        } else {
+            None
+        },
+        "checkpoint_path": if artifact_validated {
+            checkpoint_path
+        } else {
+            None
+        },
+        "checkpoint_artifact_hash": if artifact_validated {
+            checkpoint_artifact_hash
+        } else {
+            None
+        },
+        "artifact_validation": if artifact_validated {
+            Some("loom-checkpoint-hash")
+        } else {
+            None
+        },
+        "source": if artifact_validated {
+            Some("loom-builder-checkpoint")
+        } else {
+            None
+        },
     })
 }
 
@@ -1193,6 +1767,47 @@ fn scenario_coverage_json(run: &FullDepthRun) -> serde_json::Value {
     coverage_json(run)
 }
 
+fn sim_config_json(config: &kobo_driver::KoboConfig) -> serde_json::Value {
+    let profiles = config
+        .sim
+        .profiles
+        .iter()
+        .map(|(name, profile)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "schedule_budget": profile.schedule_budget,
+                    "seed_count": profile.seed_count,
+                    "shrink": profile.shrink.as_deref(),
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let backends = config
+        .sim
+        .backends
+        .iter()
+        .map(|(name, backend)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "enabled": backend.enabled,
+                    "scheduler": backend.scheduler.as_deref(),
+                    "replay_token": backend.replay_token.as_deref(),
+                    "max_branches": backend.max_branches,
+                    "checkpoint_replay": backend.checkpoint_replay,
+                }),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    serde_json::json!({
+        "default_profile": config.sim.default_profile.as_str(),
+        "show_backend_choices": config.sim.show_backend_choices,
+        "profiles": profiles,
+        "backends": backends,
+    })
+}
+
 fn scheduler_json(
     sim_profile: &str,
     seed: u64,
@@ -1209,10 +1824,13 @@ fn scheduler_json(
     let strategy = runtime_scheduler
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(profile_strategy);
+    let seeds = scheduler_seed_cases(run, seed);
     serde_json::json!({
         "profile": sim_profile,
         "strategy": strategy,
         "seed": seed,
+        "seed_count": seeds.len(),
+        "seeds": seeds,
         "event_budget": run
             .events
             .iter()
@@ -1220,6 +1838,20 @@ fn scheduler_json(
             .and_then(|event| event.value),
         "cancellation": scheduler_cancellation_json(run),
     })
+}
+
+fn scheduler_seed_cases(run: &FullDepthRun, fallback_seed: u64) -> Vec<u64> {
+    let seeds = run
+        .events
+        .iter()
+        .filter(|event| event.kind == "scheduler-seed-case")
+        .filter_map(|event| event.value)
+        .collect::<Vec<_>>();
+    if seeds.is_empty() {
+        vec![fallback_seed]
+    } else {
+        seeds
+    }
 }
 
 fn scheduler_cancellation_json(run: &FullDepthRun) -> serde_json::Value {
@@ -1272,9 +1904,13 @@ struct ShrunkEventStream {
     removed_event_ids: Vec<usize>,
 }
 
-fn shrink_event_stream(run: &FullDepthRun, sim_profile: &str) -> ShrunkEventStream {
+fn shrink_event_stream(
+    run: &FullDepthRun,
+    _sim_profile: &str,
+    shrink_mode: &str,
+) -> ShrunkEventStream {
     let mut removed_event_ids = Vec::new();
-    if run.replay_guarantee == ReplayGuarantee::Exact && sim_profile == "deep" {
+    if shrink_mode == "best-effort" && run.replay_guarantee == ReplayGuarantee::Exact {
         removed_event_ids.extend(run.events.iter().enumerate().filter_map(|(index, event)| {
             if is_replay_irrelevant_event(&event.kind) {
                 Some(index)
@@ -1296,7 +1932,11 @@ fn shrink_event_stream(run: &FullDepthRun, sim_profile: &str) -> ShrunkEventStre
     }
 }
 
-fn shrink_json(run: &FullDepthRun, event_stream: &ShrunkEventStream) -> serde_json::Value {
+fn shrink_json(
+    run: &FullDepthRun,
+    shrink_mode: &str,
+    event_stream: &ShrunkEventStream,
+) -> serde_json::Value {
     let mut shrink_passes = Vec::new();
     let scheduler_ids = removed_event_ids_for_kinds(run, event_stream, &["scheduler-pct-seed"]);
     if !scheduler_ids.is_empty() {
@@ -1338,6 +1978,7 @@ fn shrink_json(run: &FullDepthRun, event_stream: &ShrunkEventStream) -> serde_js
         }));
     }
     serde_json::json!({
+        "mode": shrink_mode,
         "original_event_count": run.events.len(),
         "shrunk_event_count": event_stream.events.len(),
         "removed_event_ids": event_stream.removed_event_ids.clone(),
@@ -1673,7 +2314,7 @@ fn boundary_policies_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
         policies.push(serde_json::json!({
             "boundary": boundary,
             "policy": "model",
-            "reason": "modeled v0.10 facade",
+            "reason": "modeled compiler facade",
         }));
     }
     policies
@@ -3806,6 +4447,80 @@ fn boundary_io_capture_json(capture: &kobo_sim_core::BoundaryIoCapture) -> serde
     })
 }
 
+pub(super) fn backend_replay_id(
+    mode: &str,
+    source_identity: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> String {
+    if mode == "none" {
+        return "none".to_owned();
+    }
+    if let Some(harness_replay_id) = harness_backend_replay_id(run) {
+        return harness_replay_id;
+    }
+    kobo_replay_hash(mode, source_identity, seed, run)
+}
+
+pub(super) fn backend_replay_evidence_json(
+    mode: &str,
+    source_identity: &str,
+    seed: u64,
+    run: &FullDepthRun,
+) -> serde_json::Value {
+    let kobo_verification_hash = kobo_replay_hash(mode, source_identity, seed, run);
+    let harness_replay_id = if mode == "none" {
+        None
+    } else {
+        harness_backend_replay_id(run)
+    };
+    serde_json::json!({
+        "backend": backend_for_profile(&run.profile),
+        "mode": if harness_replay_id.is_some() { "generated_harness" } else { mode },
+        "source": if harness_replay_id.is_some() { "generated-loom-harness" } else { "kobo-verification-hash" },
+        "harness_replay_id": harness_replay_id,
+        "kobo_verification_hash": kobo_verification_hash,
+    })
+}
+
+fn kobo_replay_hash(mode: &str, source_identity: &str, seed: u64, run: &FullDepthRun) -> String {
+    match mode {
+        "record" => replay_token(source_identity, seed, run),
+        "metadata" => kobo_sim_core::digest::stable_hash(&format!(
+            "metadata:{}:{}:{}:{}",
+            source_identity,
+            seed,
+            backend_for_profile(&run.profile),
+            run.digest.semantic_trace_hash
+        )),
+        "none" => "none".to_owned(),
+        _ => replay_token(source_identity, seed, run),
+    }
+}
+
+fn harness_backend_replay_id(run: &FullDepthRun) -> Option<String> {
+    if backend_for_profile(&run.profile) != "loom" {
+        return None;
+    }
+    let manifest = run.harness_manifest.as_ref()?;
+    let material = format!(
+        "{}:{}:{}:{}:{}:{}",
+        manifest.source_hash,
+        manifest.generated_rust_hash,
+        manifest.stdout_hash,
+        manifest
+            .checkpoint_artifact_hash
+            .as_deref()
+            .unwrap_or("no-checkpoint"),
+        run.digest.semantic_trace_hash,
+        run.digest.harness_trace_hash,
+    );
+    Some(format!(
+        "loom-harness:{}",
+        kobo_sim_core::digest::stable_hash(&material)
+    ))
+}
+
 fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String {
     let mut material = String::new();
     material.push_str(source_identity);
@@ -3827,12 +4542,41 @@ fn replay_token(source_identity: &str, seed: u64, run: &FullDepthRun) -> String 
 fn backend_for_profile(profile: &str) -> &'static str {
     match profile {
         "sync" => "loom",
+        "async" => "generated-rust-process",
         "stateful-input" => "proptest",
         "failpoint" => "failpoints",
-        "network" | "network-design" => "turmoil",
-        "distributed" | "madsim" => "madsim",
-        _ => "shuttle",
+        "network" => "network-loopback",
+        "distributed" => "generated-rust-process",
+        _ => "unknown",
     }
+}
+
+fn reserved_backend_fit_for_profile(profile: &str) -> &'static [&'static str] {
+    match profile {
+        "async" => &["shuttle"],
+        "network" => &["turmoil"],
+        "distributed" => &["madsim"],
+        _ => &[],
+    }
+}
+
+fn reserved_backend_fit_json(profile: &str) -> serde_json::Value {
+    serde_json::Value::Array(
+        reserved_backend_fit_for_profile(profile)
+            .iter()
+            .map(|backend| {
+                let capability = kobo_sim_core::backend::capabilities()
+                    .iter()
+                    .find(|capability| capability.name == *backend);
+                serde_json::json!({
+                    "backend": backend,
+                    "status": "reserved",
+                    "integration_level": capability.map(|capability| capability.integration_level).unwrap_or("metadata-only"),
+                    "scenario_execution": capability.map(|capability| capability.scenario_execution).unwrap_or("unsupported-native-adapter"),
+                })
+            })
+            .collect(),
+    )
 }
 
 fn sanitize_name(value: &str) -> String {

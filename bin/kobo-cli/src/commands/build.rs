@@ -104,19 +104,21 @@ fn cmd_build_file(
 ) -> anyhow::Result<()> {
     let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
         let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
-        let loaded = policy::load_effective_policy(Some(file), profile)?;
+        Some(policy::load_effective_policy(Some(file), profile)?)
+    } else {
+        let base_policy = cli_policy.clone().unwrap_or_default();
+        policy::load_configured_release_policy(Some(file), &base_policy)?
+    };
+    if let Some(loaded) = guarantee_policy.as_ref() {
         if let Some(downgrade) = loaded.downgrade() {
             policy::emit_downgrade(downgrade, error_format)?;
             anyhow::bail!("guarantee policy downgrade requires reason ledger entry");
         }
         if print_policy.is_some() {
-            policy::print_policy_json(&loaded)?;
+            policy::print_policy_json(loaded)?;
             return Ok(());
         }
-        Some(loaded)
-    } else {
-        None
-    };
+    }
 
     let session_policy = guarantee_policy
         .as_ref()
@@ -148,6 +150,7 @@ fn cmd_build_file(
     let has_error = session
         .visible_diagnostics()
         .any(|diagnostic| diagnostic.severity == Severity::Error);
+    enforce_configured_new_debt_gate(&session, guarantee_policy.as_ref(), error_format)?;
     if has_error || strict_ownership_line.is_some() {
         if let Some(line) = strict_ownership_line {
             anyhow::bail!(
@@ -171,5 +174,43 @@ fn cmd_build_file(
         policy::emit_policy_summary(policy);
     }
 
+    Ok(())
+}
+
+fn enforce_configured_new_debt_gate(
+    session: &kobo_driver::CompileSession,
+    effective_policy: Option<&policy::EffectiveGuaranteePolicy>,
+    error_format: ErrorFormat,
+) -> anyhow::Result<()> {
+    if !effective_policy.is_some_and(policy::EffectiveGuaranteePolicy::denies_new_debt) {
+        return Ok(());
+    }
+    let Some(diagnostic) = session
+        .visible_diagnostics()
+        .find(|diagnostic| diagnostic.severity != Severity::Note)
+    else {
+        return Ok(());
+    };
+    emit_new_debt_gate_failure(diagnostic.code, error_format)?;
+    Err(super::diagnostics_emitted())
+}
+
+fn emit_new_debt_gate_failure(code: KErrorCode, error_format: ErrorFormat) -> anyhow::Result<()> {
+    let message = format!(
+        "ci.release deny_new_debt blocked new guarantee debt reported by {}",
+        code.as_str()
+    );
+    match error_format {
+        ErrorFormat::Json => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "kind": "ci_release_gate",
+                "gate": "deny_new_debt",
+                "code": code.as_str(),
+                "message": message,
+            }))?
+        ),
+        ErrorFormat::Human => eprintln!("error: {message}"),
+    }
     Ok(())
 }

@@ -72,7 +72,8 @@ pub(super) struct SimEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ExecutionDigest {
     pub engine: String,
-    pub model_version: String,
+    pub model_schema: String,
+    pub schema_version: u64,
     pub scenario_ir_hash: String,
     pub operation_count: usize,
     pub event_hash: String,
@@ -82,9 +83,11 @@ pub(super) struct ExecutionDigest {
 pub(super) enum Backend {
     Loom,
     Shuttle,
+    Madsim,
     Proptest,
     Failpoints,
     DesignOnlyNetwork,
+    Unknown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,9 +150,11 @@ impl Backend {
         match self {
             Self::Loom => "loom",
             Self::Shuttle => "shuttle",
+            Self::Madsim => "madsim",
             Self::Proptest => "proptest",
             Self::Failpoints => "failpoints",
             Self::DesignOnlyNetwork => "network-design",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -499,7 +504,10 @@ fn target_function_source(source: &str, target: &str) -> Option<String> {
 }
 
 fn has_network_shape(lower: &str) -> bool {
-    lower.contains("reqwest::")
+    lower.contains("profile = \"network\"")
+        || lower.contains("profile=\"network\"")
+        || lower.contains("ward.network")
+        || lower.contains("reqwest::")
         || lower.contains("hyper::")
         || lower.contains("std::net::")
         || lower.contains("::client::new")
@@ -698,7 +706,8 @@ impl ScenarioProgram {
 
         ExecutionDigest {
             engine: "semantic-sim".to_owned(),
-            model_version: sim_core::lower::MODEL_VERSION.to_owned(),
+            model_schema: sim_core::lower::MODEL_SCHEMA.to_owned(),
+            schema_version: sim_core::lower::MODEL_SCHEMA_VERSION,
             scenario_ir_hash: source_hash(&ir_material),
             operation_count: self.operations.len(),
             event_hash: source_hash(&event_material),
@@ -1770,10 +1779,12 @@ fn ident_prefix(input: &str) -> Option<String> {
 pub(super) fn backend_for_profile(profile: &str) -> Backend {
     match profile {
         "sync" => Backend::Loom,
+        "async" => Backend::Shuttle,
+        "distributed" => Backend::Madsim,
         "stateful-input" => Backend::Proptest,
         "failpoint" => Backend::Failpoints,
         "network" | "network-design" => Backend::DesignOnlyNetwork,
-        _ => Backend::Shuttle,
+        _ => Backend::Unknown,
     }
 }
 

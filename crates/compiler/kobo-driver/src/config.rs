@@ -30,6 +30,7 @@ pub struct KoboConfig {
     pub mutating_methods: Vec<String>,
     pub ecosystem_policy: EcosystemPolicyConfig,
     pub runtime_profile: RuntimeProfileConfig,
+    pub sim: SimConfig,
     pub src_dir: PathBuf,
     pub enable_parse_recovery: bool,
 }
@@ -43,6 +44,78 @@ pub struct RuntimeProfileConfig {
     pub activity: String,
     pub cancellation: String,
     pub scenario_event_budget: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimConfig {
+    pub default_profile: String,
+    pub show_backend_choices: bool,
+    pub profiles: HashMap<String, SimProfileConfig>,
+    pub backends: HashMap<String, SimBackendConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SimProfileConfig {
+    pub schedule_budget: Option<u64>,
+    pub seed_count: Option<u64>,
+    pub shrink: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimBackendConfig {
+    pub enabled: bool,
+    pub scheduler: Option<String>,
+    pub replay_token: Option<String>,
+    pub max_branches: Option<u64>,
+    pub checkpoint_replay: Option<bool>,
+}
+
+impl SimConfig {
+    pub fn schedule_budget_for(&self, profile: &str) -> Option<u64> {
+        self.profiles
+            .get(profile)
+            .and_then(|config| config.schedule_budget)
+    }
+
+    pub fn seed_count_for(&self, profile: &str) -> Option<u64> {
+        self.profiles
+            .get(profile)
+            .and_then(|config| config.seed_count)
+    }
+
+    pub fn shrink_for(&self, profile: &str) -> Option<&str> {
+        self.profiles
+            .get(profile)
+            .and_then(|config| config.shrink.as_deref())
+    }
+
+    pub fn scheduler_for_backend(&self, backend: &str) -> Option<&str> {
+        self.backends
+            .get(backend)
+            .filter(|config| config.enabled)
+            .and_then(|config| config.scheduler.as_deref())
+    }
+
+    pub fn replay_token_for_backend(&self, backend: &str) -> Option<&str> {
+        self.backends
+            .get(backend)
+            .filter(|config| config.enabled)
+            .and_then(|config| config.replay_token.as_deref())
+    }
+
+    pub fn max_branches_for_backend(&self, backend: &str) -> Option<u64> {
+        self.backends
+            .get(backend)
+            .filter(|config| config.enabled)
+            .and_then(|config| config.max_branches)
+    }
+
+    pub fn checkpoint_replay_for_backend(&self, backend: &str) -> Option<bool> {
+        self.backends
+            .get(backend)
+            .filter(|config| config.enabled)
+            .and_then(|config| config.checkpoint_replay)
+    }
 }
 
 impl RuntimeProfileConfig {
@@ -155,6 +228,8 @@ struct RawKoboConfig {
     #[serde(default)]
     runtime: RawRuntimeSection,
     #[serde(default)]
+    sim: RawSimSection,
+    #[serde(default)]
     profiles: HashMap<String, RawProfileSection>,
     mode: Option<LegacyMode>,
     profile: Option<GuaranteeProfile>,
@@ -252,6 +327,16 @@ struct RawRuntimeSection {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct RawSimSection {
+    default_profile: Option<String>,
+    show_backend_choices: Option<bool>,
+    #[serde(default)]
+    profile: HashMap<String, RawSimProfileSection>,
+    #[serde(default)]
+    backend: HashMap<String, RawSimBackendSection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct RawRuntimeProfileSection {
     service_buffer: Option<usize>,
     service_backpressure: Option<String>,
@@ -260,6 +345,22 @@ struct RawRuntimeProfileSection {
     activity: Option<String>,
     cancellation: Option<String>,
     scenario_event_budget: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSimProfileSection {
+    schedule_budget: Option<u64>,
+    seed_count: Option<u64>,
+    shrink: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawSimBackendSection {
+    enabled: Option<bool>,
+    scheduler: Option<String>,
+    replay_token: Option<String>,
+    max_branches: Option<u64>,
+    checkpoint_replay: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -335,6 +436,9 @@ pub enum ConfigError {
 
     #[error("K0120 ecosystem policy parse error at {key}: unknown boundary policy `{value}`")]
     InvalidEcosystemPolicy { key: String, value: String },
+
+    #[error("K0121 simulation config parse error at {key}: {message}")]
+    InvalidSimConfig { key: String, message: String },
 }
 
 impl Default for KoboConfig {
@@ -359,8 +463,32 @@ impl Default for KoboConfig {
             mutating_methods: Vec::new(),
             ecosystem_policy: EcosystemPolicyConfig::default(),
             runtime_profile: RuntimeProfileConfig::default(),
+            sim: SimConfig::default(),
             src_dir: PathBuf::from("src"),
             enable_parse_recovery: false,
+        }
+    }
+}
+
+impl Default for SimConfig {
+    fn default() -> Self {
+        Self {
+            default_profile: "quick".to_owned(),
+            show_backend_choices: false,
+            profiles: HashMap::new(),
+            backends: HashMap::new(),
+        }
+    }
+}
+
+impl Default for SimBackendConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scheduler: None,
+            replay_token: None,
+            max_branches: None,
+            checkpoint_replay: None,
         }
     }
 }
@@ -631,8 +759,174 @@ impl RawKoboConfig {
         self.ecosystem
             .apply_to(&mut config.ecosystem_policy, config_dir)?;
         self.runtime.profile.apply_to(&mut config.runtime_profile);
+        self.sim.apply_to(&mut config.sim)?;
         Ok(())
     }
+}
+
+impl RawSimSection {
+    fn apply_to(self, sim: &mut SimConfig) -> Result<(), ConfigError> {
+        if let Some(default_profile) = self.default_profile {
+            validate_sim_profile_name("[sim].default_profile", &default_profile)?;
+            sim.default_profile = default_profile;
+        }
+        if let Some(show_backend_choices) = self.show_backend_choices {
+            sim.show_backend_choices = show_backend_choices;
+        }
+        for (name, profile) in self.profile {
+            validate_sim_profile_name("[sim.profile]", &name)?;
+            validate_sim_seed_count("[sim.profile].seed_count", profile.seed_count)?;
+            validate_sim_shrink("[sim.profile].shrink", profile.shrink.as_deref())?;
+            sim.profiles.insert(
+                name,
+                SimProfileConfig {
+                    schedule_budget: profile.schedule_budget,
+                    seed_count: profile.seed_count,
+                    shrink: profile.shrink,
+                },
+            );
+        }
+        for (name, backend) in self.backend {
+            validate_sim_backend_name("[sim.backend]", &name)?;
+            validate_sim_backend_scheduler(&name, backend.scheduler.as_deref())?;
+            validate_sim_replay_token(&name, backend.replay_token.as_deref())?;
+            validate_sim_backend_max_branches(&name, backend.max_branches)?;
+            validate_sim_backend_checkpoint_replay(&name, backend.checkpoint_replay)?;
+            sim.backends.insert(
+                name,
+                SimBackendConfig {
+                    enabled: backend.enabled.unwrap_or(true),
+                    scheduler: backend.scheduler,
+                    replay_token: backend.replay_token,
+                    max_branches: backend.max_branches,
+                    checkpoint_replay: backend.checkpoint_replay,
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+fn validate_sim_profile_name(key: &str, profile: &str) -> Result<(), ConfigError> {
+    if matches!(profile, "quick" | "deep" | "replay" | "exhaustive") {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: format!(
+            "unknown simulation profile `{profile}`; expected quick, deep, replay, or exhaustive"
+        ),
+    })
+}
+
+fn validate_sim_backend_name(key: &str, backend: &str) -> Result<(), ConfigError> {
+    if matches!(
+        backend,
+        "loom" | "shuttle" | "turmoil" | "madsim" | "proptest" | "failpoints"
+    ) {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: format!(
+            "unknown simulation backend `{backend}`; expected loom, shuttle, turmoil, madsim, proptest, or failpoints"
+        ),
+    })
+}
+
+fn validate_sim_seed_count(key: &str, seed_count: Option<u64>) -> Result<(), ConfigError> {
+    if seed_count.map_or(true, |value| value > 0) {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: "seed_count must be greater than zero".to_owned(),
+    })
+}
+
+fn validate_sim_backend_scheduler(
+    backend: &str,
+    scheduler: Option<&str>,
+) -> Result<(), ConfigError> {
+    let Some(scheduler) = scheduler else {
+        return Ok(());
+    };
+    let supported = match backend {
+        "loom" => matches!(scheduler, "exhaustive" | "small-random"),
+        "shuttle" => scheduler == "pct",
+        "turmoil" | "madsim" => false,
+        "proptest" | "failpoints" => false,
+        _ => false,
+    };
+    if supported {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].scheduler"),
+        message: format!("unsupported scheduler `{scheduler}` for backend `{backend}`"),
+    })
+}
+
+fn validate_sim_backend_max_branches(
+    backend: &str,
+    max_branches: Option<u64>,
+) -> Result<(), ConfigError> {
+    let Some(max_branches) = max_branches else {
+        return Ok(());
+    };
+    if backend == "loom" && max_branches > 0 {
+        return Ok(());
+    }
+    let message = if max_branches == 0 {
+        "max_branches must be greater than zero".to_owned()
+    } else {
+        format!("max_branches is only supported by backend `loom`, not `{backend}`")
+    };
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].max_branches"),
+        message,
+    })
+}
+
+fn validate_sim_backend_checkpoint_replay(
+    backend: &str,
+    checkpoint_replay: Option<bool>,
+) -> Result<(), ConfigError> {
+    if checkpoint_replay.is_none() || backend == "loom" {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].checkpoint_replay"),
+        message: format!("checkpoint_replay is only supported by backend `loom`, not `{backend}`"),
+    })
+}
+
+fn validate_sim_replay_token(backend: &str, replay_token: Option<&str>) -> Result<(), ConfigError> {
+    let Some(replay_token) = replay_token else {
+        return Ok(());
+    };
+    if matches!(replay_token, "record" | "metadata" | "none") {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: format!("[sim.backend.{backend}].replay_token"),
+        message: format!(
+            "unsupported replay token `{replay_token}`; expected record, metadata, or none"
+        ),
+    })
+}
+
+fn validate_sim_shrink(key: &str, shrink: Option<&str>) -> Result<(), ConfigError> {
+    let Some(shrink) = shrink else {
+        return Ok(());
+    };
+    if matches!(shrink, "off" | "best-effort") {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidSimConfig {
+        key: key.to_owned(),
+        message: format!("unsupported shrink mode `{shrink}`; expected off or best-effort"),
+    })
 }
 
 impl RawRuntimeProfileSection {
@@ -961,6 +1255,125 @@ methods = ["push", "insert", "remove"]
 "#;
         let config = parse_kobo_config(toml).unwrap();
         assert_eq!(config.mutating_methods, vec!["push", "insert", "remove"]);
+    }
+
+    #[test]
+    fn parse_config_loads_sim_profiles_and_backends() {
+        let toml = r#"
+[sim]
+default_profile = "quick"
+show_backend_choices = true
+
+[sim.profile.quick]
+schedule_budget = 7
+seed_count = 3
+shrink = "off"
+
+[sim.backend.loom]
+enabled = true
+scheduler = "exhaustive"
+replay_token = "record"
+max_branches = 11
+checkpoint_replay = true
+"#;
+        let config = parse_kobo_config(toml).unwrap();
+        let profile = config.sim.profiles.get("quick").unwrap();
+        let backend = config.sim.backends.get("loom").unwrap();
+
+        assert_eq!(config.sim.default_profile, "quick");
+        assert!(config.sim.show_backend_choices);
+        assert_eq!(profile.schedule_budget, Some(7));
+        assert_eq!(profile.seed_count, Some(3));
+        assert_eq!(profile.shrink.as_deref(), Some("off"));
+        assert!(backend.enabled);
+        assert_eq!(backend.scheduler.as_deref(), Some("exhaustive"));
+        assert_eq!(backend.replay_token.as_deref(), Some("record"));
+        assert_eq!(backend.max_branches, Some(11));
+        assert_eq!(backend.checkpoint_replay, Some(true));
+    }
+
+    #[test]
+    fn parse_config_rejects_unstable_sim_profile_and_backend_keys() {
+        let profile_error = parse_kobo_config(
+            r#"
+[sim.profile.shuttle-ish]
+schedule_budget = 7
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            profile_error.contains("unknown simulation profile"),
+            "{profile_error}"
+        );
+
+        let backend_error = parse_kobo_config(
+            r#"
+[sim.backend.fake]
+scheduler = "pct"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            backend_error.contains("unknown simulation backend"),
+            "{backend_error}"
+        );
+
+        let reserved_scheduler = parse_kobo_config(
+            r#"
+[sim.backend.shuttle]
+scheduler = "pct"
+"#,
+        )
+        .expect("reserved backend scheduler intent should parse as scenario debt input");
+        assert_eq!(
+            reserved_scheduler
+                .sim
+                .backends
+                .get("shuttle")
+                .and_then(|backend| backend.scheduler.as_deref()),
+            Some("pct")
+        );
+
+        let seed_count_error = parse_kobo_config(
+            r#"
+[sim.profile.quick]
+seed_count = 0
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            seed_count_error.contains("seed_count must be greater than zero"),
+            "{seed_count_error}"
+        );
+
+        let max_branches_error = parse_kobo_config(
+            r#"
+[sim.backend.shuttle]
+max_branches = 10
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            max_branches_error.contains("max_branches is only supported by backend `loom`"),
+            "{max_branches_error}"
+        );
+
+        let checkpoint_error = parse_kobo_config(
+            r#"
+[sim.backend.shuttle]
+checkpoint_replay = true
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            checkpoint_error.contains("checkpoint_replay is only supported by backend `loom`"),
+            "{checkpoint_error}"
+        );
     }
 
     #[test]

@@ -48,7 +48,23 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         ["seed"].as_slice(),
         ["backend_profile"].as_slice(),
         ["backend"].as_slice(),
+        ["backend_version", "backend"].as_slice(),
+        ["backend_version", "adapter_source"].as_slice(),
+        ["backend_version", "adapter_version"].as_slice(),
         ["backend_replay"].as_slice(),
+        ["backend_replay_token"].as_slice(),
+        ["backend_controls", "backend"].as_slice(),
+        ["backend_controls", "scheduler"].as_slice(),
+        ["backend_controls", "max_branches"].as_slice(),
+        ["backend_controls", "backend_native"].as_slice(),
+        ["backend_controls", "replay_token"].as_slice(),
+        ["backend_controls", "checkpoint_replay"].as_slice(),
+        ["checkpoint_replay", "enabled"].as_slice(),
+        ["sim_profile"].as_slice(),
+        ["sim_config", "default_profile"].as_slice(),
+        ["sim_config", "show_backend_choices"].as_slice(),
+        ["sim_config", "profiles"].as_slice(),
+        ["sim_config", "backends"].as_slice(),
         ["replay_guarantee"].as_slice(),
         ["expanded_policy", "ownership"].as_slice(),
         ["expanded_policy", "liveness"].as_slice(),
@@ -78,7 +94,13 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
         "witness version must not be placeholder text"
     );
     assert_eq!(json["failure"]["code"], "K0100");
-    assert_eq!(json["backend"], "shuttle");
+    assert_eq!(json["backend"], "generated-rust-process");
+    assert_eq!(
+        json["backend_controls"]["backend"],
+        "generated-rust-process"
+    );
+    assert_eq!(json["reserved_backend_fit"][0]["backend"], "shuttle");
+    assert_eq!(json["reserved_backend_fit"][0]["status"], "reserved");
     assert_contains(
         &witness,
         "Transaction",
@@ -94,6 +116,141 @@ fn kwit_emitted_for_liveness_failure_has_required_schema() {
             .as_array()
             .is_some_and(|spans| !spans.is_empty()),
         "liveness witness should include related source spans for the obligation"
+    );
+}
+
+#[test]
+fn replay_rejects_v1_witness_missing_sim_backend_schema() {
+    let project = TestProject::new("replay-missing-sim-schema");
+    let witnesses = emit_witness(&project);
+    assert!(!witnesses.is_empty(), "witness should exist before replay");
+    let witness = &witnesses[0];
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(witness).unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("sim_config");
+    json.as_object_mut().unwrap().remove("backend_controls");
+    std::fs::write(witness, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    let output = run_kobo(&[s("replay"), path_arg(witness)], &project.root);
+
+    assert_failure(&output, "replay must reject missing sim/backend schema");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "missing backend_controls",
+        "failure should name the first missing stable backend schema field",
+    );
+}
+
+#[test]
+fn backend_native_replay_rejects_non_native_witness() {
+    let project = TestProject::new("replay-backend-native-non-native");
+    let witnesses = emit_witness(&project);
+    assert!(!witnesses.is_empty(), "witness should exist before replay");
+
+    let output = run_kobo(
+        &[s("replay"), path_arg(&witnesses[0]), s("--backend-native")],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "backend-native replay must reject non-native witnesses",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "unsupported backend option",
+        "failure should name unsupported backend-native replay",
+    );
+    assert_contains(
+        &text,
+        "exact Loom",
+        "failure should explain the required native replay witness",
+    );
+}
+
+#[test]
+fn backend_native_replay_validates_recorded_backend_controls() {
+    let project = TestProject::new("replay-backend-native-controls");
+    let file = project.main_file(
+        r#"#[kobo::scenario(profile = "sync")]
+fn replay_exact_sync() {
+    let value = 1;
+    let _copy = value;
+}
+"#,
+    );
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--profile"),
+            s("sync"),
+            s("--backend"),
+            s("loom"),
+            s("--scheduler"),
+            s("exhaustive"),
+            s("--backend-native"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &sim,
+        "exact Loom scenario should emit a backend-native witness",
+    );
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(!witnesses.is_empty(), "witness should exist before replay");
+    let witness = &witnesses[0];
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(witness).unwrap()).unwrap();
+    assert_eq!(json["backend_replay_evidence"]["backend"], "loom");
+    assert_eq!(
+        json["backend_replay_evidence"]["source"],
+        "generated-loom-harness"
+    );
+    let harness_replay_id = json["backend_replay_evidence"]["harness_replay_id"]
+        .as_str()
+        .expect("backend-native witness should carry a generated harness replay id");
+    assert!(
+        harness_replay_id.starts_with("loom-harness:"),
+        "replay id should be honest generated-harness evidence, not a claimed native backend token: {json}"
+    );
+    assert_eq!(
+        json["backend_replay"], harness_replay_id,
+        "backend_replay should copy the generated harness replay id"
+    );
+    assert_ne!(
+        json["backend_replay_evidence"]["harness_replay_id"],
+        json["backend_replay_evidence"]["kobo_verification_hash"],
+        "generated harness replay id should stay separate from Kobo verification hashes"
+    );
+    json["backend_controls"]["scheduler"] = serde_json::json!("pct");
+    std::fs::write(witness, serde_json::to_string_pretty(&json).unwrap()).unwrap();
+
+    let output = run_kobo(
+        &[s("replay"), path_arg(witness), s("--backend-native")],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "backend-native replay must reject mutated backend controls",
+    );
+    let text = output.combined();
+    assert_contains(
+        &text,
+        "backend_controls.scheduler",
+        "failure should name the mutated scheduler control",
+    );
+    assert_contains(
+        &text,
+        "scenario debt",
+        "failure should keep unsupported native controls explicit",
     );
 }
 

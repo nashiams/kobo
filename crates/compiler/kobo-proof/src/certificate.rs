@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+pub const PROOF_CERTIFICATE_SCHEMA_VERSION: u32 = 2;
+pub const PROOF_TARGET_VERSION: &str = "kobo-core-obligation-flow-1";
+pub const PROOF_SEMANTIC_SCHEMA: &str = ".kproof";
+pub const PROOF_CLAIM_SCOPE: &str = "modeled_core_obligation_flow_only";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProofCertificate {
@@ -13,7 +18,7 @@ pub struct ProofCertificate {
     pub core: CoreEvidence,
     pub replay_grade: ReplayGrade,
     pub template_hashes: Vec<HashEvidence>,
-    pub template_versions: Vec<TemplateVersionEvidence>,
+    pub template_schemas: Vec<TemplateSchemaEvidence>,
     pub boundary_assumption_hashes: Vec<HashEvidence>,
     pub boundary_assumptions: Vec<BoundaryAssumption>,
     pub adapter_confidence: Vec<AdapterEvidence>,
@@ -193,10 +198,11 @@ pub struct HashEvidence {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TemplateVersionEvidence {
+pub struct TemplateSchemaEvidence {
     pub id: String,
     pub kind: String,
-    pub version: String,
+    pub template_schema: String,
+    pub schema_version: u64,
     pub confidence: String,
     pub source: String,
     pub source_span: SourceSpan,

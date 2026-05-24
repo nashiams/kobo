@@ -252,6 +252,206 @@ fn path_policy_overrides_follow_dynamic_file_globs() {
 }
 
 #[test]
+fn release_strict_paths_raise_policy_without_source_mode_identity() {
+    let project = TestProject::new("release-strict-paths");
+    let payment_name = unique_symbol("payment_strict");
+    let public_name = unique_symbol("public_recorded");
+    let source = fixture_text("policy/basic.kobo");
+    let payment_file = project.write(&format!("src/payment/{payment_name}.kobo"), &source);
+    let public_file = project.write(&format!("src/public/{public_name}.kobo"), &source);
+    project.write(
+        "Kobo.toml",
+        r#"[guarantees]
+ownership = "record"
+liveness = "record"
+replay = "record"
+boundaries = "record"
+errors = "typed"
+
+[ci.release]
+deny_new_debt = true
+strict_paths = ["src/payment/**"]
+deny_downgrade_without_reason = true
+"#,
+    );
+
+    let payment = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--print-policy=json"),
+            path_arg(&payment_file),
+        ],
+        &project.root,
+    );
+    let public = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("release"),
+            s("--print-policy=json"),
+            path_arg(&public_file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&payment, "strict path policy should print");
+    assert_success(&public, "non-strict path policy should print");
+    let payment_json = first_json(&payment, "payment strict path policy json");
+    let public_json = first_json(&public, "public path policy json");
+    assert_eq!(
+        payment_json["guarantees"]["ownership"], "strict",
+        "release strict_paths should raise matching files back to strict ownership"
+    );
+    assert_eq!(
+        payment_json["guarantees"]["boundaries"], "strict",
+        "release strict_paths should raise matching files back to strict boundaries"
+    );
+    assert_eq!(
+        public_json["guarantees"]["ownership"], "record",
+        "non-matching files should keep the explicit gradual project policy"
+    );
+}
+
+#[test]
+fn normal_check_enforces_configured_deny_new_debt() {
+    let project = TestProject::new("deny-new-debt-normal-check");
+    let file = project.main_file(
+        r#"#[kobo::relax]
+fn relaxed_fn() {
+    let value = String::from("ci");
+    println!("{}", value);
+}
+
+fn main() {
+    relaxed_fn();
+}
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ci.release]
+deny_new_debt = true
+"#,
+    );
+
+    let output = run_kobo(&[s("check"), path_arg(&file)], &project.root);
+
+    assert_failure(&output, "configured deny_new_debt must gate normal check");
+    let text = output.combined();
+    assert_contains(&text, "deny_new_debt", "failure should name the CI gate");
+    assert_contains(
+        &text,
+        "K0026",
+        "failure should point at the new debt diagnostic",
+    );
+}
+
+#[test]
+fn normal_build_enforces_configured_deny_new_debt() {
+    let project = TestProject::new("deny-new-debt-normal-build");
+    let file = project.main_file(
+        r#"#[kobo::relax]
+fn relaxed_fn() {
+    let value = String::from("ci build");
+    println!("{}", value);
+}
+
+fn main() {
+    relaxed_fn();
+}
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ci.release]
+deny_new_debt = true
+"#,
+    );
+
+    let output = run_kobo(&[s("build"), path_arg(&file)], &project.root);
+
+    assert_failure(&output, "configured deny_new_debt must gate normal build");
+    let text = output.combined();
+    assert_contains(&text, "deny_new_debt", "failure should name the CI gate");
+    assert_contains(
+        &text,
+        "K0026",
+        "failure should point at the new debt diagnostic",
+    );
+}
+
+#[test]
+fn normal_check_rejects_configured_downgrade_without_reason() {
+    let project = TestProject::new("normal-downgrade-reason");
+    let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");
+    project.write(
+        "Kobo.toml",
+        r#"[guarantees]
+ownership = "strict"
+liveness = "checked"
+replay = "checked"
+boundaries = "strict"
+errors = "explicit"
+
+[ci.release]
+deny_downgrade_without_reason = true
+
+[paths."src/main.kobo"]
+ownership = "record"
+"#,
+    );
+
+    let output = run_kobo(&[s("check"), path_arg(&file)], &project.root);
+
+    assert_failure(
+        &output,
+        "normal check must reject configured downgrade evidence",
+    );
+    let text = output.combined();
+    assert_contains(&text, "downgrade", "downgrade should be named");
+    assert_contains(&text, "reason", "downgrade must ask for a reason");
+    assert_contains(&text, "ledger", "downgrade must be recorded as evidence");
+}
+
+#[test]
+fn normal_check_applies_configured_strict_paths() {
+    let project = TestProject::new("normal-strict-paths");
+    let source = r#"fn main() {
+    let value = String::from("strict path");
+    let moved = value;
+    println!("{}", value);
+}
+"#;
+    let payment_file = project.write("src/payment/main.kobo", source);
+    let public_file = project.write("src/public/main.kobo", source);
+    project.write(
+        "Kobo.toml",
+        r#"[guarantees]
+ownership = "record"
+liveness = "record"
+replay = "record"
+boundaries = "record"
+errors = "typed"
+
+[ci.release]
+deny_new_debt = false
+strict_paths = ["src/payment/**"]
+"#,
+    );
+
+    let payment = run_kobo(&[s("check"), path_arg(&payment_file)], &project.root);
+    let public = run_kobo(&[s("check"), path_arg(&public_file)], &project.root);
+
+    assert_failure(&payment, "strict path should raise normal check policy");
+    assert_success(
+        &public,
+        "non-strict path should keep the gradual project policy",
+    );
+}
+
+#[test]
 fn docs_and_cli_do_not_expose_script_strict_as_language_identities() {
     let project = TestProject::new("no-mode-identity");
     let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");

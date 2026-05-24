@@ -5,7 +5,7 @@ use std::process::Command;
 use anyhow::Context;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value};
 
-pub(super) const BUILTIN_REGISTRY_NAME: &str = "builtin-v0.11";
+pub(super) const BUILTIN_REGISTRY_NAME: &str = "builtin-ecosystem";
 const LOCAL_REGISTRY_INDEX: &str = ".kobo/registry/index.toml";
 const KOBO_REGISTRY_SCHEMA_VERSION: i64 = 1;
 
@@ -669,7 +669,7 @@ fn local_registry_entry(
     let registry_name = document
         .get("name")
         .and_then(toml::Value::as_str)
-        .unwrap_or("local-v0.11")
+        .unwrap_or("local-registry")
         .to_owned();
     let Some(entries) = document.get("crate").and_then(toml::Value::as_array) else {
         return Ok(None);

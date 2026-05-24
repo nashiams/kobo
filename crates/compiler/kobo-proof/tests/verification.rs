@@ -1,9 +1,9 @@
 use kobo_proof::{
     certificate_material_hash, core_material_hash, parse_certificate_json, stable_hash,
-    template_version_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge,
+    template_schema_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, CoreCfgEdge,
     CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind,
     ObligationState, ObligationStatus, ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan,
-    TemplateVersionEvidence, VerificationContext, VerificationError,
+    TemplateSchemaEvidence, VerificationContext, VerificationError,
 };
 use serde_json::Value;
 
@@ -41,15 +41,16 @@ fn valid_certificate() -> ProofCertificate {
         kind: "goto".to_owned(),
         source_span: span(),
     }];
-    let template_version = TemplateVersionEvidence {
+    let template_schema = TemplateSchemaEvidence {
         id: "declared_must_call:Delivery".to_owned(),
         kind: "declared_must_call".to_owned(),
-        version: "v0.13.0".to_owned(),
+        template_schema: "lifecycle-template".to_owned(),
+        schema_version: 1,
         confidence: "declared_contract".to_owned(),
         source: "declaration".to_owned(),
         source_span: span(),
     };
-    let template_hash = template_version_hash(&template_version).unwrap();
+    let template_hash = template_schema_hash(&template_schema).unwrap();
     let entry_env = Vec::new();
     let exit_env = vec![ObligationState {
         binding: "delivery".to_owned(),
@@ -82,7 +83,7 @@ fn valid_certificate() -> ProofCertificate {
         },
     ];
     let mut certificate = ProofCertificate {
-        schema_version: 1,
+        schema_version: 2,
         proof_target_version: "kobo-core-obligation-flow-1".to_owned(),
         semantic_schema: ".kproof".to_owned(),
         artifact_kind: ArtifactKind::Kproof,
@@ -107,10 +108,10 @@ fn valid_certificate() -> ProofCertificate {
         },
         replay_grade: ReplayGrade::Partial,
         template_hashes: vec![HashEvidence {
-            id: template_version.id.clone(),
+            id: template_schema.id.clone(),
             hash: template_hash,
         }],
-        template_versions: vec![template_version],
+        template_schemas: vec![template_schema],
         boundary_assumption_hashes: Vec::new(),
         boundary_assumptions: Vec::new(),
         adapter_confidence: Vec::new(),
@@ -132,17 +133,56 @@ fn valid_certificate() -> ProofCertificate {
     certificate
 }
 
+fn certificate_with_single_event_kind(kind: ObligationEventKind) -> ProofCertificate {
+    let mut certificate = valid_certificate();
+    certificate.entry_env = Vec::new();
+    certificate.exit_env = Vec::new();
+    certificate.obligation_events = vec![ObligationEvent {
+        id: "stmt-0".to_owned(),
+        kind,
+        binding: None,
+        action: None,
+        source_span: span(),
+        state_before: Vec::new(),
+        state_after: Vec::new(),
+    }];
+    certificate.function_summaries = vec![FunctionSummary {
+        function: "proof_case".to_owned(),
+        event_count: 1,
+        entry_env: Vec::new(),
+        exit_env: Vec::new(),
+    }];
+    rehash(&mut certificate);
+    certificate
+}
+
 fn context() -> VerificationContext {
     VerificationContext {
         source: SOURCE.to_owned(),
     }
 }
 
+fn rehash(certificate: &mut ProofCertificate) {
+    certificate.certificate_material_hash = certificate_material_hash(certificate).unwrap();
+}
+
 fn mutate_json(mut certificate: ProofCertificate, mutate: impl FnOnce(&mut Value)) -> String {
-    certificate.certificate_material_hash = certificate_material_hash(&certificate).unwrap();
+    rehash(&mut certificate);
     let mut value = serde_json::to_value(certificate).unwrap();
     mutate(&mut value);
     serde_json::to_string(&value).unwrap()
+}
+
+fn assert_parse_field_error(source: String, expected_field: &str) {
+    let error = parse_certificate_json(&source).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            VerificationError::UnsupportedCertificateField { ref field, .. }
+                if field == expected_field
+        ),
+        "expected unsupported field `{expected_field}`, got {error:?}"
+    );
 }
 
 #[test]
@@ -175,6 +215,36 @@ fn core_hash_mismatch_rejected() {
 }
 
 #[test]
+fn unsupported_certificate_schema_rejected_before_hash_replay() {
+    let mut certificate = valid_certificate();
+    certificate.schema_version = 99;
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateHeader { ref field, .. }
+            if field == "schema_version"
+    ));
+}
+
+#[test]
+fn unsupported_claim_scope_rejected_even_with_matching_material_hash() {
+    let mut certificate = valid_certificate();
+    certificate.claim_scope = "whole_program_total_correctness".to_owned();
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateHeader { ref field, .. }
+            if field == "claim_scope"
+    ));
+}
+
+#[test]
 fn unknown_event_kind_rejected() {
     let source = mutate_json(valid_certificate(), |value| {
         value["obligation_events"][0]["kind"] = Value::String("teleport".to_owned());
@@ -186,15 +256,214 @@ fn unknown_event_kind_rejected() {
 }
 
 #[test]
-fn stale_template_version_rejected() {
+fn invalid_artifact_kind_reports_header_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["artifact_kind"] = Value::String("totally_proof".to_owned());
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateHeader { ref field, .. }
+            if field == "artifact_kind"
+    ));
+}
+
+#[test]
+fn invalid_replay_grade_reports_replay_grade_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["replay_grade"] = Value::String("mystery".to_owned());
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "replay_grade"
+    ));
+}
+
+#[test]
+fn invalid_adapter_confidence_reports_confidence_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["adapter_confidence"] = serde_json::json!([{
+            "boundary": "runtime",
+            "adapter": "tokio",
+            "version": null,
+            "confidence": "mystery",
+            "replay_grade": "partial",
+            "outcome": "modeled",
+            "reason": "fixture"
+        }]);
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "adapter_confidence[0].confidence"
+    ));
+}
+
+#[test]
+fn invalid_adapter_replay_grade_reports_adapter_replay_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["adapter_confidence"] = serde_json::json!([{
+            "boundary": "runtime",
+            "adapter": "tokio",
+            "version": null,
+            "confidence": "modeled",
+            "replay_grade": "mystery",
+            "outcome": "modeled",
+            "reason": "fixture"
+        }]);
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "adapter_confidence[0].replay_grade"
+    ));
+}
+
+#[test]
+fn invalid_candidate_replay_grade_reports_candidate_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["candidate_admission"] = serde_json::json!([{
+            "replay_grade": "mystery"
+        }]);
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedCertificateField { ref field, .. }
+            if field == "candidate_admission[0].replay_grade"
+    ));
+}
+
+#[test]
+fn extended_obligation_event_kinds_parse_and_verify() {
+    for kind in [
+        ObligationEventKind::Escape,
+        ObligationEventKind::UnsupportedContainer,
+        ObligationEventKind::Call,
+    ] {
+        let certificate = certificate_with_single_event_kind(kind);
+        let source = serde_json::to_string(&certificate).expect("certificate should render");
+        let parsed = parse_certificate_json(&source).expect("valid event kind should parse");
+        let report =
+            verify_certificate(&parsed, &context()).expect("valid event kind should verify");
+
+        assert_eq!(report.checked_obligation_events, 1);
+    }
+}
+
+#[test]
+fn invalid_entry_env_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["entry_env"] = serde_json::json!([{
+            "binding": "delivery",
+            "state": "mystery"
+        }]);
+    });
+
+    assert_parse_field_error(source, "entry_env[0].state");
+}
+
+#[test]
+fn invalid_event_state_after_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["obligation_events"][0]["state_after"][0]["state"] =
+            Value::String("mystery".to_owned());
+    });
+
+    assert_parse_field_error(source, "obligation_events[0].state_after[0].state");
+}
+
+#[test]
+fn invalid_future_state_obligation_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["core"]["async_model"]["future_state_obligations"] = serde_json::json!([{
+            "binding": "delivery",
+            "state": "mystery",
+            "suspension_state": "s0",
+            "source_span": span()
+        }]);
+    });
+
+    assert_parse_field_error(source, "core.async_model.future_state_obligations[0].state");
+}
+
+#[test]
+fn invalid_select_path_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["core"]["async_model"]["select_paths"] = serde_json::json!([{
+            "id": "select-0",
+            "function": "proof_case",
+            "branch_block": "bb0",
+            "branch_target": "bb1",
+            "path_kind": "selected",
+            "obligation_results": [{
+                "binding": "delivery",
+                "state": "mystery"
+            }],
+            "cancelled_obligations": [],
+            "obligation_result_hash": "hash",
+            "source_span": span()
+        }]);
+    });
+
+    assert_parse_field_error(
+        source,
+        "core.async_model.select_paths[0].obligation_results[0].state",
+    );
+}
+
+#[test]
+fn invalid_function_summary_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["function_summaries"][0]["exit_env"][0]["state"] =
+            Value::String("mystery".to_owned());
+    });
+
+    assert_parse_field_error(source, "function_summaries[0].exit_env[0].state");
+}
+
+#[test]
+fn missing_template_schema_fields_are_rejected() {
+    let source = mutate_json(valid_certificate(), |value| {
+        let template = value["template_schemas"][0]
+            .as_object_mut()
+            .expect("template schema entry should be an object");
+        template.remove("template_schema");
+        template.remove("schema_version");
+    });
+
+    let error = parse_certificate_json(&source).unwrap_err();
+
+    assert!(
+        error.to_string().contains("missing field"),
+        "missing public schema fields should not be silently defaulted: {error}"
+    );
+}
+
+#[test]
+fn unsupported_template_schema_rejected() {
     let mut certificate = valid_certificate();
-    certificate.template_versions[0].version = "v0.0.0-stale".to_owned();
+    certificate.template_schemas[0].schema_version = 99;
 
     let error = verify_certificate(&certificate, &context()).unwrap_err();
 
     assert!(matches!(
         error,
-        VerificationError::StaleTemplateVersion { .. }
+        VerificationError::UnsupportedTemplateSchema { .. }
     ));
 }
 

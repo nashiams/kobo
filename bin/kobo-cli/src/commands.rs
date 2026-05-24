@@ -1,3 +1,4 @@
+mod backend_debt;
 mod bench;
 mod bindgen;
 mod boundary_projection;
@@ -132,6 +133,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             harness,
             cargo,
             profile,
+            backend,
             trait_default,
             audit,
         } => run::cmd_inspect(
@@ -144,6 +146,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             harness,
             cargo.as_deref(),
             profile.as_deref(),
+            backend.as_deref(),
             trait_default.as_deref(),
             audit.as_deref(),
         ),
@@ -252,6 +255,10 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             error_format,
             target,
             engine,
+            backend,
+            scheduler,
+            max_branches,
+            backend_native,
             file,
         } => test_cmd::cmd_test(
             &file,
@@ -266,12 +273,14 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             error_format,
             target.as_deref(),
             engine.as_deref(),
+            test_cmd::BackendExpertOptions::new(backend, scheduler, max_branches, backend_native),
         ),
         KoboCommand::Replay {
             file,
             error_format,
             roundtrip_metadata,
-        } => replay::cmd_replay(&file, error_format, roundtrip_metadata),
+            backend_native,
+        } => replay::cmd_replay(&file, error_format, roundtrip_metadata, backend_native),
         KoboCommand::Fix {
             file,
             dry_run,
@@ -377,7 +386,11 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             plan,
             changed,
         } => watch::cmd_watch(file.as_deref(), simple, build, plan, changed.as_deref()),
-        KoboCommand::Explain { code, verbose } => explain::cmd_explain(&code, verbose),
+        KoboCommand::Explain {
+            code,
+            location,
+            verbose,
+        } => explain::cmd_explain(&code, location.as_deref(), verbose),
     }
 }
 

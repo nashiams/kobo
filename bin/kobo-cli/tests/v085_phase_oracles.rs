@@ -906,7 +906,7 @@ async fn service_retry() {
         &sim.combined(),
         &[
             "inspect --sim",
-            "v0.10 simulation facade",
+            "simulation contract transparency",
             "Rust-shaped",
             "Cargo-native",
             "use --harness",

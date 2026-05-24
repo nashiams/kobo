@@ -4,7 +4,8 @@ use crate::core::{
     BoundaryPolicyChoice, LoweredScenario, ModeledBoundary, ScenarioCoverage, ScenarioOperation,
 };
 
-pub const MODEL_VERSION: &str = "v0.11-driver-kir-generated-user-rust-harness-call-shape-1";
+pub const MODEL_SCHEMA: &str = "driver-kir-generated-user-rust-harness-call-shape";
+pub const MODEL_SCHEMA_VERSION: u64 = 1;
 
 pub fn lower_from_program(program: &ScenarioProgram, fallback_profile: &str) -> LoweredScenario {
     let operations = program

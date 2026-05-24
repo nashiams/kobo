@@ -14,6 +14,7 @@ pub use config::{
     load_config, load_config_for, parse_kobo_config, ConfigError, EcosystemAdapterPolicy,
     EcosystemCratePolicy, EcosystemPolicyConfig, EcosystemSummaryPolicy, EcosystemTypesPolicy,
     ErrorPolicy, GuaranteeLevel, GuaranteePolicy, GuaranteeProfile, KoboConfig, LegacyMode,
+    SimBackendConfig, SimConfig, SimProfileConfig,
 };
 pub use errors::DriverError;
 pub use filesystem::{

@@ -112,12 +112,17 @@ fn renamed_delivery_flow() {
         "comments and strings must not create extra lifecycle obligations: {inferred:?}"
     );
     let obligation = &inferred[0];
-    assert_eq!(obligation["kind"], "queue_delivery");
-    assert_eq!(obligation["template_id"], "queue_delivery");
-    assert_eq!(obligation["template_version"], "v0.13.0");
+    assert_eq!(obligation["kind"], "declared_must_call");
+    assert_eq!(obligation["template_id"], "declared_must_call:Delivery");
+    assert_eq!(obligation["template_schema"], "lifecycle-template");
+    assert_eq!(obligation["schema_version"], 1);
+    assert!(
+        obligation.get("template_version").is_none(),
+        "public lifecycle facts should not expose roadmap-stage template versions: {obligation}"
+    );
     assert_eq!(obligation["binding"], "renamed_delivery");
     assert_eq!(obligation["state"], "discharged");
-    assert_eq!(obligation["confidence"], "exact_template");
+    assert_eq!(obligation["confidence"], "declared_contract");
     assert_eq!(obligation["coverage_loss"], Value::Null);
     assert_contains(
         &obligation["terminal_actions"].to_string(),

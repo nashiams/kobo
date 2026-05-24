@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 use v09_common::{
-    assert_contains, assert_not_contains, assert_success, path_arg, run_kobo_with_timeout, s,
-    CliOutput, TestProject,
+    assert_contains, assert_failure, assert_not_contains, assert_success, path_arg,
+    run_kobo_with_timeout, s, CliOutput, TestProject,
 };
 
 const V13_TIMEOUT: Duration = Duration::from_secs(90);
@@ -704,10 +704,28 @@ fn run() {
 }
 "#;
     let file = project.main_file(source);
-    let witness_dir = project.root.join(".kobo/witnesses");
-    std::fs::create_dir_all(&witness_dir).expect("witness dir should create");
-    let witness_path = witness_dir.join("run-1.kwit");
-    std::fs::write(&witness_path, "{}").expect("witness should write");
+    let sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_failure(&sim, "failing live LSP scenario should emit a witness");
+    let witnesses = project.find_files_with_ext("kwit");
+    assert!(
+        !witnesses.is_empty(),
+        "live LSP test requires a generated witness"
+    );
+    let witness_name = witnesses[0]
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("witness filename should be UTF-8")
+        .to_owned();
 
     let lsp = env!("CARGO_BIN_EXE_kobo-lsp");
     let uri = file_uri(&file);
@@ -758,7 +776,7 @@ fn run() {
     assert_success(&lsp_output, "kobo-lsp framed stdio witness session");
     assert_contains(
         &lsp_output.stdout,
-        "run-1.kwit",
+        &witness_name,
         "live document links should expose the current witness artifact",
     );
     assert_contains(
@@ -1006,21 +1024,59 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         "ports",
         "recordings",
         "opaque boundaries",
-        "scoped modes",
+        "one language",
+        "guarantee policy",
+        "dev",
+        "checked",
+        "release",
         "gradual guarantees",
-        "mode invariant",
-        "Script, Checked, and Strict preserve the same ordinary runtime behavior",
+        "backend-native controls",
+        "[sim]",
+        "default_profile",
+        "schedule_budget",
     ] {
         assert_contains(&readme, expected, "README should document workflow claim");
     }
-    for forbidden in ["gradual typing", "formally proves arbitrary"] {
+    let root_config =
+        std::fs::read_to_string(repo_root.join("Kobo.toml")).expect("Kobo.toml should read");
+    for expected in ["[guarantees]", "ownership", "replay", "boundaries"] {
+        assert_contains(
+            &root_config,
+            expected,
+            "root config should show guarantee policy instead of mode identity",
+        );
+    }
+    for expected in [
+        "[sim]",
+        "default_profile",
+        "[sim.profile.quick]",
+        "[sim.backend.loom]",
+    ] {
+        assert_contains(
+            &root_config,
+            expected,
+            "root config should publish stable simulation schema",
+        );
+    }
+    for forbidden in [
+        "gradual typing",
+        "formally proves arbitrary",
+        "Script, Checked, and Strict",
+        "scoped modes",
+        "mode = \"script\"",
+    ] {
         assert_not_contains(&readme, forbidden, "README should avoid overclaim");
+        assert_not_contains(
+            &root_config,
+            forbidden,
+            "root config should avoid public mode identity",
+        );
     }
 
-    let docs = [
+    let docs: &[(&str, &[&str])] = &[
         (
             "docs/modeled-wards.md",
-            [
+            &[
                 "Modeled Ward Tutorial",
                 "attribute form",
                 "first-class ward syntax",
@@ -1032,19 +1088,19 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         ),
         (
             "docs/replay-and-strict-liveness.md",
-            [
+            &[
                 "Strict Liveness Reference",
                 "modeled scenario Core CFG evidence",
                 "join",
                 "transfer",
                 "proof failure",
                 "replay validation",
-                "mode invariant",
+                "guarantee profile",
             ],
         ),
         (
             "docs/failure-lab.md",
-            [
+            &[
                 "Failure Lab",
                 "durable queue",
                 "async gateway",
@@ -1056,7 +1112,7 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         ),
         (
             "docs/editor-clean-rust-workflow.md",
-            [
+            &[
                 "Editor Workflow",
                 "kobo-lsp",
                 "witness links",
@@ -1068,20 +1124,23 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         ),
         (
             "docs/migration-guide.md",
-            [
+            &[
                 "Migration Guide",
-                "Script",
-                "Checked",
-                "Strict",
-                "scoped modes",
+                "dev",
+                "checked",
+                "release",
+                "strict_paths",
                 "debt",
-                "mode invariant",
+                "guarantee policy",
+                "[sim]",
+                "default_profile",
+                "schedule_budget",
             ],
         ),
     ];
 
     let mut combined = readme;
-    for (relative, required_terms) in docs {
+    for &(relative, required_terms) in docs {
         let path = repo_root.join(relative);
         assert!(path.is_file(), "{relative} should be shipped documentation");
         let contents = std::fs::read_to_string(&path)
@@ -1103,6 +1162,9 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         "It is built around the Core CFG",
         "Rust navigation delegation from source-mapped compiler facts",
         "use rust-analyzer delegation and source maps",
+        "Script, Checked, and Strict",
+        "scoped modes",
+        "profile = \"strict\"",
     ] {
         assert_not_contains(
             &combined,

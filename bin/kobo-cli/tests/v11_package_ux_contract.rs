@@ -578,7 +578,7 @@ edition = "2021"
     );
     assert_contains(
         &kobo_toml,
-        r#"registry = "builtin-v0.11""#,
+        r#"registry = "builtin-ecosystem""#,
         "metadata packages should record the registry that supplied the annotation",
     );
     assert_contains(
@@ -592,9 +592,9 @@ edition = "2021"
         "adapter package metadata should preserve registry package version",
     );
     for expected in [
-        "metadata_path = \"builtin://builtin-v0.11/packages/kobo-types-sqlx-0.8.toml\"",
-        "declaration_path = \"builtin://builtin-v0.11/declarations/sqlx-0.8.kobo.d.toml\"",
-        "metadata_path = \"builtin://builtin-v0.11/packages/kobo-adapter-tokio-1.toml\"",
+        "metadata_path = \"builtin://builtin-ecosystem/packages/kobo-types-sqlx-0.8.toml\"",
+        "declaration_path = \"builtin://builtin-ecosystem/declarations/sqlx-0.8.kobo.d.toml\"",
+        "metadata_path = \"builtin://builtin-ecosystem/packages/kobo-adapter-tokio-1.toml\"",
         "checksum = \"sha256:",
         "declaration_hash = \"",
         "trust_policy = \"builtin-reviewed\"",
@@ -633,7 +633,7 @@ edition = "2021"
     for expected in [
         r#"package = "kobo-types-thiserror""#,
         r#"version = "2""#,
-        r#"declaration_path = "builtin://builtin-v0.11/declarations/thiserror-2.kobo.d.toml""#,
+        r#"declaration_path = "builtin://builtin-ecosystem/declarations/thiserror-2.kobo.d.toml""#,
         r#"declaration_hash = ""#,
         r#"validated = true"#,
     ] {

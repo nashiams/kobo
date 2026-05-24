@@ -2,7 +2,7 @@ mod v09_common;
 
 use v09_common::{
     assert_contains, assert_failure, assert_mentions_line, assert_not_contains, assert_success,
-    fixture_text, one_based_line_of, path_arg, run_kobo, s, TestProject,
+    fixture_text, one_based_line_of, path_arg, run_kobo, run_kobo_lsp_stdio, s, TestProject,
 };
 
 #[test]
@@ -259,4 +259,122 @@ fn lsp_ranges_move_when_boundary_call_moves() {
         second_line,
         "second LSP range must move with source",
     );
+}
+
+#[test]
+fn stdio_lsp_links_only_matching_witness_for_open_document() {
+    let project = TestProject::new("lsp-stdio-fresh-witness");
+    let first_source = fixture_text("lsp/range_first.kobo");
+    let second_source = fixture_text("lsp/range_second.kobo");
+    let first_file = project.write("src/lsp_first.kobo", &first_source);
+    let second_file = project.write("src/lsp_second.kobo", &second_source);
+    let first_sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&first_file),
+        ],
+        &project.root,
+    );
+    let second_sim = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&second_file),
+        ],
+        &project.root,
+    );
+    assert_failure(&first_sim, "first boundary scenario should emit a witness");
+    assert_failure(
+        &second_sim,
+        "second boundary scenario should emit a newer witness",
+    );
+    let mut witnesses = project.find_files_with_ext("kwit");
+    witnesses.sort();
+    assert!(
+        witnesses.len() >= 2,
+        "test requires two witnesses to prove stale rejection"
+    );
+    let first_witness = witnesses
+        .iter()
+        .find(|path| path.to_string_lossy().contains("replay_http_first"))
+        .expect("first source witness should exist");
+    let second_witness = witnesses
+        .iter()
+        .find(|path| path.to_string_lossy().contains("replay_http_second"))
+        .expect("second source witness should exist");
+    let first_witness_name = first_witness
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("first witness filename should be UTF-8");
+    let second_witness_name = second_witness
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("second witness filename should be UTF-8");
+    let first_uri = file_uri(&first_file);
+    let input = [
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        })
+        .to_string(),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": first_uri,
+                    "languageId": "kobo",
+                    "version": 1,
+                    "text": first_source,
+                }
+            }
+        })
+        .to_string(),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/documentLink",
+            "params": {
+                "textDocument": {"uri": first_uri}
+            }
+        })
+        .to_string(),
+    ]
+    .join("\n");
+
+    let output = run_kobo_lsp_stdio(&input, &project.root);
+
+    assert_success(&output, "stdio LSP should process open document");
+    let text = output.combined();
+    assert_contains(
+        &text,
+        first_witness_name,
+        "stdio LSP should link the witness matching the opened source",
+    );
+    assert_not_contains(
+        &text,
+        second_witness_name,
+        "stdio LSP must reject newer witnesses for other source hashes",
+    );
+}
+
+fn file_uri(path: &std::path::Path) -> String {
+    let mut normalized = path.to_string_lossy().replace('\\', "/");
+    if normalized
+        .as_bytes()
+        .get(1)
+        .is_some_and(|byte| *byte == b':')
+    {
+        normalized.insert(0, '/');
+    }
+    format!("file://{}", normalized.replace(' ', "%20"))
 }

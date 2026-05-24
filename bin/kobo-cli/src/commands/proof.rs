@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_driver::run_codegen_pipeline;
 use kobo_proof::{
-    parse_certificate_json, verify_certificate, ArtifactKind, ProofCertificate,
-    VerificationContext, VerificationError, VerificationReport,
+    parse_certificate_json, verify_certificate, verify_certificate_header, ArtifactKind,
+    ProofCertificate, VerificationContext, VerificationError, VerificationReport,
 };
 
 use crate::ProofReplayGradeArg;
@@ -20,7 +20,7 @@ pub(super) fn cmd_emit(
     let artifact_path = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| file.with_extension("kproof"));
-    let artifact_kind = artifact_kind_for_path(&artifact_path);
+    let artifact_kind = artifact_kind_for_path(&artifact_path)?;
     let (certificate, source) = emit_certificate(file, target, replay_grade, artifact_kind)?;
     verify_before_write(&certificate, &source)?;
     write_certificate(&artifact_path, &certificate)?;
@@ -32,7 +32,24 @@ pub(super) fn cmd_emit(
 }
 
 pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
+    let artifact_kind = artifact_kind_for_path(artifact);
+    let expected_artifact_kind = match artifact_kind {
+        Ok(kind) => kind,
+        Err(error) => {
+            let verification_error = unsupported_artifact_path_error(artifact);
+            emit_rejected(artifact, &verification_error, json)?;
+            return Err(error);
+        }
+    };
     let certificate = read_certificate(artifact)?;
+    if let Err(error) = verify_artifact_kind_matches_path(&expected_artifact_kind, &certificate) {
+        emit_rejected(artifact, &error, json)?;
+        anyhow::bail!("{error}");
+    }
+    if let Err(error) = verify_certificate_header(&certificate) {
+        emit_rejected(artifact, &error, json)?;
+        anyhow::bail!("{error}");
+    }
     let source = read_certificate_source(artifact, &certificate)?;
     match verify_certificate(
         &certificate,
@@ -49,6 +66,20 @@ pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
             anyhow::bail!("{error}")
         }
     }
+}
+
+fn verify_artifact_kind_matches_path(
+    expected: &ArtifactKind,
+    certificate: &ProofCertificate,
+) -> Result<(), VerificationError> {
+    if &certificate.artifact_kind == expected {
+        return Ok(());
+    }
+    Err(VerificationError::UnsupportedCertificateHeader {
+        field: "artifact_kind".to_owned(),
+        expected: artifact_kind_name(&expected).to_owned(),
+        observed: artifact_kind_name(&certificate.artifact_kind).to_owned(),
+    })
 }
 
 pub(super) fn emit_check_proof(
@@ -199,14 +230,34 @@ fn emit_rejected(artifact: &Path, error: &VerificationError, json: bool) -> anyh
     Ok(())
 }
 
-fn artifact_kind_for_path(path: &Path) -> ArtifactKind {
+fn artifact_kind_for_path(path: &Path) -> anyhow::Result<ArtifactKind> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
     if file_name.ends_with(".kwit.proof.json") {
-        ArtifactKind::KwitProofJson
-    } else {
-        ArtifactKind::Kproof
+        return Ok(ArtifactKind::KwitProofJson);
+    }
+    if file_name.ends_with(".kproof") {
+        return Ok(ArtifactKind::Kproof);
+    }
+    anyhow::bail!(
+        "unsupported proof artifact path `{}`; use .kproof or .kwit.proof.json",
+        path.display()
+    )
+}
+
+fn unsupported_artifact_path_error(path: &Path) -> VerificationError {
+    VerificationError::UnsupportedCertificateHeader {
+        field: "artifact_path".to_owned(),
+        expected: "*.kproof or *.kwit.proof.json".to_owned(),
+        observed: path.display().to_string(),
+    }
+}
+
+fn artifact_kind_name(kind: &ArtifactKind) -> &'static str {
+    match kind {
+        ArtifactKind::Kproof => "kproof",
+        ArtifactKind::KwitProofJson => "kwit.proof.json",
     }
 }

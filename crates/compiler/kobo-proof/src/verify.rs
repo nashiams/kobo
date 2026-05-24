@@ -7,6 +7,7 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerificationContext {
     pub source: String,
+    pub source_map: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,7 +42,7 @@ pub fn verify_certificate(
     crate::boundary::verify_boundary_hashes(certificate)?;
     crate::invariant::verify_loop_invariants(certificate)?;
     crate::bounded::verify_bounded_evidence(certificate)?;
-    crate::translation::verify_translation_validation(certificate)?;
+    crate::translation::verify_translation_validation(certificate, context.source_map.as_deref())?;
     crate::obligation::verify_cfg_edge_transitions(certificate)?;
     let checked_obligation_events = crate::obligation::replay_obligation_events(certificate)?;
     let certificate_hash = verify_certificate_hash(certificate)?;

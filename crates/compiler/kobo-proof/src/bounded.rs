@@ -40,7 +40,18 @@ fn verify_complete_dimensions(evidence: &BoundedProofEvidence) -> Result<(), Ver
 fn verify_bounded_wording(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {
     let claims_bounded_proof = evidence.wording.contains("bounded proof");
     if evidence.completeness == BoundedCompleteness::Complete {
-        return Ok(());
+        let expected = format!(
+            "bounded proof: all {} histories explored under declared bounds",
+            evidence.enumerated_history_count
+        );
+        if evidence.wording == expected {
+            return Ok(());
+        }
+        return Err(VerificationError::IncompleteBoundedEnumeration {
+            evidence_id: evidence.id.clone(),
+            completeness: evidence.completeness.as_str().to_owned(),
+            wording: evidence.wording.clone(),
+        });
     }
     if claims_bounded_proof {
         return Err(VerificationError::IncompleteBoundedEnumeration {

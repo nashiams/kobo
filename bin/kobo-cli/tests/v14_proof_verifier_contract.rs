@@ -83,6 +83,7 @@ fn emitted_certificate_verifies_independently() {
         &certificate,
         &VerificationContext {
             source: source().to_owned(),
+            source_map: None,
         },
     )
     .expect("emitted artifact should verify independently");
@@ -105,6 +106,7 @@ fn emitted_certificate_rejects_tampered_core_hash() {
         &certificate,
         &VerificationContext {
             source: source().to_owned(),
+            source_map: None,
         },
     )
     .expect_err("tampered core hash must be rejected");

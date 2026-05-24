@@ -1,6 +1,7 @@
 mod v09_common;
 mod v15_common;
 
+use kobo_proof::{certificate_material_hash, ProofCertificate};
 use v15_common::{
     assert_failure, assert_success, branch_leak_loop_source, emit_artifact, path_arg,
     queue_loop_source, read_json, run_kobo, s, TestProject,
@@ -81,6 +82,42 @@ fn empty_loop_source_with_invariant(scenario_name: &str, expression: &str) -> St
 fn {scenario_name}() {{
     loop {{
         let _unit = ();
+    }}
+}}
+"#
+    )
+}
+
+fn two_queue_loops_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    loop {{
+        let first = queue.recv();
+        first.ack();
+        break;
+    }}
+    loop {{
+        let second = queue.recv();
+        second.ack();
+        break;
     }}
 }}
 "#
@@ -329,4 +366,69 @@ fn valid_loop_artifact_verifies_after_invariant_checks() {
     );
 
     assert_success(&output, "valid loop invariant artifact should verify");
+}
+
+#[test]
+fn multiple_loops_scope_invariants_to_each_back_edge() {
+    let project = TestProject::new("v15-loop-invariant-scoped");
+    let artifact_path = emit_artifact(
+        &project,
+        &two_queue_loops_source("multi_loop_scope_case"),
+        "multi_loop_scope_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let invariants = artifact["loop_invariants"]
+        .as_array()
+        .expect("loop invariants should be an array");
+
+    assert_eq!(
+        invariants.len(),
+        2,
+        "both loops need distinct invariants: {artifact}"
+    );
+    assert_eq!(
+        invariants[0]["obligations_created"],
+        serde_json::json!(["first"])
+    );
+    assert_eq!(
+        invariants[1]["obligations_created"],
+        serde_json::json!(["second"])
+    );
+}
+
+#[test]
+fn tampered_invariant_back_edge_states_are_replayed_from_core() {
+    let project = TestProject::new("v15-loop-invariant-state-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source("state_tamper_case", "delivery", "queue"),
+        "state_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.loop_invariants[0].back_edge_states.clear();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    v15_common::write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "tampered invariant states should reject proof verification",
+    );
+    assert!(
+        output.combined().contains("invariant")
+            || output.combined().contains("back-edge")
+            || output.combined().contains("replay mismatch"),
+        "failure should name invariant/Core state mismatch: {}",
+        output.combined()
+    );
 }

@@ -1328,6 +1328,7 @@ fn write_proof_artifact(
         &certificate,
         &kobo_proof::VerificationContext {
             source: document.source.clone(),
+            source_map: None,
         },
     )?;
     let proof_path = kwit_proof_path(witness_path);

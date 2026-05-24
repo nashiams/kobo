@@ -50,11 +50,12 @@ pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
         emit_rejected(artifact, &error, json)?;
         anyhow::bail!("{error}");
     }
-    let source = read_certificate_source(artifact, &certificate)?;
+    let (source, source_map) = read_certificate_source_and_map(artifact, &certificate)?;
     match verify_certificate(
         &certificate,
         &VerificationContext {
             source: source.clone(),
+            source_map,
         },
     ) {
         Ok(report) => {
@@ -146,6 +147,7 @@ fn verify_before_write(certificate: &ProofCertificate, source: &str) -> anyhow::
         certificate,
         &VerificationContext {
             source: source.to_owned(),
+            source_map: None,
         },
     )
     .map(|_| ())
@@ -167,10 +169,10 @@ fn read_certificate(path: &Path) -> anyhow::Result<ProofCertificate> {
     parse_certificate_json(&source).map_err(|error| anyhow::anyhow!(error))
 }
 
-fn read_certificate_source(
+fn read_certificate_source_and_map(
     artifact: &Path,
     certificate: &ProofCertificate,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Option<String>)> {
     let source_path = PathBuf::from(&certificate.source.path);
     let resolved = if source_path.is_absolute() {
         source_path
@@ -180,8 +182,15 @@ fn read_certificate_source(
             .unwrap_or_else(|| Path::new("."))
             .join(source_path)
     };
-    std::fs::read_to_string(&resolved)
-        .with_context(|| format!("failed to read certificate source {}", resolved.display()))
+    let source = std::fs::read_to_string(&resolved)
+        .with_context(|| format!("failed to read certificate source {}", resolved.display()))?;
+    let source_map = read_source_map_for_source(&resolved);
+    Ok((source, source_map))
+}
+
+fn read_source_map_for_source(source_path: &Path) -> Option<String> {
+    let map_path = source_path.with_extension("kobo.map");
+    std::fs::read_to_string(map_path).ok()
 }
 
 fn emit_verified(

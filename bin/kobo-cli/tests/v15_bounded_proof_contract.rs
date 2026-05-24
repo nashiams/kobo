@@ -1,9 +1,10 @@
 mod v09_common;
 mod v15_common;
 
+use kobo_proof::{certificate_material_hash, ProofCertificate};
 use v15_common::{
-    assert_success, bounded_source, emit_artifact, first_json, path_arg, read_json, run_kobo, s,
-    TestProject,
+    assert_failure, assert_success, bounded_source, emit_artifact, first_json, path_arg, read_json,
+    run_kobo, s, write_json, TestProject,
 };
 
 fn bounded_source_without_expected(
@@ -257,5 +258,48 @@ fn proof_verify_json_and_text_report_same_bounded_wording() {
             .contains("bounded proof: all 12 histories explored under declared bounds"),
         "text output should match JSON bounded wording: {}",
         text_output.combined()
+    );
+}
+
+#[test]
+fn complete_bounded_evidence_requires_exact_proof_wording() {
+    let project = TestProject::new("v15-bounded-wording-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_wording_tamper_case",
+            "complete",
+            12,
+            12,
+            Some("single_thread"),
+            Some("none"),
+            Some("none"),
+        ),
+        "bounded_wording_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.bounded_evidence[0].wording = "bounded proof: trust me".to_owned();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "tampered complete bounded wording should reject proof",
+    );
+    assert!(
+        output.combined().contains("bounded evidence"),
+        "failure should name bounded wording mismatch: {}",
+        output.combined()
     );
 }

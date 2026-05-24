@@ -1,6 +1,7 @@
 mod v09_common;
 mod v15_common;
 
+use kobo_proof::{certificate_material_hash, trace_material_hash, ProofCertificate};
 use serde_json::json;
 use v15_common::{
     assert_failure, assert_success, emit_artifact, path_arg, queue_loop_source, read_json,
@@ -12,6 +13,35 @@ fn emit_queue_artifact(project: &TestProject, scenario_name: &str) -> std::path:
         project,
         &queue_loop_source(scenario_name, "delivery", "queue"),
         scenario_name,
+    )
+}
+
+fn panic_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    let delivery = queue.recv();
+    delivery.ack();
+    panic!("boom");
+}}
+"#
     )
 }
 
@@ -228,6 +258,65 @@ fn translation_status_cannot_be_toggled_without_trace_evidence() {
                 .combined()
                 .contains("translation validation status mismatch"),
         "failure should name trace evidence gap: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn generated_trace_preserves_real_panic_terminator_events() {
+    let project = TestProject::new("v15-translation-panic-event");
+    let artifact_path = emit_artifact(
+        &project,
+        &panic_source("translation_panic_event_case"),
+        "translation_panic_event_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert!(
+        artifact["core_obligation_trace"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event["kind"] == "panic")),
+        "Core trace must include real panic terminator events: {artifact}"
+    );
+    assert!(
+        artifact["generated_rust_trace"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event["kind"] == "panic")),
+        "generated trace must preserve real panic terminator events: {artifact}"
+    );
+    assert_eq!(artifact["translation_validation"]["status"], "validated");
+}
+
+#[test]
+fn fake_source_map_anchor_id_is_rejected_even_when_hashes_are_recomputed() {
+    let project = TestProject::new("v15-translation-fake-anchor");
+    let artifact_path = emit_queue_artifact(&project, "translation_fake_anchor_case");
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.generated_rust_trace[0].source_map_anchor.id = "fake-anchor".to_owned();
+    for hash in &mut certificate.trace_hashes {
+        if hash.id == "generated_rust_trace" {
+            hash.hash = trace_material_hash(&certificate.generated_rust_trace)
+                .expect("generated trace hash should compute");
+        }
+    }
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(&output, "fake source-map anchor ids should reject proof");
+    assert!(
+        output.combined().contains("source-map anchor"),
+        "failure should name source-map anchor validation: {}",
         output.combined()
     );
 }

@@ -90,8 +90,13 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
         let statements = statement_from_operation(index, operation)
             .into_iter()
             .collect();
-        let mut terminators =
-            terminators_from_operation(index, operation, next.as_deref(), modeled_ops.len());
+        let mut terminators = terminators_from_operation(
+            index,
+            operation,
+            next.as_deref(),
+            modeled_ops.len(),
+            loop_entry_index(&modeled_ops, index),
+        );
         let successors = if terminators.is_empty() {
             next.iter().cloned().collect::<Vec<_>>()
         } else {
@@ -391,6 +396,7 @@ fn terminators_from_operation(
     operation: &ScenarioOp,
     next: Option<&str>,
     block_count: usize,
+    loop_entry_index: usize,
 ) -> Vec<CoreTerminator> {
     match &operation.kind {
         ScenarioOpKind::CoreTerminator {
@@ -428,16 +434,30 @@ fn terminators_from_operation(
                 source_span: operation.span,
             }]
         }
-        ScenarioOpKind::Loop => vec![CoreTerminator {
-            id: format!("term-{index}"),
-            kind: CoreTerminatorKind::Goto,
-            boundary: None,
-            policy: None,
-            edges: vec![format!("goto:bb{index}")],
-            source_span: operation.span,
-        }],
+        ScenarioOpKind::Loop => {
+            let mut edges = vec![format!("goto:bb{loop_entry_index}")];
+            if let Some(next) = next {
+                edges.push(format!("goto:{next}"));
+            }
+            vec![CoreTerminator {
+                id: format!("term-{index}"),
+                kind: CoreTerminatorKind::Goto,
+                boundary: None,
+                policy: None,
+                edges,
+                source_span: operation.span,
+            }]
+        }
         _ => Vec::new(),
     }
+}
+
+fn loop_entry_index(modeled_ops: &[&ScenarioOp], loop_index: usize) -> usize {
+    modeled_ops[..loop_index]
+        .iter()
+        .rposition(|operation| matches!(operation.kind, ScenarioOpKind::Loop))
+        .map(|index| index + 1)
+        .unwrap_or(0)
 }
 
 fn select_branch_edges(

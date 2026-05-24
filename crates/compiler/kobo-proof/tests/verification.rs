@@ -167,6 +167,7 @@ fn certificate_with_single_event_kind(kind: ObligationEventKind) -> ProofCertifi
 fn context() -> VerificationContext {
     VerificationContext {
         source: SOURCE.to_owned(),
+        source_map: None,
     }
 }
 

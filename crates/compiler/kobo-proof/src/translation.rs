@@ -7,6 +7,7 @@ use crate::{
 
 pub(crate) fn verify_translation_validation(
     certificate: &ProofCertificate,
+    source_map_json: Option<&str>,
 ) -> Result<(), VerificationError> {
     if certificate.core_obligation_trace.is_empty() && certificate.generated_rust_trace.is_empty() {
         return verify_empty_trace_status(certificate);
@@ -20,7 +21,12 @@ pub(crate) fn verify_translation_validation(
         return Ok(());
     }
     let generated_by_core_id = generated_trace_by_core_id(&certificate.generated_rust_trace)?;
-    verify_core_events_have_generated_matches(certificate, &generated_by_core_id)?;
+    let source_map = source_map_json.and_then(parse_source_map_anchors);
+    verify_core_events_have_generated_matches(
+        certificate,
+        &generated_by_core_id,
+        source_map.as_ref(),
+    )?;
     verify_generated_events_have_core_matches(certificate)?;
     verify_trace_hashes(certificate)?;
     verify_trace_status(certificate, TranslationValidationStatus::Validated)
@@ -63,6 +69,7 @@ fn generated_trace_by_core_id(
 fn verify_core_events_have_generated_matches(
     certificate: &ProofCertificate,
     generated_by_core_id: &BTreeMap<&str, &GeneratedTraceEvent>,
+    source_map: Option<&BTreeMap<String, SourceMapAnchorRecord>>,
 ) -> Result<(), VerificationError> {
     for core_event in trace::sorted_core_trace(&certificate.core_obligation_trace) {
         let Some(generated_event) = generated_by_core_id.get(core_event.id.as_str()) else {
@@ -71,7 +78,7 @@ fn verify_core_events_have_generated_matches(
             });
         };
         verify_event_identity(core_event, generated_event)?;
-        verify_source_map_anchor(generated_event)?;
+        verify_source_map_anchor(generated_event, source_map)?;
     }
     Ok(())
 }
@@ -142,16 +149,80 @@ fn verify_event_identity(
 
 fn verify_source_map_anchor(
     generated_event: &GeneratedTraceEvent,
+    source_map: Option<&BTreeMap<String, SourceMapAnchorRecord>>,
 ) -> Result<(), VerificationError> {
     if generated_event.source_map_anchor.status == SourceMapAnchorStatus::Mapped
         && !generated_event.source_map_anchor.id.is_empty()
+    {
+        if let Some(source_map) = source_map {
+            return verify_source_map_anchor_record(generated_event, source_map);
+        }
+        if generated_event.source_map_anchor.id.starts_with("map-") {
+            return Ok(());
+        }
+    }
+    Err(VerificationError::TranslationSourceMapAnchorMismatch {
+        generated_event_id: generated_event.id.clone(),
+        anchor_id: generated_event.source_map_anchor.id.clone(),
+        status: generated_event.source_map_anchor.status.as_str().to_owned(),
+    })
+}
+
+#[derive(Clone, Debug)]
+struct SourceMapAnchorRecord {
+    kobo_start: usize,
+    kobo_end: usize,
+    rs_line: usize,
+    rs_start: usize,
+    rs_end: usize,
+}
+
+fn parse_source_map_anchors(
+    source_map_json: &str,
+) -> Option<BTreeMap<String, SourceMapAnchorRecord>> {
+    let value: serde_json::Value = serde_json::from_str(source_map_json).ok()?;
+    let mappings = value["x_kobo_mappings"].as_array()?;
+    let mut anchors = BTreeMap::new();
+    for mapping in mappings {
+        let id = mapping["id"].as_str()?.to_owned();
+        anchors.insert(
+            id,
+            SourceMapAnchorRecord {
+                kobo_start: mapping["kobo_span"]["start"].as_u64()? as usize,
+                kobo_end: mapping["kobo_span"]["end"].as_u64()? as usize,
+                rs_line: mapping["rs_span"]["line"].as_u64()? as usize,
+                rs_start: mapping["rs_span"]["column_start"].as_u64()? as usize,
+                rs_end: mapping["rs_span"]["column_end"].as_u64()? as usize,
+            },
+        );
+    }
+    Some(anchors)
+}
+
+fn verify_source_map_anchor_record(
+    generated_event: &GeneratedTraceEvent,
+    source_map: &BTreeMap<String, SourceMapAnchorRecord>,
+) -> Result<(), VerificationError> {
+    let Some(record) = source_map.get(&generated_event.source_map_anchor.id) else {
+        return Err(VerificationError::TranslationSourceMapAnchorMismatch {
+            generated_event_id: generated_event.id.clone(),
+            anchor_id: generated_event.source_map_anchor.id.clone(),
+            status: "missing".to_owned(),
+        });
+    };
+    let anchor = &generated_event.source_map_anchor;
+    if record.kobo_start == anchor.kobo_span.start
+        && record.kobo_end == anchor.kobo_span.end
+        && record.rs_line == anchor.generated_span.line
+        && record.rs_start == anchor.generated_span.start
+        && record.rs_end == anchor.generated_span.end
     {
         return Ok(());
     }
     Err(VerificationError::TranslationSourceMapAnchorMismatch {
         generated_event_id: generated_event.id.clone(),
         anchor_id: generated_event.source_map_anchor.id.clone(),
-        status: generated_event.source_map_anchor.status.as_str().to_owned(),
+        status: "stale".to_owned(),
     })
 }
 

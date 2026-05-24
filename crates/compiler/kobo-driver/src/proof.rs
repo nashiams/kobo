@@ -109,7 +109,12 @@ pub fn emit_proof_certificate(
         user_loop_invariant.as_ref(),
     );
     let bounded_evidence = bounded_evidence(&source_path, input.source, input.program);
-    let core_obligation_trace = core_trace_evidence(input.program, &obligation_events);
+    let core_obligation_trace = core_trace_evidence(
+        input.program,
+        &obligation_events,
+        &source_path,
+        input.source,
+    );
     let generated_rust_trace = generated_trace_evidence(
         &source_path,
         input.source,
@@ -214,16 +219,11 @@ fn loop_invariant_evidence(
         .iter()
         .map(|function| (function.name.as_str(), function_obligation_replay(function)))
         .collect::<BTreeMap<_, _>>();
-    let created_bindings = obligation_events
-        .iter()
-        .filter(|event| event.kind == ObligationEventKind::Create)
-        .filter_map(|event| event.binding.clone())
-        .collect::<Vec<_>>();
-
     loop_facts
         .iter()
         .filter_map(|fact| {
-            let relevant_bindings = created_bindings
+            let scoped_bindings = created_bindings_for_loop(fact, obligation_events);
+            let relevant_bindings = scoped_bindings
                 .iter()
                 .filter(|binding| {
                     user_loop_invariant
@@ -309,6 +309,30 @@ fn loop_invariant_evidence(
                 ),
             })
         })
+        .collect()
+}
+
+fn created_bindings_for_loop(
+    fact: &CoreLoopBackEdgeFact,
+    obligation_events: &[ObligationEvent],
+) -> Vec<String> {
+    let Some(entry_index) = block_index(&fact.entry_block) else {
+        return Vec::new();
+    };
+    let Some(back_edge_index) = block_index(&fact.back_edge_source) else {
+        return Vec::new();
+    };
+    obligation_events
+        .iter()
+        .filter(|event| event.kind == ObligationEventKind::Create)
+        .filter(|event| {
+            event
+                .id
+                .strip_prefix("stmt-")
+                .and_then(|index| index.parse::<usize>().ok())
+                .is_some_and(|index| entry_index <= index && index <= back_edge_index)
+        })
+        .filter_map(|event| event.binding.clone())
         .collect()
 }
 
@@ -560,28 +584,68 @@ fn bound_declarations(
 fn core_trace_evidence(
     program: &ScenarioProgram,
     obligation_events: &[ObligationEvent],
+    source_path: &str,
+    source: &str,
 ) -> Vec<CoreTraceEvent> {
     let template_by_binding = template_by_binding(program);
-    obligation_events
+    let events_by_statement = obligation_events
+        .iter()
+        .filter_map(|event| statement_index_from_event(&event.id).map(|index| (index, event)))
+        .collect::<BTreeMap<_, _>>();
+    let mut order = 0_u64;
+    program
+        .operations
         .iter()
         .enumerate()
-        .filter_map(|(order, event)| {
-            let kind = trace_event_kind(&event.kind)?;
+        .filter_map(|(operation_index, operation)| {
+            let event = events_by_statement.get(&operation_index).copied();
+            let kind = event
+                .and_then(|event| trace_event_kind(&event.kind))
+                .or_else(|| trace_event_kind_from_operation(&operation.kind))?;
             let template = event
-                .binding
-                .as_deref()
+                .and_then(|event| event.binding.as_deref())
                 .and_then(|binding| template_by_binding.get(binding));
+            let binding = event.and_then(|event| event.binding.clone());
+            let source_span = event
+                .map(|event| event.source_span.clone())
+                .unwrap_or_else(|| source_span_from_kobo(source_path, source, operation.span));
+            let id = event
+                .map(|event| format!("core-{}", event.id))
+                .unwrap_or_else(|| format!("core-term-{operation_index}"));
+            let trace_order = order;
+            order = order.saturating_add(1);
             Some(CoreTraceEvent {
-                id: format!("core-{}", event.id),
+                id,
                 kind,
-                binding: event.binding.clone(),
-                order: order as u64,
-                source_span: event.source_span.clone(),
+                binding,
+                order: trace_order,
+                source_span,
                 template_id: template.map(|template| template.id.clone()),
                 template_version: template.map(|template| lifecycle_template_version(template)),
             })
         })
         .collect()
+}
+
+fn statement_index_from_event(event_id: &str) -> Option<usize> {
+    event_id.strip_prefix("stmt-")?.parse().ok()
+}
+
+fn trace_event_kind_from_operation(kind: &ScenarioOpKind) -> Option<TraceEventKind> {
+    match kind {
+        ScenarioOpKind::CoreTerminator { kind, .. } => Some(trace_event_kind_from_terminator(kind)),
+        _ => None,
+    }
+}
+
+fn trace_event_kind_from_terminator(kind: &kobo_ir::ScenarioCoreTerminatorKind) -> TraceEventKind {
+    match kind {
+        kobo_ir::ScenarioCoreTerminatorKind::Return => TraceEventKind::Return,
+        kobo_ir::ScenarioCoreTerminatorKind::ErrorExit => TraceEventKind::ErrorExit,
+        kobo_ir::ScenarioCoreTerminatorKind::Panic => TraceEventKind::Panic,
+        kobo_ir::ScenarioCoreTerminatorKind::Await => TraceEventKind::Cancel,
+        kobo_ir::ScenarioCoreTerminatorKind::OpaqueBoundary => TraceEventKind::OpaqueBoundary,
+    }
 }
 
 fn generated_trace_evidence(

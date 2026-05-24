@@ -203,6 +203,7 @@ pub(super) fn cmd_test(
             witness_dir,
             &session.config,
             &artifacts.runtime_evidence,
+            &artifacts.source_map,
             &expert_options,
             effective_scheduler.as_deref(),
             effective_max_branches,
@@ -996,6 +997,7 @@ fn write_run_witness(
     witness_dir: Option<&Path>,
     config: &kobo_driver::KoboConfig,
     runtime_evidence: &kobo_codegen::RuntimeEvidence,
+    source_map: &kobo_codegen::KoboSourceMap,
     expert_options: &BackendExpertOptions,
     effective_scheduler: Option<&str>,
     effective_max_branches: Option<u64>,
@@ -1299,7 +1301,15 @@ fn write_run_witness(
     );
     std::fs::write(&witness_path, serde_json::to_string_pretty(&witness)?)
         .with_context(|| format!("failed to write {}", witness_path.display()))?;
-    write_proof_artifact(file, document, scenario_program, run, &witness_path, config)?;
+    write_proof_artifact(
+        file,
+        document,
+        scenario_program,
+        run,
+        &witness_path,
+        config,
+        source_map,
+    )?;
     Ok(witness_path)
 }
 
@@ -1310,6 +1320,7 @@ fn write_proof_artifact(
     run: &FullDepthRun,
     witness_path: &Path,
     config: &kobo_driver::KoboConfig,
+    source_map: &kobo_codegen::KoboSourceMap,
 ) -> anyhow::Result<()> {
     if run.failure.is_some() {
         return Ok(());
@@ -1322,13 +1333,14 @@ fn write_proof_artifact(
             adapter_policies: &config.ecosystem_policy.adapters,
             replay_grade: proof_replay_grade(&run.replay_guarantee),
             artifact_kind: kobo_driver::proof::ArtifactKind::KwitProofJson,
-            source_map: None,
+            source_map: Some(source_map),
         })?;
+    let source_map_json = source_map.to_json_string()?;
     kobo_proof::verify_certificate(
         &certificate,
         &kobo_proof::VerificationContext {
             source: document.source.clone(),
-            source_map: None,
+            source_map: Some(source_map_json),
         },
     )?;
     let proof_path = kwit_proof_path(witness_path);

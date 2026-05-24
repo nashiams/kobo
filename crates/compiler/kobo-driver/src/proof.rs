@@ -599,12 +599,15 @@ fn core_trace_evidence(
         .iter()
         .filter_map(|event| statement_index_from_event(&event.id).map(|index| (index, event)))
         .collect::<BTreeMap<_, _>>();
-    let mut order = 0_u64;
+    let has_obligation_events = !obligation_events.is_empty();
     program
         .operations
         .iter()
         .enumerate()
         .filter_map(|(operation_index, operation)| {
+            if !has_obligation_events && matches!(operation.kind, ScenarioOpKind::Return) {
+                return None;
+            }
             let event = events_by_statement.get(&operation_index).copied();
             let kind = event
                 .and_then(|event| trace_event_kind(&event.kind))
@@ -619,13 +622,11 @@ fn core_trace_evidence(
             let id = event
                 .map(|event| format!("core-{}", event.id))
                 .unwrap_or_else(|| format!("core-term-{operation_index}"));
-            let trace_order = order;
-            order = order.saturating_add(1);
             Some(CoreTraceEvent {
                 id,
                 kind,
                 binding,
-                order: trace_order,
+                order: operation_index as u64,
                 source_span,
                 template_id: template.map(|template| template.id.clone()),
                 template_version: template.map(|template| lifecycle_template_version(template)),
@@ -640,6 +641,7 @@ fn statement_index_from_event(event_id: &str) -> Option<usize> {
 
 fn trace_event_kind_from_operation(kind: &ScenarioOpKind) -> Option<TraceEventKind> {
     match kind {
+        ScenarioOpKind::Return => Some(TraceEventKind::Return),
         ScenarioOpKind::CoreTerminator { kind, .. } => Some(trace_event_kind_from_terminator(kind)),
         _ => None,
     }
@@ -674,10 +676,10 @@ fn generated_trace_evidence(
             used_lowering_events.insert(index);
             Some(GeneratedTraceEvent {
                 id: format!("generated-{}", event.id),
-                core_event_id: event.id.clone(),
+                core_event_id: lowering_event.core_event_id.clone(),
                 kind: event.kind.clone(),
                 binding: event.binding.clone(),
-                order: event.order,
+                order: lowering_event.order,
                 source_map_anchor: SourceMapAnchorEvidence {
                     id: lowering_event.source_map_entry_id.clone(),
                     status: SourceMapAnchorStatus::Mapped,
@@ -900,9 +902,11 @@ fn lowering_trace_event_for_core<'a>(
         .enumerate()
         .filter(|(index, lowering_event)| {
             !used.contains(index)
+                && lowering_event.core_event_id == event.id
                 && lowering_event.function == program.target
                 && lowering_event.kind == event.kind.as_str()
                 && lowering_event.binding == event.binding
+                && lowering_event.order == event.order
         })
         .min_by_key(|(_, lowering_event)| {
             lowering_event

@@ -205,6 +205,7 @@ fn single_create_source_map() -> serde_json::Value {
         "lowering_trace": [
             {
                 "id": "lowering-proof_case-0",
+                "core_event_id": "core-create-delivery",
                 "function": "proof_case",
                 "kind": "create",
                 "binding": "delivery",

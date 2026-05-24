@@ -33,7 +33,7 @@ fn verifier_case() {
 "#
 }
 
-fn emitted_artifact() -> (String, Value) {
+fn emitted_artifact() -> (String, Value, String) {
     let project = TestProject::new("v14-proof-verifier");
     let file = project.main_file(source());
     let output = run_kobo(
@@ -58,7 +58,13 @@ fn emitted_artifact() -> (String, Value) {
     let artifact_path = first_kwit_proof_path(&project);
     let artifact_source = fs::read_to_string(&artifact_path).expect("artifact should read");
     let artifact = serde_json::from_str(&artifact_source).expect("artifact should parse");
-    (artifact_source, artifact)
+    let source_map_path = project
+        .find_files_with_ext("map")
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == "main.kobo.map"))
+        .expect("test command should write a source map");
+    let source_map = fs::read_to_string(source_map_path).expect("source map should read");
+    (artifact_source, artifact, source_map)
 }
 
 fn first_kwit_proof_path(project: &TestProject) -> PathBuf {
@@ -75,15 +81,23 @@ fn first_kwit_proof_path(project: &TestProject) -> PathBuf {
 
 #[test]
 fn emitted_certificate_verifies_independently() {
-    let (artifact_source, _artifact) = emitted_artifact();
+    let (artifact_source, artifact, source_map) = emitted_artifact();
     let certificate =
         parse_certificate_json(&artifact_source).expect("emitted artifact should be parseable");
+
+    assert_eq!(artifact["translation_validation"]["status"], "validated");
+    assert!(
+        artifact["generated_rust_trace"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty()),
+        ".kwit proof artifact should carry generated trace evidence: {artifact}"
+    );
 
     let report = verify_certificate(
         &certificate,
         &VerificationContext {
             source: source().to_owned(),
-            source_map: None,
+            source_map: Some(source_map),
         },
     )
     .expect("emitted artifact should verify independently");
@@ -96,7 +110,7 @@ fn emitted_certificate_verifies_independently() {
 
 #[test]
 fn emitted_certificate_rejects_tampered_core_hash() {
-    let (_artifact_source, mut artifact) = emitted_artifact();
+    let (_artifact_source, mut artifact, source_map) = emitted_artifact();
     artifact["core"]["hash"] = Value::String("tampered-core".to_owned());
     let certificate =
         parse_certificate_json(&serde_json::to_string(&artifact).expect("artifact should render"))
@@ -106,7 +120,7 @@ fn emitted_certificate_rejects_tampered_core_hash() {
         &certificate,
         &VerificationContext {
             source: source().to_owned(),
-            source_map: None,
+            source_map: Some(source_map),
         },
     )
     .expect_err("tampered core hash must be rejected");

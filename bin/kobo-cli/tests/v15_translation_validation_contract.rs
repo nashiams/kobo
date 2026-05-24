@@ -141,6 +141,15 @@ fn codegen_source_map_emits_structured_lowering_trace_metadata() {
             .all(|event| event["lowering_phase"] == "kobo-codegen"),
         ".kproof generated trace must consume codegen lowering metadata: {artifact}"
     );
+    assert!(
+        lowering_trace
+            .iter()
+            .filter(|event| event["kind"] != "return")
+            .all(|event| event["core_event_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())),
+        "codegen-owned trace must carry Core event IDs for proof-relevant events: {source_map}"
+    );
 }
 
 #[test]
@@ -320,6 +329,26 @@ fn generated_trace_preserves_real_panic_terminator_events() {
 }
 
 #[test]
+fn generated_trace_preserves_normal_return_events() {
+    let project = TestProject::new("v15-translation-return-event");
+    let artifact_path = emit_queue_artifact(&project, "translation_return_event_case");
+    let artifact = read_json(&artifact_path);
+
+    assert!(
+        artifact["core_obligation_trace"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event["kind"] == "return")),
+        "Core trace must include normal return terminator events: {artifact}"
+    );
+    assert!(
+        artifact["generated_rust_trace"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|event| event["kind"] == "return")),
+        "generated trace must preserve normal return terminator events: {artifact}"
+    );
+}
+
+#[test]
 fn fake_source_map_anchor_id_is_rejected_even_when_hashes_are_recomputed() {
     let project = TestProject::new("v15-translation-fake-anchor");
     let artifact_path = emit_queue_artifact(&project, "translation_fake_anchor_case");
@@ -435,6 +464,77 @@ fn source_map_lowering_trace_tamper_rejects_validation() {
             || output.combined().contains("source-map anchor")
             || output.combined().contains("translation validation"),
         "failure should name lowering-trace mismatch: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn source_map_extra_lowering_trace_event_rejects_validation() {
+    let project = TestProject::new("v15-translation-extra-lowering-event");
+    let artifact_path = emit_queue_artifact(&project, "translation_extra_lowering_case");
+    let map_path = project
+        .find_files_with_ext("map")
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == "main.kobo.map"))
+        .expect("proof emit should write a source map");
+    let mut source_map = read_json(&map_path);
+    let mut extra = source_map["lowering_trace"][0].clone();
+    extra["id"] = "lowering-extra-proof-event".into();
+    extra["core_event_id"] = "core-extra-proof-event".into();
+    extra["order"] = 999.into();
+    source_map["lowering_trace"]
+        .as_array_mut()
+        .expect("lowering trace should be mutable")
+        .push(extra);
+    write_json(&map_path, &source_map);
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "extra source-map lowering event should reject proof",
+    );
+    assert!(
+        output.combined().contains("extra generated event")
+            || output.combined().contains("source-map anchor")
+            || output.combined().contains("translation validation"),
+        "failure should name extra lowering-trace evidence: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn source_map_lowering_trace_order_tamper_rejects_validation() {
+    let project = TestProject::new("v15-translation-lowering-order-tamper");
+    let artifact_path = emit_queue_artifact(&project, "translation_lowering_order_case");
+    let map_path = project
+        .find_files_with_ext("map")
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == "main.kobo.map"))
+        .expect("proof emit should write a source map");
+    let mut source_map = read_json(&map_path);
+    let trace = source_map["lowering_trace"]
+        .as_array_mut()
+        .expect("lowering trace should be mutable");
+    trace[0]["order"] = 99.into();
+    write_json(&map_path, &source_map);
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "source-map lowering order tamper should reject validation",
+    );
+    assert!(
+        output.combined().contains("source-map anchor")
+            || output.combined().contains("translation validation"),
+        "failure should name lowering order mismatch: {}",
         output.combined()
     );
 }

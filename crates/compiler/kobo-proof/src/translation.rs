@@ -78,6 +78,7 @@ fn verify_core_events_have_generated_matches(
         verify_source_map_anchor(generated_event, &source_map.anchors)?;
         verify_lowering_trace_record(generated_event, source_map, &mut used_lowering_records)?;
     }
+    verify_no_extra_lowering_trace_records(source_map, &used_lowering_records)?;
     Ok(())
 }
 
@@ -172,8 +173,12 @@ struct SourceMapAnchorRecord {
 
 #[derive(Clone, Debug)]
 struct LoweringTraceRecord {
+    id: String,
+    core_event_id: String,
+    function: String,
     kind: String,
     binding: Option<String>,
+    order: u64,
     source_map_entry_id: String,
     rs_line: usize,
     rs_start: usize,
@@ -196,18 +201,28 @@ fn parse_required_source_map(
     generated_trace: &[GeneratedTraceEvent],
 ) -> Result<SourceMapValidation, VerificationError> {
     let Some(source_map_json) = source_map_json else {
-        let generated_event = &generated_trace[0];
         return Err(VerificationError::TranslationSourceMapAnchorMismatch {
-            generated_event_id: generated_event.id.clone(),
-            anchor_id: generated_event.source_map_anchor.id.clone(),
+            generated_event_id: generated_trace
+                .first()
+                .map(|event| event.id.clone())
+                .unwrap_or_default(),
+            anchor_id: generated_trace
+                .first()
+                .map(|event| event.source_map_anchor.id.clone())
+                .unwrap_or_default(),
             status: "missing source map".to_owned(),
         });
     };
     parse_source_map(source_map_json).ok_or_else(|| {
-        let generated_event = &generated_trace[0];
         VerificationError::TranslationSourceMapAnchorMismatch {
-            generated_event_id: generated_event.id.clone(),
-            anchor_id: generated_event.source_map_anchor.id.clone(),
+            generated_event_id: generated_trace
+                .first()
+                .map(|event| event.id.clone())
+                .unwrap_or_default(),
+            anchor_id: generated_trace
+                .first()
+                .map(|event| event.source_map_anchor.id.clone())
+                .unwrap_or_default(),
             status: "invalid source map".to_owned(),
         }
     })
@@ -243,8 +258,12 @@ fn parse_source_map(source_map_json: &str) -> Option<SourceMapValidation> {
 
 fn parse_lowering_trace_record(value: &serde_json::Value) -> Option<LoweringTraceRecord> {
     Some(LoweringTraceRecord {
+        id: value["id"].as_str()?.to_owned(),
+        core_event_id: value["core_event_id"].as_str()?.to_owned(),
+        function: value["function"].as_str()?.to_owned(),
         kind: value["kind"].as_str()?.to_owned(),
         binding: value["binding"].as_str().map(str::to_owned),
+        order: value["order"].as_u64()?,
         source_map_entry_id: value["source_map_entry_id"].as_str()?.to_owned(),
         rs_line: value["rs_span"]["line"].as_u64()? as usize,
         rs_start: value["rs_span"]["column_start"].as_u64()? as usize,
@@ -309,13 +328,38 @@ fn verify_lowering_trace_record(
     })
 }
 
+fn verify_no_extra_lowering_trace_records(
+    source_map: &SourceMapValidation,
+    used_lowering_records: &BTreeSet<usize>,
+) -> Result<(), VerificationError> {
+    let used_functions = used_lowering_records
+        .iter()
+        .filter_map(|index| source_map.lowering_trace.get(*index))
+        .map(|record| record.function.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, record) in source_map.lowering_trace.iter().enumerate() {
+        if used_lowering_records.contains(&index) {
+            continue;
+        }
+        if !used_functions.contains(record.function.as_str()) {
+            continue;
+        }
+        return Err(VerificationError::TranslationTraceExtraEvent {
+            generated_event_id: record.id.clone(),
+        });
+    }
+    Ok(())
+}
+
 fn lowering_trace_record_matches(
     generated_event: &GeneratedTraceEvent,
     record: &LoweringTraceRecord,
 ) -> bool {
     let anchor = &generated_event.source_map_anchor;
-    record.kind == generated_event.kind.as_str()
+    record.core_event_id == generated_event.core_event_id
+        && record.kind == generated_event.kind.as_str()
         && record.binding == generated_event.binding
+        && record.order == generated_event.order
         && record.source_map_entry_id == anchor.id
         && record.rs_line == anchor.generated_span.line
         && record.rs_start == anchor.generated_span.start

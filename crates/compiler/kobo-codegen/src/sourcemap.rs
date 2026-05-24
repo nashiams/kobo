@@ -40,6 +40,7 @@ pub struct SourceMapEntry {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LoweringTraceEvent {
     pub id: String,
+    pub core_event_id: String,
     pub function: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +157,7 @@ pub(crate) fn build_lowering_trace(
                     )?;
                     Some(LoweringTraceEvent {
                         id: format!("lowering-{}-{order}", program.target),
+                        core_event_id: core_event_id_for_operation(order, &operation.kind),
                         function: program.target.clone(),
                         kind: event.kind.to_owned(),
                         binding: event.binding,
@@ -170,6 +172,20 @@ pub(crate) fn build_lowering_trace(
                 })
         })
         .collect()
+}
+
+fn core_event_id_for_operation(order: usize, kind: &ScenarioOpKind) -> String {
+    if matches!(
+        kind,
+        ScenarioOpKind::CreateObligation { .. }
+            | ScenarioOpKind::Discharge { .. }
+            | ScenarioOpKind::Transfer { .. }
+            | ScenarioOpKind::MoveBinding { .. }
+            | ScenarioOpKind::ExternalBoundary { .. }
+    ) {
+        return format!("core-stmt-{order}");
+    }
+    format!("core-term-{order}")
 }
 
 struct TraceEventSource<'a> {

@@ -92,6 +92,7 @@ fn preflight_certificate_json(source: &str) -> Result<(), VerificationError> {
     }
     validate_boundary_policy_fields(&value)?;
     validate_obligation_event_kind_fields(&value)?;
+    validate_obligation_status_fields(&value)?;
     validate_adapter_evidence_fields("adapter_confidence", value.get("adapter_confidence"))?;
     validate_candidate_admission_fields(&value)?;
     Ok(())
@@ -141,6 +142,106 @@ fn validate_obligation_event_kind_fields(
         if let Some(kind) = event.get("kind") {
             let field = format!("obligation_events[{index}].kind");
             validate_obligation_event_kind(&field, kind)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_obligation_status_fields(value: &serde_json::Value) -> Result<(), VerificationError> {
+    validate_obligation_state_array("entry_env", value.get("entry_env"))?;
+    validate_obligation_state_array("exit_env", value.get("exit_env"))?;
+
+    if let Some(events) = value
+        .get("obligation_events")
+        .and_then(serde_json::Value::as_array)
+    {
+        for (index, event) in events.iter().enumerate() {
+            validate_obligation_state_array(
+                &format!("obligation_events[{index}].state_before"),
+                event.get("state_before"),
+            )?;
+            validate_obligation_state_array(
+                &format!("obligation_events[{index}].state_after"),
+                event.get("state_after"),
+            )?;
+        }
+    }
+
+    if let Some(async_model) = value.get("core").and_then(|core| core.get("async_model")) {
+        validate_future_state_obligations(
+            "core.async_model.future_state_obligations",
+            async_model.get("future_state_obligations"),
+        )?;
+        validate_select_path_states(
+            "core.async_model.select_paths",
+            async_model.get("select_paths"),
+        )?;
+    }
+
+    if let Some(summaries) = value
+        .get("function_summaries")
+        .and_then(serde_json::Value::as_array)
+    {
+        for (index, summary) in summaries.iter().enumerate() {
+            validate_obligation_state_array(
+                &format!("function_summaries[{index}].entry_env"),
+                summary.get("entry_env"),
+            )?;
+            validate_obligation_state_array(
+                &format!("function_summaries[{index}].exit_env"),
+                summary.get("exit_env"),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_future_state_obligations(
+    field_prefix: &str,
+    value: Option<&serde_json::Value>,
+) -> Result<(), VerificationError> {
+    let Some(states) = value.and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    for (index, state) in states.iter().enumerate() {
+        if let Some(status) = state.get("state") {
+            validate_obligation_status(&format!("{field_prefix}[{index}].state"), status)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_select_path_states(
+    field_prefix: &str,
+    value: Option<&serde_json::Value>,
+) -> Result<(), VerificationError> {
+    let Some(paths) = value.and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    for (index, path) in paths.iter().enumerate() {
+        validate_obligation_state_array(
+            &format!("{field_prefix}[{index}].obligation_results"),
+            path.get("obligation_results"),
+        )?;
+        validate_obligation_state_array(
+            &format!("{field_prefix}[{index}].cancelled_obligations"),
+            path.get("cancelled_obligations"),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_obligation_state_array(
+    field_prefix: &str,
+    value: Option<&serde_json::Value>,
+) -> Result<(), VerificationError> {
+    let Some(states) = value.and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    for (index, state) in states.iter().enumerate() {
+        if let Some(status) = state.get("state") {
+            validate_obligation_status(&format!("{field_prefix}[{index}].state"), status)?;
         }
     }
     Ok(())
@@ -246,15 +347,41 @@ fn validate_obligation_event_kind(
     let observed = observed_json(value);
     if matches!(
         observed.as_str(),
-        "create" | "discharge" | "transfer" | "move" | "branch_unresolved"
+        "create"
+            | "discharge"
+            | "transfer"
+            | "move"
+            | "branch_unresolved"
+            | "escape"
+            | "unsupported_container"
+            | "call"
     ) {
         return Ok(());
     }
     Err(VerificationError::UnknownEventKind {
         message: format!(
-            "{field}: expected create, discharge, transfer, move, or branch_unresolved; observed {observed}"
+            "{field}: expected create, discharge, transfer, move, branch_unresolved, escape, unsupported_container, or call; observed {observed}"
         ),
     })
+}
+
+fn validate_obligation_status(
+    field: &str,
+    value: &serde_json::Value,
+) -> Result<(), VerificationError> {
+    validate_certificate_enum(
+        field,
+        value,
+        &[
+            "owned",
+            "resolved",
+            "transferred",
+            "moved",
+            "branch_unresolved",
+            "escaped",
+        ],
+        "owned, resolved, transferred, moved, branch_unresolved, or escaped",
+    )
 }
 
 fn validate_header_enum(

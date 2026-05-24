@@ -133,6 +133,29 @@ fn valid_certificate() -> ProofCertificate {
     certificate
 }
 
+fn certificate_with_single_event_kind(kind: ObligationEventKind) -> ProofCertificate {
+    let mut certificate = valid_certificate();
+    certificate.entry_env = Vec::new();
+    certificate.exit_env = Vec::new();
+    certificate.obligation_events = vec![ObligationEvent {
+        id: "stmt-0".to_owned(),
+        kind,
+        binding: None,
+        action: None,
+        source_span: span(),
+        state_before: Vec::new(),
+        state_after: Vec::new(),
+    }];
+    certificate.function_summaries = vec![FunctionSummary {
+        function: "proof_case".to_owned(),
+        event_count: 1,
+        entry_env: Vec::new(),
+        exit_env: Vec::new(),
+    }];
+    rehash(&mut certificate);
+    certificate
+}
+
 fn context() -> VerificationContext {
     VerificationContext {
         source: SOURCE.to_owned(),
@@ -148,6 +171,18 @@ fn mutate_json(mut certificate: ProofCertificate, mutate: impl FnOnce(&mut Value
     let mut value = serde_json::to_value(certificate).unwrap();
     mutate(&mut value);
     serde_json::to_string(&value).unwrap()
+}
+
+fn assert_parse_field_error(source: String, expected_field: &str) {
+    let error = parse_certificate_json(&source).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            VerificationError::UnsupportedCertificateField { ref field, .. }
+                if field == expected_field
+        ),
+        "expected unsupported field `{expected_field}`, got {error:?}"
+    );
 }
 
 #[test]
@@ -311,6 +346,94 @@ fn invalid_candidate_replay_grade_reports_candidate_field() {
         VerificationError::UnsupportedCertificateField { ref field, .. }
             if field == "candidate_admission[0].replay_grade"
     ));
+}
+
+#[test]
+fn extended_obligation_event_kinds_parse_and_verify() {
+    for kind in [
+        ObligationEventKind::Escape,
+        ObligationEventKind::UnsupportedContainer,
+        ObligationEventKind::Call,
+    ] {
+        let certificate = certificate_with_single_event_kind(kind);
+        let source = serde_json::to_string(&certificate).expect("certificate should render");
+        let parsed = parse_certificate_json(&source).expect("valid event kind should parse");
+        let report =
+            verify_certificate(&parsed, &context()).expect("valid event kind should verify");
+
+        assert_eq!(report.checked_obligation_events, 1);
+    }
+}
+
+#[test]
+fn invalid_entry_env_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["entry_env"] = serde_json::json!([{
+            "binding": "delivery",
+            "state": "mystery"
+        }]);
+    });
+
+    assert_parse_field_error(source, "entry_env[0].state");
+}
+
+#[test]
+fn invalid_event_state_after_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["obligation_events"][0]["state_after"][0]["state"] =
+            Value::String("mystery".to_owned());
+    });
+
+    assert_parse_field_error(source, "obligation_events[0].state_after[0].state");
+}
+
+#[test]
+fn invalid_future_state_obligation_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["core"]["async_model"]["future_state_obligations"] = serde_json::json!([{
+            "binding": "delivery",
+            "state": "mystery",
+            "suspension_state": "s0",
+            "source_span": span()
+        }]);
+    });
+
+    assert_parse_field_error(source, "core.async_model.future_state_obligations[0].state");
+}
+
+#[test]
+fn invalid_select_path_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["core"]["async_model"]["select_paths"] = serde_json::json!([{
+            "id": "select-0",
+            "function": "proof_case",
+            "branch_block": "bb0",
+            "branch_target": "bb1",
+            "path_kind": "selected",
+            "obligation_results": [{
+                "binding": "delivery",
+                "state": "mystery"
+            }],
+            "cancelled_obligations": [],
+            "obligation_result_hash": "hash",
+            "source_span": span()
+        }]);
+    });
+
+    assert_parse_field_error(
+        source,
+        "core.async_model.select_paths[0].obligation_results[0].state",
+    );
+}
+
+#[test]
+fn invalid_function_summary_status_reports_state_field() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["function_summaries"][0]["exit_env"][0]["state"] =
+            Value::String("mystery".to_owned());
+    });
+
+    assert_parse_field_error(source, "function_summaries[0].exit_env[0].state");
 }
 
 #[test]

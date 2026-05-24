@@ -207,6 +207,12 @@ fn apply_kir_cfg_successors(
         .collect::<BTreeSet<_>>();
 
     for (index, block) in blocks.iter_mut().enumerate() {
+        if modeled_ops
+            .get(index)
+            .is_some_and(|operation| uses_scenario_control_successors(&operation.kind))
+        {
+            continue;
+        }
         let Some(cfg_block) = op_to_cfg_block.get(index).and_then(|block| *block) else {
             continue;
         };
@@ -232,6 +238,17 @@ fn apply_kir_cfg_successors(
             sync_terminator_successor_edges(block);
         }
     }
+}
+
+fn uses_scenario_control_successors(kind: &ScenarioOpKind) -> bool {
+    matches!(
+        kind,
+        ScenarioOpKind::LoopStart
+            | ScenarioOpKind::Loop
+            | ScenarioOpKind::LoopBackEdge
+            | ScenarioOpKind::LoopContinue
+            | ScenarioOpKind::LoopBreak
+    )
 }
 
 fn same_cfg_successor(
@@ -386,6 +403,10 @@ fn statement_from_operation(index: usize, operation: &ScenarioOp) -> Option<Core
         | ScenarioOpKind::Select { .. }
         | ScenarioOpKind::RawNondeterminism { .. }
         | ScenarioOpKind::UncontrolledEffect { .. }
+        | ScenarioOpKind::LoopStart
+        | ScenarioOpKind::LoopBackEdge
+        | ScenarioOpKind::LoopContinue
+        | ScenarioOpKind::LoopBreak
         | ScenarioOpKind::Loop
         | ScenarioOpKind::Return => None,
     }
@@ -448,6 +469,29 @@ fn terminators_from_operation(
                 source_span: operation.span,
             }]
         }
+        ScenarioOpKind::LoopBackEdge | ScenarioOpKind::LoopContinue => vec![CoreTerminator {
+            id: format!("term-{index}"),
+            kind: CoreTerminatorKind::Goto,
+            boundary: None,
+            policy: None,
+            edges: vec![format!("goto:bb{loop_entry_index}")],
+            source_span: operation.span,
+        }],
+        ScenarioOpKind::LoopBreak => {
+            let mut edges = vec![format!("goto:bb{loop_entry_index}")];
+            edges.push(
+                next.map(|next| format!("goto:{next}"))
+                    .unwrap_or_else(|| "break_exit".to_owned()),
+            );
+            vec![CoreTerminator {
+                id: format!("term-{index}-break"),
+                kind: CoreTerminatorKind::Goto,
+                boundary: None,
+                policy: None,
+                edges,
+                source_span: operation.span,
+            }]
+        }
         _ => Vec::new(),
     }
 }
@@ -455,7 +499,12 @@ fn terminators_from_operation(
 fn loop_entry_index(modeled_ops: &[&ScenarioOp], loop_index: usize) -> usize {
     modeled_ops[..loop_index]
         .iter()
-        .rposition(|operation| matches!(operation.kind, ScenarioOpKind::Loop))
+        .rposition(|operation| {
+            matches!(
+                operation.kind,
+                ScenarioOpKind::LoopStart | ScenarioOpKind::Loop
+            )
+        })
         .map(|index| index + 1)
         .unwrap_or(0)
 }

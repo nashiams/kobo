@@ -423,6 +423,10 @@ fn verify_spawned_task_obligations(
         {
             return Err(VerificationError::UnresolvedExitObligation {
                 binding: task.binding.clone(),
+                state: exit_env
+                    .get(&task.binding)
+                    .map(|state| state.as_str().to_owned())
+                    .unwrap_or_else(|| "unknown".to_owned()),
             });
         }
     }

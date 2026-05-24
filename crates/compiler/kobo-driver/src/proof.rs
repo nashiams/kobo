@@ -2095,13 +2095,14 @@ fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationRepl
             let Some(target_block) = blocks.get(target.as_str()) else {
                 continue;
             };
+            let discovered = !block_entry_envs.contains_key(&target_block.id);
             let changed = merge_block_entry_env(
                 block_entry_envs
                     .entry(target_block.id.clone())
                     .or_insert_with(BTreeMap::new),
                 &exit_env,
             );
-            if changed {
+            if discovered || changed {
                 queued.push_back(target_block.id.clone());
             }
         }
@@ -2122,8 +2123,14 @@ fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationRepl
     let terminal_envs = function
         .blocks
         .iter()
-        .filter(|block| block_successor_targets(block).is_empty())
-        .filter_map(|block| block_exit_envs.get(&block.id).cloned())
+        .filter_map(|block| {
+            let targets = block_successor_targets(block);
+            let is_terminal =
+                targets.is_empty() || targets.iter().any(|target| modeled_exit_target(target));
+            is_terminal
+                .then(|| block_exit_envs.get(&block.id).cloned())
+                .flatten()
+        })
         .collect::<Vec<_>>();
 
     FunctionObligationReplay {
@@ -2158,8 +2165,12 @@ fn block_successor_targets(block: &CoreBlock) -> Vec<String> {
         .terminators
         .iter()
         .flat_map(|terminator| terminator.edges.iter())
-        .filter_map(|edge| edge.strip_prefix("goto:").map(str::to_owned))
+        .map(|edge| edge.strip_prefix("goto:").unwrap_or(edge).to_owned())
         .collect()
+}
+
+fn modeled_exit_target(target: &str) -> bool {
+    matches!(target, "return" | "error_exit" | "panic" | "break_exit")
 }
 
 fn merge_block_entry_env(

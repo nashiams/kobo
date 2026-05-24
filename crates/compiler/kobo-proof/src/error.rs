@@ -149,8 +149,8 @@ pub enum VerificationError {
     },
     #[error("removed discharge for {binding}")]
     RemovedDischarge { binding: String },
-    #[error("unresolved obligation {binding} reaches a modeled exit")]
-    UnresolvedExitObligation { binding: String },
+    #[error("unresolved obligation {binding} reaches a modeled exit as {state}")]
+    UnresolvedExitObligation { binding: String, state: String },
     #[error("unknown obligation event kind: {message}")]
     UnknownEventKind { message: String },
     #[error("unknown boundary policy: {message}")]

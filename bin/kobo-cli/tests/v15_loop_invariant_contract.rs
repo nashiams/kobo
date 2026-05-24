@@ -124,6 +124,71 @@ fn {scenario_name}() {{
     )
 }
 
+fn loop_control_flow_source(scenario_name: &str, control_flow: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+fn choose() -> bool {{ true }}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    loop {{
+        let delivery = queue.recv();
+        {control_flow}
+        delivery.ack();
+    }}
+}}
+"#
+    )
+}
+
+fn while_queue_loop_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+fn choose() -> bool {{ true }}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    while choose() {{
+        let delivery = queue.recv();
+        delivery.ack();
+    }}
+}}
+"#
+    )
+}
+
 #[test]
 fn queue_loop_infers_template_invariant() {
     let project = TestProject::new("v15-loop-invariant-queue");
@@ -196,6 +261,102 @@ fn branch_leak_reaching_back_edge_rejects_proof() {
             || output.combined().contains("CFG edge transition mismatch"),
         "failure should name the back-edge, join, or branch-unresolved obligation: {}",
         output.combined()
+    );
+}
+
+#[test]
+fn continue_before_discharge_rejects_back_edge_proof() {
+    let project = TestProject::new("v15-loop-invariant-continue");
+    let source_file = project.main_file(&loop_control_flow_source(
+        "continue_leak_case",
+        "if choose() { continue; }",
+    ));
+    let artifact_path = project.root.join("continue_leak_case.kproof");
+
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&source_file),
+            s("--target"),
+            s("continue_leak_case"),
+            s("--output"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "continue before discharge should reject proof emission",
+    );
+    assert!(
+        output.combined().contains("back-edge")
+            || output.combined().contains("continue")
+            || output.combined().contains("BranchUnresolved")
+            || output.combined().contains("branch_unresolved"),
+        "failure should name continue/back-edge unresolved flow: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn early_break_before_discharge_rejects_loop_proof() {
+    let project = TestProject::new("v15-loop-invariant-break");
+    let source_file = project.main_file(&loop_control_flow_source(
+        "early_break_leak_case",
+        "if choose() { break; }",
+    ));
+    let artifact_path = project.root.join("early_break_leak_case.kproof");
+
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&source_file),
+            s("--target"),
+            s("early_break_leak_case"),
+            s("--output"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "early break before discharge should reject proof emission",
+    );
+    assert!(
+        output.combined().contains("back-edge")
+            || output.combined().contains("break")
+            || output.combined().contains("BranchUnresolved")
+            || output.combined().contains("branch_unresolved"),
+        "failure should name break/back-edge unresolved flow: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn while_loop_records_back_edge_facts() {
+    let project = TestProject::new("v15-loop-invariant-while");
+    let artifact_path = emit_artifact(
+        &project,
+        &while_queue_loop_source("while_loop_case"),
+        "while_loop_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert!(
+        artifact["core"]["loop_facts"]
+            .as_array()
+            .is_some_and(|facts| !facts.is_empty()),
+        "while loops must emit Core loop facts: {artifact}"
+    );
+    assert!(
+        artifact["loop_invariants"]
+            .as_array()
+            .is_some_and(|invariants| !invariants.is_empty()),
+        "while loops must carry proof-grade invariant evidence: {artifact}"
     );
 }
 

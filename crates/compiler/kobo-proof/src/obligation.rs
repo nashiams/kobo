@@ -270,6 +270,7 @@ fn reject_unresolved_exit(env: &ObligationEnv) -> Result<(), VerificationError> 
         if state.is_unresolved_exit() {
             return Err(VerificationError::UnresolvedExitObligation {
                 binding: binding.clone(),
+                state: state.as_str().to_owned(),
             });
         }
     }
@@ -284,7 +285,10 @@ fn reject_unresolved_exit_on_edge(
         if state.is_unresolved_exit() {
             return Err(VerificationError::CfgEdgeTransitionMismatch {
                 edge: edge_id.to_owned(),
-                reason: format!("unresolved obligation {binding} reaches modeled edge exit"),
+                reason: format!(
+                    "unresolved obligation {binding} reaches modeled edge exit as {}",
+                    state.as_str()
+                ),
             });
         }
     }
@@ -292,7 +296,7 @@ fn reject_unresolved_exit_on_edge(
 }
 
 fn modeled_exit_target(target: &str) -> bool {
-    matches!(target, "return" | "error_exit" | "panic")
+    matches!(target, "return" | "error_exit" | "panic" | "break_exit")
 }
 
 fn format_env(env: &ObligationEnv) -> String {

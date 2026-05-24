@@ -162,6 +162,70 @@ fn proof_verify_rejects_artifact_kind_path_mismatch() {
 }
 
 #[test]
+fn proof_verify_rejects_unsupported_artifact_extension() {
+    let (project, _source_file, artifact_path) = emit_project(
+        "v14-proof-verify-unsupported-extension",
+        "proof_verify_extension_case",
+    );
+    let unsupported_path = project.root.join("proof.txt");
+    fs::copy(&artifact_path, &unsupported_path).expect("unsupported proof copy should write");
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&unsupported_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "proof verify should reject valid certificate content on unsupported artifact paths",
+    );
+    assert!(
+        output
+            .combined()
+            .contains("unsupported proof artifact path")
+            || output.combined().contains("artifact_path"),
+        "unsupported extension rejection should name the path contract: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn proof_emit_rejects_unsupported_output_extension() {
+    let project = TestProject::new("v14-proof-emit-unsupported-extension");
+    let source_file = project.main_file(&source("proof_emit_extension_case"));
+    let unsupported_path = project.root.join("proof.txt");
+
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&source_file),
+            s("--target"),
+            s("proof_emit_extension_case"),
+            s("--output"),
+            path_arg(&unsupported_path),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "proof emit should reject unsupported proof artifact output extensions",
+    );
+    assert!(
+        output
+            .combined()
+            .contains("unsupported proof artifact path"),
+        "unsupported output extension rejection should name the path contract: {}",
+        output.combined()
+    );
+    assert!(
+        !unsupported_path.exists(),
+        "unsupported proof output should not be written"
+    );
+}
+
+#[test]
 fn check_emit_proof_runs_check_and_emits_artifact() {
     let project = TestProject::new("v14-check-emit-proof");
     let source_file = project.main_file(&source("check_emit_case"));

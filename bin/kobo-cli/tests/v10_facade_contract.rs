@@ -5,7 +5,7 @@ use v09_common::{
 };
 
 #[test]
-fn inspect_sim_shows_v10_facade_lowering_without_rewriting_user_imports() {
+fn inspect_sim_shows_facade_lowering_without_rewriting_user_imports() {
     let project = TestProject::new("v10-facade-inspect");
     let file = project.main_file(
         r#"
@@ -22,9 +22,18 @@ async fn async_gateway() {
 
     let output = run_kobo(&[s("inspect"), s("--sim"), path_arg(&file)], &project.root);
 
-    assert_success(&output, "inspect --sim should expose v0.10 facade lowering");
+    assert_success(&output, "inspect --sim should expose facade lowering");
     let text = output.combined();
-    assert_contains(&text, "v0.10", "inspect output should name v0.10");
+    assert_contains(
+        &text,
+        "Rust-shaped and Cargo-native",
+        "inspect output should keep Kobo-first product posture",
+    );
+    assert_contains(
+        &text,
+        "normal Kobo source stays framework-shaped",
+        "inspect output should not make user source backend-shaped",
+    );
     assert_contains(
         &text,
         "simulation facade",
@@ -37,8 +46,8 @@ async fn async_gateway() {
     }
     assert_not_contains(
         &text,
-        "reserved for v0.10",
-        "v0.10 implementation must not report reserved harness wording",
+        "reserved for",
+        "inspect --sim implementation must not report reserved harness wording",
     );
     let source = project.read("src/main.kobo");
     assert_not_contains(&source, "shuttle::", "user source must not import Shuttle");

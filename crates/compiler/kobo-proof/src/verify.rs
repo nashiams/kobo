@@ -37,6 +37,9 @@ pub fn verify_certificate(
     crate::adapter::verify_adapter_confidence(certificate)?;
     crate::candidate::verify_candidate_admission(certificate)?;
     crate::boundary::verify_boundary_hashes(certificate)?;
+    crate::invariant::verify_loop_invariants(certificate)?;
+    crate::bounded::verify_bounded_evidence(certificate)?;
+    crate::translation::verify_translation_validation(certificate)?;
     crate::obligation::verify_cfg_edge_transitions(certificate)?;
     let checked_obligation_events = crate::obligation::replay_obligation_events(certificate)?;
     let certificate_hash = verify_certificate_hash(certificate)?;
@@ -455,6 +458,7 @@ fn verify_core_hash(certificate: &ProofCertificate) -> Result<(), VerificationEr
         &certificate.core.version,
         &certificate.core.cfg_nodes,
         &certificate.core.cfg_edges,
+        &certificate.core.loop_facts,
         &certificate.core.async_model,
     )
     .map_err(|error| VerificationError::Parse {

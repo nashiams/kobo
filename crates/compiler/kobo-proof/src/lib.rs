@@ -1,21 +1,31 @@
 mod adapter;
 mod async_model;
+mod bounded;
 mod boundary;
 mod candidate;
 mod certificate;
 mod error;
 mod hash;
+mod invariant;
 mod obligation;
+mod trace;
+mod translation;
 mod verify;
 
 pub use certificate::{
     AdapterConfidence, AdapterEvidence, ArtifactKind, AsyncModelEvidence, BoundaryAssumption,
-    BoundaryPolicy, CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact,
-    CoreCfgEdge, CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary,
-    FutureStateLocalEvidence, FutureStateObligationEvidence, HashEvidence, ObligationEvent,
+    BoundaryPolicy, BoundDeclaration, BoundDimension, BoundSource, BoundedCompleteness,
+    BoundedProofEvidence, CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact,
+    CoreCfgEdge, CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreTraceEvent, CoverageLoss,
+    FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent,
+    HashEvidence, InvariantConfidence, InvariantPreservation, InvariantTemplateEvidence,
+    InvariantTemplateSource, InvariantTier, LoopInvariantEvidence, ObligationEvent,
     ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate,
-    ReplayGrade, SelectPathEvidence, SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence,
-    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence,
+    PrunedHistoryEvidence, ReplayGrade, SelectPathEvidence, SourceEvidence,
+    SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
+    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
+    TraceMismatchEvidence, TraceMismatchKind, TranslationValidationEvidence,
+    TranslationValidationStatus,
     PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
     PROOF_TARGET_VERSION,
 };

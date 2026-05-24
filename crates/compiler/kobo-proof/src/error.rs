@@ -77,6 +77,64 @@ pub enum VerificationError {
     },
     #[error("CFG edge transition mismatch for {edge}: {reason}")]
     CfgEdgeTransitionMismatch { edge: String, reason: String },
+    #[error("loop {loop_id} is missing a proof-grade back-edge fact")]
+    MissingLoopBackEdgeFact { loop_id: String },
+    #[error("loop {loop_id} inferred invariant is missing template evidence")]
+    MissingInvariantTemplate { loop_id: String },
+    #[error("loop {loop_id} invariant was not preserved: {reason}")]
+    InvariantNotPreserved { loop_id: String, reason: String },
+    #[error("loop {loop_id} leaks unresolved obligation {binding} at the back-edge")]
+    LoopBackEdgeLeak { loop_id: String, binding: String },
+    #[error("bounded evidence {evidence_id} cannot claim proof with {completeness} enumeration: {wording}")]
+    IncompleteBoundedEnumeration {
+        evidence_id: String,
+        completeness: String,
+        wording: String,
+    },
+    #[error("bounded evidence {evidence_id} is missing proof-relevant bounds")]
+    MissingBoundedProofDimension { evidence_id: String },
+    #[error("bounded evidence {evidence_id} has inconsistent history count: expected {expected}, observed {observed}")]
+    BoundedHistoryCountMismatch {
+        evidence_id: String,
+        expected: u64,
+        observed: u64,
+    },
+    #[error("translation validation is missing generated event for Core event {core_event_id}")]
+    TranslationTraceMissingEvent { core_event_id: String },
+    #[error("translation validation has extra generated event {generated_event_id}")]
+    TranslationTraceExtraEvent { generated_event_id: String },
+    #[error("translation validation order mismatch for Core event {core_event_id}: expected {expected}, observed {observed}")]
+    TranslationTraceOrderMismatch {
+        core_event_id: String,
+        expected: u64,
+        observed: u64,
+    },
+    #[error("translation validation kind mismatch for Core event {core_event_id}: expected {expected}, observed {observed}")]
+    TranslationTraceKindMismatch {
+        core_event_id: String,
+        expected: String,
+        observed: String,
+    },
+    #[error("translation validation binding mismatch for Core event {core_event_id}: expected {expected}, observed {observed}")]
+    TranslationTraceBindingMismatch {
+        core_event_id: String,
+        expected: String,
+        observed: String,
+    },
+    #[error("translation validation template mismatch for Core event {core_event_id}: expected {expected}, observed {observed}")]
+    TranslationTraceTemplateMismatch {
+        core_event_id: String,
+        expected: String,
+        observed: String,
+    },
+    #[error("translation validation source-map anchor {anchor_id} for generated event {generated_event_id} is {status}")]
+    TranslationSourceMapAnchorMismatch {
+        generated_event_id: String,
+        anchor_id: String,
+        status: String,
+    },
+    #[error("translation validation status mismatch: expected {expected}, observed {observed}")]
+    TranslationValidationStatusMismatch { expected: String, observed: String },
     #[error("removed discharge for {binding}")]
     RemovedDischarge { binding: String },
     #[error("unresolved obligation {binding} reaches a modeled exit")]

@@ -98,12 +98,14 @@ fn valid_certificate() -> ProofCertificate {
                 "core-1",
                 &cfg_nodes,
                 &cfg_edges,
+                &[],
                 &AsyncModelEvidence::default(),
             )
             .unwrap(),
             version: "core-1".to_owned(),
             cfg_nodes,
             cfg_edges,
+            loop_facts: Vec::new(),
             async_model: AsyncModelEvidence::default(),
         },
         replay_grade: ReplayGrade::Partial,
@@ -125,6 +127,11 @@ fn valid_certificate() -> ProofCertificate {
             exit_env,
         }],
         coverage_loss: Vec::new(),
+        loop_invariants: Vec::new(),
+        bounded_evidence: Vec::new(),
+        core_obligation_trace: Vec::new(),
+        generated_rust_trace: Vec::new(),
+        translation_validation: Default::default(),
         opaque_edge_ledger: Vec::new(),
         candidate_admission: Vec::new(),
         certificate_material_hash: String::new(),
@@ -540,4 +547,143 @@ fn unknown_unversioned_field_rejected() {
     let error = parse_certificate_json(&source).unwrap_err();
 
     assert!(matches!(error, VerificationError::UnknownField { .. }));
+}
+
+#[test]
+fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["loop_invariants"] = serde_json::json!([{
+            "id": "loop-proof_case-0",
+            "function": "proof_case",
+            "entry_block": "bb0",
+            "back_edge_source": "bb1",
+            "back_edge_target": "bb0",
+            "tier": "inferred",
+            "expression": "no_pending(Delivery)",
+            "source_span": span(),
+            "obligations_created": ["delivery"],
+            "back_edge_states": [{
+                "binding": "delivery",
+                "state": "owned"
+            }],
+            "preservation": "preserved",
+            "template": {
+                "id": "queue_delivery",
+                "version": "0.1",
+                "schema_hash": "queue-template-hash",
+                "source": "built_in",
+                "confidence": "exact",
+                "obligation_kind": "Delivery",
+                "lifecycle_owner": "queue"
+            },
+            "downgrade_reason": null
+        }]);
+    });
+    let certificate = parse_certificate_json(&source).expect("v15 loop fields should parse");
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::LoopBackEdgeLeak { ref loop_id, ref binding }
+            if loop_id == "loop-proof_case-0" && binding == "delivery"
+    ));
+}
+
+#[test]
+fn incomplete_bounded_enumeration_cannot_claim_bounded_proof() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["bounded_evidence"] = serde_json::json!([{
+            "id": "bounded-proof_case-0",
+            "function": "proof_case",
+            "bounds": [{
+                "dimension": "scheduler_histories",
+                "value": 384,
+                "source": "ward",
+                "proof_relevant": true
+            }],
+            "normalized_bound_hash": "bound-hash",
+            "enumerated_history_count": 128,
+            "expected_complete_history_count": 384,
+            "scheduler_dimensions": ["ready_queue_order"],
+            "fault_dimensions": ["timeout"],
+            "cancellation_points": ["await-recv"],
+            "pruned_histories": [],
+            "completeness": "sampled",
+            "wording": "bounded proof: all 128 histories explored under declared bounds"
+        }]);
+    });
+    let certificate = parse_certificate_json(&source).expect("v15 bounded fields should parse");
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::IncompleteBoundedEnumeration { ref evidence_id, .. }
+            if evidence_id == "bounded-proof_case-0"
+    ));
+}
+
+#[test]
+fn translation_validation_rejects_dropped_discharge_event() {
+    let source = mutate_json(valid_certificate(), |value| {
+        value["core_obligation_trace"] = serde_json::json!([
+            {
+                "id": "core-create-delivery",
+                "kind": "create",
+                "binding": "delivery",
+                "order": 0,
+                "source_span": span(),
+                "template_id": "queue_delivery",
+                "template_version": "0.1"
+            },
+            {
+                "id": "core-discharge-delivery",
+                "kind": "discharge",
+                "binding": "delivery",
+                "order": 1,
+                "source_span": span(),
+                "template_id": "queue_delivery",
+                "template_version": "0.1"
+            }
+        ]);
+        value["generated_rust_trace"] = serde_json::json!([
+            {
+                "id": "generated-create-delivery",
+                "core_event_id": "core-create-delivery",
+                "kind": "create",
+                "binding": "delivery",
+                "order": 0,
+                "source_map_anchor": {
+                    "id": "map-0",
+                    "status": "mapped",
+                    "generated_span": {
+                        "path": "src/main.rs",
+                        "line": 1,
+                        "start": 0,
+                        "end": 8,
+                        "mapped": true,
+                        "snippet": "delivery"
+                    },
+                    "kobo_span": span()
+                },
+                "lowering_phase": "obligation_lowering",
+                "template_id": "queue_delivery",
+                "template_version": "0.1"
+            }
+        ]);
+        value["translation_validation"] = serde_json::json!({
+            "status": "validated",
+            "mismatches": []
+        });
+    });
+    let certificate = parse_certificate_json(&source).expect("v15 trace fields should parse");
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::TranslationTraceMissingEvent { ref core_event_id }
+            if core_event_id == "core-discharge-delivery"
+    ));
 }

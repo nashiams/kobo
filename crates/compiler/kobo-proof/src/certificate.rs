@@ -27,6 +27,16 @@ pub struct ProofCertificate {
     pub exit_env: Vec<ObligationState>,
     pub function_summaries: Vec<FunctionSummary>,
     pub coverage_loss: Vec<CoverageLoss>,
+    #[serde(default)]
+    pub loop_invariants: Vec<LoopInvariantEvidence>,
+    #[serde(default)]
+    pub bounded_evidence: Vec<BoundedProofEvidence>,
+    #[serde(default)]
+    pub core_obligation_trace: Vec<CoreTraceEvent>,
+    #[serde(default)]
+    pub generated_rust_trace: Vec<GeneratedTraceEvent>,
+    #[serde(default)]
+    pub translation_validation: TranslationValidationEvidence,
     pub opaque_edge_ledger: Vec<OpaqueLedgerEntry>,
     pub candidate_admission: Vec<CandidateAdmissionEvidence>,
     pub certificate_material_hash: String,
@@ -46,6 +56,8 @@ pub struct CoreEvidence {
     pub version: String,
     pub cfg_nodes: Vec<CoreCfgNode>,
     pub cfg_edges: Vec<CoreCfgEdge>,
+    #[serde(default)]
+    pub loop_facts: Vec<CoreLoopBackEdgeFact>,
     pub async_model: AsyncModelEvidence,
 }
 
@@ -180,6 +192,17 @@ pub struct CoreCfgEdge {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CoreLoopBackEdgeFact {
+    pub id: String,
+    pub function: String,
+    pub entry_block: String,
+    pub back_edge_source: String,
+    pub back_edge_target: String,
+    pub source_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceSpan {
     pub path: String,
     pub line: usize,
@@ -268,6 +291,129 @@ pub struct CoverageLoss {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct LoopInvariantEvidence {
+    pub id: String,
+    pub function: String,
+    pub entry_block: String,
+    pub back_edge_source: String,
+    pub back_edge_target: String,
+    pub tier: InvariantTier,
+    pub expression: String,
+    pub source_span: SourceSpan,
+    pub obligations_created: Vec<String>,
+    pub back_edge_states: Vec<ObligationState>,
+    pub preservation: InvariantPreservation,
+    pub template: Option<InvariantTemplateEvidence>,
+    pub downgrade_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvariantTemplateEvidence {
+    pub id: String,
+    pub version: String,
+    pub schema_hash: String,
+    pub source: InvariantTemplateSource,
+    pub confidence: InvariantConfidence,
+    pub obligation_kind: String,
+    pub lifecycle_owner: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundedProofEvidence {
+    pub id: String,
+    pub function: String,
+    pub bounds: Vec<BoundDeclaration>,
+    pub normalized_bound_hash: String,
+    pub enumerated_history_count: u64,
+    pub expected_complete_history_count: Option<u64>,
+    pub scheduler_dimensions: Vec<String>,
+    pub fault_dimensions: Vec<String>,
+    pub cancellation_points: Vec<String>,
+    pub pruned_histories: Vec<PrunedHistoryEvidence>,
+    pub completeness: BoundedCompleteness,
+    pub wording: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundDeclaration {
+    pub dimension: BoundDimension,
+    pub value: u64,
+    pub source: BoundSource,
+    pub proof_relevant: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrunedHistoryEvidence {
+    pub id: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoreTraceEvent {
+    pub id: String,
+    pub kind: TraceEventKind,
+    pub binding: Option<String>,
+    pub order: u64,
+    pub source_span: SourceSpan,
+    pub template_id: Option<String>,
+    pub template_version: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedTraceEvent {
+    pub id: String,
+    pub core_event_id: String,
+    pub kind: TraceEventKind,
+    pub binding: Option<String>,
+    pub order: u64,
+    pub source_map_anchor: SourceMapAnchorEvidence,
+    pub lowering_phase: String,
+    pub template_id: Option<String>,
+    pub template_version: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceMapAnchorEvidence {
+    pub id: String,
+    pub status: SourceMapAnchorStatus,
+    pub generated_span: SourceSpan,
+    pub kobo_span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranslationValidationEvidence {
+    pub status: TranslationValidationStatus,
+    pub mismatches: Vec<TraceMismatchEvidence>,
+}
+
+impl Default for TranslationValidationEvidence {
+    fn default() -> Self {
+        Self {
+            status: TranslationValidationStatus::CoreOnly,
+            mismatches: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceMismatchEvidence {
+    pub kind: TraceMismatchKind,
+    pub core_event_id: Option<String>,
+    pub generated_event_id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpaqueLedgerEntry {
     pub edge_id: String,
     pub boundary: String,
@@ -313,6 +459,165 @@ pub enum BoundaryPolicy {
     Opaque,
     Debt,
     Unselected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantTier {
+    Inferred,
+    User,
+    Bounded,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantPreservation {
+    Preserved,
+    Failed,
+    Downgraded,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantTemplateSource {
+    BuiltIn,
+    Declaration,
+    Adapter,
+    Summary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantConfidence {
+    Exact,
+    Modeled,
+    Sampled,
+    MetadataOnly,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundDimension {
+    LoopIterations,
+    QueueCapacity,
+    MessageCount,
+    SchedulerHistories,
+    CancellationPoints,
+    RetryAttempts,
+    TimeoutPaths,
+    FaultInjectionChoices,
+    ExternalBoundaryRecordings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundSource {
+    Ward,
+    Template,
+    Adapter,
+    Summary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundedCompleteness {
+    Complete,
+    Incomplete,
+    Sampled,
+    Timeout,
+}
+
+impl BoundedCompleteness {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Incomplete => "incomplete",
+            Self::Sampled => "sampled",
+            Self::Timeout => "timeout",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceEventKind {
+    Create,
+    Move,
+    Transfer,
+    Discharge,
+    Return,
+    Escape,
+    Panic,
+    ErrorExit,
+    Cancel,
+    OpaqueBoundary,
+}
+
+impl TraceEventKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Move => "move",
+            Self::Transfer => "transfer",
+            Self::Discharge => "discharge",
+            Self::Return => "return",
+            Self::Escape => "escape",
+            Self::Panic => "panic",
+            Self::ErrorExit => "error_exit",
+            Self::Cancel => "cancel",
+            Self::OpaqueBoundary => "opaque_boundary",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceMapAnchorStatus {
+    Mapped,
+    Missing,
+    Stale,
+}
+
+impl SourceMapAnchorStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Mapped => "mapped",
+            Self::Missing => "missing",
+            Self::Stale => "stale",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationValidationStatus {
+    CoreOnly,
+    Validated,
+    Failed,
+    NotGenerated,
+}
+
+impl TranslationValidationStatus {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::CoreOnly => "core_only",
+            Self::Validated => "validated",
+            Self::Failed => "failed",
+            Self::NotGenerated => "not_generated",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraceMismatchKind {
+    MissingEvent,
+    ExtraEvent,
+    OrderMismatch,
+    KindMismatch,
+    BindingMismatch,
+    SourceMapAnchorMismatch,
+    TemplateMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

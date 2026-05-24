@@ -10,12 +10,13 @@ use kobo_proof::{
     certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
     AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy,
     CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
-    FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
-    ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence,
-    SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence,
-    TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, PROOF_CERTIFICATE_SCHEMA_VERSION,
-    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoverageLoss, FunctionSummary,
+    FutureStateLocalEvidence, FutureStateObligationEvidence, HashEvidence, ObligationEvent,
+    ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate,
+    SelectPathEvidence, SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence,
+    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence,
+    PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
+    PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -42,6 +43,7 @@ pub fn emit_proof_certificate(
     let core_program = lower_core_program(input.program);
     let cfg_nodes = core_cfg_nodes(&source_path, input.source, &core_program.functions);
     let cfg_edges = core_cfg_edges(&source_path, input.source, &core_program.functions);
+    let loop_facts = core_loop_facts(&cfg_edges);
     let (template_hashes, template_schemas) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
@@ -58,6 +60,7 @@ pub fn emit_proof_certificate(
         core_program.core_version,
         &cfg_nodes,
         &cfg_edges,
+        &loop_facts,
         &async_model,
     )?;
     let mut adapter_confidence = adapter_evidence(
@@ -99,6 +102,7 @@ pub fn emit_proof_certificate(
             version: core_program.core_version.to_owned(),
             cfg_nodes,
             cfg_edges,
+            loop_facts,
             async_model,
         },
         replay_grade,
@@ -112,12 +116,46 @@ pub fn emit_proof_certificate(
         exit_env,
         function_summaries,
         coverage_loss,
+        loop_invariants: Vec::new(),
+        bounded_evidence: Vec::new(),
+        core_obligation_trace: Vec::new(),
+        generated_rust_trace: Vec::new(),
+        translation_validation: Default::default(),
         opaque_edge_ledger,
         candidate_admission,
         certificate_material_hash: String::new(),
     };
     certificate.certificate_material_hash = certificate_material_hash(&certificate)?;
     Ok(certificate)
+}
+
+fn core_loop_facts(edges: &[CoreCfgEdge]) -> Vec<CoreLoopBackEdgeFact> {
+    edges
+        .iter()
+        .filter(|edge| is_back_edge(edge))
+        .map(|edge| CoreLoopBackEdgeFact {
+            id: format!("loop-{}-{}-{}", edge.function, edge.from, edge.to),
+            function: edge.function.clone(),
+            entry_block: edge.to.clone(),
+            back_edge_source: edge.from.clone(),
+            back_edge_target: edge.to.clone(),
+            source_span: edge.source_span.clone(),
+        })
+        .collect()
+}
+
+fn is_back_edge(edge: &CoreCfgEdge) -> bool {
+    let Some(source_index) = block_index(&edge.from) else {
+        return false;
+    };
+    let Some(target_index) = block_index(&edge.to) else {
+        return false;
+    };
+    target_index <= source_index
+}
+
+fn block_index(block: &str) -> Option<usize> {
+    block.strip_prefix("bb")?.parse().ok()
 }
 
 fn core_cfg_nodes(source_path: &str, source: &str, functions: &[CoreFunction]) -> Vec<CoreCfgNode> {

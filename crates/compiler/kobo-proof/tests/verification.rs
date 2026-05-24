@@ -54,6 +54,9 @@ fn valid_certificate() -> ProofCertificate {
         schema_version: 1,
         confidence: "declared_contract".to_owned(),
         source: "declaration".to_owned(),
+        lifecycle_owner: "Delivery".to_owned(),
+        cancel_policy: "declared_terminal_action".to_owned(),
+        registry_source: "declaration".to_owned(),
         source_span: span(),
     };
     let template_hash = template_schema_hash(&template_schema).unwrap();
@@ -649,6 +652,23 @@ fn unsupported_template_schema_rejected() {
 }
 
 #[test]
+fn metadata_only_template_schema_rejected() {
+    let mut certificate = valid_certificate();
+    certificate.template_schemas[0].source = "adapter".to_owned();
+    certificate.template_schemas[0].confidence = "metadata-only".to_owned();
+    certificate.template_hashes[0].hash =
+        template_schema_hash(&certificate.template_schemas[0]).unwrap();
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::UnsupportedTemplateSchema { .. }
+    ));
+}
+
+#[test]
 fn unrecognized_boundary_policy_rejected() {
     let source = mutate_json(valid_certificate(), |value| {
         value["boundary_assumptions"] = serde_json::json!([{
@@ -731,7 +751,10 @@ fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
         template_schema: "lifecycle-template".to_owned(),
         schema_version: 1,
         confidence: "exact_template".to_owned(),
-        source: "inference".to_owned(),
+        source: "built_in".to_owned(),
+        lifecycle_owner: "queue".to_owned(),
+        cancel_policy: "terminal_action_or_requeue".to_owned(),
+        registry_source: "builtin_protocol_registry".to_owned(),
         source_span: span(),
     };
     let template_hash = template_schema_hash(&template_schema).unwrap();

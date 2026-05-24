@@ -109,6 +109,9 @@ pub struct ScenarioLifecycleTemplate {
     pub schema_version: u64,
     pub confidence: String,
     pub source: ScenarioLifecycleTemplateSource,
+    pub lifecycle_owner: String,
+    pub cancel_policy: String,
+    pub registry_source: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -117,8 +120,27 @@ pub enum ScenarioLifecycleTemplateSource {
     Inference,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProtocolTemplateDefinition {
+    pub id: &'static str,
+    pub kind: &'static str,
+    pub obligation_kind: &'static str,
+    pub create_methods: &'static [&'static str],
+    pub terminal_actions: &'static [&'static str],
+    pub lifecycle_owner: &'static str,
+    pub cancel_policy: &'static str,
+    pub schema_version: u64,
+    pub confidence: &'static str,
+    pub registry_source: &'static str,
+}
+
+pub struct ProtocolTemplateRegistry;
+
 impl ScenarioLifecycleTemplate {
     pub fn inferred(id: &str, kind: &str) -> Self {
+        if let Some(definition) = ProtocolTemplateRegistry::find(id) {
+            return Self::from_protocol_definition(definition);
+        }
         Self {
             id: id.to_owned(),
             kind: kind.to_owned(),
@@ -126,6 +148,9 @@ impl ScenarioLifecycleTemplate {
             schema_version: 1,
             confidence: "exact_template".to_owned(),
             source: ScenarioLifecycleTemplateSource::Inference,
+            lifecycle_owner: kind.to_owned(),
+            cancel_policy: "explicit_terminal_action".to_owned(),
+            registry_source: "inferred_fallback".to_owned(),
         }
     }
 
@@ -137,7 +162,149 @@ impl ScenarioLifecycleTemplate {
             schema_version: 1,
             confidence: "declared_contract".to_owned(),
             source: ScenarioLifecycleTemplateSource::Declaration,
+            lifecycle_owner: type_name.to_owned(),
+            cancel_policy: "declared_terminal_action".to_owned(),
+            registry_source: "declaration".to_owned(),
         }
+    }
+
+    pub fn from_protocol_definition(definition: ProtocolTemplateDefinition) -> Self {
+        Self {
+            id: definition.id.to_owned(),
+            kind: definition.kind.to_owned(),
+            template_schema: "lifecycle-template".to_owned(),
+            schema_version: definition.schema_version,
+            confidence: definition.confidence.to_owned(),
+            source: ScenarioLifecycleTemplateSource::Inference,
+            lifecycle_owner: definition.lifecycle_owner.to_owned(),
+            cancel_policy: definition.cancel_policy.to_owned(),
+            registry_source: definition.registry_source.to_owned(),
+        }
+    }
+}
+
+impl ProtocolTemplateDefinition {
+    pub fn has_create_method(&self, method_name: &str) -> bool {
+        self.create_methods
+            .iter()
+            .any(|candidate| *candidate == method_name)
+    }
+
+    pub fn terminal_action_strings(&self) -> Vec<String> {
+        self.terminal_actions
+            .iter()
+            .map(|action| (*action).to_owned())
+            .collect()
+    }
+}
+
+impl ProtocolTemplateRegistry {
+    pub fn builtin_templates() -> &'static [ProtocolTemplateDefinition] {
+        &[
+            ProtocolTemplateDefinition {
+                id: "queue_delivery",
+                kind: "queue_delivery",
+                obligation_kind: "Delivery",
+                create_methods: &["recv"],
+                terminal_actions: &["ack", "nack", "requeue"],
+                lifecycle_owner: "queue",
+                cancel_policy: "terminal_action_or_requeue",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+            ProtocolTemplateDefinition {
+                id: "transaction",
+                kind: "transaction",
+                obligation_kind: "Transaction",
+                create_methods: &["begin"],
+                terminal_actions: &["commit", "rollback"],
+                lifecycle_owner: "transaction_manager",
+                cancel_policy: "commit_or_rollback",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+            ProtocolTemplateDefinition {
+                id: "stream_item",
+                kind: "stream_item",
+                obligation_kind: "StreamItem",
+                create_methods: &["next", "poll_next"],
+                terminal_actions: &["consume", "skip"],
+                lifecycle_owner: "stream",
+                cancel_policy: "consume_or_skip",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+            ProtocolTemplateDefinition {
+                id: "retry_attempt",
+                kind: "retry_attempt",
+                obligation_kind: "RetryAttempt",
+                create_methods: &["attempt", "next_attempt"],
+                terminal_actions: &["succeed", "retry", "give_up"],
+                lifecycle_owner: "retry_policy",
+                cancel_policy: "succeed_retry_or_give_up",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+            ProtocolTemplateDefinition {
+                id: "handler_reply",
+                kind: "handler_reply",
+                obligation_kind: "HandlerReply",
+                create_methods: &["request"],
+                terminal_actions: &["reply", "reject", "cancel"],
+                lifecycle_owner: "service_request",
+                cancel_policy: "reply_reject_or_cancel",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+            ProtocolTemplateDefinition {
+                id: "spawned_task",
+                kind: "spawned_task",
+                obligation_kind: "SpawnedTask",
+                create_methods: &["spawn"],
+                terminal_actions: &["await", "abort", "detach-with-policy"],
+                lifecycle_owner: "task_runtime",
+                cancel_policy: "await_abort_or_detach",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+            ProtocolTemplateDefinition {
+                id: "lock_permit",
+                kind: "lock_permit",
+                obligation_kind: "LockPermit",
+                create_methods: &["acquire", "lock", "try_acquire"],
+                terminal_actions: &["release", "drop-at-safe-boundary"],
+                lifecycle_owner: "lock",
+                cancel_policy: "release_or_safe_drop",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+            ProtocolTemplateDefinition {
+                id: "file_socket",
+                kind: "file_socket",
+                obligation_kind: "FileSocket",
+                create_methods: &["open", "connect", "accept"],
+                terminal_actions: &["close", "transfer", "opaque-boundary"],
+                lifecycle_owner: "io_resource",
+                cancel_policy: "close_transfer_or_opaque_boundary",
+                schema_version: 1,
+                confidence: "exact_template",
+                registry_source: "builtin_protocol_registry",
+            },
+        ]
+    }
+
+    pub fn find(id: &str) -> Option<ProtocolTemplateDefinition> {
+        Self::builtin_templates()
+            .iter()
+            .copied()
+            .find(|definition| definition.id == id)
     }
 }
 

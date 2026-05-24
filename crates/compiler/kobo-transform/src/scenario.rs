@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
-    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryCallArgument,
-    ScenarioBoundaryPolicy, ScenarioCallGraphScc, ScenarioCoreTerminatorKind,
-    ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioLifecycleTemplate,
-    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    KoboSpan, MustCallObligation, ProtocolTemplateRegistry, ScenarioBoundary,
+    ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
+    ScenarioCoreTerminatorKind, ScenarioCoverageFacts, ScenarioExternalCallShape,
+    ScenarioLifecycleTemplate, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind,
+    ScenarioProgram,
 };
 use kobo_parser::KoboFile;
 use quote::ToTokens;
@@ -88,13 +89,6 @@ struct LoopFrame {
 struct MethodShape {
     return_type: Option<String>,
     consumes_receiver: bool,
-}
-
-#[derive(Clone, Debug)]
-struct LifecycleTemplateShape {
-    template_id: &'static str,
-    type_name: &'static str,
-    actions: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -911,12 +905,9 @@ impl<'a> ScenarioLowerer<'a> {
         lifecycle_template_from_shape(&method_name, method_shape, self.method_shapes).map(
             |template| InferredLifecycleCreation {
                 binding,
-                type_name: template.type_name.to_owned(),
-                actions: template.actions,
-                template: ScenarioLifecycleTemplate::inferred(
-                    template.template_id,
-                    template.template_id,
-                ),
+                type_name: template.obligation_kind.to_owned(),
+                actions: template.terminal_action_strings(),
+                template: ScenarioLifecycleTemplate::from_protocol_definition(template),
                 span: self.span(call),
             },
         )
@@ -2368,72 +2359,19 @@ fn lifecycle_template_from_shape(
     method_name: &str,
     method_shape: &MethodShape,
     method_shapes: &MethodShapeMap,
-) -> Option<LifecycleTemplateShape> {
+) -> Option<kobo_ir::ProtocolTemplateDefinition> {
     let return_type = method_shape.return_type.as_deref()?;
-    match method_name {
-        "recv"
-            if type_has_terminal_action(return_type, &queue_delivery_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "queue_delivery",
-                type_name: "Delivery",
-                actions: queue_delivery_actions(),
-            })
-        }
-        "begin" if type_has_terminal_action(return_type, &transaction_actions(), method_shapes) => {
-            Some(LifecycleTemplateShape {
-                template_id: "transaction",
-                type_name: "Transaction",
-                actions: transaction_actions(),
-            })
-        }
-        "next" | "poll_next"
-            if type_has_terminal_action(return_type, &stream_item_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "stream_item",
-                type_name: "StreamItem",
-                actions: stream_item_actions(),
-            })
-        }
-        "attempt" | "next_attempt"
-            if type_has_terminal_action(return_type, &retry_attempt_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "retry_attempt",
-                type_name: "RetryAttempt",
-                actions: retry_attempt_actions(),
-            })
-        }
-        "request"
-            if type_has_terminal_action(return_type, &handler_reply_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "handler_reply",
-                type_name: "HandlerReply",
-                actions: handler_reply_actions(),
-            })
-        }
-        "acquire" | "lock" | "try_acquire"
-            if type_has_terminal_action(return_type, &lock_permit_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "lock_permit",
-                type_name: "LockPermit",
-                actions: lock_permit_actions(),
-            })
-        }
-        "open" | "connect" | "accept"
-            if type_has_terminal_action(return_type, &file_socket_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "file_socket",
-                type_name: "FileSocket",
-                actions: file_socket_actions(),
-            })
-        }
-        _ => None,
-    }
+    ProtocolTemplateRegistry::builtin_templates()
+        .iter()
+        .copied()
+        .find(|template| {
+            template.has_create_method(method_name)
+                && type_has_terminal_action(
+                    return_type,
+                    &template.terminal_action_strings(),
+                    method_shapes,
+                )
+        })
 }
 
 fn is_std_file_open_path(path: &[String]) -> bool {
@@ -2559,6 +2497,7 @@ fn rust_method_name(action: &str) -> Option<&str> {
     }
 }
 
+#[cfg(test)]
 fn queue_delivery_actions() -> Vec<String> {
     ["ack", "nack", "requeue"]
         .into_iter()
@@ -2566,19 +2505,9 @@ fn queue_delivery_actions() -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn transaction_actions() -> Vec<String> {
     ["commit", "rollback"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
-}
-
-fn stream_item_actions() -> Vec<String> {
-    ["consume", "skip"].into_iter().map(str::to_owned).collect()
-}
-
-fn retry_attempt_actions() -> Vec<String> {
-    ["succeed", "retry", "give_up"]
         .into_iter()
         .map(str::to_owned)
         .collect()
@@ -2593,13 +2522,6 @@ fn handler_reply_actions() -> Vec<String> {
 
 fn spawned_task_actions() -> Vec<String> {
     ["await", "abort", "detach-with-policy"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
-}
-
-fn lock_permit_actions() -> Vec<String> {
-    ["release", "drop-at-safe-boundary"]
         .into_iter()
         .map(str::to_owned)
         .collect()

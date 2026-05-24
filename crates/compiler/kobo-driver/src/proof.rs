@@ -506,7 +506,7 @@ fn loop_invariant_evidence(
                     source: invariant_template_source(&template.source),
                     confidence: invariant_confidence(&template.confidence),
                     obligation_kind,
-                    lifecycle_owner: lifecycle_owner(&template.id),
+                    lifecycle_owner: template.lifecycle_owner.clone(),
                 }),
                 binding_templates,
                 user_fact,
@@ -567,7 +567,7 @@ fn user_invariant_fact(
         loop_id: loop_id.to_owned(),
         predicate: UserInvariantPredicate::NoPending,
         obligation_kind,
-        lifecycle_owner: template.map(|template| lifecycle_owner(&template.id)),
+        lifecycle_owner: template.map(|template| template.lifecycle_owner.clone()),
         template_id: template.map(|template| template.id.clone()),
         template_version: template.map(|template| lifecycle_template_version(template)),
         domain_bindings: domain_bindings.to_vec(),
@@ -596,7 +596,7 @@ fn invariant_binding_templates(
                 source: invariant_template_source(&template.source),
                 confidence: invariant_confidence(&template.confidence),
                 obligation_kind,
-                lifecycle_owner: lifecycle_owner(&template.id),
+                lifecycle_owner: template.lifecycle_owner.clone(),
             })
         })
         .collect()
@@ -1305,21 +1305,6 @@ fn invariant_confidence(confidence: &str) -> InvariantConfidence {
     }
 }
 
-fn lifecycle_owner(template_id: &str) -> String {
-    match template_id {
-        "queue_delivery" => "queue",
-        "transaction" => "transaction_manager",
-        "stream_item" => "stream",
-        "retry_attempt" => "retry_policy",
-        "handler_reply" => "service_request",
-        "spawned_task" => "task_runtime",
-        "lock_permit" => "lock",
-        "file_socket" => "io_resource",
-        other => other,
-    }
-    .to_owned()
-}
-
 fn numeric_field(fields: &BTreeMap<String, String>, key: &str) -> Option<u64> {
     fields.get(key)?.parse().ok()
 }
@@ -1707,7 +1692,7 @@ fn template_evidence(
         };
         let template_source = match template.source {
             ScenarioLifecycleTemplateSource::Declaration => "declaration",
-            ScenarioLifecycleTemplateSource::Inference => "inference",
+            ScenarioLifecycleTemplateSource::Inference => "built_in",
         };
         let schema = TemplateSchemaEvidence {
             id: template.id.clone(),
@@ -1716,6 +1701,9 @@ fn template_evidence(
             schema_version: template.schema_version,
             confidence: template.confidence.clone(),
             source: template_source.to_owned(),
+            lifecycle_owner: template.lifecycle_owner.clone(),
+            cancel_policy: template.cancel_policy.clone(),
+            registry_source: template.registry_source.clone(),
             source_span: source_span_from_kobo(source_path, source, operation.span),
         };
         let hash = template_schema_hash(&schema)?;

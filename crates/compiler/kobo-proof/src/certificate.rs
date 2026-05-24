@@ -258,6 +258,9 @@ pub struct TemplateSchemaEvidence {
     pub schema_version: u64,
     pub confidence: String,
     pub source: String,
+    pub lifecycle_owner: String,
+    pub cancel_policy: String,
+    pub registry_source: String,
     pub source_span: SourceSpan,
 }
 

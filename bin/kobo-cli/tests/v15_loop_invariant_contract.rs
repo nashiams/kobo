@@ -90,6 +90,16 @@ fn assert_binding_template(
     );
 }
 
+fn template_schema_by_id<'a>(
+    artifact: &'a serde_json::Value,
+    template_id: &str,
+) -> &'a serde_json::Value {
+    artifact["template_schemas"]
+        .as_array()
+        .and_then(|schemas| schemas.iter().find(|schema| schema["id"] == template_id))
+        .unwrap_or_else(|| panic!("missing template schema {template_id}: {artifact}"))
+}
+
 fn queue_loop_source_with_invariant(scenario_name: &str, expression: &str) -> String {
     queue_loop_source(scenario_name, "delivery", "queue").replace(
         "#[kobo::scenario(profile = \"sync\")]",
@@ -795,6 +805,28 @@ fn service_request_loop_infers_reply_template_before_user_invariant() {
     let artifact = read_json(&artifact_path);
 
     assert_inferred_template(&artifact, "handler_reply", "HandlerReply", "reply");
+}
+
+#[test]
+fn inferred_protocol_template_uses_registry_metadata() {
+    let project = TestProject::new("v15-loop-invariant-template-registry");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source("registry_metadata_case", "delivery", "queue"),
+        "registry_metadata_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let schema = template_schema_by_id(&artifact, "queue_delivery");
+    let invariant_template = &artifact["loop_invariants"][0]["binding_templates"][0];
+
+    assert_eq!(schema["source"], "built_in");
+    assert_eq!(schema["lifecycle_owner"], "queue");
+    assert_eq!(schema["cancel_policy"], "terminal_action_or_requeue");
+    assert_eq!(schema["registry_source"], "builtin_protocol_registry");
+    assert_eq!(
+        invariant_template["lifecycle_owner"],
+        schema["lifecycle_owner"]
+    );
 }
 
 #[test]

@@ -80,7 +80,19 @@ pub(crate) fn verify_boundary_hashes(
 }
 
 fn is_supported_template_schema(template: &TemplateSchemaEvidence) -> bool {
-    template.template_schema == "lifecycle-template" && template.schema_version == 1
+    template.template_schema == "lifecycle-template"
+        && template.schema_version == 1
+        && matches!(
+            template.source.as_str(),
+            "built_in" | "declaration" | "adapter" | "summary"
+        )
+        && !matches!(
+            template.confidence.as_str(),
+            "metadata-only" | "metadata_only" | "sampled" | "stale"
+        )
+        && !template.lifecycle_owner.trim().is_empty()
+        && !template.cancel_policy.trim().is_empty()
+        && !template.registry_source.trim().is_empty()
 }
 
 fn verify_opaque_edges_have_ledger(

@@ -49,6 +49,9 @@ pub fn template_schema_hash(
         "schema_version": template.schema_version,
         "confidence": &template.confidence,
         "source": &template.source,
+        "lifecycle_owner": &template.lifecycle_owner,
+        "cancel_policy": &template.cancel_policy,
+        "registry_source": &template.registry_source,
     });
     serde_json::to_string(&material).map(|source| stable_hash(&source))
 }

@@ -1,4 +1,8 @@
-use crate::{BoundedCompleteness, BoundedProofEvidence, ProofCertificate, VerificationError};
+use std::collections::BTreeSet;
+
+use crate::{
+    stable_hash, BoundedCompleteness, BoundedProofEvidence, ProofCertificate, VerificationError,
+};
 
 pub(crate) fn verify_bounded_evidence(
     certificate: &ProofCertificate,
@@ -8,6 +12,7 @@ pub(crate) fn verify_bounded_evidence(
         verify_complete_dimensions(evidence)?;
         verify_bounded_wording(evidence)?;
         verify_complete_history_count(evidence)?;
+        verify_canonical_histories(evidence)?;
     }
     Ok(())
 }
@@ -89,4 +94,37 @@ fn verify_complete_history_count(evidence: &BoundedProofEvidence) -> Result<(), 
         expected,
         observed: evidence.enumerated_history_count,
     })
+}
+
+fn verify_canonical_histories(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {
+    if evidence.completeness != BoundedCompleteness::Complete {
+        return verify_history_hashes(evidence);
+    }
+    if evidence.canonical_histories.len() as u64 != evidence.enumerated_history_count {
+        return Err(VerificationError::BoundedHistoryCountMismatch {
+            evidence_id: evidence.id.clone(),
+            expected: evidence.enumerated_history_count,
+            observed: evidence.canonical_histories.len() as u64,
+        });
+    }
+    verify_history_hashes(evidence)
+}
+
+fn verify_history_hashes(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {
+    let mut ids = BTreeSet::new();
+    for history in &evidence.canonical_histories {
+        let material = format!(
+            "{}:{}:{}:{}",
+            history.id, history.scheduler, history.fault, history.cancellation
+        );
+        let expected = stable_hash(&material);
+        if history.history_hash != expected || !ids.insert(history.id.as_str()) {
+            return Err(VerificationError::IncompleteBoundedEnumeration {
+                evidence_id: evidence.id.clone(),
+                completeness: evidence.completeness.as_str().to_owned(),
+                wording: evidence.wording.clone(),
+            });
+        }
+    }
+    Ok(())
 }

@@ -409,6 +409,7 @@ dependencies = [
  "kobo-migrate",
  "kobo-parser",
  "kobo-proof",
+ "kobo-sim-core",
  "kobo-transform",
  "quote",
  "serde",

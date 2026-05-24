@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod bounded;
 pub mod core;
 pub mod coverage;
 pub mod digest;
@@ -11,6 +12,7 @@ pub mod scheduler;
 mod source;
 pub mod storage;
 
+pub use bounded::{bounded_history_material, enumerate_bounded_histories, BoundedHistory};
 pub use core::{
     run_compiler_semantics, run_full_depth, run_full_depth_from_program,
     run_semantics_from_program, BoundaryDecision, BoundaryIoCapture, BoundaryIoField,

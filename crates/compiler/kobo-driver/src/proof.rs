@@ -11,15 +11,15 @@ use kobo_proof::{
     certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
     trace_material_hash, AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundDeclaration,
     BoundDimension, BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedCompleteness,
-    BoundedProofEvidence, CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact,
-    CoreCfgEdge, CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreTraceEvent, CoverageLoss,
-    FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent,
-    HashEvidence, InvariantConfidence, InvariantPreservation, InvariantTemplateEvidence,
-    InvariantTemplateSource, InvariantTier, LoopInvariantEvidence, ObligationEvent,
-    ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate,
-    PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence, SourceMapAnchorEvidence,
-    SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence,
-    TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
+    BoundedHistoryEvidence, BoundedProofEvidence, CancelEdgeEvidence, CandidateAdmissionEvidence,
+    CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact,
+    CoreTraceEvent, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
+    FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence, InvariantConfidence,
+    InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier,
+    LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
+    OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
+    SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
+    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
     TranslationValidationEvidence, TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION,
     PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
@@ -488,6 +488,13 @@ fn bounded_evidence_from_fields(
         enumerated_history_count,
         expected_complete_history_count,
     );
+    let canonical_histories = canonical_histories(
+        &program.target,
+        enumerated_history_count,
+        &scheduler_dimensions,
+        &fault_dimensions,
+        &cancellation_points,
+    );
     let bounds = bound_declarations(
         expected_complete_history_count.unwrap_or(enumerated_history_count),
         &scheduler_dimensions,
@@ -522,10 +529,36 @@ fn bounded_evidence_from_fields(
         scheduler_dimensions,
         fault_dimensions,
         cancellation_points,
+        canonical_histories,
         pruned_histories,
         completeness,
         wording,
     }
+}
+
+fn canonical_histories(
+    function: &str,
+    enumerated_history_count: u64,
+    scheduler_dimensions: &[String],
+    fault_dimensions: &[String],
+    cancellation_points: &[String],
+) -> Vec<BoundedHistoryEvidence> {
+    kobo_sim_core::enumerate_bounded_histories(
+        function,
+        enumerated_history_count,
+        scheduler_dimensions,
+        fault_dimensions,
+        cancellation_points,
+    )
+    .into_iter()
+    .map(|history| BoundedHistoryEvidence {
+        id: history.id,
+        scheduler: history.scheduler,
+        fault: history.fault,
+        cancellation: history.cancellation,
+        history_hash: history.history_hash,
+    })
+    .collect()
 }
 
 fn effective_bounded_completeness(

@@ -351,6 +351,94 @@ fn complete_bounded_evidence_names_every_loop_fact() {
 }
 
 #[test]
+fn complete_bounded_evidence_records_canonical_histories() {
+    let project = TestProject::new("v15-bounded-canonical-histories");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_canonical_history_case",
+            "complete",
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
+        ),
+        "bounded_canonical_history_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let histories = artifact["bounded_evidence"][0]["canonical_histories"]
+        .as_array()
+        .expect("bounded evidence should record canonical histories");
+
+    assert_eq!(
+        histories.len(),
+        artifact["bounded_evidence"][0]["enumerated_history_count"]
+            .as_u64()
+            .expect("enumerated count should be numeric") as usize
+    );
+    assert!(
+        histories.iter().all(|history| {
+            history["id"].as_str().is_some_and(|id| !id.is_empty())
+                && history["scheduler"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+                && history["fault"].as_str().is_some_and(|id| !id.is_empty())
+                && history["cancellation"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+                && history["history_hash"]
+                    .as_str()
+                    .is_some_and(|hash| !hash.is_empty())
+        }),
+        "canonical histories should carry dimensions and hashes: {artifact}"
+    );
+}
+
+#[test]
+fn complete_bounded_evidence_missing_canonical_history_rejects_proof() {
+    let project = TestProject::new("v15-bounded-missing-canonical-history");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_missing_canonical_history_case",
+            "complete",
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
+        ),
+        "bounded_missing_canonical_history_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.bounded_evidence[0].canonical_histories.pop();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "complete bounded evidence missing a canonical history should reject proof",
+    );
+    assert!(
+        output.combined().contains("bounded evidence"),
+        "failure should name bounded canonical history mismatch: {}",
+        output.combined()
+    );
+}
+
+#[test]
 fn complete_bounded_evidence_missing_loop_id_cannot_cover_loop_fact() {
     let project = TestProject::new("v15-bounded-missing-loop-id");
     let artifact_path = emit_artifact(

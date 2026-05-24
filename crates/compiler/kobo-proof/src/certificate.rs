@@ -335,6 +335,8 @@ pub struct BoundedProofEvidence {
     pub scheduler_dimensions: Vec<String>,
     pub fault_dimensions: Vec<String>,
     pub cancellation_points: Vec<String>,
+    #[serde(default)]
+    pub canonical_histories: Vec<BoundedHistoryEvidence>,
     pub pruned_histories: Vec<PrunedHistoryEvidence>,
     pub completeness: BoundedCompleteness,
     pub wording: String,
@@ -354,6 +356,16 @@ pub struct BoundDeclaration {
 pub struct PrunedHistoryEvidence {
     pub id: String,
     pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundedHistoryEvidence {
+    pub id: String,
+    pub scheduler: String,
+    pub fault: String,
+    pub cancellation: String,
+    pub history_hash: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -221,6 +221,36 @@ fn complete_bounded_evidence() -> BoundedProofEvidence {
                 source: BoundSource::Ward,
                 proof_relevant: true,
             },
+            BoundDeclaration {
+                dimension: BoundDimension::QueueCapacity,
+                value: 1,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+            BoundDeclaration {
+                dimension: BoundDimension::MessageCount,
+                value: 1,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+            BoundDeclaration {
+                dimension: BoundDimension::RetryAttempts,
+                value: 1,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+            BoundDeclaration {
+                dimension: BoundDimension::TimeoutPaths,
+                value: 1,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
+            BoundDeclaration {
+                dimension: BoundDimension::ExternalBoundaryRecordings,
+                value: 0,
+                source: BoundSource::Ward,
+                proof_relevant: true,
+            },
         ],
         normalized_bound_hash: String::new(),
         enumerated_history_count: 4,
@@ -767,6 +797,26 @@ fn complete_bounded_evidence_rejects_missing_fault_bound() {
     evidence
         .bounds
         .retain(|bound| bound.dimension != BoundDimension::FaultInjectionChoices);
+    evidence.normalized_bound_hash = normalized_bound_hash(&evidence);
+    certificate.bounded_evidence = vec![evidence];
+    rehash(&mut certificate);
+
+    let error = verify_certificate(&certificate, &context()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::MissingBoundedProofDimension { ref evidence_id }
+            if evidence_id == "bounded-proof_case-0"
+    ));
+}
+
+#[test]
+fn complete_bounded_evidence_rejects_missing_queue_capacity_bound() {
+    let mut certificate = valid_certificate();
+    let mut evidence = complete_bounded_evidence();
+    evidence
+        .bounds
+        .retain(|bound| bound.dimension != BoundDimension::QueueCapacity);
     evidence.normalized_bound_hash = normalized_bound_hash(&evidence);
     certificate.bounded_evidence = vec![evidence];
     rehash(&mut certificate);

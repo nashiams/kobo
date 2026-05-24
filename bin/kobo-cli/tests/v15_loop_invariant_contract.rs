@@ -200,7 +200,7 @@ fn choose() -> bool {{
     std::env::args().next().is_some()
 }}
 
-#[kobo::bounded(histories = "4", expected = "4", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none")]
+#[kobo::bounded(histories = "4", expected = "4", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
 #[kobo::scenario(profile = "sync")]
 fn {scenario_name}() {{
     'outer: loop {{

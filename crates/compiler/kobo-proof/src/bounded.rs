@@ -85,22 +85,7 @@ fn verify_bound_declarations(evidence: &BoundedProofEvidence) -> Result<(), Veri
     let expected = evidence
         .expected_complete_history_count
         .unwrap_or(evidence.enumerated_history_count);
-    if has_bound(
-        &evidence.bounds,
-        BoundDimension::SchedulerHistories,
-        expected,
-    ) && has_bound(&evidence.bounds, BoundDimension::LoopIterations, 1)
-        && has_bound(
-            &evidence.bounds,
-            BoundDimension::FaultInjectionChoices,
-            evidence.fault_dimensions.len() as u64,
-        )
-        && has_bound(
-            &evidence.bounds,
-            BoundDimension::CancellationPoints,
-            evidence.cancellation_points.len() as u64,
-        )
-    {
+    if has_complete_product_bounds(evidence, expected) && has_required_state_bounds(evidence) {
         return Ok(());
     }
     Err(VerificationError::MissingBoundedProofDimension {
@@ -115,6 +100,7 @@ fn verify_complete_dimensions(evidence: &BoundedProofEvidence) -> Result<(), Ver
     if !evidence.scheduler_dimensions.is_empty()
         && !evidence.fault_dimensions.is_empty()
         && !evidence.cancellation_points.is_empty()
+        && has_single_path_state_bounds(evidence)
         && evidence.pruned_histories.is_empty()
     {
         return Ok(());
@@ -196,6 +182,53 @@ fn has_bound(bounds: &[BoundDeclaration], dimension: BoundDimension, value: u64)
     bounds
         .iter()
         .any(|bound| bound.proof_relevant && bound.dimension == dimension && bound.value == value)
+}
+
+fn has_complete_product_bounds(evidence: &BoundedProofEvidence, expected: u64) -> bool {
+    has_bound(
+        &evidence.bounds,
+        BoundDimension::SchedulerHistories,
+        expected,
+    ) && has_bound(&evidence.bounds, BoundDimension::LoopIterations, 1)
+        && has_bound(
+            &evidence.bounds,
+            BoundDimension::FaultInjectionChoices,
+            evidence.fault_dimensions.len() as u64,
+        )
+        && has_bound(
+            &evidence.bounds,
+            BoundDimension::CancellationPoints,
+            evidence.cancellation_points.len() as u64,
+        )
+}
+
+fn has_required_state_bounds(evidence: &BoundedProofEvidence) -> bool {
+    required_state_dimensions()
+        .into_iter()
+        .all(|dimension| bound_value(&evidence.bounds, dimension).is_some())
+}
+
+fn has_single_path_state_bounds(evidence: &BoundedProofEvidence) -> bool {
+    required_state_dimensions()
+        .into_iter()
+        .all(|dimension| bound_value(&evidence.bounds, dimension).is_some_and(|value| value <= 1))
+}
+
+fn required_state_dimensions() -> [BoundDimension; 5] {
+    [
+        BoundDimension::QueueCapacity,
+        BoundDimension::MessageCount,
+        BoundDimension::RetryAttempts,
+        BoundDimension::TimeoutPaths,
+        BoundDimension::ExternalBoundaryRecordings,
+    ]
+}
+
+fn bound_value(bounds: &[BoundDeclaration], dimension: BoundDimension) -> Option<u64> {
+    bounds
+        .iter()
+        .find(|bound| bound.proof_relevant && bound.dimension == dimension)
+        .map(|bound| bound.value)
 }
 
 fn verify_history_hashes(evidence: &BoundedProofEvidence) -> Result<(), VerificationError> {

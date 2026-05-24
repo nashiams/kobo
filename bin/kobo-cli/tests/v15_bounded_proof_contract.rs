@@ -16,7 +16,7 @@ fn bounded_source_without_expected(
 ) -> String {
     format!(
         r#"
-#[kobo::bounded(histories = "{histories}", completeness = "complete", scheduler = "{scheduler}", fault = "{fault}", cancellation = "{cancellation}")]
+#[kobo::bounded(histories = "{histories}", completeness = "complete", scheduler = "{scheduler}", fault = "{fault}", cancellation = "{cancellation}", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
 #[kobo::scenario(profile = "sync")]
 fn {scenario_name}() {{
     let _unit = ();
@@ -33,7 +33,7 @@ fn bounded_source_with_unique_histories(
 ) -> String {
     format!(
         r#"
-#[kobo::bounded(histories = "{histories}", unique_histories = "{unique_histories}", expected = "{expected}", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none")]
+#[kobo::bounded(histories = "{histories}", unique_histories = "{unique_histories}", expected = "{expected}", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
 #[kobo::scenario(profile = "sync")]
 fn {scenario_name}() {{
     let _unit = ();
@@ -45,7 +45,7 @@ fn {scenario_name}() {{
 fn bounded_source_with_two_loops(scenario_name: &str) -> String {
     format!(
         r#"
-#[kobo::bounded(histories = "1", expected = "1", completeness = "complete", scheduler = "single_thread", fault = "none", cancellation = "none")]
+#[kobo::bounded(histories = "1", expected = "1", completeness = "complete", scheduler = "single_thread", fault = "none", cancellation = "none", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
 #[kobo::scenario(profile = "sync")]
 fn {scenario_name}() {{
     loop {{
@@ -57,6 +57,31 @@ fn {scenario_name}() {{
 }}
 "#
     )
+}
+
+#[test]
+fn complete_bounded_evidence_requires_all_proof_relevant_dimensions() {
+    let project = TestProject::new("v15-bounded-required-dimensions");
+    let source = r#"
+#[kobo::bounded(histories = "4", expected = "4", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none")]
+#[kobo::scenario(profile = "sync")]
+fn bounded_required_dimensions_case() {
+    let _unit = ();
+}
+"#;
+    let artifact_path = emit_artifact(&project, source, "bounded_required_dimensions_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(
+        artifact["bounded_evidence"][0]["completeness"],
+        "incomplete"
+    );
+    assert!(
+        artifact["bounded_evidence"][0]["wording"]
+            .as_str()
+            .is_some_and(|wording| wording.contains("evidence only")),
+        "complete bounded proof must not omit queue/message/retry/timeout/external bounds: {artifact}"
+    );
 }
 
 #[test]
@@ -86,6 +111,28 @@ fn complete_finite_state_space_emits_bounded_proof_wording() {
         artifact["bounded_evidence"][0]["wording"],
         "bounded proof: all 4 histories explored under declared bounds"
     );
+    let dimensions = artifact["bounded_evidence"][0]["bounds"]
+        .as_array()
+        .expect("complete bounded evidence must record bounds")
+        .iter()
+        .map(|bound| {
+            bound["dimension"]
+                .as_str()
+                .expect("dimension should be text")
+        })
+        .collect::<Vec<_>>();
+    for required in [
+        "queue_capacity",
+        "message_count",
+        "retry_attempts",
+        "timeout_paths",
+        "external_boundary_recordings",
+    ] {
+        assert!(
+            dimensions.contains(&required),
+            "complete bounded evidence must record {required}: {artifact}"
+        );
+    }
 }
 
 #[test]

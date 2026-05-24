@@ -57,7 +57,7 @@ fn queue_loop_source_with_invariant(scenario_name: &str) -> String {
 fn bounded_source(scenario_name: &str, completeness: &str, observed: u64, expected: u64) -> String {
     format!(
         r#"
-#[kobo::bounded(histories = "{observed}", expected = "{expected}", completeness = "{completeness}", scheduler = "ready_queue_order", fault = "timeout", cancellation = "await-recv")]
+#[kobo::bounded(histories = "{observed}", expected = "{expected}", completeness = "{completeness}", scheduler = "ready_queue_order", fault = "timeout", cancellation = "await-recv", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
 #[kobo::scenario(profile = "sync")]
 fn {scenario_name}() {{
     let _unit = ();

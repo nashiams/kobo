@@ -108,6 +108,11 @@ pub fn bounded_source(
     if let Some(cancellation) = cancellation {
         fields.push(format!(r#"cancellation = "{cancellation}""#));
     }
+    fields.push(r#"queue_capacity = "1""#.to_owned());
+    fields.push(r#"message_count = "1""#.to_owned());
+    fields.push(r#"retry_attempts = "1""#.to_owned());
+    fields.push(r#"timeout_paths = "1""#.to_owned());
+    fields.push(r#"external_boundary_recordings = "0""#.to_owned());
     format!(
         r#"
 #[kobo::bounded({})]

@@ -60,6 +60,15 @@ struct BoundedHistoryExploration {
     is_complete: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+struct RequiredBoundDimensions {
+    queue_capacity: Option<u64>,
+    message_count: Option<u64>,
+    retry_attempts: Option<u64>,
+    timeout_paths: Option<u64>,
+    external_boundary_recordings: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ParsedLoopEdgeKind {
     BackEdge,
@@ -89,6 +98,61 @@ impl ParsedLoopEdgeKind {
             Self::Break => "break",
             Self::Condition => "condition",
         }
+    }
+}
+
+impl RequiredBoundDimensions {
+    fn from_fields(fields: &BTreeMap<String, String>) -> Self {
+        Self {
+            queue_capacity: first_numeric_field(fields, &["queue_capacity"]),
+            message_count: first_numeric_field(fields, &["message_count", "messages"]),
+            retry_attempts: first_numeric_field(fields, &["retry_attempts", "retries"]),
+            timeout_paths: first_numeric_field(fields, &["timeout_paths"]),
+            external_boundary_recordings: first_numeric_field(
+                fields,
+                &[
+                    "external_boundary_recordings",
+                    "external_boundary_models",
+                    "external_boundaries",
+                ],
+            ),
+        }
+    }
+
+    fn has_all_required_dimensions(&self) -> bool {
+        self.queue_capacity.is_some()
+            && self.message_count.is_some()
+            && self.retry_attempts.is_some()
+            && self.timeout_paths.is_some()
+            && self.external_boundary_recordings.is_some()
+    }
+
+    fn has_single_path_state_dimensions(&self) -> bool {
+        self.required_values()
+            .into_iter()
+            .all(|value| value.is_some_and(|value| value <= 1))
+    }
+
+    fn push_declarations(&self, bounds: &mut Vec<BoundDeclaration>) {
+        push_bound_if_declared(bounds, BoundDimension::QueueCapacity, self.queue_capacity);
+        push_bound_if_declared(bounds, BoundDimension::MessageCount, self.message_count);
+        push_bound_if_declared(bounds, BoundDimension::RetryAttempts, self.retry_attempts);
+        push_bound_if_declared(bounds, BoundDimension::TimeoutPaths, self.timeout_paths);
+        push_bound_if_declared(
+            bounds,
+            BoundDimension::ExternalBoundaryRecordings,
+            self.external_boundary_recordings,
+        );
+    }
+
+    fn required_values(&self) -> [Option<u64>; 5] {
+        [
+            self.queue_capacity,
+            self.message_count,
+            self.retry_attempts,
+            self.timeout_paths,
+            self.external_boundary_recordings,
+        ]
     }
 }
 
@@ -575,9 +639,11 @@ fn bounded_evidence_from_fields(
     fields: &BTreeMap<String, String>,
 ) -> BoundedProofEvidence {
     let history_bound = numeric_field(fields, "histories").unwrap_or_default();
+    let loop_iteration_bound = numeric_field(fields, "loop_iterations").unwrap_or(1);
     let scheduler_dimensions = dimension_values(fields, "scheduler");
     let fault_dimensions = dimension_values(fields, "fault");
     let cancellation_points = dimension_values(fields, "cancellation");
+    let required_dimensions = RequiredBoundDimensions::from_fields(fields);
     let exploration = bounded_history_exploration(
         &program.target,
         history_bound,
@@ -597,6 +663,8 @@ fn bounded_evidence_from_fields(
         &scheduler_dimensions,
         &fault_dimensions,
         &cancellation_points,
+        loop_iteration_bound,
+        &required_dimensions,
     );
     let wording = bounded_wording(
         &completeness,
@@ -606,9 +674,10 @@ fn bounded_evidence_from_fields(
     let canonical_histories = canonical_histories(exploration.histories);
     let bounds = bound_declarations(
         exploration.expected_complete_history_count,
-        &scheduler_dimensions,
+        loop_iteration_bound,
         &fault_dimensions,
         &cancellation_points,
+        &required_dimensions,
     );
     let mut evidence = BoundedProofEvidence {
         id: format!("bounded-{}", program.target),
@@ -708,6 +777,8 @@ fn effective_bounded_completeness(
     scheduler_dimensions: &[String],
     fault_dimensions: &[String],
     cancellation_points: &[String],
+    loop_iteration_bound: u64,
+    required_dimensions: &RequiredBoundDimensions,
 ) -> BoundedCompleteness {
     if declared != BoundedCompleteness::Complete {
         return declared;
@@ -719,6 +790,9 @@ fn effective_bounded_completeness(
         || scheduler_dimensions.is_empty()
         || fault_dimensions.is_empty()
         || cancellation_points.is_empty()
+        || loop_iteration_bound != 1
+        || !required_dimensions.has_all_required_dimensions()
+        || !required_dimensions.has_single_path_state_dimensions()
     {
         return BoundedCompleteness::Incomplete;
     }
@@ -727,9 +801,10 @@ fn effective_bounded_completeness(
 
 fn bound_declarations(
     history_bound: u64,
-    scheduler_dimensions: &[String],
+    loop_iteration_bound: u64,
     fault_dimensions: &[String],
     cancellation_points: &[String],
+    required_dimensions: &RequiredBoundDimensions,
 ) -> Vec<BoundDeclaration> {
     let mut bounds = vec![BoundDeclaration {
         dimension: BoundDimension::SchedulerHistories,
@@ -737,14 +812,12 @@ fn bound_declarations(
         source: BoundSource::Ward,
         proof_relevant: true,
     }];
-    if !scheduler_dimensions.is_empty() {
-        bounds.push(BoundDeclaration {
-            dimension: BoundDimension::LoopIterations,
-            value: 1,
-            source: BoundSource::Ward,
-            proof_relevant: true,
-        });
-    }
+    bounds.push(BoundDeclaration {
+        dimension: BoundDimension::LoopIterations,
+        value: loop_iteration_bound,
+        source: BoundSource::Ward,
+        proof_relevant: true,
+    });
     if !fault_dimensions.is_empty() {
         bounds.push(BoundDeclaration {
             dimension: BoundDimension::FaultInjectionChoices,
@@ -761,6 +834,7 @@ fn bound_declarations(
             proof_relevant: true,
         });
     }
+    required_dimensions.push_declarations(&mut bounds);
     bounds
 }
 
@@ -1119,6 +1193,26 @@ fn lifecycle_owner(template_id: &str) -> String {
 
 fn numeric_field(fields: &BTreeMap<String, String>, key: &str) -> Option<u64> {
     fields.get(key)?.parse().ok()
+}
+
+fn first_numeric_field(fields: &BTreeMap<String, String>, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| numeric_field(fields, key))
+}
+
+fn push_bound_if_declared(
+    bounds: &mut Vec<BoundDeclaration>,
+    dimension: BoundDimension,
+    value: Option<u64>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    bounds.push(BoundDeclaration {
+        dimension,
+        value,
+        source: BoundSource::Ward,
+        proof_relevant: true,
+    });
 }
 
 fn dimension_values(fields: &BTreeMap<String, String>, key: &str) -> Vec<String> {

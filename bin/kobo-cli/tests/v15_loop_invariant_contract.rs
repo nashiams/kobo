@@ -88,6 +88,42 @@ fn {scenario_name}() {{
     )
 }
 
+fn queue_loop_source_with_pending_entry_invariant(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+fn choose() -> bool {{ true }}
+
+#[kobo::invariant(expression = "no_pending(Delivery)")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    let held = queue.recv();
+    while choose() {{
+        let delivery = queue.recv();
+        delivery.ack();
+        break;
+    }}
+    held.ack();
+}}
+"#
+    )
+}
+
 fn two_queue_loops_source(scenario_name: &str) -> String {
     format!(
         r#"
@@ -716,6 +752,22 @@ fn explicit_user_invariant_records_user_tier_and_preservation() {
         serde_json::json!([]),
         "user invariant must record loop-entry truth evidence: {artifact}"
     );
+    let loop_id = invariant["loop_id"]
+        .as_str()
+        .expect("user invariant must carry loop_id");
+    assert_eq!(
+        invariant["user_fact"],
+        serde_json::json!({
+            "loop_id": loop_id,
+            "predicate": "no_pending",
+            "obligation_kind": "Delivery",
+            "lifecycle_owner": "queue",
+            "template_id": "queue_delivery",
+            "template_version": "0.1",
+            "domain_bindings": ["delivery"]
+        }),
+        "user invariant must be represented as typed verifier facts: {artifact}"
+    );
 }
 
 #[test]
@@ -750,6 +802,40 @@ fn explicit_user_invariant_is_scoped_to_named_loop() {
             .iter()
             .any(|invariant| invariant["loop_label"] == "first" && invariant["tier"] == "inferred"),
         "unannotated loop should keep inferred proof evidence: {artifact}"
+    );
+}
+
+#[test]
+fn explicit_user_invariant_rejects_pending_entry_obligation() {
+    let project = TestProject::new("v15-loop-invariant-entry-domain");
+    let source_file = project.main_file(&queue_loop_source_with_pending_entry_invariant(
+        "entry_domain_case",
+    ));
+    let artifact_path = project.root.join("entry_domain_case.kproof");
+
+    let output = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&source_file),
+            s("--target"),
+            s("entry_domain_case"),
+            s("--output"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "user invariant must reject pending same-kind obligation at loop entry",
+    );
+    assert!(
+        output.combined().contains("entry")
+            || output.combined().contains("invariant")
+            || output.combined().contains("not preserved"),
+        "failure should name user invariant entry truth: {}",
+        output.combined()
     );
 }
 
@@ -947,6 +1033,86 @@ fn tampered_user_invariant_entry_states_are_replayed_from_core() {
     assert!(
         output.combined().contains("entry") || output.combined().contains("invariant"),
         "failure should name invariant entry/Core state mismatch: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn tampered_user_invariant_fact_is_rejected_after_rehash() {
+    let project = TestProject::new("v15-loop-invariant-user-fact-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source_with_invariant("user_fact_tamper_case", "no_pending(Delivery)"),
+        "user_fact_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.loop_invariants[0]
+        .user_fact
+        .as_mut()
+        .expect("user invariant should carry typed fact evidence")
+        .obligation_kind = "Ghost".to_owned();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    v15_common::write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "tampered typed user invariant facts should reject proof verification",
+    );
+    assert!(
+        output.combined().contains("user invariant fact")
+            || output.combined().contains("typed fact"),
+        "failure should name typed user invariant facts: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn stale_user_invariant_template_fact_is_rejected_after_rehash() {
+    let project = TestProject::new("v15-loop-invariant-user-template-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_loop_source_with_invariant("user_template_tamper_case", "no_pending(Delivery)"),
+        "user_template_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.loop_invariants[0]
+        .user_fact
+        .as_mut()
+        .expect("user invariant should carry typed fact evidence")
+        .template_version = Some("stale".to_owned());
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    v15_common::write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "stale typed user invariant template facts should reject proof verification",
+    );
+    assert!(
+        output.combined().contains("lifecycle template")
+            || output.combined().contains("user invariant fact"),
+        "failure should name stale typed template fact: {}",
         output.combined()
     );
 }

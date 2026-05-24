@@ -22,8 +22,9 @@ use kobo_proof::{
     SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
     SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
     TraceMismatchEvidence, TraceMismatchKind, TranslationValidationEvidence,
-    TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE,
-    PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    TranslationValidationStatus, UserInvariantFactEvidence, UserInvariantPredicate,
+    PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
+    PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -409,14 +410,21 @@ fn loop_invariant_evidence(
                 })
                 .cloned()
                 .collect::<Vec<_>>();
+            let user_domain_bindings =
+                user_invariant_domain_bindings(user_invariant, &type_by_binding);
+            let checked_bindings = user_domain_bindings
+                .as_ref()
+                .unwrap_or(&relevant_bindings)
+                .clone();
             let first_binding = relevant_bindings.first();
             if user_invariant.is_none() && first_binding.is_none() {
                 return None;
             }
-            let template =
-                first_binding.and_then(|binding| template_by_binding.get(binding.as_str()));
+            let template_binding = first_binding.or_else(|| checked_bindings.first());
+            let template = template_binding
+                .and_then(|binding| template_by_binding.get(binding.as_str()).copied());
             let obligation_kind = type_by_binding
-                .get(first_binding.map(String::as_str).unwrap_or_default())
+                .get(template_binding.map(String::as_str).unwrap_or_default())
                 .cloned()
                 .or_else(|| user_invariant.and_then(|directive| directive.obligation_kind.clone()))
                 .unwrap_or_else(|| "obligation".to_owned());
@@ -424,15 +432,24 @@ fn loop_invariant_evidence(
             let entry_states = replay
                 .block_entry_envs
                 .get(&fact.entry_block)
-                .map(env_states)
+                .map(|env| env_states_for_bindings(env, &checked_bindings))
                 .unwrap_or_default();
             let back_edge_states = replay
                 .block_exit_envs
                 .get(&fact.back_edge_source)
-                .map(env_states)
+                .map(|env| env_states_for_bindings(env, &checked_bindings))
                 .unwrap_or_default();
+            let entry_leak = entry_states.iter().any(|state| {
+                checked_bindings.contains(&state.binding)
+                    && matches!(
+                        state.state,
+                        ObligationStatus::Owned
+                            | ObligationStatus::Moved
+                            | ObligationStatus::BranchUnresolved
+                    )
+            });
             let back_edge_leak = back_edge_states.iter().any(|state| {
-                relevant_bindings.contains(&state.binding)
+                checked_bindings.contains(&state.binding)
                     && matches!(
                         state.state,
                         ObligationStatus::Owned
@@ -443,12 +460,18 @@ fn loop_invariant_evidence(
             let malformed_user_invariant =
                 user_invariant.is_some_and(|directive| directive.obligation_kind.is_none());
             let unknown_user_kind = malformed_user_invariant
-                || (user_invariant.is_some() && relevant_bindings.is_empty());
-            let preservation = if back_edge_leak || unknown_user_kind {
+                || (user_invariant.is_some()
+                    && user_domain_bindings.as_ref().map_or(true, Vec::is_empty));
+            let preservation = if entry_leak || back_edge_leak || unknown_user_kind {
                 InvariantPreservation::Failed
             } else {
                 InvariantPreservation::Preserved
             };
+            let user_fact = user_invariant.and_then(|directive| {
+                user_domain_bindings.as_ref().and_then(|domain_bindings| {
+                    user_invariant_fact(&fact.loop_id, directive, domain_bindings, template)
+                })
+            });
             Some(LoopInvariantEvidence {
                 id: fact.id.clone(),
                 function: fact.function.clone(),
@@ -479,10 +502,12 @@ fn loop_invariant_evidence(
                     obligation_kind,
                     lifecycle_owner: lifecycle_owner(&template.id),
                 }),
+                user_fact,
                 downgrade_reason: user_invariant_downgrade_reason(
                     user_invariant,
                     malformed_user_invariant,
                     unknown_user_kind,
+                    entry_leak,
                     back_edge_leak,
                 ),
             })
@@ -510,6 +535,38 @@ fn user_invariant_for_fact<'a>(
     (function_loop_count == 1).then_some(directive)
 }
 
+fn user_invariant_domain_bindings(
+    user_invariant: Option<&UserLoopInvariantDirective>,
+    type_by_binding: &BTreeMap<&str, String>,
+) -> Option<Vec<String>> {
+    let obligation_kind = user_invariant?.obligation_kind.as_deref()?;
+    Some(
+        type_by_binding
+            .iter()
+            .filter(|(_, type_name)| type_name.as_str() == obligation_kind)
+            .map(|(binding, _)| (*binding).to_owned())
+            .collect(),
+    )
+}
+
+fn user_invariant_fact(
+    loop_id: &str,
+    directive: &UserLoopInvariantDirective,
+    domain_bindings: &[String],
+    template: Option<&kobo_ir::ScenarioLifecycleTemplate>,
+) -> Option<UserInvariantFactEvidence> {
+    let obligation_kind = directive.obligation_kind.clone()?;
+    Some(UserInvariantFactEvidence {
+        loop_id: loop_id.to_owned(),
+        predicate: UserInvariantPredicate::NoPending,
+        obligation_kind,
+        lifecycle_owner: template.map(|template| lifecycle_owner(&template.id)),
+        template_id: template.map(|template| template.id.clone()),
+        template_version: template.map(|template| lifecycle_template_version(template)),
+        domain_bindings: domain_bindings.to_vec(),
+    })
+}
+
 fn created_bindings_for_loop(
     fact: &CoreLoopBackEdgeFact,
     obligation_events: &[ObligationEvent],
@@ -531,6 +588,7 @@ fn user_invariant_downgrade_reason(
     user_loop_invariant: Option<&UserLoopInvariantDirective>,
     malformed_user_invariant: bool,
     unknown_user_kind: bool,
+    entry_leak: bool,
     back_edge_leak: bool,
 ) -> Option<String> {
     if user_loop_invariant.is_some() && malformed_user_invariant {
@@ -538,6 +596,9 @@ fn user_invariant_downgrade_reason(
     }
     if user_loop_invariant.is_some() && unknown_user_kind {
         return Some("unknown obligation kind in user invariant".to_owned());
+    }
+    if entry_leak {
+        return Some("user invariant is not true at loop entry".to_owned());
     }
     back_edge_leak.then(|| "unresolved obligation reaches loop back-edge".to_owned())
 }
@@ -2863,6 +2924,19 @@ fn obligation_event_kind(kind: &CoreStatementKind) -> Option<ObligationEventKind
 
 fn env_states(env: &BTreeMap<String, ObligationStatus>) -> Vec<ObligationState> {
     env.iter()
+        .map(|(binding, state)| ObligationState {
+            binding: binding.clone(),
+            state: state.clone(),
+        })
+        .collect()
+}
+
+fn env_states_for_bindings(
+    env: &BTreeMap<String, ObligationStatus>,
+    bindings: &[String],
+) -> Vec<ObligationState> {
+    env.iter()
+        .filter(|(binding, _)| bindings.contains(binding))
         .map(|(binding, state)| ObligationState {
             binding: binding.clone(),
             state: state.clone(),

@@ -26,8 +26,9 @@ pub use certificate::{
     SourceEvidence, SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan,
     SpawnedTaskObligationEvidence, SuspensionStateEvidence, TemplateSchemaEvidence,
     TimeoutCancelEdgeEvidence, TraceEventKind, TraceMismatchEvidence, TraceMismatchKind,
-    TranslationValidationEvidence, TranslationValidationStatus, PROOF_CERTIFICATE_SCHEMA_VERSION,
-    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    TranslationValidationEvidence, TranslationValidationStatus, UserInvariantFactEvidence,
+    UserInvariantPredicate, PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE,
+    PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
 };
 pub use error::VerificationError;
 pub use hash::{

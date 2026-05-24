@@ -12,7 +12,7 @@ pub(crate) fn verify_loop_invariants(
     let block_entry_envs = crate::obligation::block_obligation_entry_envs(certificate)?;
     let block_exit_envs = crate::obligation::block_obligation_envs(certificate)?;
     for invariant in &certificate.loop_invariants {
-        verify_invariant_template(invariant)?;
+        verify_invariant_template(certificate, invariant)?;
         verify_user_invariant_fact(certificate, invariant)?;
         let checked_bindings = invariant_checked_bindings(invariant);
         verify_preservation_status(invariant)?;
@@ -191,11 +191,15 @@ fn reject_entry_leaks(
 }
 
 fn verify_invariant_template(
+    certificate: &ProofCertificate,
     invariant: &crate::LoopInvariantEvidence,
 ) -> Result<(), VerificationError> {
     if invariant.tier != InvariantTier::Inferred {
+        verify_binding_template_hashes(certificate, invariant)?;
         return Ok(());
     }
+    verify_binding_template_coverage(invariant)?;
+    verify_binding_template_hashes(certificate, invariant)?;
     let Some(template) = invariant.template.as_ref() else {
         return Err(VerificationError::MissingInvariantTemplate {
             loop_id: invariant.id.clone(),
@@ -205,6 +209,64 @@ fn verify_invariant_template(
         return Err(VerificationError::MissingInvariantTemplate {
             loop_id: invariant.id.clone(),
         });
+    }
+    Ok(())
+}
+
+fn verify_binding_template_coverage(
+    invariant: &crate::LoopInvariantEvidence,
+) -> Result<(), VerificationError> {
+    let expected = invariant
+        .obligations_created
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let observed = invariant
+        .binding_templates
+        .iter()
+        .map(|template| template.binding.clone())
+        .collect::<BTreeSet<_>>();
+    if expected == observed && observed.len() == invariant.binding_templates.len() {
+        return Ok(());
+    }
+    Err(VerificationError::MissingInvariantTemplate {
+        loop_id: invariant.id.clone(),
+    })
+}
+
+fn verify_binding_template_hashes(
+    certificate: &ProofCertificate,
+    invariant: &crate::LoopInvariantEvidence,
+) -> Result<(), VerificationError> {
+    let template_hashes = certificate
+        .template_hashes
+        .iter()
+        .map(|hash| (hash.id.as_str(), hash.hash.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    for template in &invariant.binding_templates {
+        if template.id.is_empty()
+            || template.version.is_empty()
+            || template.schema_hash.is_empty()
+            || template.binding.is_empty()
+            || template.obligation_kind.is_empty()
+            || template.lifecycle_owner.is_empty()
+        {
+            return Err(VerificationError::MissingInvariantTemplate {
+                loop_id: invariant.id.clone(),
+            });
+        }
+        let Some(expected_hash) = template_hashes.get(template.id.as_str()) else {
+            return Err(VerificationError::MissingInvariantTemplate {
+                loop_id: invariant.id.clone(),
+            });
+        };
+        if template.schema_hash != *expected_hash {
+            return Err(VerificationError::TemplateHashMismatch {
+                id: template.id.clone(),
+                expected: (*expected_hash).to_owned(),
+                observed: template.schema_hash.clone(),
+            });
+        }
     }
     Ok(())
 }

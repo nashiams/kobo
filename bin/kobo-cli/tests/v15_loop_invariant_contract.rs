@@ -65,6 +65,31 @@ fn assert_inferred_template(
     assert_eq!(invariant["obligations_created"][0], obligation_binding);
 }
 
+fn assert_binding_template(
+    binding_templates: &[serde_json::Value],
+    binding: &str,
+    template_id: &str,
+    obligation_kind: &str,
+    lifecycle_owner: &str,
+) {
+    let template = binding_templates
+        .iter()
+        .find(|template| template["binding"] == binding)
+        .unwrap_or_else(|| panic!("missing template evidence for binding {binding}"));
+    assert_eq!(template["id"], template_id);
+    assert_eq!(template["version"], "0.1");
+    assert_eq!(template["source"], "built_in");
+    assert_eq!(template["confidence"], "exact");
+    assert_eq!(template["obligation_kind"], obligation_kind);
+    assert_eq!(template["lifecycle_owner"], lifecycle_owner);
+    assert!(
+        template["schema_hash"]
+            .as_str()
+            .is_some_and(|hash| !hash.is_empty()),
+        "template evidence for {binding} must carry schema hash"
+    );
+}
+
 fn queue_loop_source_with_invariant(scenario_name: &str, expression: &str) -> String {
     queue_loop_source(scenario_name, "delivery", "queue").replace(
         "#[kobo::scenario(profile = \"sync\")]",
@@ -119,6 +144,52 @@ fn {scenario_name}() {{
         break;
     }}
     held.ack();
+}}
+"#
+    )
+}
+
+fn queue_transaction_loop_source(scenario_name: &str) -> String {
+    format!(
+        r#"
+struct Queue {{}}
+struct TransactionManager {{}}
+
+#[kobo::must_call(ack | nack | requeue)]
+struct Delivery {{}}
+
+#[kobo::must_call(commit | rollback)]
+struct Transaction {{}}
+
+impl Queue {{
+    fn recv(&self) -> Delivery {{ Delivery {{}} }}
+}}
+
+impl TransactionManager {{
+    fn begin(&self) -> Transaction {{ Transaction {{}} }}
+}}
+
+impl Delivery {{
+    fn ack(self) {{}}
+    fn nack(self) {{}}
+    fn requeue(self) {{}}
+}}
+
+impl Transaction {{
+    fn commit(self) {{}}
+    fn rollback(self) {{}}
+}}
+
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let queue = Queue {{}};
+    let manager = TransactionManager {{}};
+    loop {{
+        let delivery = queue.recv();
+        let tx = manager.begin();
+        delivery.ack();
+        tx.commit();
+    }}
 }}
 "#
     )
@@ -724,6 +795,84 @@ fn service_request_loop_infers_reply_template_before_user_invariant() {
     let artifact = read_json(&artifact_path);
 
     assert_inferred_template(&artifact, "handler_reply", "HandlerReply", "reply");
+}
+
+#[test]
+fn mixed_protocol_loop_records_template_evidence_per_binding() {
+    let project = TestProject::new("v15-loop-invariant-multi-template");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_transaction_loop_source("multi_template_loop_case"),
+        "multi_template_loop_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let invariant = &artifact["loop_invariants"][0];
+    let binding_templates = invariant["binding_templates"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!("invariant must carry per-binding template evidence: {artifact}")
+        });
+
+    assert_eq!(
+        invariant["obligations_created"],
+        serde_json::json!(["delivery", "tx"])
+    );
+    assert_eq!(
+        binding_templates.len(),
+        2,
+        "each created obligation needs its own template fact: {artifact}"
+    );
+    assert_binding_template(
+        binding_templates,
+        "delivery",
+        "queue_delivery",
+        "Delivery",
+        "queue",
+    );
+    assert_binding_template(
+        binding_templates,
+        "tx",
+        "transaction",
+        "Transaction",
+        "transaction_manager",
+    );
+}
+
+#[test]
+fn missing_binding_template_evidence_is_rejected_after_rehash() {
+    let project = TestProject::new("v15-loop-invariant-multi-template-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &queue_transaction_loop_source("multi_template_tamper_case"),
+        "multi_template_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.loop_invariants[0]
+        .binding_templates
+        .retain(|template| template.binding != "tx");
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    v15_common::write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "missing per-binding template evidence should reject verification",
+    );
+    assert!(
+        output.combined().contains("template") || output.combined().contains("invariant"),
+        "failure should name missing template evidence: {}",
+        output.combined()
+    );
 }
 
 #[test]

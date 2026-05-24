@@ -15,10 +15,10 @@ use kobo_proof::{
     CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
     CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent,
     CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
-    GeneratedTraceEvent, HashEvidence, InvariantConfidence, InvariantPreservation,
-    InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier, LoopInvariantEvidence,
-    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry,
-    ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
+    GeneratedTraceEvent, HashEvidence, InvariantBindingTemplateEvidence, InvariantConfidence,
+    InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier,
+    LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
+    OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
     SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
     SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
     TraceMismatchEvidence, TraceMismatchKind, TranslationValidationEvidence,
@@ -423,6 +423,12 @@ fn loop_invariant_evidence(
             let template_binding = first_binding.or_else(|| checked_bindings.first());
             let template = template_binding
                 .and_then(|binding| template_by_binding.get(binding.as_str()).copied());
+            let binding_templates = invariant_binding_templates(
+                &relevant_bindings,
+                &template_by_binding,
+                &type_by_binding,
+                template_hashes,
+            );
             let obligation_kind = type_by_binding
                 .get(template_binding.map(String::as_str).unwrap_or_default())
                 .cloned()
@@ -502,6 +508,7 @@ fn loop_invariant_evidence(
                     obligation_kind,
                     lifecycle_owner: lifecycle_owner(&template.id),
                 }),
+                binding_templates,
                 user_fact,
                 downgrade_reason: user_invariant_downgrade_reason(
                     user_invariant,
@@ -565,6 +572,34 @@ fn user_invariant_fact(
         template_version: template.map(|template| lifecycle_template_version(template)),
         domain_bindings: domain_bindings.to_vec(),
     })
+}
+
+fn invariant_binding_templates(
+    bindings: &[String],
+    template_by_binding: &BTreeMap<&str, &kobo_ir::ScenarioLifecycleTemplate>,
+    type_by_binding: &BTreeMap<&str, String>,
+    template_hashes: &[HashEvidence],
+) -> Vec<InvariantBindingTemplateEvidence> {
+    bindings
+        .iter()
+        .filter_map(|binding| {
+            let template = template_by_binding.get(binding.as_str()).copied()?;
+            let obligation_kind = type_by_binding
+                .get(binding.as_str())
+                .cloned()
+                .unwrap_or_else(|| "obligation".to_owned());
+            Some(InvariantBindingTemplateEvidence {
+                binding: binding.clone(),
+                id: template.id.clone(),
+                version: lifecycle_template_version(template),
+                schema_hash: template_hash(template, template_hashes),
+                source: invariant_template_source(&template.source),
+                confidence: invariant_confidence(&template.confidence),
+                obligation_kind,
+                lifecycle_owner: lifecycle_owner(&template.id),
+            })
+        })
+        .collect()
 }
 
 fn created_bindings_for_loop(

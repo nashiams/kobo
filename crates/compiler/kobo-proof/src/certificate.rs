@@ -342,6 +342,8 @@ pub struct LoopInvariantEvidence {
     pub back_edge_states: Vec<ObligationState>,
     pub preservation: InvariantPreservation,
     pub template: Option<InvariantTemplateEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub binding_templates: Vec<InvariantBindingTemplateEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_fact: Option<UserInvariantFactEvidence>,
     pub downgrade_reason: Option<String>,
@@ -350,6 +352,19 @@ pub struct LoopInvariantEvidence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InvariantTemplateEvidence {
+    pub id: String,
+    pub version: String,
+    pub schema_hash: String,
+    pub source: InvariantTemplateSource,
+    pub confidence: InvariantConfidence,
+    pub obligation_kind: String,
+    pub lifecycle_owner: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvariantBindingTemplateEvidence {
+    pub binding: String,
     pub id: String,
     pub version: String,
     pub schema_hash: String,

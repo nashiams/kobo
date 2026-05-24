@@ -725,7 +725,22 @@ fn unknown_unversioned_field_rejected() {
 
 #[test]
 fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
+    let template_schema = TemplateSchemaEvidence {
+        id: "queue_delivery".to_owned(),
+        kind: "queue_delivery".to_owned(),
+        template_schema: "lifecycle-template".to_owned(),
+        schema_version: 1,
+        confidence: "exact_template".to_owned(),
+        source: "inference".to_owned(),
+        source_span: span(),
+    };
+    let template_hash = template_schema_hash(&template_schema).unwrap();
     let source = mutate_json(valid_certificate(), |value| {
+        value["template_schemas"] = serde_json::json!([template_schema]);
+        value["template_hashes"] = serde_json::json!([{
+            "id": "queue_delivery",
+            "hash": template_hash,
+        }]);
         value["obligation_events"][0]["loop_regions"] = serde_json::json!(["loop-proof"]);
         value["obligation_events"][1]["loop_regions"] = serde_json::json!(["loop-proof"]);
         value["loop_invariants"] = serde_json::json!([{
@@ -747,12 +762,22 @@ fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
             "template": {
                 "id": "queue_delivery",
                 "version": "0.1",
-                "schema_hash": "queue-template-hash",
+                "schema_hash": template_hash,
                 "source": "built_in",
                 "confidence": "exact",
                 "obligation_kind": "Delivery",
                 "lifecycle_owner": "queue"
             },
+            "binding_templates": [{
+                "binding": "delivery",
+                "id": "queue_delivery",
+                "version": "0.1",
+                "schema_hash": template_hash,
+                "source": "built_in",
+                "confidence": "exact",
+                "obligation_kind": "Delivery",
+                "lifecycle_owner": "queue"
+            }],
             "downgrade_reason": null
         }]);
     });

@@ -400,6 +400,8 @@ pub struct BoundedHistoryEvidence {
     pub fault: String,
     pub cancellation: String,
     #[serde(default)]
+    pub loop_iteration: u64,
+    #[serde(default)]
     pub queue_capacity: u64,
     #[serde(default)]
     pub message_count: u64,

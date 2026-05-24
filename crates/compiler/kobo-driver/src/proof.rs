@@ -139,8 +139,9 @@ impl RequiredBoundDimensions {
         );
     }
 
-    fn state_dimensions(&self) -> kobo_sim_core::BoundedStateDimensions {
+    fn state_dimensions(&self, loop_iteration_bound: u64) -> kobo_sim_core::BoundedStateDimensions {
         kobo_sim_core::BoundedStateDimensions::from_bounds(
+            Some(loop_iteration_bound),
             self.queue_capacity,
             self.message_count,
             self.retry_attempts,
@@ -645,6 +646,7 @@ fn bounded_evidence_from_fields(
         &scheduler_dimensions,
         &fault_dimensions,
         &cancellation_points,
+        loop_iteration_bound,
         &required_dimensions,
     );
     let expected_complete_history_count = Some(exploration.expected_complete_history_count);
@@ -658,7 +660,6 @@ fn bounded_evidence_from_fields(
         &scheduler_dimensions,
         &fault_dimensions,
         &cancellation_points,
-        loop_iteration_bound,
         &required_dimensions,
     );
     let wording = bounded_wording(
@@ -711,6 +712,7 @@ fn bounded_history_exploration(
     scheduler_dimensions: &[String],
     fault_dimensions: &[String],
     cancellation_points: &[String],
+    loop_iteration_bound: u64,
     required_dimensions: &RequiredBoundDimensions,
 ) -> BoundedHistoryExploration {
     let sim_exploration = kobo_sim_core::explore_bounded_histories(
@@ -719,7 +721,7 @@ fn bounded_history_exploration(
         scheduler_dimensions,
         fault_dimensions,
         cancellation_points,
-        &required_dimensions.state_dimensions(),
+        &required_dimensions.state_dimensions(loop_iteration_bound),
     );
     let mut histories = sim_exploration.histories;
     let original_history_count = histories.len() as u64;
@@ -762,6 +764,7 @@ fn canonical_histories(
             scheduler: history.scheduler,
             fault: history.fault,
             cancellation: history.cancellation,
+            loop_iteration: history.loop_iteration,
             queue_capacity: history.queue_capacity,
             message_count: history.message_count,
             retry_attempts: history.retry_attempts,
@@ -779,7 +782,6 @@ fn effective_bounded_completeness(
     scheduler_dimensions: &[String],
     fault_dimensions: &[String],
     cancellation_points: &[String],
-    loop_iteration_bound: u64,
     required_dimensions: &RequiredBoundDimensions,
 ) -> BoundedCompleteness {
     if declared != BoundedCompleteness::Complete {
@@ -792,7 +794,6 @@ fn effective_bounded_completeness(
         || scheduler_dimensions.is_empty()
         || fault_dimensions.is_empty()
         || cancellation_points.is_empty()
-        || loop_iteration_bound != 1
         || !required_dimensions.has_all_required_dimensions()
     {
         return BoundedCompleteness::Incomplete;

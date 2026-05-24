@@ -185,6 +185,52 @@ fn bounded_all_dimensions_case() {
 }
 
 #[test]
+fn complete_finite_state_space_enumerates_loop_iteration_bounds() {
+    let project = TestProject::new("v15-bounded-loop-iterations");
+    let source = r#"
+#[kobo::bounded(histories = "4", expected = "4", completeness = "complete", scheduler = "fifo|round_robin", fault = "none", cancellation = "none", loop_iterations = "2", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
+#[kobo::scenario(profile = "sync")]
+fn bounded_loop_iterations_case() {
+    loop {
+        break;
+    }
+}
+"#;
+    let artifact_path = emit_artifact(&project, source, "bounded_loop_iterations_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
+    assert_eq!(
+        artifact["bounded_evidence"][0]["expected_complete_history_count"],
+        4
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["enumerated_history_count"],
+        4
+    );
+    let histories = artifact["bounded_evidence"][0]["canonical_histories"]
+        .as_array()
+        .expect("complete bounded evidence should record histories");
+    let loop_iterations = histories
+        .iter()
+        .map(|history| {
+            history["loop_iteration"]
+                .as_u64()
+                .expect("history should record loop iteration")
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        loop_iterations,
+        [1, 2].into_iter().collect(),
+        "canonical histories must vary finite loop iteration bounds: {artifact}"
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["wording"],
+        "bounded proof: all 4 histories explored under declared bounds"
+    );
+}
+
+#[test]
 fn sampled_histories_emit_evidence_only_wording() {
     let project = TestProject::new("v15-bounded-sampled");
     let artifact_path = emit_artifact(
@@ -491,6 +537,7 @@ fn complete_bounded_evidence_records_canonical_histories() {
                 && history["cancellation"]
                     .as_str()
                     .is_some_and(|id| !id.is_empty())
+                && history["loop_iteration"].as_u64().is_some()
                 && history["queue_capacity"].as_u64().is_some()
                 && history["message_count"].as_u64().is_some()
                 && history["retry_attempts"].as_u64().is_some()

@@ -6,6 +6,7 @@ pub struct BoundedHistory {
     pub scheduler: String,
     pub fault: String,
     pub cancellation: String,
+    pub loop_iteration: u64,
     pub queue_capacity: u64,
     pub message_count: u64,
     pub retry_attempts: u64,
@@ -23,6 +24,7 @@ pub struct BoundedExploration {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoundedStateDimensions {
+    pub loop_iterations: Vec<u64>,
     pub queue_capacities: Vec<u64>,
     pub message_counts: Vec<u64>,
     pub retry_attempts: Vec<u64>,
@@ -32,6 +34,7 @@ pub struct BoundedStateDimensions {
 
 impl BoundedStateDimensions {
     pub fn from_bounds(
+        loop_iterations: Option<u64>,
         queue_capacity: Option<u64>,
         message_count: Option<u64>,
         retry_attempts: Option<u64>,
@@ -39,6 +42,7 @@ impl BoundedStateDimensions {
         external_boundary_recordings: Option<u64>,
     ) -> Self {
         Self {
+            loop_iterations: numeric_axis(loop_iterations),
             queue_capacities: numeric_axis(queue_capacity),
             message_counts: numeric_axis(message_count),
             retry_attempts: numeric_axis(retry_attempts),
@@ -48,7 +52,8 @@ impl BoundedStateDimensions {
     }
 
     fn is_empty(&self) -> bool {
-        self.queue_capacities.is_empty()
+        self.loop_iterations.is_empty()
+            || self.queue_capacities.is_empty()
             || self.message_counts.is_empty()
             || self.retry_attempts.is_empty()
             || self.timeout_paths.is_empty()
@@ -56,8 +61,9 @@ impl BoundedStateDimensions {
     }
 
     fn state_product(&self) -> u64 {
-        self.queue_capacities
+        self.loop_iterations
             .len()
+            .saturating_mul(self.queue_capacities.len())
             .saturating_mul(self.message_counts.len())
             .saturating_mul(self.retry_attempts.len())
             .saturating_mul(self.timeout_paths.len())
@@ -130,12 +136,16 @@ pub fn enumerate_bounded_histories(
                 fault_dimensions.len(),
                 cancellation_points.len(),
             ]);
-            let queue_capacity = numeric_dimension_at(
-                &state_dimensions.queue_capacities,
+            let loop_iteration = numeric_dimension_at(
+                &state_dimensions.loop_iterations,
                 index / cancellation_stride,
             );
+            let loop_stride =
+                cancellation_stride.saturating_mul(state_dimensions.loop_iterations.len() as u64);
+            let queue_capacity =
+                numeric_dimension_at(&state_dimensions.queue_capacities, index / loop_stride);
             let message_stride =
-                cancellation_stride.saturating_mul(state_dimensions.queue_capacities.len() as u64);
+                loop_stride.saturating_mul(state_dimensions.queue_capacities.len() as u64);
             let message_count =
                 numeric_dimension_at(&state_dimensions.message_counts, index / message_stride);
             let retry_stride =
@@ -158,6 +168,7 @@ pub fn enumerate_bounded_histories(
                 scheduler,
                 fault,
                 cancellation,
+                loop_iteration,
                 queue_capacity,
                 message_count,
                 retry_attempts,
@@ -169,6 +180,7 @@ pub fn enumerate_bounded_histories(
                 scheduler: scheduler.to_owned(),
                 fault: fault.to_owned(),
                 cancellation: cancellation.to_owned(),
+                loop_iteration,
                 queue_capacity,
                 message_count,
                 retry_attempts,
@@ -204,6 +216,7 @@ pub fn bounded_history_material(
     scheduler: &str,
     fault: &str,
     cancellation: &str,
+    loop_iteration: u64,
     queue_capacity: u64,
     message_count: u64,
     retry_attempts: u64,
@@ -211,7 +224,7 @@ pub fn bounded_history_material(
     external_boundary_recording: u64,
 ) -> String {
     format!(
-        "{id}:{scheduler}:{fault}:{cancellation}:{queue_capacity}:{message_count}:{retry_attempts}:{timeout_path}:{external_boundary_recording}"
+        "{id}:{scheduler}:{fault}:{cancellation}:{loop_iteration}:{queue_capacity}:{message_count}:{retry_attempts}:{timeout_path}:{external_boundary_recording}"
     )
 }
 
@@ -260,7 +273,14 @@ mod tests {
             &scheduler_dimensions,
             &fault_dimensions,
             &cancellation_points,
-            &BoundedStateDimensions::from_bounds(Some(1), Some(1), Some(1), Some(1), Some(0)),
+            &BoundedStateDimensions::from_bounds(
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(0),
+            ),
         );
 
         let combinations = exploration
@@ -290,7 +310,14 @@ mod tests {
             &scheduler_dimensions,
             &fault_dimensions,
             &cancellation_points,
-            &BoundedStateDimensions::from_bounds(Some(1), Some(1), Some(1), Some(1), Some(0)),
+            &BoundedStateDimensions::from_bounds(
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(0),
+            ),
         );
 
         assert_eq!(exploration.expected_history_count, 4);
@@ -303,8 +330,14 @@ mod tests {
         let scheduler_dimensions = dimensions(&["fifo", "round_robin"]);
         let fault_dimensions = dimensions(&["none"]);
         let cancellation_points = dimensions(&["none"]);
-        let state_dimensions =
-            BoundedStateDimensions::from_bounds(Some(2), Some(2), Some(2), Some(2), Some(1));
+        let state_dimensions = BoundedStateDimensions::from_bounds(
+            Some(1),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(2),
+            Some(1),
+        );
         let exploration = explore_bounded_histories(
             "bounded_case",
             32,
@@ -332,5 +365,38 @@ mod tests {
         assert_eq!(exploration.expected_history_count, 32);
         assert!(exploration.is_complete);
         assert_eq!(combinations.len(), 16);
+    }
+
+    #[test]
+    fn bounded_exploration_includes_loop_iteration_product() {
+        let scheduler_dimensions = dimensions(&["fifo", "round_robin"]);
+        let fault_dimensions = dimensions(&["none"]);
+        let cancellation_points = dimensions(&["none"]);
+        let state_dimensions = BoundedStateDimensions::from_bounds(
+            Some(2),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(0),
+        );
+        let exploration = explore_bounded_histories(
+            "bounded_case",
+            4,
+            &scheduler_dimensions,
+            &fault_dimensions,
+            &cancellation_points,
+            &state_dimensions,
+        );
+
+        let loop_iterations = exploration
+            .histories
+            .iter()
+            .map(|history| history.loop_iteration)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(exploration.expected_history_count, 4);
+        assert!(exploration.is_complete);
+        assert_eq!(loop_iterations, [1, 2].into_iter().collect());
     }
 }

@@ -191,7 +191,7 @@ fn has_complete_product_bounds(evidence: &BoundedProofEvidence, expected: u64) -
         &evidence.bounds,
         BoundDimension::SchedulerHistories,
         expected,
-    ) && has_bound(&evidence.bounds, BoundDimension::LoopIterations, 1)
+    ) && bound_value(&evidence.bounds, BoundDimension::LoopIterations).is_some()
         && has_bound(
             &evidence.bounds,
             BoundDimension::FaultInjectionChoices,
@@ -231,6 +231,8 @@ fn declared_history_product(evidence: &BoundedProofEvidence) -> u64 {
     let scheduler = evidence.scheduler_dimensions.len() as u64;
     let fault = evidence.fault_dimensions.len() as u64;
     let cancellation = evidence.cancellation_points.len() as u64;
+    let loop_iterations = bound_value(&evidence.bounds, BoundDimension::LoopIterations)
+        .map_or(0, numeric_bound_cardinality);
     let state = required_state_dimensions()
         .into_iter()
         .filter_map(|dimension| bound_value(&evidence.bounds, dimension))
@@ -239,6 +241,7 @@ fn declared_history_product(evidence: &BoundedProofEvidence) -> u64 {
     scheduler
         .saturating_mul(fault)
         .saturating_mul(cancellation)
+        .saturating_mul(loop_iterations)
         .saturating_mul(state)
 }
 
@@ -295,6 +298,10 @@ fn history_dimensions_match_bounds(
             .iter()
             .any(|dimension| dimension == &history.cancellation)
         && numeric_history_value_matches_bound(
+            history.loop_iteration,
+            bound_value(&evidence.bounds, BoundDimension::LoopIterations),
+        )
+        && numeric_history_value_matches_bound(
             history.queue_capacity,
             bound_value(&evidence.bounds, BoundDimension::QueueCapacity),
         )
@@ -326,11 +333,12 @@ const fn numeric_history_value_matches_bound(value: u64, bound: Option<u64>) -> 
 
 fn history_material(history: &crate::BoundedHistoryEvidence) -> String {
     format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         history.id,
         history.scheduler,
         history.fault,
         history.cancellation,
+        history.loop_iteration,
         history.queue_capacity,
         history.message_count,
         history.retry_attempts,
@@ -341,10 +349,11 @@ fn history_material(history: &crate::BoundedHistoryEvidence) -> String {
 
 fn history_dimension_key(history: &crate::BoundedHistoryEvidence) -> String {
     format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
         history.scheduler,
         history.fault,
         history.cancellation,
+        history.loop_iteration,
         history.queue_capacity,
         history.message_count,
         history.retry_attempts,

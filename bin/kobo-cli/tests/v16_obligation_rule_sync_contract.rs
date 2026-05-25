@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use kobo_proof::{
-    load_obligation_rule_catalog, parse_obligation_rule_catalog, required_obligation_rule_ids,
-    validate_obligation_rule_catalog,
+    load_obligation_rule_catalog, parse_certificate_json, parse_obligation_rule_catalog,
+    required_obligation_rule_ids, validate_obligation_rule_catalog, ObligationEventKind,
+    ObligationState,
 };
 
 #[test]
@@ -126,6 +127,65 @@ fn rule_projection_covers_shipped_rust_obligation_events() {
     }
 }
 
+#[test]
+fn rule_transitions_match_sample_certificate_obligation_events() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let source = sample_kproof_source();
+    let certificate = parse_certificate_json(&source).expect("sample .kproof should parse");
+
+    for event in certificate.obligation_events {
+        let Some(rule_id) = rule_id_for_obligation_event(&event.kind) else {
+            continue;
+        };
+        let rule = catalog
+            .rules
+            .iter()
+            .find(|rule| rule.id == rule_id)
+            .unwrap_or_else(|| panic!("catalog should contain event rule `{rule_id}`"));
+
+        let event_input_states = state_names(&event.state_before);
+        let catalog_input_states = rule
+            .input_states
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let event_output_states = state_names(&event.state_after);
+        let catalog_output_states = rule
+            .output_states
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+
+        assert!(
+            event_input_states.is_subset(&catalog_input_states),
+            "rule `{rule_id}` input states must admit sample certificate event `{}`: event={event_input_states:?} catalog={catalog_input_states:?}",
+            event.id
+        );
+        assert!(
+            event_output_states.is_subset(&catalog_output_states),
+            "rule `{rule_id}` output states must admit sample certificate event `{}`: event={event_output_states:?} catalog={catalog_output_states:?}",
+            event.id
+        );
+    }
+}
+
+#[test]
+fn rule_entries_name_existing_rust_verifier_hooks() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let verifier_sources = proof_verifier_sources();
+
+    for rule in catalog.rules {
+        let marker = rust_verifier_marker(&rule.rust_verifier);
+        assert!(
+            verifier_sources.contains(marker),
+            "rule `{}` names missing Rust verifier marker `{}` from `{}`",
+            rule.id,
+            marker,
+            rule.rust_verifier
+        );
+    }
+}
+
 fn default_rule_catalog_source() -> String {
     std::fs::read_to_string(
         repo_root().join("crates/compiler/kobo-proof/rules/obligation_rules.toml"),
@@ -157,6 +217,57 @@ fn lean_sources() -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn proof_verifier_sources() -> String {
+    let source_dir = repo_root().join("crates/compiler/kobo-proof/src");
+    std::fs::read_dir(source_dir)
+        .expect("kobo-proof source dir should exist")
+        .map(|entry| {
+            let path = entry.expect("source entry should read").path();
+            if path.file_name().and_then(|name| name.to_str()) == Some("rule_sync.rs") {
+                return String::new();
+            }
+            std::fs::read_to_string(path).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn sample_kproof_source() -> String {
+    std::fs::read_to_string(
+        repo_root().join("crates/compiler/kobo-proof/fixtures/v16_sample.kproof"),
+    )
+    .expect("sample .kproof fixture should exist")
+}
+
+fn rule_id_for_obligation_event(kind: &ObligationEventKind) -> Option<&'static str> {
+    match kind {
+        ObligationEventKind::Create => Some("create"),
+        ObligationEventKind::Discharge => Some("discharge"),
+        ObligationEventKind::Transfer | ObligationEventKind::Move => Some("transfer"),
+        ObligationEventKind::BranchUnresolved => Some("split"),
+        ObligationEventKind::Escape => Some("opaque"),
+        ObligationEventKind::UnsupportedContainer | ObligationEventKind::Call => None,
+    }
+}
+
+fn state_names(states: &[ObligationState]) -> BTreeSet<&str> {
+    states.iter().map(|state| state.state.as_str()).collect()
+}
+
+fn rust_verifier_marker(verifier: &str) -> &str {
+    match verifier {
+        "apply_obligation_event::Create" => "ObligationEventKind::Create",
+        "apply_obligation_event::Transfer" => "ObligationEventKind::Transfer",
+        "apply_obligation_event::Discharge" => "ObligationEventKind::Discharge",
+        "apply_obligation_event::BranchUnresolved" => "ObligationEventKind::BranchUnresolved",
+        "reject_unresolved_exit::return" | "reject_unresolved_exit::panic" => {
+            "reject_unresolved_exit"
+        }
+        "verify_boundary_policies::Opaque" => "BoundaryPolicy::Opaque",
+        other => other,
+    }
 }
 
 fn repo_root() -> std::path::PathBuf {

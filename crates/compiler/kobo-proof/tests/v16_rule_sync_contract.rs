@@ -76,7 +76,7 @@ fn rule_split_requires_branch_state_join_evidence() {
 }
 
 #[test]
-fn rule_discharge_resolves_owned_obligation() {
+fn rule_discharge_resolves_transferred_obligation() {
     let certificate = certificate_with_events(vec![
         event(
             "stmt-0",
@@ -86,15 +86,21 @@ fn rule_discharge_resolves_owned_obligation() {
         ),
         event(
             "stmt-1",
-            ObligationEventKind::Discharge,
+            ObligationEventKind::Transfer,
             states(&[("delivery", ObligationStatus::Owned)]),
+            states(&[("delivery", ObligationStatus::Transferred)]),
+        ),
+        event(
+            "stmt-2",
+            ObligationEventKind::Discharge,
+            states(&[("delivery", ObligationStatus::Transferred)]),
             states(&[("delivery", ObligationStatus::Resolved)]),
         ),
     ]);
 
     let report = verify(&certificate).expect("discharge event should replay");
 
-    assert_eq!(report.checked_obligation_events, 2);
+    assert_eq!(report.checked_obligation_events, 3);
 }
 
 #[test]

@@ -188,7 +188,7 @@ fn lower_function(
     let mut env = BindingEnv::with_imports(imports.clone());
     lowerer.execute_function(&function.sig.ident.to_string(), function, &mut env);
     lowerer.operations.push(ScenarioOp {
-        span: KoboSpan::generated(ast.file_id),
+        span: ast.span_from_syn(function.sig.ident.span()),
         kind: ScenarioOpKind::Return,
     });
     let boundaries = boundaries_from_operations(&lowerer.operations);
@@ -2752,6 +2752,25 @@ struct Delivery {}
 struct Db {}
 struct Tx {}
 struct Request {}
+
+impl Queue {
+    fn recv(&self) -> Delivery { Delivery {} }
+}
+
+impl Delivery {
+    fn ack(self) {}
+    fn nack(self) {}
+    fn requeue(self) {}
+}
+
+impl Db {
+    fn begin(&self) -> Tx { Tx {} }
+}
+
+impl Tx {
+    fn commit(self) {}
+    fn rollback(self) {}
+}
 
 #[kobo::handler]
 #[kobo::scenario(profile = "async")]

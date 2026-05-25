@@ -10,6 +10,7 @@ use kobo_ir::{
     KoboSpan, OwnershipTier, ScenarioCoreTerminatorKind, ScenarioLifecycleTemplate,
     ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
+use kobo_parser::KoboFile;
 use serde::{Deserialize, Serialize};
 
 use crate::lower::{LoweringSite, ResolvedAnchorMap};
@@ -119,6 +120,43 @@ pub(crate) fn build_source_map_entries(
     entries
 }
 
+pub(crate) fn add_proof_event_source_entries(
+    entries: &mut Vec<SourceMapEntry>,
+    ast: &KoboFile,
+    rs_source: &str,
+    programs: &[ScenarioProgram],
+) {
+    for program in programs {
+        let template_by_binding = template_by_binding(program);
+        for (order, operation) in program.operations.iter().enumerate() {
+            let Some(event) = lowering_event_from_operation(&operation.kind, &template_by_binding)
+            else {
+                continue;
+            };
+            if has_source_map_anchor(entries, operation.span) {
+                continue;
+            }
+            let Some(rs_span) = generated_span_for_source_event(ast, rs_source, operation.span)
+            else {
+                continue;
+            };
+            entries.push(SourceMapEntry {
+                id: format!("proof-map-{}-{order}", program.target),
+                binding_name: event
+                    .binding
+                    .clone()
+                    .unwrap_or_else(|| event.kind.to_owned()),
+                rs_span,
+                kobo_span: operation.span,
+                ownership_tier: "proof-event".to_owned(),
+                solver_outcome: None,
+                decision_source: None,
+                solver_node_id: None,
+            });
+        }
+    }
+}
+
 pub fn wrap_source_map(
     kobo_path: &Path,
     rs_path: &Path,
@@ -135,41 +173,79 @@ pub fn wrap_source_map(
     }
 }
 
-pub(crate) fn add_trace_anchor_entries(
-    entries: &mut Vec<SourceMapEntry>,
-    programs: &[ScenarioProgram],
-) {
-    for program in programs {
-        let template_by_binding = template_by_binding(program);
-        for (order, operation) in program.operations.iter().enumerate() {
-            let Some(event) = lowering_event_from_operation(&operation.kind, &template_by_binding)
-            else {
-                continue;
-            };
-            if entries.iter().any(|entry| {
-                entry.kobo_span == operation.span || entry.kobo_span.overlaps(operation.span)
-            }) {
-                continue;
+fn has_source_map_anchor(entries: &[SourceMapEntry], span: KoboSpan) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.kobo_span == span || entry.kobo_span.overlaps(span))
+}
+
+fn generated_span_for_source_event(
+    ast: &KoboFile,
+    rs_source: &str,
+    span: KoboSpan,
+) -> Option<RsSpan> {
+    let snippet = ast
+        .source()
+        .get(span.start as usize..span.end as usize)?
+        .trim();
+    if snippet.is_empty() || snippet.contains('\n') {
+        return None;
+    }
+    let (source_line, _) = ast.line_col(span);
+    let source_line_text = source_line_text(ast.source(), source_line)?.trim();
+
+    generated_span_from_line_match(rs_source, source_line_text, snippet)
+        .or_else(|| generated_span_from_snippet(rs_source, snippet))
+        .or_else(|| {
+            question_mark_base(snippet)
+                .and_then(|base| generated_span_from_snippet(rs_source, base))
+        })
+}
+
+fn source_line_text(source: &str, one_based_line: usize) -> Option<&str> {
+    source.lines().nth(one_based_line.saturating_sub(1))
+}
+
+fn question_mark_base(snippet: &str) -> Option<&str> {
+    let base = snippet.trim_end().strip_suffix('?')?.trim_end();
+    (!base.is_empty()).then_some(base)
+}
+
+fn generated_span_from_line_match(
+    rs_source: &str,
+    source_line: &str,
+    snippet: &str,
+) -> Option<RsSpan> {
+    if source_line.is_empty() {
+        return None;
+    }
+    rs_source
+        .lines()
+        .enumerate()
+        .find_map(|(line_index, line)| {
+            if line.trim() != source_line {
+                return None;
             }
-            let Some(anchor) =
-                trace_anchor_source(entries, operation.span, event.binding.as_deref())
-            else {
-                continue;
-            };
-            entries.push(SourceMapEntry {
-                id: format!("trace-map-{}-{order}", program.target),
-                binding_name: event
-                    .binding
-                    .clone()
-                    .unwrap_or_else(|| event.kind.to_owned()),
-                rs_span: anchor.rs_span.clone(),
-                kobo_span: operation.span,
-                ownership_tier: anchor.ownership_tier.clone(),
-                solver_outcome: anchor.solver_outcome.clone(),
-                decision_source: anchor.decision_source.clone(),
-                solver_node_id: anchor.solver_node_id,
-            });
-        }
+            let column_start = line.find(snippet)?;
+            Some(rs_span_for_snippet(line_index, column_start, snippet))
+        })
+}
+
+fn generated_span_from_snippet(rs_source: &str, snippet: &str) -> Option<RsSpan> {
+    rs_source
+        .lines()
+        .enumerate()
+        .find_map(|(line_index, line)| {
+            let column_start = line.find(snippet)?;
+            Some(rs_span_for_snippet(line_index, column_start, snippet))
+        })
+}
+
+fn rs_span_for_snippet(line_index: usize, column_start: usize, snippet: &str) -> RsSpan {
+    RsSpan {
+        line: line_index + 1,
+        column_start,
+        column_end: column_start + snippet.len().max(1),
     }
 }
 
@@ -321,30 +397,6 @@ fn anchor_for_trace_event<'a>(
         .find(|entry| entry.kobo_span == span || entry.kobo_span.overlaps(span))
 }
 
-fn trace_anchor_source<'a>(
-    entries: &'a [SourceMapEntry],
-    span: KoboSpan,
-    binding: Option<&str>,
-) -> Option<&'a SourceMapEntry> {
-    entries
-        .iter()
-        .find(|entry| entry.kobo_span == span || entry.kobo_span.overlaps(span))
-        .or_else(|| {
-            binding.and_then(|binding| {
-                entries.iter().find(|entry| {
-                    entry.kobo_span.file_id == span.file_id && entry.binding_name == binding
-                })
-            })
-        })
-        .or_else(|| {
-            binding.is_none().then(|| {
-                entries
-                    .iter()
-                    .find(|entry| entry.kobo_span.file_id == span.file_id)
-            })?
-        })
-}
-
 fn template_version(template: &ScenarioLifecycleTemplate) -> String {
     if matches!(template.source, ScenarioLifecycleTemplateSource::Inference) {
         "0.1".to_owned()
@@ -408,9 +460,7 @@ mod lowering_trace_tests {
         ScenarioOpKind, ScenarioProgram,
     };
 
-    use super::{
-        add_trace_anchor_entries, build_lowering_trace, wrap_source_map, RsSpan, SourceMapEntry,
-    };
+    use super::{build_lowering_trace, wrap_source_map, RsSpan, SourceMapEntry};
 
     #[test]
     fn lowering_trace_schema_covers_translation_event_kinds() {
@@ -513,11 +563,11 @@ mod lowering_trace_tests {
     }
 
     #[test]
-    fn trace_anchor_entries_make_event_spans_explicit() {
+    fn source_map_without_event_site_anchor_omits_generated_trace_event() {
         let file_id = FileId(1);
         let mapped_span = kobo_ir::KoboSpan::new(10, 20, file_id);
         let event_span = kobo_ir::KoboSpan::new(40, 50, file_id);
-        let mut entries = vec![SourceMapEntry {
+        let entries = vec![SourceMapEntry {
             id: "map-0".to_owned(),
             binding_name: "delivery".to_owned(),
             kobo_span: mapped_span,
@@ -546,7 +596,12 @@ mod lowering_trace_tests {
             coverage: ScenarioCoverageFacts::default(),
         };
 
-        add_trace_anchor_entries(&mut entries, std::slice::from_ref(&program));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !entry.id.starts_with("trace-map-")),
+            "unmapped proof events must not synthesize copied trace-map anchors: {entries:?}"
+        );
         let source_map = wrap_source_map(
             Path::new("src/main.kobo"),
             Path::new("src/main.rs"),
@@ -554,9 +609,10 @@ mod lowering_trace_tests {
         );
         let trace = build_lowering_trace(&[program], &source_map);
 
-        assert_eq!(trace.len(), 1);
-        assert_eq!(trace[0].source_map_entry_id, "trace-map-trace_case-0");
-        assert_eq!(trace[0].kobo_span, event_span);
+        assert!(
+            trace.is_empty(),
+            "unmapped proof events must not produce generated trace events: {trace:?}"
+        );
     }
 
     fn trace_kind_operations(span: kobo_ir::KoboSpan) -> Vec<ScenarioOp> {

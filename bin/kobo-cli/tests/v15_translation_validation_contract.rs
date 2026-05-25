@@ -116,6 +116,32 @@ fn codegen_source_map_emits_structured_lowering_trace_metadata() {
     let lowering_trace = source_map["lowering_trace"]
         .as_array()
         .expect("source map lowering_trace should be an array");
+    let mappings = source_map["x_kobo_mappings"]
+        .as_array()
+        .expect("source map mappings should be an array");
+
+    assert!(
+        mappings.iter().all(|mapping| mapping["id"]
+            .as_str()
+            .is_some_and(|id| !id.starts_with("trace-map-"))),
+        "codegen must not synthesize copied trace-map anchors: {source_map}"
+    );
+    assert!(
+        lowering_trace
+            .iter()
+            .all(|event| event["source_map_entry_id"]
+                .as_str()
+                .is_some_and(|id| !id.starts_with("trace-map-"))),
+        "lowering trace events must not point at copied trace-map anchors: {source_map}"
+    );
+    assert!(
+        lowering_trace
+            .iter()
+            .any(|event| event["source_map_entry_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("proof-map-"))),
+        "proof-relevant events must use source-derived proof map entries: {source_map}"
+    );
 
     assert!(
         lowering_trace.iter().any(|event| event["kind"] == "create"

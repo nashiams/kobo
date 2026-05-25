@@ -98,14 +98,29 @@ fn is_supported_template_schema(template: &TemplateSchemaEvidence) -> bool {
 fn verify_opaque_edges_have_ledger(
     certificate: &ProofCertificate,
 ) -> Result<(), VerificationError> {
-    let ledger_boundaries = certificate
+    let opaque_cfg_edges = certificate
+        .core
+        .cfg_edges
+        .iter()
+        .filter(|edge| is_opaque_boundary_edge(&edge.kind, &edge.to))
+        .map(|edge| edge.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let cfg_backed_ledgers = certificate
         .opaque_edge_ledger
         .iter()
+        .filter(|entry| opaque_cfg_edges.contains(entry.edge_id.as_str()))
         .map(|entry| entry.boundary.as_str())
         .collect::<BTreeSet<_>>();
+    for ledger in &certificate.opaque_edge_ledger {
+        if !opaque_cfg_edges.contains(ledger.edge_id.as_str()) {
+            return Err(VerificationError::OpaqueEdgeWithoutLedger {
+                boundary: ledger.boundary.clone(),
+            });
+        }
+    }
     for assumption in &certificate.boundary_assumptions {
         if assumption.policy == BoundaryPolicy::Opaque
-            && !ledger_boundaries.contains(assumption.boundary.as_str())
+            && !cfg_backed_ledgers.contains(assumption.boundary.as_str())
         {
             return Err(VerificationError::OpaqueEdgeWithoutLedger {
                 boundary: assumption.boundary.clone(),
@@ -113,6 +128,10 @@ fn verify_opaque_edges_have_ledger(
         }
     }
     Ok(())
+}
+
+fn is_opaque_boundary_edge(kind: &str, target: &str) -> bool {
+    kind == "opaque_boundary" || target == "opaque_boundary"
 }
 
 fn verify_exact_replay_boundaries(certificate: &ProofCertificate) -> Result<(), VerificationError> {

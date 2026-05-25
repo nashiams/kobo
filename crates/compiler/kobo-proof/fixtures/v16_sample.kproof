@@ -584,11 +584,11 @@
   },
   "opaque_edge_ledger": [
     {
-      "edge_id": "edge-proof_case-bb2-opaque",
+      "edge_id": "edge-proof_case-bb2-opaque_boundary",
       "boundary": "external.queue",
       "evidence_hash": "7ef0a4d8e1c52a63"
     }
   ],
   "candidate_admission": [],
-  "certificate_material_hash": "f7f5f0c480e9822a"
+  "certificate_material_hash": "aa0d267bcf856eb9"
 }

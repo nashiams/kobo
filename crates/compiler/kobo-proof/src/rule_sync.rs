@@ -32,9 +32,14 @@ pub struct ObligationRule {
     pub required_certificate_fields: Vec<String>,
     pub rust_module: String,
     pub rust_verifier: String,
+    pub rust_verifiers: Vec<String>,
     pub rust_test: String,
     pub lean_rule: String,
+    pub lean_constructor_arity: usize,
+    pub lean_required_premises: Vec<String>,
+    pub lean_output_states: Vec<String>,
     pub lean_theorem: String,
+    pub template_assumption_fields: Vec<String>,
     pub examples: Vec<String>,
     pub negative_examples: Vec<String>,
 }
@@ -68,8 +73,13 @@ struct RuleExpectation {
     allowed_modeled_exits: &'static [&'static str],
     rust_module: &'static str,
     rust_verifier: &'static str,
+    rust_verifiers: &'static [&'static str],
     lean_rule: &'static str,
+    lean_constructor_arity: usize,
+    lean_required_premises: &'static [&'static str],
+    lean_output_states: &'static [&'static str],
     lean_theorem: &'static str,
+    template_assumption_fields: &'static [&'static str],
     rust_event_kinds: &'static [&'static str],
 }
 
@@ -130,13 +140,26 @@ fn verify_rule_fields(catalog: &ObligationRuleCatalog) -> Result<(), RuleSyncErr
         verify_non_empty(&rule.id, "rust_test", &rule.rust_test)?;
         verify_non_empty(&rule.id, "lean_rule", &rule.lean_rule)?;
         verify_non_empty(&rule.id, "lean_theorem", &rule.lean_theorem)?;
+        verify_non_empty_list(&rule.id, "rust_verifiers", &rule.rust_verifiers)?;
         verify_non_empty_list(
             &rule.id,
             "required_certificate_fields",
             &rule.required_certificate_fields,
         )?;
+        verify_list_values(
+            &rule.id,
+            "lean_required_premises",
+            &rule.lean_required_premises,
+        )?;
+        verify_list_values(&rule.id, "lean_output_states", &rule.lean_output_states)?;
+        verify_list_values(
+            &rule.id,
+            "template_assumption_fields",
+            &rule.template_assumption_fields,
+        )?;
         verify_non_empty_list(&rule.id, "examples", &rule.examples)?;
         verify_non_empty_list(&rule.id, "negative_examples", &rule.negative_examples)?;
+        verify_primary_verifier(rule)?;
     }
     Ok(())
 }
@@ -159,6 +182,32 @@ fn verify_non_empty_list(id: &str, field: &str, values: &[String]) -> Result<(),
         id: id.to_owned(),
         field: field.to_owned(),
     })
+}
+
+fn verify_list_values(id: &str, field: &str, values: &[String]) -> Result<(), RuleSyncError> {
+    if values.iter().all(|value| !value.trim().is_empty()) {
+        return Ok(());
+    }
+    Err(RuleSyncError::EmptyField {
+        id: id.to_owned(),
+        field: field.to_owned(),
+    })
+}
+
+fn verify_primary_verifier(rule: &ObligationRule) -> Result<(), RuleSyncError> {
+    if rule
+        .rust_verifiers
+        .iter()
+        .any(|verifier| verifier == &rule.rust_verifier)
+    {
+        return Ok(());
+    }
+    Err(drift(
+        rule,
+        "rust_verifiers",
+        rule.rust_verifier.clone(),
+        rule.rust_verifiers.join(","),
+    ))
 }
 
 fn verify_rule_expectations(
@@ -207,12 +256,42 @@ fn verify_rule_expectations(
             expectation.rust_verifier,
             &rule.rust_verifier,
         )?;
+        verify_list_field(
+            rule,
+            "rust_verifiers",
+            expectation.rust_verifiers,
+            &rule.rust_verifiers,
+        )?;
         verify_text_field(rule, "lean_rule", expectation.lean_rule, &rule.lean_rule)?;
+        verify_usize_field(
+            rule,
+            "lean_constructor_arity",
+            expectation.lean_constructor_arity,
+            rule.lean_constructor_arity,
+        )?;
+        verify_list_field(
+            rule,
+            "lean_required_premises",
+            expectation.lean_required_premises,
+            &rule.lean_required_premises,
+        )?;
+        verify_list_field(
+            rule,
+            "lean_output_states",
+            expectation.lean_output_states,
+            &rule.lean_output_states,
+        )?;
         verify_text_field(
             rule,
             "lean_theorem",
             expectation.lean_theorem,
             &rule.lean_theorem,
+        )?;
+        verify_list_field(
+            rule,
+            "template_assumption_fields",
+            expectation.template_assumption_fields,
+            &rule.template_assumption_fields,
         )?;
     }
     Ok(())
@@ -249,6 +328,23 @@ fn verify_list_field(
     ))
 }
 
+fn verify_usize_field(
+    rule: &ObligationRule,
+    field: &str,
+    expected: usize,
+    observed: usize,
+) -> Result<(), RuleSyncError> {
+    if expected == observed {
+        return Ok(());
+    }
+    Err(drift(
+        rule,
+        field,
+        expected.to_string(),
+        observed.to_string(),
+    ))
+}
+
 fn drift(rule: &ObligationRule, field: &str, expected: String, observed: String) -> RuleSyncError {
     RuleSyncError::Drift {
         id: rule.id.clone(),
@@ -267,8 +363,13 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &[],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "apply_obligation_event::Create",
+            rust_verifiers: &["apply_obligation_event::Create"],
             lean_rule: "step_create",
+            lean_constructor_arity: 3,
+            lean_required_premises: &["nonempty_id"],
+            lean_output_states: &["owned"],
             lean_theorem: "preservation_create",
+            template_assumption_fields: &[],
             rust_event_kinds: &["create"],
         },
         RuleExpectation {
@@ -278,8 +379,13 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &[],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "apply_obligation_event::Transfer",
+            rust_verifiers: &["apply_obligation_event::Transfer"],
             lean_rule: "step_transfer",
+            lean_constructor_arity: 5,
+            lean_required_premises: &["nonempty_id", "projection", "requires_owned"],
+            lean_output_states: &["moved", "transferred"],
             lean_theorem: "preservation_transfer",
+            template_assumption_fields: &[],
             rust_event_kinds: &["transfer", "move"],
         },
         RuleExpectation {
@@ -289,8 +395,13 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &[],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "apply_obligation_event::BranchUnresolved",
+            rust_verifiers: &["apply_obligation_event::BranchUnresolved"],
             lean_rule: "step_split",
+            lean_constructor_arity: 4,
+            lean_required_premises: &["nonempty_id", "requires_owned"],
+            lean_output_states: &["branch_unresolved"],
             lean_theorem: "preservation_split",
+            template_assumption_fields: &[],
             rust_event_kinds: &["branch_unresolved"],
         },
         RuleExpectation {
@@ -300,8 +411,13 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &[],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "apply_obligation_event::Discharge",
+            rust_verifiers: &["apply_obligation_event::Discharge"],
             lean_rule: "step_discharge",
+            lean_constructor_arity: 4,
+            lean_required_premises: &["nonempty_id", "owned_or_transferred"],
+            lean_output_states: &["resolved"],
             lean_theorem: "preservation_discharge",
+            template_assumption_fields: &[],
             rust_event_kinds: &["discharge"],
         },
         RuleExpectation {
@@ -311,8 +427,13 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &["return"],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "reject_unresolved_exit::return",
+            rust_verifiers: &["reject_unresolved_exit::return"],
             lean_rule: "step_return",
+            lean_constructor_arity: 2,
+            lean_required_premises: &["no_unresolved_local"],
+            lean_output_states: &[],
             lean_theorem: "preservation_return",
+            template_assumption_fields: &[],
             rust_event_kinds: &[],
         },
         RuleExpectation {
@@ -322,8 +443,18 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &["cancel"],
             rust_module: "crates/compiler/kobo-proof/src/async_model.rs",
             rust_verifier: "verify_cancel_edges",
+            rust_verifiers: &["verify_cancel_edges", "verify_future_state_obligations"],
             lean_rule: "step_cancel",
+            lean_constructor_arity: 6,
+            lean_required_premises: &[
+                "no_unresolved_local",
+                "cancel_edge_evidence",
+                "future_state_obligation_evidence",
+                "cancellation_evidence_recorded",
+            ],
+            lean_output_states: &[],
             lean_theorem: "preservation_cancel",
+            template_assumption_fields: &[],
             rust_event_kinds: &[],
         },
         RuleExpectation {
@@ -333,8 +464,13 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &["panic"],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "reject_unresolved_exit::panic",
+            rust_verifiers: &["reject_unresolved_exit::panic"],
             lean_rule: "step_panic",
+            lean_constructor_arity: 2,
+            lean_required_premises: &["no_unresolved_local"],
+            lean_output_states: &[],
             lean_theorem: "preservation_panic",
+            template_assumption_fields: &[],
             rust_event_kinds: &[],
         },
         RuleExpectation {
@@ -344,8 +480,28 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             allowed_modeled_exits: &["opaque_boundary"],
             rust_module: "crates/compiler/kobo-proof/src/boundary.rs",
             rust_verifier: "verify_boundary_policies::Opaque",
+            rust_verifiers: &["verify_boundary_policies::Opaque"],
             lean_rule: "step_opaque",
+            lean_constructor_arity: 10,
+            lean_required_premises: &[
+                "nonempty_id",
+                "opaque_boundary_precondition",
+                "template_assumption_current",
+                "template_assumption_matches_requirement",
+                "opaque_ledger_recorded",
+            ],
+            lean_output_states: &["escaped"],
             lean_theorem: "preservation_opaque",
+            template_assumption_fields: &[
+                "confidence",
+                "lean_assumption_name",
+                "obligation_kind",
+                "rust_certificate_field_path",
+                "source",
+                "statement",
+                "template_id",
+                "template_version",
+            ],
             rust_event_kinds: &["escape"],
         },
     ]

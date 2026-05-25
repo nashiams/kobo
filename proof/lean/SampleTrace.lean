@@ -41,9 +41,11 @@ def sampleEvidence : SampleTraceEvidence :=
 
 def sampleLedger : OpaqueLedgerEvidence :=
   {
-    edgeId := "edge-proof_case-bb2-opaque",
+    edgeId := "edge-proof_case-bb2-opaque_boundary",
     boundary := "external.queue",
     obligationId := delivery,
+    cfgEdgeKind := "opaque_boundary",
+    cfgEdgeTarget := "opaque_boundary",
     evidenceHash := "7ef0a4d8e1c52a63"
   }
 
@@ -72,23 +74,8 @@ theorem template_assumption_is_current :
 
 theorem sample_template_assumption_matches :
     templateAssumptionMatches sampleTemplateAssumption sampleTemplateRequirement := by
-  constructor
-  · rfl
-  · constructor
-    · rfl
-    · constructor
-      · rfl
-      · constructor
-        · rfl
-        · constructor
-          · rfl
-          · constructor
-            · rfl
-            · constructor
-              · rfl
-              · constructor
-                · rfl
-                · rfl
+  unfold templateAssumptionMatches
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 theorem sample_template_requirement_id :
     sampleTemplateRequirement.templateId = "queue_delivery" := by

@@ -119,4 +119,15 @@ theorem preservation_obligation_state (env next : Env) (rule : RuleId) :
   | step_discharge id nonempty =>
       exact typed_writeState env id ObligationState.resolved nonempty typed
 
+theorem preservation_rule_output_matches_catalog
+    (env next : Env)
+    (rule : RuleId) :
+    Step env rule next ->
+      typedObligationEnv env ->
+      typedObligationEnv next /\ exists state, RuleOutputState rule state := by
+  intro step typed
+  exact
+    ⟨preservation_obligation_state env next rule step typed,
+      step_output_state_matches_catalog env next rule step⟩
+
 end Kobo

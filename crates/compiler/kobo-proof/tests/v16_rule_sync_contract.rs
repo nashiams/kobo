@@ -261,6 +261,66 @@ fn rule_opaque_requires_ledger_entry() {
     ));
 }
 
+#[test]
+fn rule_opaque_rejects_ledger_entry_without_cfg_edge() {
+    let mut certificate = certificate_with_opaque_exit();
+    certificate.opaque_edge_ledger = vec![OpaqueLedgerEntry {
+        edge_id: "edge-proof_case-bb9-opaque_boundary".to_owned(),
+        boundary: "external.queue".to_owned(),
+        evidence_hash: stable_hash("external.queue"),
+    }];
+    rehash(&mut certificate);
+
+    let error = verify(&certificate).expect_err("opaque ledger must bind to a CFG edge");
+
+    assert!(matches!(
+        error,
+        VerificationError::OpaqueEdgeWithoutLedger { .. }
+    ));
+}
+
+#[test]
+fn rule_opaque_accepts_ledger_entry_for_cfg_edge() {
+    let certificate = certificate_with_opaque_exit();
+
+    verify(&certificate).expect("opaque ledger should bind to the modeled CFG edge");
+}
+
+fn certificate_with_opaque_exit() -> ProofCertificate {
+    let cfg_nodes = vec![CoreCfgNode {
+        id: "bb0".to_owned(),
+        function: "proof_case".to_owned(),
+        source_span: span(),
+    }];
+    let cfg_edges = vec![CoreCfgEdge {
+        id: "edge-proof_case-bb0-opaque_boundary".to_owned(),
+        function: "proof_case".to_owned(),
+        from: "bb0".to_owned(),
+        to: "opaque_boundary".to_owned(),
+        kind: "opaque_boundary".to_owned(),
+        loop_id: None,
+        loop_label: None,
+        loop_edge_kind: None,
+        loop_entry_block: None,
+        source_span: span(),
+    }];
+    let mut certificate = certificate_from_parts(cfg_nodes, cfg_edges, Vec::new(), Vec::new());
+    certificate.boundary_assumptions = vec![BoundaryAssumption {
+        id: "boundary-opaque-0".to_owned(),
+        boundary: "external.queue".to_owned(),
+        policy: BoundaryPolicy::Opaque,
+        reason: Some("external queue model is outside this proof".to_owned()),
+        source_span: span(),
+    }];
+    certificate.opaque_edge_ledger = vec![OpaqueLedgerEntry {
+        edge_id: "edge-proof_case-bb0-opaque_boundary".to_owned(),
+        boundary: "external.queue".to_owned(),
+        evidence_hash: stable_hash("external.queue"),
+    }];
+    rehash(&mut certificate);
+    certificate
+}
+
 fn certificate_with_exit(target: &str) -> ProofCertificate {
     let cfg_nodes = vec![CoreCfgNode {
         id: "bb0".to_owned(),
@@ -383,11 +443,7 @@ fn certificate_from_parts(
         generated_rust_trace: Vec::new(),
         trace_hashes: Vec::new(),
         translation_validation: Default::default(),
-        opaque_edge_ledger: vec![OpaqueLedgerEntry {
-            edge_id: "opaque-edge-0".to_owned(),
-            boundary: "external.queue".to_owned(),
-            evidence_hash: stable_hash("external.queue"),
-        }],
+        opaque_edge_ledger: Vec::new(),
         candidate_admission: Vec::new(),
         certificate_material_hash: String::new(),
     };

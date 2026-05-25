@@ -155,6 +155,27 @@ fn sample_terminal_trace_events_are_cfg_backed() {
 }
 
 #[test]
+fn opaque_ledger_entries_are_cfg_edge_backed() {
+    let source = sample_kproof_source();
+    let certificate = parse_certificate_json(&source).expect("sample .kproof should parse");
+    let opaque_cfg_edges = certificate
+        .core
+        .cfg_edges
+        .iter()
+        .filter(|edge| edge.kind == "opaque_boundary" || edge.to == "opaque_boundary")
+        .map(|edge| edge.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for ledger in &certificate.opaque_edge_ledger {
+        assert!(
+            opaque_cfg_edges.contains(ledger.edge_id.as_str()),
+            "opaque ledger edge `{}` must name a real opaque CFG edge",
+            ledger.edge_id
+        );
+    }
+}
+
+#[test]
 fn lean_sample_models_terminal_exits_as_alternatives() {
     let sample = sample_trace_source();
 
@@ -197,6 +218,34 @@ fn mechanized_theorems_use_typed_env_and_accounting_evidence() {
             && !no_silent_loss.contains("(_unresolved"),
         "no-silent-loss proof must use unresolved premises and expose opaque ledger accounting"
     );
+}
+
+#[test]
+fn preservation_and_loss_theorems_use_rule_specific_shapes() {
+    let core = core_model_source();
+    let rules = rules_model_source();
+    let preservation = preservation_source();
+    let no_silent_loss = no_silent_loss_source();
+
+    for required in [
+        "RuleInputState",
+        "RuleOutputState",
+        "ruleOutputStateKnown",
+        "step_output_state_matches_catalog",
+        "preservation_rule_output_matches_catalog",
+        "cfgEdgeKind",
+        "cfgEdgeTarget",
+        "opaqueLedgerBindsCfgEdge",
+        "opaque_exit_change_uses_ledger_cfg_edge",
+    ] {
+        assert!(
+            core.contains(required)
+                || rules.contains(required)
+                || preservation.contains(required)
+                || no_silent_loss.contains(required),
+            "mechanized proofs must use rule-specific shape `{required}`"
+        );
+    }
 }
 
 #[test]

@@ -32,6 +32,20 @@ fn docs_do_not_claim_whole_program_or_rust_runtime_proofs() {
     }
 }
 
+#[test]
+fn proof_ci_rejects_unchecked_lean_debt_markers() {
+    let workflow =
+        std::fs::read_to_string(repo_root().join(".github/workflows/proof-mechanization.yml"))
+            .expect("proof mechanization workflow should exist");
+
+    for marker in ["sorry", "admit", "axiom", "constant\\s+.*:"] {
+        assert!(
+            workflow.contains(marker),
+            "proof CI must reject Lean debt marker `{marker}`"
+        );
+    }
+}
+
 fn proof_docs() -> String {
     [
         "proof/README.md",

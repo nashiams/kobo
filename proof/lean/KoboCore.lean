@@ -92,6 +92,8 @@ structure OpaqueLedgerEvidence where
   edgeId : String
   boundary : String
   obligationId : ObligationId
+  cfgEdgeKind : String
+  cfgEdgeTarget : String
   evidenceHash : String
   deriving DecidableEq, Repr
 
@@ -163,5 +165,33 @@ def allRules : List RuleId :=
     RuleId.panic,
     RuleId.opaque
   ]
+
+inductive RuleInputState : RuleId -> ObligationState -> Prop where
+  | transferOwned : RuleInputState RuleId.transfer ObligationState.owned
+  | splitOwned : RuleInputState RuleId.split ObligationState.owned
+  | dischargeOwned : RuleInputState RuleId.discharge ObligationState.owned
+  | dischargeTransferred : RuleInputState RuleId.discharge ObligationState.transferred
+  | opaqueOwned : RuleInputState RuleId.opaque ObligationState.owned
+  | opaqueResolved : RuleInputState RuleId.opaque ObligationState.resolved
+  | opaqueTransferred : RuleInputState RuleId.opaque ObligationState.transferred
+
+inductive RuleOutputState : RuleId -> ObligationState -> Prop where
+  | createOwned : RuleOutputState RuleId.create ObligationState.owned
+  | transferTransferred : RuleOutputState RuleId.transfer ObligationState.transferred
+  | transferMoved : RuleOutputState RuleId.transfer ObligationState.moved
+  | splitBranchUnresolved :
+      RuleOutputState RuleId.split ObligationState.branchUnresolved
+  | dischargeResolved : RuleOutputState RuleId.discharge ObligationState.resolved
+  | opaqueEscaped : RuleOutputState RuleId.opaque ObligationState.escaped
+
+theorem ruleOutputStateKnown (rule : RuleId) (state : ObligationState) :
+    RuleOutputState rule state -> knownObligationState state := by
+  intro output
+  cases output <;> trivial
+
+def opaqueLedgerBindsCfgEdge (ledger : OpaqueLedgerEvidence) : Prop :=
+  OpaqueLedgerEvidence.edgeId ledger ≠ ""
+    /\ OpaqueLedgerEvidence.cfgEdgeKind ledger = "opaque_boundary"
+    /\ OpaqueLedgerEvidence.cfgEdgeTarget ledger = "opaque_boundary"
 
 end Kobo

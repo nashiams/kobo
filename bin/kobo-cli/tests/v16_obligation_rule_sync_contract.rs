@@ -59,6 +59,36 @@ fn transition_drift_from_rust_expectations_is_rejected() {
 }
 
 #[test]
+fn lean_constructor_arity_drift_is_rejected() {
+    let source = default_rule_catalog_source()
+        .replace("lean_constructor_arity = 5", "lean_constructor_arity = 1");
+    let catalog = parse_obligation_rule_catalog(&source).expect("mutated catalog should parse");
+    let error = validate_obligation_rule_catalog(&catalog)
+        .expect_err("Lean constructor arity drift must fail validation");
+
+    assert!(
+        error.to_string().contains("lean_constructor_arity"),
+        "error should identify constructor arity drift: {error}"
+    );
+}
+
+#[test]
+fn rust_verifier_owner_drift_is_rejected() {
+    let source = default_rule_catalog_source().replace(
+        "rust_verifiers = [\"verify_cancel_edges\", \"verify_future_state_obligations\"]",
+        "rust_verifiers = [\"verify_cancel_edges\"]",
+    );
+    let catalog = parse_obligation_rule_catalog(&source).expect("mutated catalog should parse");
+    let error = validate_obligation_rule_catalog(&catalog)
+        .expect_err("Rust verifier owner drift must fail validation");
+
+    assert!(
+        error.to_string().contains("rust_verifiers"),
+        "error should identify verifier owner drift: {error}"
+    );
+}
+
+#[test]
 fn missing_lean_theorem_names_are_rejected() {
     let source = default_rule_catalog_source().replace(
         "lean_theorem = \"preservation_create\"",
@@ -213,13 +243,100 @@ fn rule_entries_name_existing_rust_verifier_hooks() {
     let verifier_sources = proof_verifier_sources();
 
     for rule in catalog.rules {
-        let marker = rust_verifier_marker(&rule.rust_verifier);
+        for verifier in &rule.rust_verifiers {
+            let marker = rust_verifier_marker(verifier);
+            assert!(
+                verifier_sources.contains(marker),
+                "rule `{}` names missing Rust verifier marker `{}` from `{}`",
+                rule.id,
+                marker,
+                verifier
+            );
+        }
+    }
+}
+
+#[test]
+fn rule_catalog_carries_structural_lean_rule_shapes() {
+    let catalog = default_rule_catalog_value();
+    let rules = catalog
+        .get("rules")
+        .and_then(toml::Value::as_array)
+        .expect("rule catalog should contain a rules array");
+
+    for rule in rules {
+        let id = rule
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .expect("rule should have id");
         assert!(
-            verifier_sources.contains(marker),
-            "rule `{}` names missing Rust verifier marker `{}` from `{}`",
-            rule.id,
-            marker,
-            rule.rust_verifier
+            rule.get("lean_constructor_arity")
+                .and_then(toml::Value::as_integer)
+                .is_some(),
+            "rule `{id}` must declare Lean constructor arity"
+        );
+        assert!(
+            rule.get("lean_required_premises")
+                .and_then(toml::Value::as_array)
+                .is_some(),
+            "rule `{id}` must declare Lean semantic premises"
+        );
+        assert!(
+            rule.get("lean_output_states")
+                .and_then(toml::Value::as_array)
+                .is_some(),
+            "rule `{id}` must declare Lean output states"
+        );
+    }
+}
+
+#[test]
+fn cancel_rule_names_all_rust_verifier_owners() {
+    let catalog = default_rule_catalog_value();
+    let cancel = rule_value(&catalog, "cancel");
+    let verifiers = cancel
+        .get("rust_verifiers")
+        .and_then(toml::Value::as_array)
+        .expect("cancel rule should carry structured Rust verifier owners");
+    let verifier_names = verifiers
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect::<BTreeSet<_>>();
+
+    for verifier in ["verify_cancel_edges", "verify_future_state_obligations"] {
+        assert!(
+            verifier_names.contains(verifier),
+            "cancel rule must name Rust verifier owner `{verifier}`"
+        );
+    }
+}
+
+#[test]
+fn opaque_rule_names_template_assumption_shape() {
+    let catalog = default_rule_catalog_value();
+    let opaque = rule_value(&catalog, "opaque");
+    let template_fields = opaque
+        .get("template_assumption_fields")
+        .and_then(toml::Value::as_array)
+        .expect("opaque rule should carry template-assumption fields");
+    let observed = template_fields
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect::<BTreeSet<_>>();
+
+    for field in [
+        "template_id",
+        "template_version",
+        "obligation_kind",
+        "statement",
+        "source",
+        "confidence",
+        "rust_certificate_field_path",
+        "lean_assumption_name",
+    ] {
+        assert!(
+            observed.contains(field),
+            "opaque rule must structurally track template field `{field}`"
         );
     }
 }
@@ -229,6 +346,26 @@ fn default_rule_catalog_source() -> String {
         repo_root().join("crates/compiler/kobo-proof/rules/obligation_rules.toml"),
     )
     .expect("default obligation rule catalog should exist")
+}
+
+fn default_rule_catalog_value() -> toml::Value {
+    default_rule_catalog_source()
+        .parse::<toml::Value>()
+        .expect("default obligation rule catalog should parse as TOML value")
+}
+
+fn rule_value<'a>(catalog: &'a toml::Value, rule_id: &str) -> &'a toml::Value {
+    catalog
+        .get("rules")
+        .and_then(toml::Value::as_array)
+        .and_then(|rules| {
+            rules.iter().find(|rule| {
+                rule.get("id")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|id| id == rule_id)
+            })
+        })
+        .unwrap_or_else(|| panic!("catalog should contain rule `{rule_id}`"))
 }
 
 fn proof_test_sources() -> String {

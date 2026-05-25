@@ -43,6 +43,16 @@ theorem opaque_exit_change_has_ledger_accounting
   | step_opaque id _nonempty _precondition _assumption _current _requirement _matched ledger recorded =>
       exact ⟨id, ledger, recorded⟩
 
+theorem opaque_exit_change_uses_ledger_cfg_edge
+    (before after : Env)
+    (step : ModeledExitStep before ModeledExit.opaqueBoundary after) :
+    exists id ledger,
+      opaqueLedgerRecorded ledger id "external.queue"
+        /\ opaqueLedgerBindsCfgEdge ledger := by
+  cases step with
+  | step_opaque id _nonempty _precondition _assumption _current _requirement _matched ledger recorded =>
+      exact ⟨id, ledger, recorded, recorded.right.right.right⟩
+
 theorem return_exit_rejects_unresolved_before
     (before after : Env)
     (obligation : Obligation)

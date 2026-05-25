@@ -31,6 +31,6 @@ jobs:
       - name: Reject unfinished Lean proofs
         shell: bash
         run: |
-          if grep -R -n -E 'sorry|admit' proof/lean; then
+          if grep -R -n -E '\b(sorry|admit|axiom)\b|constant\s+.*:' proof/lean; then
             exit 1
           fi

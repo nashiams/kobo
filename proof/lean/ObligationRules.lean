@@ -12,8 +12,8 @@ def opaqueLedgerRecorded
     Prop :=
   OpaqueLedgerEvidence.obligationId ledger = id
     /\ OpaqueLedgerEvidence.boundary ledger = boundary
-    /\ OpaqueLedgerEvidence.edgeId ledger ≠ ""
     /\ OpaqueLedgerEvidence.evidenceHash ledger ≠ ""
+    /\ opaqueLedgerBindsCfgEdge ledger
 
 inductive TransferProjection where
   | transferred
@@ -105,5 +105,24 @@ def ruleName : RuleId -> String
   | RuleId.cancel => "cancel"
   | RuleId.panic => "panic"
   | RuleId.opaque => "opaque"
+
+theorem step_output_state_matches_catalog
+    (env next : Env)
+    (rule : RuleId) :
+    Step env rule next -> exists state, RuleOutputState rule state := by
+  intro step
+  cases step with
+  | step_create id nonempty =>
+      exact ⟨ObligationState.owned, RuleOutputState.createOwned⟩
+  | step_transfer id nonempty projection owned =>
+      cases projection with
+      | transferred =>
+          exact ⟨ObligationState.transferred, RuleOutputState.transferTransferred⟩
+      | moved =>
+          exact ⟨ObligationState.moved, RuleOutputState.transferMoved⟩
+  | step_split =>
+      exact ⟨ObligationState.branchUnresolved, RuleOutputState.splitBranchUnresolved⟩
+  | step_discharge =>
+      exact ⟨ObligationState.resolved, RuleOutputState.dischargeResolved⟩
 
 end Kobo

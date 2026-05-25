@@ -8,21 +8,22 @@ use kobo_ir::{
     CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, normalized_bound_hash, stable_hash,
-    template_schema_hash, trace_material_hash, AdapterConfidence, AdapterEvidence,
-    AsyncModelEvidence, BoundDeclaration, BoundDimension, BoundSource, BoundaryAssumption,
-    BoundaryPolicy, BoundedCompleteness, BoundedHistoryEvidence, BoundedProofEvidence,
-    CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent,
-    CoverageLoss, FunctionSummary, FutureStateLocalEvidence, FutureStateObligationEvidence,
-    GeneratedTraceEvent, HashEvidence, InvariantBindingTemplateEvidence, InvariantConfidence,
-    InvariantPreservation, InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier,
-    LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
-    OpaqueLedgerEntry, ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
+    bounded_wording as proof_bounded_wording, certificate_material_hash,
+    classify_bounded_completeness, core_material_hash, derive_translation_validation,
+    normalized_bound_hash, stable_hash, template_schema_hash, trace_material_hash,
+    AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundDeclaration, BoundDimension,
+    BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedClassificationInput,
+    BoundedCompleteness, BoundedHistoryEvidence, BoundedProofEvidence, CancelEdgeEvidence,
+    CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence,
+    CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent, CoverageLoss, FunctionSummary,
+    FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence,
+    InvariantBindingTemplateEvidence, InvariantConfidence, InvariantPreservation,
+    InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier, LoopInvariantEvidence,
+    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry,
+    ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
     SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
     SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
-    TraceMismatchEvidence, TraceMismatchKind, TranslationValidationEvidence,
-    TranslationValidationStatus, UserInvariantFactEvidence, UserInvariantPredicate,
+    TranslationValidationInput, UserInvariantFactEvidence, UserInvariantPredicate,
     PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
     PROOF_TARGET_VERSION,
 };
@@ -245,11 +246,11 @@ pub fn emit_proof_certificate(
         &core_obligation_trace,
         input.source_map,
     );
-    let translation_validation = translation_validation_evidence(
-        &core_obligation_trace,
-        &generated_rust_trace,
-        input.source_map,
-    );
+    let translation_validation = derive_translation_validation(TranslationValidationInput {
+        core_trace: &core_obligation_trace,
+        generated_trace: &generated_rust_trace,
+        has_source_map: input.source_map.is_some(),
+    });
     let trace_hashes = trace_hashes(&core_obligation_trace, &generated_rust_trace)?;
 
     let mut certificate = ProofCertificate {
@@ -780,16 +781,18 @@ fn bounded_evidence_from_fields(
     let declared_expected = numeric_field(fields, "expected");
     let declared_completeness =
         bounded_completeness(fields.get("completeness").map(String::as_str));
-    let completeness = effective_bounded_completeness(
-        declared_completeness,
+    let completeness = classify_bounded_completeness(&BoundedClassificationInput {
+        declared: declared_completeness,
         declared_expected,
-        &exploration,
-        &scheduler_dimensions,
-        &fault_dimensions,
-        &cancellation_points,
-        &required_dimensions,
-    );
-    let wording = bounded_wording(
+        is_complete: exploration.is_complete,
+        expected_complete_history_count: exploration.expected_complete_history_count,
+        enumerated_history_count: exploration.enumerated_history_count,
+        has_scheduler_dimensions: !scheduler_dimensions.is_empty(),
+        has_fault_dimensions: !fault_dimensions.is_empty(),
+        has_cancellation_points: !cancellation_points.is_empty(),
+        has_required_dimensions: required_dimensions.has_all_required_dimensions(),
+    });
+    let wording = proof_bounded_wording(
         &completeness,
         exploration.enumerated_history_count,
         expected_complete_history_count,
@@ -902,32 +905,6 @@ fn canonical_histories(
         .collect()
 }
 
-fn effective_bounded_completeness(
-    declared: BoundedCompleteness,
-    declared_expected: Option<u64>,
-    exploration: &BoundedHistoryExploration,
-    scheduler_dimensions: &[String],
-    fault_dimensions: &[String],
-    cancellation_points: &[String],
-    required_dimensions: &RequiredBoundDimensions,
-) -> BoundedCompleteness {
-    if declared != BoundedCompleteness::Complete {
-        return declared;
-    }
-    if !exploration.is_complete
-        || declared_expected
-            .is_some_and(|expected| expected != exploration.expected_complete_history_count)
-        || exploration.expected_complete_history_count != exploration.enumerated_history_count
-        || scheduler_dimensions.is_empty()
-        || fault_dimensions.is_empty()
-        || cancellation_points.is_empty()
-        || !required_dimensions.has_all_required_dimensions()
-    {
-        return BoundedCompleteness::Incomplete;
-    }
-    BoundedCompleteness::Complete
-}
-
 fn bound_declarations(
     history_bound: u64,
     loop_iteration_bound: u64,
@@ -999,8 +976,8 @@ fn core_trace_evidence(
                 .map(|event| event.source_span.clone())
                 .unwrap_or_else(|| source_span_from_kobo(source_path, source, operation.span));
             let id = event
-                .map(|event| format!("core-{}", event.id))
-                .unwrap_or_else(|| format!("core-term-{operation_index}"));
+                .map(|event| format!("core-{}-{}", program.target, event.id))
+                .unwrap_or_else(|| format!("core-{}-term-{operation_index}", program.target));
             Some(CoreTraceEvent {
                 id,
                 kind,
@@ -1081,148 +1058,6 @@ fn generated_trace_evidence(
             })
         })
         .collect()
-}
-
-fn translation_validation_evidence(
-    core_trace: &[CoreTraceEvent],
-    generated_trace: &[GeneratedTraceEvent],
-    source_map: Option<&KoboSourceMap>,
-) -> TranslationValidationEvidence {
-    let mismatches = translation_trace_mismatches(core_trace, generated_trace);
-    let status = if core_trace.is_empty() {
-        TranslationValidationStatus::CoreOnly
-    } else if source_map.is_none() {
-        TranslationValidationStatus::CoreOnly
-    } else if mismatches.is_empty() {
-        TranslationValidationStatus::Validated
-    } else {
-        TranslationValidationStatus::Failed
-    };
-    TranslationValidationEvidence { status, mismatches }
-}
-
-fn translation_trace_mismatches(
-    core_trace: &[CoreTraceEvent],
-    generated_trace: &[GeneratedTraceEvent],
-) -> Vec<TraceMismatchEvidence> {
-    let mut mismatches = Vec::new();
-    let mut generated_by_core_id = BTreeMap::new();
-    for generated_event in generated_trace {
-        if generated_by_core_id
-            .insert(generated_event.core_event_id.as_str(), generated_event)
-            .is_some()
-        {
-            mismatches.push(trace_mismatch(
-                TraceMismatchKind::ExtraEvent,
-                None,
-                Some(generated_event.id.clone()),
-                "duplicate generated event for Core event".to_owned(),
-            ));
-        }
-    }
-    let core_ids = core_trace
-        .iter()
-        .map(|event| event.id.as_str())
-        .collect::<BTreeSet<_>>();
-    for core_event in core_trace {
-        let Some(generated_event) = generated_by_core_id.get(core_event.id.as_str()) else {
-            mismatches.push(trace_mismatch(
-                TraceMismatchKind::MissingEvent,
-                Some(core_event.id.clone()),
-                None,
-                "generated trace is missing this Core event".to_owned(),
-            ));
-            continue;
-        };
-        record_event_identity_mismatches(core_event, generated_event, &mut mismatches);
-    }
-    for generated_event in generated_trace {
-        if !core_ids.contains(generated_event.core_event_id.as_str()) {
-            mismatches.push(trace_mismatch(
-                TraceMismatchKind::ExtraEvent,
-                None,
-                Some(generated_event.id.clone()),
-                "generated trace event has no matching Core event".to_owned(),
-            ));
-        }
-    }
-    mismatches
-}
-
-fn record_event_identity_mismatches(
-    core_event: &CoreTraceEvent,
-    generated_event: &GeneratedTraceEvent,
-    mismatches: &mut Vec<TraceMismatchEvidence>,
-) {
-    if core_event.order != generated_event.order {
-        mismatches.push(trace_mismatch(
-            TraceMismatchKind::OrderMismatch,
-            Some(core_event.id.clone()),
-            Some(generated_event.id.clone()),
-            format!(
-                "expected order {}, observed {}",
-                core_event.order, generated_event.order
-            ),
-        ));
-    }
-    if core_event.kind != generated_event.kind {
-        mismatches.push(trace_mismatch(
-            TraceMismatchKind::KindMismatch,
-            Some(core_event.id.clone()),
-            Some(generated_event.id.clone()),
-            format!(
-                "expected kind {}, observed {}",
-                core_event.kind.as_str(),
-                generated_event.kind.as_str()
-            ),
-        ));
-    }
-    if core_event.binding != generated_event.binding {
-        mismatches.push(trace_mismatch(
-            TraceMismatchKind::BindingMismatch,
-            Some(core_event.id.clone()),
-            Some(generated_event.id.clone()),
-            format!(
-                "expected binding {}, observed {}",
-                optional_trace_text(&core_event.binding),
-                optional_trace_text(&generated_event.binding)
-            ),
-        ));
-    }
-    if core_event.template_id != generated_event.template_id
-        || core_event.template_version != generated_event.template_version
-    {
-        mismatches.push(trace_mismatch(
-            TraceMismatchKind::TemplateMismatch,
-            Some(core_event.id.clone()),
-            Some(generated_event.id.clone()),
-            format!(
-                "expected template {}@{}, observed {}@{}",
-                optional_trace_text(&core_event.template_id),
-                optional_trace_text(&core_event.template_version),
-                optional_trace_text(&generated_event.template_id),
-                optional_trace_text(&generated_event.template_version)
-            ),
-        ));
-    }
-}
-
-fn trace_mismatch(
-    kind: TraceMismatchKind,
-    core_event_id: Option<String>,
-    generated_event_id: Option<String>,
-    reason: String,
-) -> TraceMismatchEvidence {
-    TraceMismatchEvidence {
-        kind,
-        core_event_id,
-        generated_event_id,
-        reason,
-    }
-}
-
-fn optional_trace_text(value: &Option<String>) -> &str {
-    value.as_deref().unwrap_or("<none>")
 }
 
 fn trace_hashes(
@@ -1348,21 +1183,6 @@ fn bounded_completeness(value: Option<&str>) -> BoundedCompleteness {
         Some("sampled") | None => BoundedCompleteness::Sampled,
         Some(_) => BoundedCompleteness::Incomplete,
     }
-}
-
-fn bounded_wording(
-    completeness: &BoundedCompleteness,
-    enumerated_history_count: u64,
-    expected_complete_history_count: Option<u64>,
-) -> String {
-    if completeness == &BoundedCompleteness::Complete
-        && expected_complete_history_count == Some(enumerated_history_count)
-    {
-        return format!(
-            "bounded proof: all {enumerated_history_count} histories explored under declared bounds"
-        );
-    }
-    format!("evidence only: {enumerated_history_count} sampled histories, state space incomplete")
 }
 
 fn trace_event_kind(kind: &ObligationEventKind) -> Option<TraceEventKind> {
@@ -3546,54 +3366,4 @@ fn line_snippet(source: &str, offset: usize) -> String {
         .map(|index| bounded + index)
         .unwrap_or(source.len());
     source[line_start..line_end].trim().to_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn span() -> SourceSpan {
-        SourceSpan {
-            path: "src/main.kobo".to_owned(),
-            line: 1,
-            start: 0,
-            end: 1,
-            mapped: true,
-            snippet: "return".to_owned(),
-        }
-    }
-
-    fn source_map() -> KoboSourceMap {
-        KoboSourceMap {
-            version: 3,
-            file: "src/main.rs".to_owned(),
-            sources: vec!["src/main.kobo".to_owned()],
-            x_kobo_mappings: Vec::new(),
-            runtime_evidence: None,
-            solver_evidence: None,
-            lowering_trace: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn translation_validation_records_missing_generated_event() {
-        let core_trace = vec![CoreTraceEvent {
-            id: "core-term-0".to_owned(),
-            kind: TraceEventKind::Return,
-            binding: None,
-            order: 0,
-            source_span: span(),
-            template_id: None,
-            template_version: None,
-        }];
-        let evidence = translation_validation_evidence(&core_trace, &[], Some(&source_map()));
-
-        assert_eq!(evidence.status, TranslationValidationStatus::Failed);
-        assert_eq!(evidence.mismatches.len(), 1);
-        assert_eq!(evidence.mismatches[0].kind, TraceMismatchKind::MissingEvent);
-        assert_eq!(
-            evidence.mismatches[0].core_event_id.as_deref(),
-            Some("core-term-0")
-        );
-    }
 }

@@ -5,8 +5,55 @@ use crate::{
     BoundedProofEvidence, ProofCertificate, VerificationError,
 };
 
+#[derive(Clone, Debug)]
+pub struct BoundedClassificationInput {
+    pub declared: BoundedCompleteness,
+    pub declared_expected: Option<u64>,
+    pub is_complete: bool,
+    pub expected_complete_history_count: u64,
+    pub enumerated_history_count: u64,
+    pub has_scheduler_dimensions: bool,
+    pub has_fault_dimensions: bool,
+    pub has_cancellation_points: bool,
+    pub has_required_dimensions: bool,
+}
+
 pub fn normalized_bound_hash(evidence: &BoundedProofEvidence) -> String {
     stable_hash(&normalized_bound_material(evidence))
+}
+
+pub fn classify_bounded_completeness(input: &BoundedClassificationInput) -> BoundedCompleteness {
+    if input.declared != BoundedCompleteness::Complete {
+        return input.declared.clone();
+    }
+    if !input.is_complete
+        || input
+            .declared_expected
+            .is_some_and(|expected| expected != input.expected_complete_history_count)
+        || input.expected_complete_history_count != input.enumerated_history_count
+        || !input.has_scheduler_dimensions
+        || !input.has_fault_dimensions
+        || !input.has_cancellation_points
+        || !input.has_required_dimensions
+    {
+        return BoundedCompleteness::Incomplete;
+    }
+    BoundedCompleteness::Complete
+}
+
+pub fn bounded_wording(
+    completeness: &BoundedCompleteness,
+    enumerated_history_count: u64,
+    expected_complete_history_count: Option<u64>,
+) -> String {
+    if completeness == &BoundedCompleteness::Complete
+        && expected_complete_history_count == Some(enumerated_history_count)
+    {
+        return format!(
+            "bounded proof: all {enumerated_history_count} histories explored under declared bounds"
+        );
+    }
+    format!("evidence only: {enumerated_history_count} sampled histories, state space incomplete")
 }
 
 pub(crate) fn verify_bounded_evidence(

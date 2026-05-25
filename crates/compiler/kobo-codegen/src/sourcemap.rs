@@ -169,8 +169,10 @@ pub(crate) fn add_proof_event_source_entries(
             else {
                 continue;
             };
-            let core_event_id = core_event_id_for_operation(order, &operation.kind);
-            if has_core_event_anchor(entries, &core_event_id) {
+            let core_event_id =
+                core_event_id_for_operation(&program.target, order, &operation.kind);
+            let source_map_entry_id = proof_source_map_entry_id(&program.target, order);
+            if has_core_event_anchor(entries, &source_map_entry_id, &core_event_id) {
                 continue;
             }
             let Some(rs_span) = generated_anchor_for_operation(
@@ -183,7 +185,7 @@ pub(crate) fn add_proof_event_source_entries(
                 continue;
             };
             entries.push(SourceMapEntry {
-                id: format!("proof-map-{}-{order}", program.target),
+                id: source_map_entry_id,
                 core_event_id: Some(core_event_id),
                 binding_name: event
                     .binding
@@ -216,10 +218,14 @@ pub fn wrap_source_map(
     }
 }
 
-fn has_core_event_anchor(entries: &[SourceMapEntry], core_event_id: &str) -> bool {
-    entries
-        .iter()
-        .any(|entry| entry.core_event_id.as_deref() == Some(core_event_id))
+fn has_core_event_anchor(
+    entries: &[SourceMapEntry],
+    source_map_entry_id: &str,
+    core_event_id: &str,
+) -> bool {
+    entries.iter().any(|entry| {
+        entry.id == source_map_entry_id && entry.core_event_id.as_deref() == Some(core_event_id)
+    })
 }
 
 fn generated_anchor_for_operation(
@@ -645,8 +651,11 @@ pub(crate) fn build_lowering_trace(
                 .filter_map(move |(order, operation)| {
                     let event =
                         lowering_event_from_operation(&operation.kind, &template_by_binding)?;
-                    let core_event_id = core_event_id_for_operation(order, &operation.kind);
-                    let anchor = anchor_for_trace_event(source_map, &core_event_id)?;
+                    let core_event_id =
+                        core_event_id_for_operation(&program.target, order, &operation.kind);
+                    let source_map_entry_id = proof_source_map_entry_id(&program.target, order);
+                    let anchor =
+                        anchor_for_trace_event(source_map, &source_map_entry_id, &core_event_id)?;
                     Some(LoweringTraceEvent {
                         id: format!("lowering-{}-{order}", program.target),
                         core_event_id,
@@ -666,7 +675,11 @@ pub(crate) fn build_lowering_trace(
         .collect()
 }
 
-fn core_event_id_for_operation(order: usize, kind: &ScenarioOpKind) -> String {
+fn proof_source_map_entry_id(function: &str, order: usize) -> String {
+    format!("proof-map-{function}-{order}")
+}
+
+fn core_event_id_for_operation(function: &str, order: usize, kind: &ScenarioOpKind) -> String {
     if matches!(
         kind,
         ScenarioOpKind::CreateObligation { .. }
@@ -675,9 +688,9 @@ fn core_event_id_for_operation(order: usize, kind: &ScenarioOpKind) -> String {
             | ScenarioOpKind::MoveBinding { .. }
             | ScenarioOpKind::ExternalBoundary { .. }
     ) {
-        return format!("core-stmt-{order}");
+        return format!("core-{function}-stmt-{order}");
     }
-    format!("core-term-{order}")
+    format!("core-{function}-term-{order}")
 }
 
 struct TraceEventSource<'a> {
@@ -771,12 +784,12 @@ fn core_terminator_trace_kind(kind: &ScenarioCoreTerminatorKind) -> &'static str
 
 fn anchor_for_trace_event<'a>(
     source_map: &'a KoboSourceMap,
+    source_map_entry_id: &str,
     core_event_id: &str,
 ) -> Option<&'a SourceMapEntry> {
-    source_map
-        .x_kobo_mappings
-        .iter()
-        .find(|entry| entry.core_event_id.as_deref() == Some(core_event_id))
+    source_map.x_kobo_mappings.iter().find(|entry| {
+        entry.id == source_map_entry_id && entry.core_event_id.as_deref() == Some(core_event_id)
+    })
 }
 
 fn template_version(template: &ScenarioLifecycleTemplate) -> String {
@@ -863,7 +876,11 @@ mod lowering_trace_tests {
             .enumerate()
             .map(|(order, operation)| SourceMapEntry {
                 id: format!("proof-map-trace_case-{order}"),
-                core_event_id: Some(super::core_event_id_for_operation(order, &operation.kind)),
+                core_event_id: Some(super::core_event_id_for_operation(
+                    "trace_case",
+                    order,
+                    &operation.kind,
+                )),
                 binding_name: "delivery".to_owned(),
                 kobo_span: span,
                 rs_span: RsSpan {
@@ -996,6 +1013,71 @@ mod lowering_trace_tests {
         assert!(
             trace.is_empty(),
             "generated proof trace must require an anchor with matching core_event_id: {trace:?}"
+        );
+    }
+
+    #[test]
+    fn lowering_trace_core_event_ids_are_function_scoped() {
+        let file_id = FileId(1);
+        let first_span = kobo_ir::KoboSpan::new(10, 20, file_id);
+        let second_span = kobo_ir::KoboSpan::new(40, 50, file_id);
+        let source_map = wrap_source_map(
+            Path::new("src/main.kobo"),
+            Path::new("src/main.rs"),
+            vec![
+                SourceMapEntry {
+                    id: "proof-map-first-0".to_owned(),
+                    core_event_id: Some("core-first-stmt-0".to_owned()),
+                    binding_name: "delivery".to_owned(),
+                    kobo_span: first_span,
+                    rs_span: RsSpan {
+                        line: 1,
+                        column_start: 1,
+                        column_end: 8,
+                    },
+                    ownership_tier: "proof-event".to_owned(),
+                    solver_outcome: None,
+                    decision_source: None,
+                    solver_node_id: None,
+                },
+                SourceMapEntry {
+                    id: "proof-map-second-0".to_owned(),
+                    core_event_id: Some("core-second-stmt-0".to_owned()),
+                    binding_name: "delivery".to_owned(),
+                    kobo_span: second_span,
+                    rs_span: RsSpan {
+                        line: 2,
+                        column_start: 1,
+                        column_end: 8,
+                    },
+                    ownership_tier: "proof-event".to_owned(),
+                    solver_outcome: None,
+                    decision_source: None,
+                    solver_node_id: None,
+                },
+            ],
+        );
+        let first_program = single_discharge_program(file_id, "first", first_span);
+        let second_program = single_discharge_program(file_id, "second", second_span);
+
+        let trace = build_lowering_trace(&[first_program, second_program], &source_map);
+        let core_event_ids = trace
+            .iter()
+            .map(|event| event.core_event_id.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            trace.len(),
+            2,
+            "both functions need distinct anchors: {trace:?}"
+        );
+        assert!(
+            core_event_ids.contains("core-first-stmt-0"),
+            "first function event id must be function-scoped: {trace:?}"
+        );
+        assert!(
+            core_event_ids.contains("core-second-stmt-0"),
+            "second function event id must be function-scoped: {trace:?}"
         );
     }
 
@@ -1217,6 +1299,27 @@ fn second() -> Result<(), ()> {
                 policy: None,
                 edges: Vec::new(),
             },
+        }
+    }
+
+    fn single_discharge_program(
+        file_id: FileId,
+        target: &str,
+        span: kobo_ir::KoboSpan,
+    ) -> ScenarioProgram {
+        ScenarioProgram {
+            file_id,
+            target: target.to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span,
+                kind: ScenarioOpKind::Discharge {
+                    binding: "delivery".to_owned(),
+                    action: "ack".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
         }
     }
 

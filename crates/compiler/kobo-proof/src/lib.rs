@@ -12,7 +12,10 @@ mod trace;
 mod translation;
 mod verify;
 
-pub use bounded::normalized_bound_hash;
+pub use bounded::{
+    bounded_wording, classify_bounded_completeness, normalized_bound_hash,
+    BoundedClassificationInput,
+};
 pub use certificate::{
     AdapterConfidence, AdapterEvidence, ArtifactKind, AsyncModelEvidence, BoundDeclaration,
     BoundDimension, BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedCompleteness,
@@ -36,6 +39,7 @@ pub use hash::{
     certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
     trace_material_hash,
 };
+pub use translation::{derive_translation_validation, TranslationValidationInput};
 pub use verify::{
     parse_certificate_json, verify_certificate, verify_certificate_header, VerificationContext,
     VerificationReport,

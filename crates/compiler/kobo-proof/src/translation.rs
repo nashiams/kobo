@@ -1,9 +1,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    trace, trace_material_hash, GeneratedTraceEvent, HashEvidence, ProofCertificate,
-    SourceMapAnchorStatus, TranslationValidationStatus, VerificationError,
+    trace, trace_material_hash, CoreTraceEvent, GeneratedTraceEvent, HashEvidence,
+    ProofCertificate, SourceMapAnchorStatus, TraceMismatchEvidence, TraceMismatchKind,
+    TranslationValidationEvidence, TranslationValidationStatus, VerificationError,
 };
+
+#[derive(Clone, Copy, Debug)]
+pub struct TranslationValidationInput<'a> {
+    pub core_trace: &'a [CoreTraceEvent],
+    pub generated_trace: &'a [GeneratedTraceEvent],
+    pub has_source_map: bool,
+}
+
+pub fn derive_translation_validation(
+    input: TranslationValidationInput<'_>,
+) -> TranslationValidationEvidence {
+    let mismatches = translation_trace_mismatches(input.core_trace, input.generated_trace);
+    let status = if input.core_trace.is_empty() || !input.has_source_map {
+        TranslationValidationStatus::CoreOnly
+    } else if mismatches.is_empty() {
+        TranslationValidationStatus::Validated
+    } else {
+        TranslationValidationStatus::Failed
+    };
+    TranslationValidationEvidence { status, mismatches }
+}
 
 pub(crate) fn verify_translation_validation(
     certificate: &ProofCertificate,
@@ -26,6 +48,126 @@ pub(crate) fn verify_translation_validation(
     verify_generated_events_have_core_matches(certificate)?;
     verify_trace_hashes(certificate)?;
     verify_trace_status(certificate, TranslationValidationStatus::Validated)
+}
+
+fn translation_trace_mismatches(
+    core_trace: &[CoreTraceEvent],
+    generated_trace: &[GeneratedTraceEvent],
+) -> Vec<TraceMismatchEvidence> {
+    let mut mismatches = Vec::new();
+    let mut generated_by_core_id = BTreeMap::new();
+    for generated_event in generated_trace {
+        if generated_by_core_id
+            .insert(generated_event.core_event_id.as_str(), generated_event)
+            .is_some()
+        {
+            mismatches.push(trace_mismatch(
+                TraceMismatchKind::ExtraEvent,
+                None,
+                Some(generated_event.id.clone()),
+                "duplicate generated event for Core event".to_owned(),
+            ));
+        }
+    }
+    let core_ids = core_trace
+        .iter()
+        .map(|event| event.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for core_event in core_trace {
+        let Some(generated_event) = generated_by_core_id.get(core_event.id.as_str()) else {
+            mismatches.push(trace_mismatch(
+                TraceMismatchKind::MissingEvent,
+                Some(core_event.id.clone()),
+                None,
+                "generated trace is missing this Core event".to_owned(),
+            ));
+            continue;
+        };
+        record_event_identity_mismatches(core_event, generated_event, &mut mismatches);
+    }
+    for generated_event in generated_trace {
+        if !core_ids.contains(generated_event.core_event_id.as_str()) {
+            mismatches.push(trace_mismatch(
+                TraceMismatchKind::ExtraEvent,
+                None,
+                Some(generated_event.id.clone()),
+                "generated trace event has no matching Core event".to_owned(),
+            ));
+        }
+    }
+    mismatches
+}
+
+fn record_event_identity_mismatches(
+    core_event: &CoreTraceEvent,
+    generated_event: &GeneratedTraceEvent,
+    mismatches: &mut Vec<TraceMismatchEvidence>,
+) {
+    if core_event.order != generated_event.order {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::OrderMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected order {}, observed {}",
+                core_event.order, generated_event.order
+            ),
+        ));
+    }
+    if core_event.kind != generated_event.kind {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::KindMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected kind {}, observed {}",
+                core_event.kind.as_str(),
+                generated_event.kind.as_str()
+            ),
+        ));
+    }
+    if core_event.binding != generated_event.binding {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::BindingMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected binding {}, observed {}",
+                trace::optional_text(&core_event.binding),
+                trace::optional_text(&generated_event.binding)
+            ),
+        ));
+    }
+    if core_event.template_id != generated_event.template_id
+        || core_event.template_version != generated_event.template_version
+    {
+        mismatches.push(trace_mismatch(
+            TraceMismatchKind::TemplateMismatch,
+            Some(core_event.id.clone()),
+            Some(generated_event.id.clone()),
+            format!(
+                "expected template {}@{}, observed {}@{}",
+                trace::optional_text(&core_event.template_id),
+                trace::optional_text(&core_event.template_version),
+                trace::optional_text(&generated_event.template_id),
+                trace::optional_text(&generated_event.template_version)
+            ),
+        ));
+    }
+}
+
+fn trace_mismatch(
+    kind: TraceMismatchKind,
+    core_event_id: Option<String>,
+    generated_event_id: Option<String>,
+    reason: String,
+) -> TraceMismatchEvidence {
+    TraceMismatchEvidence {
+        kind,
+        core_event_id,
+        generated_event_id,
+        reason,
+    }
 }
 
 fn verify_empty_trace_status(certificate: &ProofCertificate) -> Result<(), VerificationError> {

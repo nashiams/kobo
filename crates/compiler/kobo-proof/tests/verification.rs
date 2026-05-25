@@ -1,11 +1,13 @@
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, normalized_bound_hash, parse_certificate_json,
-    stable_hash, template_schema_hash, verify_certificate, ArtifactKind, AsyncModelEvidence,
-    BoundDeclaration, BoundDimension, BoundSource, BoundedCompleteness, BoundedHistoryEvidence,
-    BoundedProofEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence,
-    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, ProofCertificate,
-    ReplayGrade, SourceEvidence, SourceSpan, TemplateSchemaEvidence, VerificationContext,
-    VerificationError,
+    bounded_wording, certificate_material_hash, classify_bounded_completeness, core_material_hash,
+    derive_translation_validation, normalized_bound_hash, parse_certificate_json, stable_hash,
+    template_schema_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, BoundDeclaration,
+    BoundDimension, BoundSource, BoundedClassificationInput, BoundedCompleteness,
+    BoundedHistoryEvidence, BoundedProofEvidence, CoreCfgEdge, CoreCfgNode, CoreEvidence,
+    CoreTraceEvent, FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind,
+    ObligationState, ObligationStatus, ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan,
+    TemplateSchemaEvidence, TraceEventKind, TranslationValidationInput,
+    TranslationValidationStatus, VerificationContext, VerificationError,
 };
 use serde_json::Value;
 
@@ -345,6 +347,57 @@ fn single_create_source_map() -> serde_json::Value {
             }
         ]
     })
+}
+
+#[test]
+fn proof_crate_derives_translation_status_and_mismatches() {
+    let core_trace = vec![CoreTraceEvent {
+        id: "core-discharge-delivery".to_owned(),
+        kind: TraceEventKind::Discharge,
+        binding: Some("delivery".to_owned()),
+        order: 1,
+        source_span: span(),
+        template_id: Some("queue_delivery".to_owned()),
+        template_version: Some("0.1".to_owned()),
+    }];
+    let evidence = derive_translation_validation(TranslationValidationInput {
+        core_trace: &core_trace,
+        generated_trace: &[],
+        has_source_map: true,
+    });
+
+    assert_eq!(evidence.status, TranslationValidationStatus::Failed);
+    assert!(
+        evidence
+            .mismatches
+            .iter()
+            .any(|mismatch| mismatch.core_event_id.as_deref() == Some("core-discharge-delivery")),
+        "missing generated event should be proof-crate-classified: {evidence:?}"
+    );
+}
+
+#[test]
+fn proof_crate_classifies_bounded_completeness_and_wording() {
+    let input = BoundedClassificationInput {
+        declared: BoundedCompleteness::Complete,
+        declared_expected: Some(2),
+        is_complete: true,
+        expected_complete_history_count: 2,
+        enumerated_history_count: 1,
+        has_scheduler_dimensions: true,
+        has_fault_dimensions: true,
+        has_cancellation_points: true,
+        has_required_dimensions: true,
+    };
+
+    let completeness = classify_bounded_completeness(&input);
+    let wording = bounded_wording(&completeness, 1, Some(2));
+
+    assert_eq!(completeness, BoundedCompleteness::Incomplete);
+    assert!(
+        wording.contains("evidence only"),
+        "incomplete proof must be proof-crate-classified as evidence-only: {wording}"
+    );
 }
 
 fn rehash(certificate: &mut ProofCertificate) {

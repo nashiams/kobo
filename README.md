@@ -47,6 +47,11 @@ means codegen-emitted lowering metadata preserves the modeled Core obligation
 trace and source-map anchors for proof-relevant events. It is not a whole-program
 Rust correctness claim.
 
+Proof assistant mechanization is a release credibility layer over the same narrow
+obligation core. v0.16 begins mechanized soundness for Kobo's obligation core and
+proof verifier. The sample accepted .kproof trace has a matching mechanized trace
+model, and that bridge remains sample-scoped.
+
 ## CLI Workflow
 
 The primary workflow is:

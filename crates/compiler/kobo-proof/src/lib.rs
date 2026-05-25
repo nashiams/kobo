@@ -8,6 +8,7 @@ mod error;
 mod hash;
 mod invariant;
 mod obligation;
+mod rule_sync;
 mod trace;
 mod translation;
 mod verify;
@@ -38,6 +39,10 @@ pub use error::VerificationError;
 pub use hash::{
     certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
     trace_material_hash,
+};
+pub use rule_sync::{
+    load_obligation_rule_catalog, parse_obligation_rule_catalog, required_obligation_rule_ids,
+    validate_obligation_rule_catalog, ObligationRule, ObligationRuleCatalog, RuleSyncError,
 };
 pub use translation::{derive_translation_validation, TranslationValidationInput};
 pub use verify::{

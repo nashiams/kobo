@@ -1,4 +1,10 @@
-use kobo_proof::{load_obligation_rule_catalog, required_obligation_rule_ids};
+use kobo_proof::{
+    load_obligation_rule_catalog, parse_certificate_json, required_obligation_rule_ids,
+    verify_certificate, TraceEventKind, VerificationContext,
+};
+
+const SAMPLE_KOBO_SOURCE: &str =
+    "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }";
 
 #[test]
 fn sample_trace_uses_only_known_rule_ids() {
@@ -38,15 +44,67 @@ fn sample_trace_records_template_id_version_assumptions() {
         sample.contains("opaqueLedgerRecorded := true"),
         "sample trace must include an explicit opaque ledger assumption"
     );
+    for required_field in [
+        "rustCertificateFieldPath := \"template_schemas\"",
+        "leanAssumptionName := \"queue_delivery_assumption\"",
+        "source := TemplateAssumptionSource.builtIn",
+        "confidence := TemplateAssumptionConfidence.modeled",
+    ] {
+        assert!(
+            sample.contains(required_field),
+            "sample trace must record structured template-assumption field `{required_field}`"
+        );
+    }
 }
 
 #[test]
-fn stale_template_version_is_not_the_sample_assumption() {
-    let sample = sample_trace_source();
+fn sample_kproof_fixture_is_accepted_by_the_rust_verifier() {
+    let source = sample_kproof_source();
+    let certificate = parse_certificate_json(&source).expect("sample .kproof should parse");
+    let report = verify_certificate(
+        &certificate,
+        &VerificationContext {
+            source: SAMPLE_KOBO_SOURCE.to_owned(),
+            source_map: None,
+        },
+    )
+    .expect("sample .kproof should verify");
+
+    assert_eq!(
+        report.checked_obligation_events, 3,
+        "sample fixture should replay create, transfer, and discharge obligation events"
+    );
+    assert!(
+        certificate
+            .core_obligation_trace
+            .iter()
+            .any(|event| event.kind == TraceEventKind::Return),
+        "sample fixture must include a modeled return trace event"
+    );
+    assert!(
+        certificate
+            .core_obligation_trace
+            .iter()
+            .any(|event| event.kind == TraceEventKind::Panic),
+        "sample fixture must include a cancel-or-panic trace event"
+    );
+    assert!(
+        certificate
+            .core_obligation_trace
+            .iter()
+            .any(|event| event.kind == TraceEventKind::OpaqueBoundary),
+        "sample fixture must include an opaque boundary trace event"
+    );
+}
+
+#[test]
+fn stale_template_version_is_structurally_rejected_by_the_sample_model() {
+    let sample = format!("{}\n{}", core_model_source(), sample_trace_source());
 
     assert!(
-        !sample.contains("templateVersion := \"stale\""),
-        "sample trace must not satisfy the contract with a stale template version"
+        sample.contains("def templateAssumptionIsCurrent")
+            && sample.contains("templateVersion = \"0.1\""),
+        "sample model must structurally reject stale template versions"
     );
 }
 
@@ -80,6 +138,18 @@ fn mechanized_trace_files_are_release_checked_content() {
 fn sample_trace_source() -> String {
     std::fs::read_to_string(repo_root().join("proof/lean/SampleTrace.lean"))
         .expect("Lean sample trace mirror should exist")
+}
+
+fn core_model_source() -> String {
+    std::fs::read_to_string(repo_root().join("proof/lean/KoboCore.lean"))
+        .expect("Lean core model should exist")
+}
+
+fn sample_kproof_source() -> String {
+    std::fs::read_to_string(
+        repo_root().join("crates/compiler/kobo-proof/fixtures/v16_sample.kproof"),
+    )
+    .expect("sample .kproof fixture should exist")
 }
 
 fn repo_root() -> std::path::PathBuf {

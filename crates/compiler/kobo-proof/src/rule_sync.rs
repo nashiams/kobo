@@ -28,6 +28,7 @@ pub struct ObligationRule {
     pub input_states: Vec<String>,
     pub output_states: Vec<String>,
     pub allowed_modeled_exits: Vec<String>,
+    pub rust_event_kinds: Vec<String>,
     pub required_certificate_fields: Vec<String>,
     pub rust_module: String,
     pub rust_verifier: String,
@@ -69,6 +70,7 @@ struct RuleExpectation {
     rust_verifier: &'static str,
     lean_rule: &'static str,
     lean_theorem: &'static str,
+    rust_event_kinds: &'static [&'static str],
 }
 
 pub fn required_obligation_rule_ids() -> &'static [&'static str] {
@@ -187,6 +189,12 @@ fn verify_rule_expectations(
             expectation.allowed_modeled_exits,
             &rule.allowed_modeled_exits,
         )?;
+        verify_list_field(
+            rule,
+            "rust_event_kinds",
+            expectation.rust_event_kinds,
+            &rule.rust_event_kinds,
+        )?;
         verify_text_field(
             rule,
             "rust_module",
@@ -261,6 +269,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "apply_obligation_event::Create",
             lean_rule: "step_create",
             lean_theorem: "preservation_create",
+            rust_event_kinds: &["create"],
         },
         RuleExpectation {
             id: "transfer",
@@ -271,6 +280,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "apply_obligation_event::Transfer",
             lean_rule: "step_transfer",
             lean_theorem: "preservation_transfer",
+            rust_event_kinds: &["transfer", "move"],
         },
         RuleExpectation {
             id: "split",
@@ -281,6 +291,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "cfg_branch_join_split",
             lean_rule: "step_split",
             lean_theorem: "preservation_split",
+            rust_event_kinds: &["branch_unresolved"],
         },
         RuleExpectation {
             id: "discharge",
@@ -291,6 +302,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "apply_obligation_event::Discharge",
             lean_rule: "step_discharge",
             lean_theorem: "preservation_discharge",
+            rust_event_kinds: &["discharge"],
         },
         RuleExpectation {
             id: "return",
@@ -301,6 +313,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "reject_unresolved_exit::return",
             lean_rule: "step_return",
             lean_theorem: "preservation_return",
+            rust_event_kinds: &[],
         },
         RuleExpectation {
             id: "cancel",
@@ -311,6 +324,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "verify_cancel_edges",
             lean_rule: "step_cancel",
             lean_theorem: "preservation_cancel",
+            rust_event_kinds: &[],
         },
         RuleExpectation {
             id: "panic",
@@ -321,6 +335,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "reject_unresolved_exit::panic",
             lean_rule: "step_panic",
             lean_theorem: "preservation_panic",
+            rust_event_kinds: &[],
         },
         RuleExpectation {
             id: "opaque",
@@ -331,6 +346,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
             rust_verifier: "verify_boundary_policies::Opaque",
             lean_rule: "step_opaque",
             lean_theorem: "preservation_opaque",
+            rust_event_kinds: &["escape"],
         },
     ]
 }

@@ -73,11 +73,90 @@ fn missing_lean_theorem_names_are_rejected() {
     );
 }
 
+#[test]
+fn rule_entries_name_real_rust_tests_and_lean_declarations() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let proof_test_sources = proof_test_sources();
+    let lean_sources = lean_sources();
+
+    for rule in catalog.rules {
+        assert!(
+            proof_test_sources.contains(&format!("fn {}", rule.rust_test)),
+            "rule `{}` names missing Rust verifier test `{}`",
+            rule.id,
+            rule.rust_test
+        );
+        assert!(
+            lean_sources.contains(&format!("| {}", rule.lean_rule))
+                || lean_sources.contains(&format!("theorem {}", rule.lean_rule)),
+            "rule `{}` names missing Lean rule `{}`",
+            rule.id,
+            rule.lean_rule
+        );
+        assert!(
+            lean_sources.contains(&format!("theorem {}", rule.lean_theorem)),
+            "rule `{}` names missing Lean theorem `{}`",
+            rule.id,
+            rule.lean_theorem
+        );
+    }
+}
+
+#[test]
+fn rule_projection_covers_shipped_rust_obligation_events() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let projected_events = catalog
+        .rules
+        .iter()
+        .flat_map(|rule| rule.rust_event_kinds.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+
+    for rust_event_kind in [
+        "create",
+        "discharge",
+        "transfer",
+        "move",
+        "branch_unresolved",
+        "escape",
+    ] {
+        assert!(
+            projected_events.contains(rust_event_kind),
+            "v0.16 rule projection must account for shipped Rust event `{rust_event_kind}`"
+        );
+    }
+}
+
 fn default_rule_catalog_source() -> String {
     std::fs::read_to_string(
         repo_root().join("crates/compiler/kobo-proof/rules/obligation_rules.toml"),
     )
     .expect("default obligation rule catalog should exist")
+}
+
+fn proof_test_sources() -> String {
+    let test_dir = repo_root().join("crates/compiler/kobo-proof/tests");
+    std::fs::read_dir(test_dir)
+        .expect("kobo-proof test dir should exist")
+        .map(|entry| {
+            let path = entry.expect("test entry should read").path();
+            std::fs::read_to_string(path).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn lean_sources() -> String {
+    std::fs::read_dir(repo_root().join("proof/lean"))
+        .expect("Lean proof dir should exist")
+        .map(|entry| {
+            let path = entry.expect("Lean entry should read").path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("lean") {
+                return String::new();
+            }
+            std::fs::read_to_string(path).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn repo_root() -> std::path::PathBuf {

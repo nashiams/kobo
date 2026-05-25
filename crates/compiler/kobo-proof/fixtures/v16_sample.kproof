@@ -341,10 +341,200 @@
       "template_version": "0.1"
     }
   ],
-  "generated_rust_trace": [],
-  "trace_hashes": [],
+  "generated_rust_trace": [
+    {
+      "id": "generated-core-proof_case-stmt-0",
+      "core_event_id": "core-proof_case-stmt-0",
+      "kind": "create",
+      "binding": "delivery",
+      "order": 0,
+      "source_map_anchor": {
+        "id": "anchor-core-proof_case-stmt-0",
+        "status": "mapped",
+        "generated_span": {
+          "path": "src/main.rs",
+          "line": 1,
+          "start": 0,
+          "end": 8,
+          "mapped": true,
+          "snippet": "generated trace event 0"
+        },
+        "kobo_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      "lowering_phase": "v16_sample_fixture",
+      "template_id": "queue_delivery",
+      "template_version": "0.1"
+    },
+    {
+      "id": "generated-core-proof_case-stmt-1",
+      "core_event_id": "core-proof_case-stmt-1",
+      "kind": "transfer",
+      "binding": "delivery",
+      "order": 1,
+      "source_map_anchor": {
+        "id": "anchor-core-proof_case-stmt-1",
+        "status": "mapped",
+        "generated_span": {
+          "path": "src/main.rs",
+          "line": 1,
+          "start": 10,
+          "end": 18,
+          "mapped": true,
+          "snippet": "generated trace event 1"
+        },
+        "kobo_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      "lowering_phase": "v16_sample_fixture",
+      "template_id": "queue_delivery",
+      "template_version": "0.1"
+    },
+    {
+      "id": "generated-core-proof_case-stmt-2",
+      "core_event_id": "core-proof_case-stmt-2",
+      "kind": "discharge",
+      "binding": "delivery",
+      "order": 2,
+      "source_map_anchor": {
+        "id": "anchor-core-proof_case-stmt-2",
+        "status": "mapped",
+        "generated_span": {
+          "path": "src/main.rs",
+          "line": 1,
+          "start": 20,
+          "end": 28,
+          "mapped": true,
+          "snippet": "generated trace event 2"
+        },
+        "kobo_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      "lowering_phase": "v16_sample_fixture",
+      "template_id": "queue_delivery",
+      "template_version": "0.1"
+    },
+    {
+      "id": "generated-core-proof_case-term-3",
+      "core_event_id": "core-proof_case-term-3",
+      "kind": "return",
+      "binding": null,
+      "order": 3,
+      "source_map_anchor": {
+        "id": "anchor-core-proof_case-term-3",
+        "status": "mapped",
+        "generated_span": {
+          "path": "src/main.rs",
+          "line": 1,
+          "start": 30,
+          "end": 38,
+          "mapped": true,
+          "snippet": "generated trace event 3"
+        },
+        "kobo_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      "lowering_phase": "v16_sample_fixture",
+      "template_id": "queue_delivery",
+      "template_version": "0.1"
+    },
+    {
+      "id": "generated-core-proof_case-term-4",
+      "core_event_id": "core-proof_case-term-4",
+      "kind": "panic",
+      "binding": null,
+      "order": 4,
+      "source_map_anchor": {
+        "id": "anchor-core-proof_case-term-4",
+        "status": "mapped",
+        "generated_span": {
+          "path": "src/main.rs",
+          "line": 1,
+          "start": 40,
+          "end": 48,
+          "mapped": true,
+          "snippet": "generated trace event 4"
+        },
+        "kobo_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      "lowering_phase": "v16_sample_fixture",
+      "template_id": "queue_delivery",
+      "template_version": "0.1"
+    },
+    {
+      "id": "generated-core-proof_case-term-5",
+      "core_event_id": "core-proof_case-term-5",
+      "kind": "opaque_boundary",
+      "binding": "delivery",
+      "order": 5,
+      "source_map_anchor": {
+        "id": "anchor-core-proof_case-term-5",
+        "status": "mapped",
+        "generated_span": {
+          "path": "src/main.rs",
+          "line": 1,
+          "start": 50,
+          "end": 58,
+          "mapped": true,
+          "snippet": "generated trace event 5"
+        },
+        "kobo_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      "lowering_phase": "v16_sample_fixture",
+      "template_id": "queue_delivery",
+      "template_version": "0.1"
+    }
+  ],
+  "trace_hashes": [
+    {
+      "id": "core_obligation_trace",
+      "hash": "3a167612e8d3337b"
+    },
+    {
+      "id": "generated_rust_trace",
+      "hash": "cd4f3897735f759e"
+    }
+  ],
   "translation_validation": {
-    "status": "core_only",
+    "status": "validated",
     "mismatches": []
   },
   "opaque_edge_ledger": [
@@ -355,5 +545,5 @@
     }
   ],
   "candidate_admission": [],
-  "certificate_material_hash": "d34460e219a32529"
+  "certificate_material_hash": "0ee57bc132fa4457"
 }

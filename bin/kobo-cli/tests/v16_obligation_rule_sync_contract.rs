@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use kobo_proof::{
     load_obligation_rule_catalog, parse_certificate_json, parse_obligation_rule_catalog,
     required_obligation_rule_ids, validate_obligation_rule_catalog, ObligationEventKind,
-    ObligationState,
+    ObligationState, ObligationStatus,
 };
 
 #[test]
@@ -125,6 +125,44 @@ fn rule_projection_covers_shipped_rust_obligation_events() {
             "v0.16 rule projection must account for shipped Rust event `{rust_event_kind}`"
         );
     }
+}
+
+#[test]
+fn rule_projection_preserves_rust_event_state_outputs() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+
+    for (event_kind, expected_rule_id, expected_status) in [
+        (
+            ObligationEventKind::Move,
+            "transfer",
+            ObligationStatus::Moved,
+        ),
+        (
+            ObligationEventKind::BranchUnresolved,
+            "split",
+            ObligationStatus::BranchUnresolved,
+        ),
+    ] {
+        let rule = catalog
+            .rules
+            .iter()
+            .find(|rule| rule.id == expected_rule_id)
+            .unwrap_or_else(|| panic!("catalog should contain rule `{expected_rule_id}`"));
+        assert!(
+            rule.output_states
+                .iter()
+                .any(|state| state == expected_status.as_str()),
+            "rule `{expected_rule_id}` must include Rust event `{event_kind:?}` output `{}`",
+            expected_status.as_str()
+        );
+    }
+
+    let lean_rules = lean_sources();
+    assert!(
+        lean_rules.contains("ObligationState.moved")
+            && lean_rules.contains("ObligationState.branchUnresolved"),
+        "Lean rules must explicitly model Rust moved and branch-unresolved states"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use kobo_proof::{
     load_obligation_rule_catalog, parse_certificate_json, required_obligation_rule_ids,
-    verify_certificate, TraceEventKind, VerificationContext,
+    verify_certificate, TraceEventKind, TranslationValidationStatus, VerificationContext,
 };
 
 const SAMPLE_KOBO_SOURCE: &str =
@@ -83,7 +83,7 @@ fn sample_kproof_fixture_is_accepted_by_the_rust_verifier() {
         &certificate,
         &VerificationContext {
             source: SAMPLE_KOBO_SOURCE.to_owned(),
-            source_map: None,
+            source_map: Some(sample_source_map_source()),
         },
     )
     .expect("sample .kproof should verify");
@@ -96,6 +96,102 @@ fn sample_kproof_fixture_is_accepted_by_the_rust_verifier() {
         sample_trace_source().contains(&lean_trace_literal(&certificate)),
         "Lean sample trace must mirror the exact fixture core trace sequence"
     );
+}
+
+#[test]
+fn sample_kproof_bridge_uses_validated_generated_trace() {
+    let source = sample_kproof_source();
+    let certificate = parse_certificate_json(&source).expect("sample .kproof should parse");
+
+    assert!(
+        !certificate.generated_rust_trace.is_empty(),
+        "sample bridge must include generated trace evidence"
+    );
+    assert_eq!(
+        certificate.translation_validation.status,
+        TranslationValidationStatus::Validated,
+        "sample bridge must not rely on core-only translation validation"
+    );
+    assert!(
+        certificate
+            .trace_hashes
+            .iter()
+            .any(|hash| hash.id == "core_obligation_trace"),
+        "sample bridge must hash the Core trace"
+    );
+    assert!(
+        certificate
+            .trace_hashes
+            .iter()
+            .any(|hash| hash.id == "generated_rust_trace"),
+        "sample bridge must hash the generated trace"
+    );
+}
+
+#[test]
+fn lean_sample_models_terminal_exits_as_alternatives() {
+    let sample = sample_trace_source();
+
+    assert!(
+        sample.contains("def sampleObligationTrace")
+            && sample.contains("def sampleModeledExitTrace")
+            && sample.contains("sample_return_exit_accepted")
+            && sample.contains("sample_panic_exit_accepted")
+            && sample.contains("sample_opaque_exit_recorded"),
+        "Lean sample must split obligation steps from terminal modeled exits"
+    );
+    assert!(
+        !sample.contains("TraceAccepted sampleStart sampleTrace sampleEnd"),
+        "Lean sample must not accept terminal exits as one sequential obligation trace"
+    );
+}
+
+#[test]
+fn mechanized_theorems_use_typed_env_and_accounting_evidence() {
+    let core = core_model_source();
+    let preservation = preservation_source();
+    let no_silent_loss = no_silent_loss_source();
+
+    assert!(
+        core.contains("typedObligationEnv"),
+        "core model must define a typed obligation environment invariant"
+    );
+    assert!(
+        preservation.contains("typedObligationEnv env")
+            && preservation.contains("typedObligationEnv next"),
+        "preservation theorem must preserve the typed obligation environment"
+    );
+    assert!(
+        no_silent_loss.contains("PermittedAccountingRule")
+            && no_silent_loss.contains("unresolved_local_state_change_requires_accounting"),
+        "no-silent-loss proof must account for state-changing exits, not only missing keys"
+    );
+}
+
+#[test]
+fn template_and_opaque_evidence_are_semantic_premises() {
+    let core = core_model_source();
+    let rules = rules_model_source();
+    let sample = sample_trace_source();
+    let certificate_bridge = certificate_soundness_source();
+
+    for required in [
+        "templateAssumptionMatches",
+        "templateId = \"queue_delivery\"",
+        "source = TemplateAssumptionSource.builtIn",
+        "confidence = TemplateAssumptionConfidence.modeled",
+        "opaqueLedgerRecorded ledger id \"external.queue\"",
+        "sample_template_assumption_matches",
+        "sample_opaque_ledger_recorded",
+    ] {
+        assert!(
+            core.contains(required)
+                || rules.contains(required)
+                || sample.contains(required)
+                || certificate_bridge.contains(required),
+            "mechanized bridge must use semantic evidence premise `{required}`"
+        );
+    }
 }
 
 #[test]
@@ -181,6 +277,16 @@ fn no_silent_loss_source() -> String {
         .expect("Lean no-silent-loss proof should exist")
 }
 
+fn preservation_source() -> String {
+    std::fs::read_to_string(repo_root().join("proof/lean/Preservation.lean"))
+        .expect("Lean preservation proof should exist")
+}
+
+fn certificate_soundness_source() -> String {
+    std::fs::read_to_string(repo_root().join("proof/lean/CertificateSoundness.lean"))
+        .expect("Lean certificate bridge should exist")
+}
+
 fn core_model_source() -> String {
     std::fs::read_to_string(repo_root().join("proof/lean/KoboCore.lean"))
         .expect("Lean core model should exist")
@@ -217,6 +323,13 @@ fn sample_kproof_source() -> String {
         repo_root().join("crates/compiler/kobo-proof/fixtures/v16_sample.kproof"),
     )
     .expect("sample .kproof fixture should exist")
+}
+
+fn sample_source_map_source() -> String {
+    std::fs::read_to_string(
+        repo_root().join("crates/compiler/kobo-proof/fixtures/v16_sample.sourcemap.json"),
+    )
+    .expect("sample source map fixture should exist")
 }
 
 fn repo_root() -> std::path::PathBuf {

@@ -58,21 +58,59 @@ fn rule_transfer_moves_owned_obligation_to_callee() {
 }
 
 #[test]
-fn rule_split_requires_branch_state_join_evidence() {
-    let catalog = load_obligation_rule_catalog().expect("catalog should parse");
-    let split = catalog
-        .rules
-        .iter()
-        .find(|rule| rule.id == "split")
-        .expect("split rule should exist");
+fn rule_transfer_also_models_move_projection() {
+    let certificate = certificate_with_events(vec![
+        event(
+            "stmt-0",
+            ObligationEventKind::Create,
+            Vec::new(),
+            states(&[("delivery", ObligationStatus::Owned)]),
+        ),
+        event(
+            "stmt-1",
+            ObligationEventKind::Move,
+            states(&[("delivery", ObligationStatus::Owned)]),
+            states(&[("delivery", ObligationStatus::Moved)]),
+        ),
+        event(
+            "stmt-2",
+            ObligationEventKind::Discharge,
+            states(&[("delivery", ObligationStatus::Moved)]),
+            states(&[("delivery", ObligationStatus::Resolved)]),
+        ),
+    ]);
 
-    assert!(
-        split
-            .rust_event_kinds
-            .iter()
-            .any(|event| event == "branch_unresolved"),
-        "split projection must account for branch-unresolved join evidence"
-    );
+    let report = verify(&certificate).expect("move event should replay");
+
+    assert_eq!(report.checked_obligation_events, 3);
+}
+
+#[test]
+fn rule_split_requires_branch_state_join_evidence() {
+    let certificate = certificate_with_events(vec![
+        event(
+            "stmt-0",
+            ObligationEventKind::Create,
+            Vec::new(),
+            states(&[("delivery", ObligationStatus::Owned)]),
+        ),
+        event(
+            "stmt-1",
+            ObligationEventKind::BranchUnresolved,
+            states(&[("delivery", ObligationStatus::Owned)]),
+            states(&[("delivery", ObligationStatus::BranchUnresolved)]),
+        ),
+        event(
+            "stmt-2",
+            ObligationEventKind::Escape,
+            states(&[("delivery", ObligationStatus::BranchUnresolved)]),
+            states(&[("delivery", ObligationStatus::Escaped)]),
+        ),
+    ]);
+
+    let report = verify(&certificate).expect("branch-unresolved split event should replay");
+
+    assert_eq!(report.checked_obligation_events, 3);
 }
 
 #[test]

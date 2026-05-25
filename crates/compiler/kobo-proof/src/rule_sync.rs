@@ -274,7 +274,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
         RuleExpectation {
             id: "transfer",
             input_states: &["owned"],
-            output_states: &["transferred"],
+            output_states: &["moved", "transferred"],
             allowed_modeled_exits: &[],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "apply_obligation_event::Transfer",
@@ -285,7 +285,7 @@ fn rule_expectations() -> Vec<RuleExpectation> {
         RuleExpectation {
             id: "split",
             input_states: &["owned"],
-            output_states: &["owned", "transferred"],
+            output_states: &["branch_unresolved"],
             allowed_modeled_exits: &[],
             rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
             rust_verifier: "apply_obligation_event::BranchUnresolved",

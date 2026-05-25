@@ -26,6 +26,8 @@ inductive ModeledExit where
   | return
   | cancel
   | panic
+  | errorExit
+  | breakExit
   | opaqueBoundary
   deriving DecidableEq, Repr
 
@@ -62,8 +64,35 @@ structure TemplateAssumption where
   leanAssumptionName : String
   deriving DecidableEq, Repr
 
+structure TemplateAssumptionRequirement where
+  templateId : String
+  templateVersion : String
+  source : TemplateAssumptionSource
+  confidence : TemplateAssumptionConfidence
+  rustCertificateFieldPath : String
+  leanAssumptionName : String
+  deriving DecidableEq, Repr
+
+structure OpaqueLedgerEvidence where
+  edgeId : String
+  boundary : String
+  obligationId : ObligationId
+  evidenceHash : String
+  deriving DecidableEq, Repr
+
 def templateAssumptionIsCurrent (assumption : TemplateAssumption) : Prop :=
   assumption.templateVersion = "0.1"
+
+def templateAssumptionMatches
+    (assumption : TemplateAssumption)
+    (requirement : TemplateAssumptionRequirement) :
+    Prop :=
+  assumption.templateId = requirement.templateId
+    /\ assumption.templateVersion = requirement.templateVersion
+    /\ assumption.source = requirement.source
+    /\ assumption.confidence = requirement.confidence
+    /\ assumption.rustCertificateFieldPath = requirement.rustCertificateFieldPath
+    /\ assumption.leanAssumptionName = requirement.leanAssumptionName
 
 def writeState (id : ObligationId) (state : ObligationState) (env : Env) : Env :=
   fun query =>
@@ -74,6 +103,18 @@ def writeState (id : ObligationId) (state : ObligationState) (env : Env) : Env :
 
 def wellFormedEnv (env : Env) : Prop :=
   forall query obligation, env query = some obligation -> obligation.id = query /\ query ≠ ""
+
+def knownObligationState : ObligationState -> Prop
+  | ObligationState.owned => True
+  | ObligationState.resolved => True
+  | ObligationState.transferred => True
+  | ObligationState.moved => True
+  | ObligationState.branchUnresolved => True
+  | ObligationState.escaped => True
+
+def typedObligationEnv (env : Env) : Prop :=
+  wellFormedEnv env
+    /\ forall query obligation, env query = some obligation -> knownObligationState obligation.state
 
 def isUnresolvedLocalState : ObligationState -> Prop
   | ObligationState.owned => True

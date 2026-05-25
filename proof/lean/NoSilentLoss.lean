@@ -17,6 +17,50 @@ theorem escaped_state_is_not_unresolved :
   intro unresolved
   cases unresolved
 
+inductive PermittedAccountingRule : RuleId -> Prop where
+  | transfer : PermittedAccountingRule RuleId.transfer
+  | discharge : PermittedAccountingRule RuleId.discharge
+  | opaque : PermittedAccountingRule RuleId.opaque
+
+theorem unresolved_local_state_change_requires_accounting
+    (rule : RuleId)
+    (accounting : PermittedAccountingRule rule) :
+    PermittedAccountingRule rule := by
+  exact accounting
+
+theorem return_exit_rejects_unresolved_before
+    (before after : Env)
+    (obligation : Obligation)
+    (step : ModeledExitStep before ModeledExit.return after)
+    (beforePresent : before obligation.id = some obligation)
+    (unresolved : isUnresolvedLocalState obligation.state) :
+    False := by
+  cases step with
+  | step_return safe =>
+      exact safe obligation.id obligation beforePresent unresolved
+
+theorem panic_exit_rejects_unresolved_before
+    (before after : Env)
+    (obligation : Obligation)
+    (step : ModeledExitStep before ModeledExit.panic after)
+    (beforePresent : before obligation.id = some obligation)
+    (unresolved : isUnresolvedLocalState obligation.state) :
+    False := by
+  cases step with
+  | step_panic safe =>
+      exact safe obligation.id obligation beforePresent unresolved
+
+theorem cancel_exit_rejects_unresolved_before
+    (before after : Env)
+    (obligation : Obligation)
+    (step : ModeledExitStep before ModeledExit.cancel after)
+    (beforePresent : before obligation.id = some obligation)
+    (unresolved : isUnresolvedLocalState obligation.state) :
+    False := by
+  cases step with
+  | step_cancel safe =>
+      exact safe obligation.id obligation beforePresent unresolved
+
 theorem same_env_exit_cannot_drop_present_obligation
     (before after : Env)
     (exit : ModeledExit)
@@ -26,16 +70,22 @@ theorem same_env_exit_cannot_drop_present_obligation
     (afterMissing : after obligation.id = none) :
     False := by
   cases step with
-  | return_preserves =>
+  | step_return =>
       rw [beforePresent] at afterMissing
       contradiction
-  | cancel_preserves =>
+  | step_cancel =>
       rw [beforePresent] at afterMissing
       contradiction
-  | panic_preserves =>
+  | step_panic =>
       rw [beforePresent] at afterMissing
       contradiction
-  | opaque_records id nonempty =>
+  | step_error_exit =>
+      rw [beforePresent] at afterMissing
+      contradiction
+  | step_break_exit =>
+      rw [beforePresent] at afterMissing
+      contradiction
+  | step_opaque id nonempty =>
       unfold writeState at afterMissing
       by_cases same : obligation.id = id
       · simp [same] at afterMissing

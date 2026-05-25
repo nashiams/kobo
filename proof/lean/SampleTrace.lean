@@ -20,6 +20,16 @@ def sampleTemplateAssumption : TemplateAssumption :=
     leanAssumptionName := "queue_delivery_assumption"
   }
 
+def sampleTemplateRequirement : TemplateAssumptionRequirement :=
+  {
+    templateId := "queue_delivery",
+    templateVersion := "0.1",
+    source := TemplateAssumptionSource.builtIn,
+    confidence := TemplateAssumptionConfidence.modeled,
+    rustCertificateFieldPath := "template_schemas",
+    leanAssumptionName := "queue_delivery_assumption"
+  }
+
 structure SampleTraceEvidence where
   opaqueLedgerRecorded : Bool
   deriving DecidableEq, Repr
@@ -27,11 +37,22 @@ structure SampleTraceEvidence where
 def sampleEvidence : SampleTraceEvidence :=
   { opaqueLedgerRecorded := true }
 
-def sampleLedger : ObligationId -> Bool :=
-  fun query => if query = delivery then true else false
+def sampleLedger : OpaqueLedgerEvidence :=
+  {
+    edgeId := "edge-proof_case-bb2-opaque",
+    boundary := "external.queue",
+    obligationId := delivery,
+    evidenceHash := "7ef0a4d8e1c52a63"
+  }
 
 def sampleTrace : List RuleId :=
   [RuleId.create, RuleId.transfer, RuleId.discharge, RuleId.return, RuleId.panic, RuleId.opaque]
+
+def sampleObligationTrace : List RuleId :=
+  [RuleId.create, RuleId.transfer, RuleId.discharge]
+
+def sampleModeledExitTrace : List RuleId :=
+  [RuleId.return, RuleId.panic, RuleId.opaque]
 
 def sampleStart : Env := emptyEnv
 def sampleAfterCreate : Env := writeState delivery ObligationState.owned sampleStart
@@ -47,6 +68,32 @@ theorem template_assumption_is_current :
     templateAssumptionIsCurrent sampleTemplateAssumption := by
   rfl
 
+theorem sample_template_assumption_matches :
+    templateAssumptionMatches sampleTemplateAssumption sampleTemplateRequirement := by
+  constructor
+  · rfl
+  · constructor
+    · rfl
+    · constructor
+      · rfl
+      · constructor
+        · rfl
+        · constructor
+          · rfl
+          · rfl
+
+theorem sample_template_requirement_id :
+    sampleTemplateRequirement.templateId = "queue_delivery" := by
+  rfl
+
+theorem sample_template_requirement_source :
+    sampleTemplateRequirement.source = TemplateAssumptionSource.builtIn := by
+  rfl
+
+theorem sample_template_requirement_confidence :
+    sampleTemplateRequirement.confidence = TemplateAssumptionConfidence.modeled := by
+  rfl
+
 theorem stale_template_assumption_is_rejected
     (assumption : TemplateAssumption)
     (_sameId : assumption.templateId = "queue_delivery")
@@ -59,9 +106,8 @@ theorem sample_trace_has_opaque_ledger : sampleEvidence.opaqueLedgerRecorded = t
   rfl
 
 theorem sample_opaque_ledger_recorded :
-    opaqueLedgerRecorded sampleLedger delivery := by
-  unfold opaqueLedgerRecorded sampleLedger
-  simp [delivery]
+    opaqueLedgerRecorded sampleLedger delivery "external.queue" := by
+  repeat constructor <;> decide
 
 theorem sample_after_create_has_owned_delivery :
     requiresState sampleAfterCreate delivery ObligationState.owned := by
@@ -110,8 +156,8 @@ theorem sample_after_panic_has_no_unresolved :
     noUnresolvedLocal sampleAfterPanic := by
   exact sample_after_return_has_no_unresolved
 
-theorem sample_trace_accepted :
-    TraceAccepted sampleStart sampleTrace sampleEnd := by
+theorem sample_obligation_trace_accepted :
+    TraceAccepted sampleStart sampleObligationTrace sampleAfterDischarge := by
   apply TraceAccepted.step
   · exact Step.step_create sampleStart delivery delivery_nonempty
   · apply TraceAccepted.step
@@ -120,6 +166,7 @@ theorem sample_trace_accepted :
           sampleAfterCreate
           delivery
           delivery_nonempty
+          TransferProjection.transferred
           sample_after_create_has_owned_delivery
     · apply TraceAccepted.step
       · exact
@@ -128,21 +175,29 @@ theorem sample_trace_accepted :
             delivery
             delivery_nonempty
             sample_after_transfer_can_discharge
-      · apply TraceAccepted.step
-        · exact Step.step_return sampleAfterDischarge sample_after_discharge_has_no_unresolved
-        · apply TraceAccepted.step
-          · exact Step.step_panic sampleAfterReturn sample_after_return_has_no_unresolved
-          · apply TraceAccepted.step
-            · exact
-                Step.step_opaque
-                  sampleAfterPanic
-                  delivery
-                  delivery_nonempty
-                  sample_after_panic_can_cross_opaque_boundary
-                  sampleTemplateAssumption
-                  template_assumption_is_current
-                  sampleLedger
-                  sample_opaque_ledger_recorded
-            · exact TraceAccepted.done sampleEnd
+      · exact TraceAccepted.done sampleAfterDischarge
+
+theorem sample_return_exit_accepted :
+    ModeledExitStep sampleAfterDischarge ModeledExit.return sampleAfterReturn := by
+  exact ModeledExitStep.step_return sampleAfterDischarge sample_after_discharge_has_no_unresolved
+
+theorem sample_panic_exit_accepted :
+    ModeledExitStep sampleAfterReturn ModeledExit.panic sampleAfterPanic := by
+  exact ModeledExitStep.step_panic sampleAfterReturn sample_after_return_has_no_unresolved
+
+theorem sample_opaque_exit_recorded :
+    ModeledExitStep sampleAfterPanic ModeledExit.opaqueBoundary sampleEnd := by
+  exact
+    ModeledExitStep.step_opaque
+      sampleAfterPanic
+      delivery
+      delivery_nonempty
+      sample_after_panic_can_cross_opaque_boundary
+      sampleTemplateAssumption
+      template_assumption_is_current
+      sampleTemplateRequirement
+      sample_template_assumption_matches
+      sampleLedger
+      sample_opaque_ledger_recorded
 
 end Kobo

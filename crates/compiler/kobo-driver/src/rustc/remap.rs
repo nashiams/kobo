@@ -363,6 +363,7 @@ mod tests {
             x_kobo_mappings: vec![
                 SourceMapEntry {
                     id: "map-1".to_owned(),
+                    core_event_id: None,
                     binding_name: "left".to_owned(),
                     rs_span: RsSpan {
                         line: 2,
@@ -377,6 +378,7 @@ mod tests {
                 },
                 SourceMapEntry {
                     id: "map-2".to_owned(),
+                    core_event_id: None,
                     binding_name: "right".to_owned(),
                     rs_span: RsSpan {
                         line: 3,

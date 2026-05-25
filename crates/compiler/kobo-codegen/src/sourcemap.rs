@@ -27,6 +27,8 @@ pub struct RsSpan {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SourceMapEntry {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub core_event_id: Option<String>,
     pub binding_name: String,
     pub rs_span: RsSpan,
     pub kobo_span: KoboSpan,
@@ -108,6 +110,7 @@ struct GeneratedProofEventAnchor {
     function: String,
     kind: &'static str,
     binding: Option<String>,
+    detail: Option<String>,
     role: GeneratedProofEventRole,
     rs_span: RsSpan,
 }
@@ -134,6 +137,7 @@ pub(crate) fn build_source_map_entries(
 
         entries.push(SourceMapEntry {
             id: format!("map-{}", site.node.0),
+            core_event_id: None,
             binding_name: site.binding_name.clone(),
             rs_span: RsSpan {
                 line: anchor.line,
@@ -179,6 +183,7 @@ pub(crate) fn add_proof_event_source_entries(
             };
             entries.push(SourceMapEntry {
                 id: format!("proof-map-{}-{order}", program.target),
+                core_event_id: Some(core_event_id_for_operation(order, &operation.kind)),
                 binding_name: event
                     .binding
                     .clone()
@@ -225,15 +230,57 @@ fn generated_anchor_for_operation(
 ) -> Option<RsSpan> {
     let role = generated_anchor_role(operation)?;
     let binding = event.binding.as_deref();
+    let detail = generated_anchor_detail(operation);
     let (index, anchor) = anchors.iter().enumerate().find(|(index, anchor)| {
         !used_anchors[*index]
             && anchor.function == program.target
             && anchor.kind == event.kind
             && anchor.binding.as_deref() == binding
+            && anchor.detail == detail
             && anchor.role == role
     })?;
     used_anchors[index] = true;
     Some(anchor.rs_span.clone())
+}
+
+fn generated_anchor_detail(operation: &ScenarioOpKind) -> Option<String> {
+    match operation {
+        ScenarioOpKind::Discharge { action, .. } => Some(discharge_anchor_detail(action)),
+        ScenarioOpKind::Transfer { callee, .. } => Some(callee.clone()),
+        ScenarioOpKind::ExternalBoundary {
+            call_path,
+            crate_name,
+            ..
+        } => Some(
+            call_path
+                .as_deref()
+                .and_then(last_path_segment_text)
+                .unwrap_or(crate_name)
+                .to_owned(),
+        ),
+        ScenarioOpKind::CoreTerminator {
+            kind: ScenarioCoreTerminatorKind::OpaqueBoundary,
+            boundary,
+            ..
+        } => boundary.clone(),
+        _ => None,
+    }
+}
+
+fn discharge_anchor_detail(action: &str) -> String {
+    if action.starts_with("escape:") {
+        return "escape".to_owned();
+    }
+    if action.starts_with("suppressed:") {
+        return "suppressed".to_owned();
+    }
+    action.to_owned()
+}
+
+fn last_path_segment_text(path: &str) -> Option<&str> {
+    path.rsplit("::")
+        .next()
+        .filter(|segment| !segment.is_empty())
 }
 
 fn generated_anchor_role(operation: &ScenarioOpKind) -> Option<GeneratedProofEventRole> {
@@ -306,6 +353,7 @@ fn collect_function_event_anchors(
     collector.push_anchor(
         "return",
         None,
+        None,
         GeneratedProofEventRole::ReturnFunction,
         function_span,
     );
@@ -319,6 +367,7 @@ fn collect_function_event_anchors(
         collector.push_anchor(
             "create",
             Some(binding.to_string()),
+            None,
             GeneratedProofEventRole::Create,
             binding.span(),
         );
@@ -332,6 +381,7 @@ impl GeneratedEventCollector {
         &mut self,
         kind: &'static str,
         binding: Option<String>,
+        detail: Option<String>,
         role: GeneratedProofEventRole,
         span: proc_macro2::Span,
     ) {
@@ -339,6 +389,7 @@ impl GeneratedEventCollector {
             function: self.function.clone(),
             kind,
             binding,
+            detail,
             role,
             rs_span: rs_span_from_syn(span),
         });
@@ -352,6 +403,7 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
                 self.push_anchor(
                     "create",
                     Some(binding.to_string()),
+                    None,
                     GeneratedProofEventRole::Create,
                     event_expr_span(init.expr.as_ref()),
                 );
@@ -360,6 +412,7 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
                 self.push_anchor(
                     "move",
                     Some(binding),
+                    None,
                     GeneratedProofEventRole::Move,
                     event_expr_span(init.expr.as_ref()),
                 );
@@ -373,14 +426,23 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
             self.push_anchor(
                 "discharge",
                 Some(binding),
+                Some(terminal_action_name(&call.method.to_string())),
                 GeneratedProofEventRole::Discharge,
                 call.span(),
             );
         }
-        self.push_anchor("escape", None, GeneratedProofEventRole::Escape, call.span());
+        let method_detail = Some(call.method.to_string());
+        self.push_anchor(
+            "escape",
+            None,
+            method_detail.clone(),
+            GeneratedProofEventRole::Escape,
+            call.span(),
+        );
         self.push_anchor(
             "opaque_boundary",
             None,
+            method_detail,
             GeneratedProofEventRole::OpaqueBoundary,
             call.span(),
         );
@@ -388,20 +450,36 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        let call_detail = call_detail(call);
         for argument in &call.args {
             if let Some(binding) = expr_path_ident(argument) {
                 self.push_anchor(
+                    "discharge",
+                    Some(binding.clone()),
+                    Some("escape".to_owned()),
+                    GeneratedProofEventRole::Discharge,
+                    call.span(),
+                );
+                self.push_anchor(
                     "transfer",
                     Some(binding),
+                    call_detail.clone(),
                     GeneratedProofEventRole::Transfer,
                     call.span(),
                 );
             }
         }
-        self.push_anchor("escape", None, GeneratedProofEventRole::Escape, call.span());
+        self.push_anchor(
+            "escape",
+            None,
+            call_detail.clone(),
+            GeneratedProofEventRole::Escape,
+            call.span(),
+        );
         self.push_anchor(
             "opaque_boundary",
             None,
+            call_detail,
             GeneratedProofEventRole::OpaqueBoundary,
             call.span(),
         );
@@ -411,6 +489,7 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
     fn visit_expr_try(&mut self, expr_try: &'ast syn::ExprTry) {
         self.push_anchor(
             "error_exit",
+            None,
             None,
             GeneratedProofEventRole::ErrorExit,
             event_expr_span(expr_try.expr.as_ref()),
@@ -422,6 +501,7 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
         self.push_anchor(
             "return",
             None,
+            None,
             GeneratedProofEventRole::ReturnTerminator,
             expr_return.span(),
         );
@@ -431,6 +511,7 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
     fn visit_expr_await(&mut self, expr_await: &'ast syn::ExprAwait) {
         self.push_anchor(
             "cancel",
+            None,
             None,
             GeneratedProofEventRole::Cancel,
             expr_await.span(),
@@ -452,8 +533,28 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
 impl GeneratedEventCollector {
     fn record_macro(&mut self, mac: &syn::Macro) {
         if path_last_ident(&mac.path).as_deref() == Some("panic") {
-            self.push_anchor("panic", None, GeneratedProofEventRole::Panic, mac.span());
+            self.push_anchor(
+                "panic",
+                None,
+                None,
+                GeneratedProofEventRole::Panic,
+                mac.span(),
+            );
         }
+    }
+}
+
+fn terminal_action_name(method: &str) -> String {
+    match method {
+        "detach_with_policy" => "detach-with-policy".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn call_detail(call: &syn::ExprCall) -> Option<String> {
+    match call.func.as_ref() {
+        syn::Expr::Path(path) => path_last_ident(&path.path),
+        _ => None,
     }
 }
 
@@ -750,6 +851,7 @@ mod lowering_trace_tests {
             Path::new("src/main.rs"),
             vec![SourceMapEntry {
                 id: "map-0".to_owned(),
+                core_event_id: None,
                 binding_name: "delivery".to_owned(),
                 kobo_span: span,
                 rs_span: RsSpan {
@@ -805,6 +907,7 @@ mod lowering_trace_tests {
             Path::new("src/main.rs"),
             vec![SourceMapEntry {
                 id: "map-0".to_owned(),
+                core_event_id: None,
                 binding_name: "delivery".to_owned(),
                 kobo_span: mapped_span,
                 rs_span: RsSpan {
@@ -848,6 +951,7 @@ mod lowering_trace_tests {
         let event_span = kobo_ir::KoboSpan::new(40, 50, file_id);
         let entries = vec![SourceMapEntry {
             id: "map-0".to_owned(),
+            core_event_id: None,
             binding_name: "delivery".to_owned(),
             kobo_span: mapped_span,
             rs_span: RsSpan {
@@ -954,6 +1058,42 @@ fn second() -> Result<(), ()> {
         assert!(
             entry.rs_span.line > second_function_line,
             "proof anchor must be in second function, not a global text match: {entry:?}"
+        );
+    }
+
+    #[test]
+    fn discharge_anchors_match_action_not_any_same_binding_method() {
+        let rs_source = r#"fn case() {
+    delivery.inspect();
+    delivery.ack();
+}
+"#;
+        let mut entries = Vec::new();
+        let program = ScenarioProgram {
+            file_id: FileId(1),
+            target: "case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span: kobo_ir::KoboSpan::new(20, 34, FileId(1)),
+                kind: ScenarioOpKind::Discharge {
+                    binding: "delivery".to_owned(),
+                    action: "ack".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        super::add_proof_event_source_entries(&mut entries, rs_source, &[program]);
+
+        let ack_line = line_containing(rs_source, "delivery.ack()");
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "proof-map-case-0")
+            .expect("ack discharge should get a generated anchor");
+        assert_eq!(
+            entry.rs_span.line, ack_line,
+            "ack discharge must anchor to ack(), not an earlier same-binding method: {entry:?}"
         );
     }
 

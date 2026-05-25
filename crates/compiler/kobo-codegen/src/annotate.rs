@@ -139,6 +139,7 @@ mod tests {
         let mut entries = vec![
             SourceMapEntry {
                 id: "map-1".to_owned(),
+                core_event_id: None,
                 binding_name: "x".to_owned(),
                 rs_span: RsSpan {
                     line: 2,
@@ -153,6 +154,7 @@ mod tests {
             },
             SourceMapEntry {
                 id: "map-2".to_owned(),
+                core_event_id: None,
                 binding_name: "y".to_owned(),
                 rs_span: RsSpan {
                     line: 3,

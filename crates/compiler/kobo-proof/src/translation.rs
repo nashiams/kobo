@@ -164,6 +164,7 @@ fn verify_source_map_anchor(
 
 #[derive(Clone, Debug)]
 struct SourceMapAnchorRecord {
+    core_event_id: Option<String>,
     kobo_start: usize,
     kobo_end: usize,
     rs_line: usize,
@@ -237,6 +238,7 @@ fn parse_source_map(source_map_json: &str) -> Option<SourceMapValidation> {
         anchors.insert(
             id,
             SourceMapAnchorRecord {
+                core_event_id: mapping["core_event_id"].as_str().map(str::to_owned),
                 kobo_start: mapping["kobo_span"]["start"].as_u64()? as usize,
                 kobo_end: mapping["kobo_span"]["end"].as_u64()? as usize,
                 rs_line: mapping["rs_span"]["line"].as_u64()? as usize,
@@ -288,7 +290,8 @@ fn verify_source_map_anchor_record(
         });
     };
     let anchor = &generated_event.source_map_anchor;
-    if record.kobo_start == anchor.kobo_span.start
+    if source_map_anchor_core_event_matches(record, generated_event)
+        && record.kobo_start == anchor.kobo_span.start
         && record.kobo_end == anchor.kobo_span.end
         && record.rs_line == anchor.generated_span.line
         && record.rs_start == anchor.generated_span.start
@@ -301,6 +304,19 @@ fn verify_source_map_anchor_record(
         anchor_id: generated_event.source_map_anchor.id.clone(),
         status: "stale".to_owned(),
     })
+}
+
+fn source_map_anchor_core_event_matches(
+    record: &SourceMapAnchorRecord,
+    generated_event: &GeneratedTraceEvent,
+) -> bool {
+    match record.core_event_id.as_deref() {
+        Some(core_event_id) => core_event_id == generated_event.core_event_id,
+        None => !generated_event
+            .source_map_anchor
+            .id
+            .starts_with("proof-map-"),
+    }
 }
 
 fn verify_lowering_trace_record(

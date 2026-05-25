@@ -72,6 +72,31 @@ fn rule_transfer_also_models_move_projection() {
             states(&[("delivery", ObligationStatus::Owned)]),
             states(&[("delivery", ObligationStatus::Moved)]),
         ),
+    ]);
+
+    let error = verify(&certificate).expect_err("moved obligation must remain unresolved at exit");
+
+    assert!(matches!(
+        error,
+        VerificationError::UnresolvedExitObligation { .. }
+    ));
+}
+
+#[test]
+fn rule_discharge_rejects_moved_obligation() {
+    let certificate = certificate_with_events(vec![
+        event(
+            "stmt-0",
+            ObligationEventKind::Create,
+            Vec::new(),
+            states(&[("delivery", ObligationStatus::Owned)]),
+        ),
+        event(
+            "stmt-1",
+            ObligationEventKind::Move,
+            states(&[("delivery", ObligationStatus::Owned)]),
+            states(&[("delivery", ObligationStatus::Moved)]),
+        ),
         event(
             "stmt-2",
             ObligationEventKind::Discharge,
@@ -80,13 +105,42 @@ fn rule_transfer_also_models_move_projection() {
         ),
     ]);
 
-    let report = verify(&certificate).expect("move event should replay");
+    let error = verify(&certificate).expect_err("discharge from moved must fail");
 
-    assert_eq!(report.checked_obligation_events, 3);
+    assert!(matches!(
+        error,
+        VerificationError::ObligationReplayMismatch { .. }
+    ));
 }
 
 #[test]
 fn rule_split_requires_branch_state_join_evidence() {
+    let certificate = certificate_with_events(vec![
+        event(
+            "stmt-0",
+            ObligationEventKind::Create,
+            Vec::new(),
+            states(&[("delivery", ObligationStatus::Owned)]),
+        ),
+        event(
+            "stmt-1",
+            ObligationEventKind::BranchUnresolved,
+            states(&[("delivery", ObligationStatus::Owned)]),
+            states(&[("delivery", ObligationStatus::BranchUnresolved)]),
+        ),
+    ]);
+
+    let error = verify(&certificate)
+        .expect_err("branch-unresolved obligation must remain unresolved at exit");
+
+    assert!(matches!(
+        error,
+        VerificationError::UnresolvedExitObligation { .. }
+    ));
+}
+
+#[test]
+fn rule_opaque_rejects_branch_unresolved_escape() {
     let certificate = certificate_with_events(vec![
         event(
             "stmt-0",
@@ -108,9 +162,12 @@ fn rule_split_requires_branch_state_join_evidence() {
         ),
     ]);
 
-    let report = verify(&certificate).expect("branch-unresolved split event should replay");
+    let error = verify(&certificate).expect_err("escape from branch-unresolved must fail");
 
-    assert_eq!(report.checked_obligation_events, 3);
+    assert!(matches!(
+        error,
+        VerificationError::ObligationReplayMismatch { .. }
+    ));
 }
 
 #[test]

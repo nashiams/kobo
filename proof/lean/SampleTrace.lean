@@ -24,6 +24,8 @@ def sampleTemplateRequirement : TemplateAssumptionRequirement :=
   {
     templateId := "queue_delivery",
     templateVersion := "0.1",
+    obligationKind := "Delivery",
+    statement := "Delivery obligations are discharged, returned, transferred, canceled with policy, or escaped with ledger before loop back-edge",
     source := TemplateAssumptionSource.builtIn,
     confidence := TemplateAssumptionConfidence.modeled,
     rustCertificateFieldPath := "template_schemas",
@@ -61,8 +63,8 @@ def sampleAfterTransfer : Env :=
 def sampleAfterDischarge : Env :=
   writeState delivery ObligationState.resolved sampleAfterTransfer
 def sampleAfterReturn : Env := sampleAfterDischarge
-def sampleAfterPanic : Env := sampleAfterReturn
-def sampleEnd : Env := writeState delivery ObligationState.escaped sampleAfterPanic
+def sampleAfterPanic : Env := sampleAfterDischarge
+def sampleEnd : Env := writeState delivery ObligationState.escaped sampleAfterDischarge
 
 theorem template_assumption_is_current :
     templateAssumptionIsCurrent sampleTemplateAssumption := by
@@ -80,10 +82,24 @@ theorem sample_template_assumption_matches :
         · rfl
         · constructor
           · rfl
-          · rfl
+          · constructor
+            · rfl
+            · constructor
+              · rfl
+              · constructor
+                · rfl
+                · rfl
 
 theorem sample_template_requirement_id :
     sampleTemplateRequirement.templateId = "queue_delivery" := by
+  rfl
+
+theorem sample_template_requirement_kind :
+    sampleTemplateRequirement.obligationKind = "Delivery" := by
+  rfl
+
+theorem sample_template_requirement_statement :
+    sampleTemplateRequirement.statement = "Delivery obligations are discharged, returned, transferred, canceled with policy, or escaped with ledger before loop back-edge" := by
   rfl
 
 theorem sample_template_requirement_source :
@@ -182,14 +198,14 @@ theorem sample_return_exit_accepted :
   exact ModeledExitStep.step_return sampleAfterDischarge sample_after_discharge_has_no_unresolved
 
 theorem sample_panic_exit_accepted :
-    ModeledExitStep sampleAfterReturn ModeledExit.panic sampleAfterPanic := by
-  exact ModeledExitStep.step_panic sampleAfterReturn sample_after_return_has_no_unresolved
+    ModeledExitStep sampleAfterDischarge ModeledExit.panic sampleAfterPanic := by
+  exact ModeledExitStep.step_panic sampleAfterDischarge sample_after_discharge_has_no_unresolved
 
 theorem sample_opaque_exit_recorded :
-    ModeledExitStep sampleAfterPanic ModeledExit.opaqueBoundary sampleEnd := by
+    ModeledExitStep sampleAfterDischarge ModeledExit.opaqueBoundary sampleEnd := by
   exact
     ModeledExitStep.step_opaque
-      sampleAfterPanic
+      sampleAfterDischarge
       delivery
       delivery_nonempty
       sample_after_panic_can_cross_opaque_boundary

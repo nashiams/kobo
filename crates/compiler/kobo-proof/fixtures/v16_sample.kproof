@@ -10,7 +10,7 @@
     "hash": "7c090f81542a8d79"
   },
   "core": {
-    "hash": "b8e40ffcd5e88592",
+    "hash": "5331f5f90e11a362",
     "version": "core-1",
     "cfg_nodes": [
       {
@@ -72,6 +72,51 @@
         "from": "bb1",
         "to": "bb2",
         "kind": "goto",
+        "source_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      {
+        "id": "edge-proof_case-bb2-return",
+        "function": "proof_case",
+        "from": "bb2",
+        "to": "return",
+        "kind": "return",
+        "source_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      {
+        "id": "edge-proof_case-bb2-panic",
+        "function": "proof_case",
+        "from": "bb2",
+        "to": "panic",
+        "kind": "panic",
+        "source_span": {
+          "path": "src/main.kobo",
+          "line": 1,
+          "start": 0,
+          "end": 81,
+          "mapped": true,
+          "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
+        }
+      },
+      {
+        "id": "edge-proof_case-bb2-opaque_boundary",
+        "function": "proof_case",
+        "from": "bb2",
+        "to": "opaque_boundary",
+        "kind": "opaque_boundary",
         "source_span": {
           "path": "src/main.kobo",
           "line": 1,
@@ -545,5 +590,5 @@
     }
   ],
   "candidate_admission": [],
-  "certificate_material_hash": "0ee57bc132fa4457"
+  "certificate_material_hash": "f7f5f0c480e9822a"
 }

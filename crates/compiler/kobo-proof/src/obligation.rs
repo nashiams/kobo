@@ -209,11 +209,70 @@ fn replay_block_event(
         return Ok(entry_env.clone());
     };
     verify_env_exact(&event.state_before, entry_env)?;
+    verify_event_precondition(event, entry_env)?;
     let mut observed = entry_env.clone();
     apply_obligation_event(event, &mut observed);
     verify_env_exact(&event.state_after, &observed)?;
     checked_event_ids.insert(event.id.clone());
     Ok(observed)
+}
+
+fn verify_event_precondition(
+    event: &ObligationEvent,
+    env: &ObligationEnv,
+) -> Result<(), VerificationError> {
+    let Some(binding) = event.binding.as_ref() else {
+        return Ok(());
+    };
+    let observed = env.get(binding);
+    let allowed = match event.kind {
+        ObligationEventKind::Create => observed.is_none(),
+        ObligationEventKind::Transfer
+        | ObligationEventKind::Move
+        | ObligationEventKind::BranchUnresolved => {
+            matches!(observed, Some(ObligationStatus::Owned))
+        }
+        ObligationEventKind::Discharge => {
+            matches!(
+                observed,
+                Some(ObligationStatus::Owned | ObligationStatus::Transferred)
+            )
+        }
+        ObligationEventKind::Escape => {
+            matches!(
+                observed,
+                Some(
+                    ObligationStatus::Owned
+                        | ObligationStatus::Transferred
+                        | ObligationStatus::Resolved
+                )
+            )
+        }
+        ObligationEventKind::UnsupportedContainer | ObligationEventKind::Call => true,
+    };
+    if allowed {
+        return Ok(());
+    }
+    Err(VerificationError::ObligationReplayMismatch {
+        binding: binding.clone(),
+        expected: expected_precondition(&event.kind).to_owned(),
+        observed: observed
+            .map(ObligationStatus::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    })
+}
+
+fn expected_precondition(kind: &ObligationEventKind) -> &'static str {
+    match kind {
+        ObligationEventKind::Create => "absent",
+        ObligationEventKind::Transfer
+        | ObligationEventKind::Move
+        | ObligationEventKind::BranchUnresolved => "owned",
+        ObligationEventKind::Discharge => "owned|transferred",
+        ObligationEventKind::Escape => "owned|transferred|resolved",
+        ObligationEventKind::UnsupportedContainer | ObligationEventKind::Call => "any",
+    }
 }
 
 fn edges_by_source(edges: &[CoreCfgEdge]) -> BTreeMap<&str, Vec<&CoreCfgEdge>> {
@@ -306,7 +365,10 @@ fn reject_unresolved_exit_on_edge(
 }
 
 fn modeled_exit_target(target: &str) -> bool {
-    matches!(target, "return" | "error_exit" | "panic" | "break_exit")
+    matches!(
+        target,
+        "return" | "error_exit" | "panic" | "break_exit" | "opaque_boundary"
+    )
 }
 
 fn core_successor_target(target: &str) -> String {

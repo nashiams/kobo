@@ -69,7 +69,13 @@ inductive TraceAccepted : Env -> List RuleId -> Env -> Prop where
 inductive ModeledExitStep : Env -> ModeledExit -> Env -> Prop where
   | step_return (env : Env) (safe : noUnresolvedLocal env) :
       ModeledExitStep env ModeledExit.return env
-  | step_cancel (env : Env) (safe : noUnresolvedLocal env) :
+  | step_cancel
+      (env : Env)
+      (safe : noUnresolvedLocal env)
+      (id : ObligationId)
+      (cancelEvidence : CancellationEdgeEvidence)
+      (futureObligation : FutureStateObligationEvidence)
+      (recorded : cancellationEvidenceRecorded cancelEvidence futureObligation id) :
       ModeledExitStep env ModeledExit.cancel env
   | step_panic (env : Env) (safe : noUnresolvedLocal env) :
       ModeledExitStep env ModeledExit.panic env

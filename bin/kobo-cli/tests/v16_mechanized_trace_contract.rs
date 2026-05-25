@@ -129,6 +129,32 @@ fn sample_kproof_bridge_uses_validated_generated_trace() {
 }
 
 #[test]
+fn sample_terminal_trace_events_are_cfg_backed() {
+    let source = sample_kproof_source();
+    let certificate = parse_certificate_json(&source).expect("sample .kproof should parse");
+    let cfg_targets = certificate
+        .core
+        .cfg_edges
+        .iter()
+        .map(|edge| edge.to.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for required_target in ["return", "panic", "opaque_boundary"] {
+        assert!(
+            cfg_targets.contains(required_target),
+            "sample fixture terminal trace must be backed by CFG target `{required_target}`"
+        );
+    }
+    let sample = sample_trace_source();
+    assert!(
+        sample.contains("ModeledExitStep sampleAfterDischarge ModeledExit.return")
+            && sample.contains("ModeledExitStep sampleAfterDischarge ModeledExit.panic")
+            && sample.contains("ModeledExitStep sampleAfterDischarge ModeledExit.opaqueBoundary"),
+        "Lean sample must model terminal exits as alternatives from the same CFG terminal state"
+    );
+}
+
+#[test]
 fn lean_sample_models_terminal_exits_as_alternatives() {
     let sample = sample_trace_source();
 
@@ -166,6 +192,11 @@ fn mechanized_theorems_use_typed_env_and_accounting_evidence() {
             && no_silent_loss.contains("unresolved_local_state_change_requires_accounting"),
         "no-silent-loss proof must account for state-changing exits, not only missing keys"
     );
+    assert!(
+        no_silent_loss.contains("opaque_exit_change_has_ledger_accounting")
+            && !no_silent_loss.contains("(_unresolved"),
+        "no-silent-loss proof must use unresolved premises and expose opaque ledger accounting"
+    );
 }
 
 #[test]
@@ -178,6 +209,8 @@ fn template_and_opaque_evidence_are_semantic_premises() {
     for required in [
         "templateAssumptionMatches",
         "templateId = \"queue_delivery\"",
+        "obligationKind = \"Delivery\"",
+        "statement = \"Delivery obligations are discharged",
         "source = TemplateAssumptionSource.builtIn",
         "confidence = TemplateAssumptionConfidence.modeled",
         "opaqueLedgerRecorded ledger id \"external.queue\"",
@@ -190,6 +223,25 @@ fn template_and_opaque_evidence_are_semantic_premises() {
                 || sample.contains(required)
                 || certificate_bridge.contains(required),
             "mechanized bridge must use semantic evidence premise `{required}`"
+        );
+    }
+}
+
+#[test]
+fn cancellation_evidence_is_a_semantic_premise() {
+    let core = core_model_source();
+    let rules = rules_model_source();
+
+    for required in [
+        "structure CancellationEdgeEvidence",
+        "structure FutureStateObligationEvidence",
+        "cancellationEvidenceRecorded",
+        "cancelEvidence : CancellationEdgeEvidence",
+        "futureObligation : FutureStateObligationEvidence",
+    ] {
+        assert!(
+            core.contains(required) || rules.contains(required),
+            "cancel rule must mechanize evidence premise `{required}`"
         );
     }
 }

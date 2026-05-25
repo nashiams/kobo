@@ -23,10 +23,25 @@ inductive PermittedAccountingRule : RuleId -> Prop where
   | opaque : PermittedAccountingRule RuleId.opaque
 
 theorem unresolved_local_state_change_requires_accounting
+    (before after : Env)
+    (id : ObligationId)
     (rule : RuleId)
+    (_beforeObligation afterObligation : Obligation)
+    (_beforePresent : before id = some _beforeObligation)
+    (_afterPresent : after id = some afterObligation)
+    (unresolved : isUnresolvedLocalState _beforeObligation.state)
+    (_changed : afterObligation.state ≠ _beforeObligation.state)
     (accounting : PermittedAccountingRule rule) :
-    PermittedAccountingRule rule := by
-  exact accounting
+    PermittedAccountingRule rule /\ isUnresolvedLocalState _beforeObligation.state := by
+  exact ⟨accounting, unresolved⟩
+
+theorem opaque_exit_change_has_ledger_accounting
+    (before after : Env)
+    (step : ModeledExitStep before ModeledExit.opaqueBoundary after) :
+    exists id ledger, opaqueLedgerRecorded ledger id "external.queue" := by
+  cases step with
+  | step_opaque id _nonempty _precondition _assumption _current _requirement _matched ledger recorded =>
+      exact ⟨id, ledger, recorded⟩
 
 theorem return_exit_rejects_unresolved_before
     (before after : Env)
@@ -100,8 +115,25 @@ theorem no_silent_loss_on_modeled_exit
     (step : ModeledExitStep before exit after)
     (beforePresent : before obligation.id = some obligation)
     (afterMissing : after obligation.id = none)
-    (_unresolved : isUnresolvedLocalState obligation.state) :
+    (unresolved : isUnresolvedLocalState obligation.state) :
     False := by
-  exact same_env_exit_cannot_drop_present_obligation before after exit obligation step beforePresent afterMissing
+  cases step with
+  | step_return safe =>
+      exact safe obligation.id obligation beforePresent unresolved
+  | step_cancel safe id cancelEvidence futureObligation recorded =>
+      exact safe obligation.id obligation beforePresent unresolved
+  | step_panic safe =>
+      exact safe obligation.id obligation beforePresent unresolved
+  | step_error_exit safe =>
+      exact safe obligation.id obligation beforePresent unresolved
+  | step_break_exit safe =>
+      exact safe obligation.id obligation beforePresent unresolved
+  | step_opaque id nonempty =>
+      unfold writeState at afterMissing
+      by_cases same : obligation.id = id
+      · simp [same] at afterMissing
+      · simp [same] at afterMissing
+        rw [beforePresent] at afterMissing
+        contradiction
 
 end Kobo

@@ -7,8 +7,8 @@ structure SampleCertificateBridge where
   rustRuleIds : List RuleId
   leanTraceAccepted : TraceAccepted sampleStart sampleObligationTrace sampleAfterDischarge
   returnExitAccepted : ModeledExitStep sampleAfterDischarge ModeledExit.return sampleAfterReturn
-  panicExitAccepted : ModeledExitStep sampleAfterReturn ModeledExit.panic sampleAfterPanic
-  opaqueExitRecorded : ModeledExitStep sampleAfterPanic ModeledExit.opaqueBoundary sampleEnd
+  panicExitAccepted : ModeledExitStep sampleAfterDischarge ModeledExit.panic sampleAfterPanic
+  opaqueExitRecorded : ModeledExitStep sampleAfterDischarge ModeledExit.opaqueBoundary sampleEnd
   templateCurrent : templateAssumptionIsCurrent sampleTemplateAssumption
   templateMatches : templateAssumptionMatches sampleTemplateAssumption sampleTemplateRequirement
   opaqueLedger : sampleEvidence.opaqueLedgerRecorded = true
@@ -31,8 +31,8 @@ def sampleCertificateBridge : SampleCertificateBridge :=
 theorem sample_certificate_trace_sound :
     TraceAccepted sampleStart sampleObligationTrace sampleAfterDischarge
       /\ ModeledExitStep sampleAfterDischarge ModeledExit.return sampleAfterReturn
-      /\ ModeledExitStep sampleAfterReturn ModeledExit.panic sampleAfterPanic
-      /\ ModeledExitStep sampleAfterPanic ModeledExit.opaqueBoundary sampleEnd
+      /\ ModeledExitStep sampleAfterDischarge ModeledExit.panic sampleAfterPanic
+      /\ ModeledExitStep sampleAfterDischarge ModeledExit.opaqueBoundary sampleEnd
       /\ templateAssumptionIsCurrent sampleTemplateAssumption
       /\ templateAssumptionMatches sampleTemplateAssumption sampleTemplateRequirement
       /\ opaqueLedgerRecorded sampleLedger delivery "external.queue"

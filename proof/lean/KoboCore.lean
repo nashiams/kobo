@@ -67,10 +67,25 @@ structure TemplateAssumption where
 structure TemplateAssumptionRequirement where
   templateId : String
   templateVersion : String
+  obligationKind : String
+  statement : String
   source : TemplateAssumptionSource
   confidence : TemplateAssumptionConfidence
   rustCertificateFieldPath : String
   leanAssumptionName : String
+  deriving DecidableEq, Repr
+
+structure CancellationEdgeEvidence where
+  edgeId : String
+  sourceBlock : String
+  targetBlock : String
+  cancelKind : String
+  deriving DecidableEq, Repr
+
+structure FutureStateObligationEvidence where
+  obligationId : ObligationId
+  state : ObligationState
+  sourceField : String
   deriving DecidableEq, Repr
 
 structure OpaqueLedgerEvidence where
@@ -89,10 +104,22 @@ def templateAssumptionMatches
     Prop :=
   assumption.templateId = requirement.templateId
     /\ assumption.templateVersion = requirement.templateVersion
+    /\ assumption.obligationKind = requirement.obligationKind
+    /\ assumption.statement = requirement.statement
     /\ assumption.source = requirement.source
     /\ assumption.confidence = requirement.confidence
     /\ assumption.rustCertificateFieldPath = requirement.rustCertificateFieldPath
     /\ assumption.leanAssumptionName = requirement.leanAssumptionName
+
+def cancellationEvidenceRecorded
+    (cancelEvidence : CancellationEdgeEvidence)
+    (futureObligation : FutureStateObligationEvidence)
+    (id : ObligationId) :
+    Prop :=
+  cancelEvidence.edgeId ≠ ""
+    /\ cancelEvidence.cancelKind = "await_cancel"
+    /\ futureObligation.obligationId = id
+    /\ futureObligation.sourceField = "core.async_model.future_state_obligations"
 
 def writeState (id : ObligationId) (state : ObligationState) (env : Env) : Env :=
   fun query =>

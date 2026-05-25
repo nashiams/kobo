@@ -310,13 +310,7 @@ fn source_map_anchor_core_event_matches(
     record: &SourceMapAnchorRecord,
     generated_event: &GeneratedTraceEvent,
 ) -> bool {
-    match record.core_event_id.as_deref() {
-        Some(core_event_id) => core_event_id == generated_event.core_event_id,
-        None => !generated_event
-            .source_map_anchor
-            .id
-            .starts_with("proof-map-"),
-    }
+    record.core_event_id.as_deref() == Some(generated_event.core_event_id.as_str())
 }
 
 fn verify_lowering_trace_record(

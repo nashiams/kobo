@@ -321,6 +321,7 @@ fn single_create_source_map() -> serde_json::Value {
         "x_kobo_mappings": [
             {
                 "id": "map-0",
+                "core_event_id": "core-create-delivery",
                 "binding_name": "delivery",
                 "rs_span": rs_span,
                 "kobo_span": kobo_span,

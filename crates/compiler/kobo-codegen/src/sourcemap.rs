@@ -169,7 +169,8 @@ pub(crate) fn add_proof_event_source_entries(
             else {
                 continue;
             };
-            if has_source_map_anchor(entries, operation.span) {
+            let core_event_id = core_event_id_for_operation(order, &operation.kind);
+            if has_core_event_anchor(entries, &core_event_id) {
                 continue;
             }
             let Some(rs_span) = generated_anchor_for_operation(
@@ -183,7 +184,7 @@ pub(crate) fn add_proof_event_source_entries(
             };
             entries.push(SourceMapEntry {
                 id: format!("proof-map-{}-{order}", program.target),
-                core_event_id: Some(core_event_id_for_operation(order, &operation.kind)),
+                core_event_id: Some(core_event_id),
                 binding_name: event
                     .binding
                     .clone()
@@ -215,10 +216,10 @@ pub fn wrap_source_map(
     }
 }
 
-fn has_source_map_anchor(entries: &[SourceMapEntry], span: KoboSpan) -> bool {
+fn has_core_event_anchor(entries: &[SourceMapEntry], core_event_id: &str) -> bool {
     entries
         .iter()
-        .any(|entry| entry.kobo_span == span || entry.kobo_span.overlaps(span))
+        .any(|entry| entry.core_event_id.as_deref() == Some(core_event_id))
 }
 
 fn generated_anchor_for_operation(
@@ -644,10 +645,11 @@ pub(crate) fn build_lowering_trace(
                 .filter_map(move |(order, operation)| {
                     let event =
                         lowering_event_from_operation(&operation.kind, &template_by_binding)?;
-                    let anchor = anchor_for_trace_event(source_map, operation.span)?;
+                    let core_event_id = core_event_id_for_operation(order, &operation.kind);
+                    let anchor = anchor_for_trace_event(source_map, &core_event_id)?;
                     Some(LoweringTraceEvent {
                         id: format!("lowering-{}-{order}", program.target),
-                        core_event_id: core_event_id_for_operation(order, &operation.kind),
+                        core_event_id,
                         function: program.target.clone(),
                         kind: event.kind.to_owned(),
                         binding: event.binding,
@@ -769,12 +771,12 @@ fn core_terminator_trace_kind(kind: &ScenarioCoreTerminatorKind) -> &'static str
 
 fn anchor_for_trace_event<'a>(
     source_map: &'a KoboSourceMap,
-    span: KoboSpan,
+    core_event_id: &str,
 ) -> Option<&'a SourceMapEntry> {
     source_map
         .x_kobo_mappings
         .iter()
-        .find(|entry| entry.kobo_span == span || entry.kobo_span.overlaps(span))
+        .find(|entry| entry.core_event_id.as_deref() == Some(core_event_id))
 }
 
 fn template_version(template: &ScenarioLifecycleTemplate) -> String {
@@ -846,33 +848,40 @@ mod lowering_trace_tests {
     fn lowering_trace_schema_covers_translation_event_kinds() {
         let file_id = FileId(1);
         let span = kobo_ir::KoboSpan::new(10, 20, file_id);
-        let source_map = wrap_source_map(
-            Path::new("src/main.kobo"),
-            Path::new("src/main.rs"),
-            vec![SourceMapEntry {
-                id: "map-0".to_owned(),
-                core_event_id: None,
-                binding_name: "delivery".to_owned(),
-                kobo_span: span,
-                rs_span: RsSpan {
-                    line: 1,
-                    column_start: 1,
-                    column_end: 8,
-                },
-                ownership_tier: "plain".to_owned(),
-                solver_outcome: None,
-                decision_source: None,
-                solver_node_id: None,
-            }],
-        );
+        let operations = trace_kind_operations(span);
         let program = ScenarioProgram {
             file_id,
             target: "trace_case".to_owned(),
             source_hash: "source".to_owned(),
-            operations: trace_kind_operations(span),
+            operations,
             boundaries: Vec::new(),
             coverage: ScenarioCoverageFacts::default(),
         };
+        let entries = program
+            .operations
+            .iter()
+            .enumerate()
+            .map(|(order, operation)| SourceMapEntry {
+                id: format!("proof-map-trace_case-{order}"),
+                core_event_id: Some(super::core_event_id_for_operation(order, &operation.kind)),
+                binding_name: "delivery".to_owned(),
+                kobo_span: span,
+                rs_span: RsSpan {
+                    line: order + 1,
+                    column_start: 1,
+                    column_end: 8,
+                },
+                ownership_tier: "proof-event".to_owned(),
+                solver_outcome: None,
+                decision_source: None,
+                solver_node_id: None,
+            })
+            .collect();
+        let source_map = wrap_source_map(
+            Path::new("src/main.kobo"),
+            Path::new("src/main.rs"),
+            entries,
+        );
         let kinds = build_lowering_trace(&[program], &source_map)
             .into_iter()
             .map(|event| event.kind)
@@ -941,6 +950,52 @@ mod lowering_trace_tests {
         assert!(
             trace.is_empty(),
             "unmapped proof events must not reuse a same-binding anchor: {trace:?}"
+        );
+    }
+
+    #[test]
+    fn map_entry_without_core_event_id_does_not_anchor_generated_trace() {
+        let file_id = FileId(1);
+        let span = kobo_ir::KoboSpan::new(10, 20, file_id);
+        let source_map = wrap_source_map(
+            Path::new("src/main.kobo"),
+            Path::new("src/main.rs"),
+            vec![SourceMapEntry {
+                id: "map-0".to_owned(),
+                core_event_id: None,
+                binding_name: "delivery".to_owned(),
+                kobo_span: span,
+                rs_span: RsSpan {
+                    line: 1,
+                    column_start: 1,
+                    column_end: 8,
+                },
+                ownership_tier: "plain".to_owned(),
+                solver_outcome: None,
+                decision_source: None,
+                solver_node_id: None,
+            }],
+        );
+        let program = ScenarioProgram {
+            file_id,
+            target: "trace_case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span,
+                kind: ScenarioOpKind::Discharge {
+                    binding: "delivery".to_owned(),
+                    action: "ack".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        let trace = build_lowering_trace(&[program], &source_map);
+
+        assert!(
+            trace.is_empty(),
+            "generated proof trace must require an anchor with matching core_event_id: {trace:?}"
         );
     }
 

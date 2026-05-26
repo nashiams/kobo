@@ -22,18 +22,55 @@ inductive PermittedAccountingRule : RuleId -> Prop where
   | discharge : PermittedAccountingRule RuleId.discharge
   | opaque : PermittedAccountingRule RuleId.opaque
 
+inductive ExitAccountingRule : ModeledExit -> RuleId -> Prop where
+  | return : ExitAccountingRule ModeledExit.return RuleId.return
+  | cancel : ExitAccountingRule ModeledExit.cancel RuleId.cancel
+  | panic : ExitAccountingRule ModeledExit.panic RuleId.panic
+  | opaque : ExitAccountingRule ModeledExit.opaqueBoundary RuleId.opaque
+
+inductive SilentLossOnModeledExit
+    (before after : Env)
+    (exit : ModeledExit)
+    (obligation : Obligation) :
+    Prop where
+  | missing
+      (beforePresent : before obligation.id = some obligation)
+      (afterMissing : after obligation.id = none)
+      (unresolved : isUnresolvedLocalState obligation.state) :
+      SilentLossOnModeledExit before after exit obligation
+  | unaccountedStateChange
+      (beforePresent : before obligation.id = some obligation)
+      (afterObligation : Obligation)
+      (afterPresent : after obligation.id = some afterObligation)
+      (unresolved : isUnresolvedLocalState obligation.state)
+      (changed : afterObligation.state ≠ obligation.state)
+      (afterNotUnresolved : isUnresolvedLocalState afterObligation.state -> False)
+      (noAccounting : forall rule, ExitAccountingRule exit rule -> False) :
+      SilentLossOnModeledExit before after exit obligation
+
 theorem unresolved_local_state_change_requires_accounting
     (before after : Env)
-    (id : ObligationId)
-    (rule : RuleId)
-    (_beforeObligation afterObligation : Obligation)
-    (_beforePresent : before id = some _beforeObligation)
-    (_afterPresent : after id = some afterObligation)
-    (unresolved : isUnresolvedLocalState _beforeObligation.state)
-    (_changed : afterObligation.state ≠ _beforeObligation.state)
-    (accounting : PermittedAccountingRule rule) :
-    PermittedAccountingRule rule /\ isUnresolvedLocalState _beforeObligation.state := by
-  exact ⟨accounting, unresolved⟩
+    (exit : ModeledExit)
+    (obligation afterObligation : Obligation)
+    (step : ModeledExitStep before exit after)
+    (beforePresent : before obligation.id = some obligation)
+    (afterPresent : after obligation.id = some afterObligation)
+    (unresolved : isUnresolvedLocalState obligation.state)
+    (_changed : afterObligation.state ≠ obligation.state) :
+    exists rule, ExitAccountingRule exit rule := by
+  cases step with
+  | step_return safe =>
+      exact False.elim (safe obligation.id obligation beforePresent unresolved)
+  | step_cancel safe id cancelEvidence futureObligation recorded =>
+      exact False.elim (safe obligation.id obligation beforePresent unresolved)
+  | step_panic safe =>
+      exact False.elim (safe obligation.id obligation beforePresent unresolved)
+  | step_error_exit safe =>
+      exact False.elim (safe obligation.id obligation beforePresent unresolved)
+  | step_break_exit safe =>
+      exact False.elim (safe obligation.id obligation beforePresent unresolved)
+  | step_opaque id nonempty precondition assumption current requirement matched ledger recorded =>
+      exact ⟨RuleId.opaque, ExitAccountingRule.opaque⟩
 
 theorem opaque_exit_change_has_ledger_accounting
     (before after : Env)
@@ -123,27 +160,34 @@ theorem no_silent_loss_on_modeled_exit
     (exit : ModeledExit)
     (obligation : Obligation)
     (step : ModeledExitStep before exit after)
-    (beforePresent : before obligation.id = some obligation)
-    (afterMissing : after obligation.id = none)
-    (unresolved : isUnresolvedLocalState obligation.state) :
+    (loss : SilentLossOnModeledExit before after exit obligation) :
     False := by
-  cases step with
-  | step_return safe =>
-      exact safe obligation.id obligation beforePresent unresolved
-  | step_cancel safe id cancelEvidence futureObligation recorded =>
-      exact safe obligation.id obligation beforePresent unresolved
-  | step_panic safe =>
-      exact safe obligation.id obligation beforePresent unresolved
-  | step_error_exit safe =>
-      exact safe obligation.id obligation beforePresent unresolved
-  | step_break_exit safe =>
-      exact safe obligation.id obligation beforePresent unresolved
-  | step_opaque id nonempty =>
-      unfold writeState at afterMissing
-      by_cases same : obligation.id = id
-      · simp [same] at afterMissing
-      · simp [same] at afterMissing
-        rw [beforePresent] at afterMissing
-        contradiction
+  cases loss with
+  | missing beforePresent afterMissing unresolved =>
+      cases step with
+      | step_return safe =>
+          exact safe obligation.id obligation beforePresent unresolved
+      | step_cancel safe id cancelEvidence futureObligation recorded =>
+          exact safe obligation.id obligation beforePresent unresolved
+      | step_panic safe =>
+          exact safe obligation.id obligation beforePresent unresolved
+      | step_error_exit safe =>
+          exact safe obligation.id obligation beforePresent unresolved
+      | step_break_exit safe =>
+          exact safe obligation.id obligation beforePresent unresolved
+      | step_opaque id nonempty =>
+          unfold writeState at afterMissing
+          by_cases same : obligation.id = id
+          · simp [same] at afterMissing
+          · simp [same] at afterMissing
+            rw [beforePresent] at afterMissing
+            contradiction
+  | unaccountedStateChange beforePresent afterObligation afterPresent unresolved changed _afterNotUnresolved noAccounting =>
+      have accounting :=
+        unresolved_local_state_change_requires_accounting
+          before after exit obligation afterObligation step beforePresent afterPresent unresolved changed
+      cases accounting with
+      | intro rule accounted =>
+          exact noAccounting rule accounted
 
 end Kobo

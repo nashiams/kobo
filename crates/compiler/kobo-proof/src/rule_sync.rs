@@ -3,6 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 const OBLIGATION_RULE_CATALOG: &str = include_str!("../rules/obligation_rules.toml");
+const LEAN_CORE_SOURCE: &str = include_str!("../../../../proof/lean/KoboCore.lean");
+const LEAN_OBLIGATION_RULES_SOURCE: &str =
+    include_str!("../../../../proof/lean/ObligationRules.lean");
+const LEAN_PRESERVATION_SOURCE: &str = include_str!("../../../../proof/lean/Preservation.lean");
+const LEAN_NO_SILENT_LOSS_SOURCE: &str = include_str!("../../../../proof/lean/NoSilentLoss.lean");
 const REQUIRED_RULE_IDS: [&str; 8] = [
     "create",
     "transfer",
@@ -12,6 +17,17 @@ const REQUIRED_RULE_IDS: [&str; 8] = [
     "cancel",
     "panic",
     "opaque",
+];
+
+const TEMPLATE_ASSUMPTION_FIELDS: &[(&str, &str)] = &[
+    ("templateId", "template_id"),
+    ("templateVersion", "template_version"),
+    ("obligationKind", "obligation_kind"),
+    ("statement", "statement"),
+    ("source", "source"),
+    ("confidence", "confidence"),
+    ("rustCertificateFieldPath", "rust_certificate_field_path"),
+    ("leanAssumptionName", "lean_assumption_name"),
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -44,6 +60,30 @@ pub struct ObligationRule {
     pub negative_examples: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeanRuleManifest {
+    pub rules: Vec<LeanRuleShape>,
+    pub template_assumption_fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeanRuleShape {
+    pub id: String,
+    pub constructor: String,
+    pub constructor_arity: usize,
+    pub required_premises: Vec<String>,
+    pub input_states: Vec<String>,
+    pub output_states: Vec<String>,
+    pub allowed_modeled_exits: Vec<String>,
+    pub theorem: String,
+}
+
+impl LeanRuleManifest {
+    pub fn rule(&self, id: &str) -> Option<&LeanRuleShape> {
+        self.rules.iter().find(|rule| rule.id == id)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RuleSyncError {
     #[error("obligation rule catalog parse error: {message}")]
@@ -63,24 +103,8 @@ pub enum RuleSyncError {
         expected: String,
         observed: String,
     },
-}
-
-#[derive(Clone, Debug)]
-struct RuleExpectation {
-    id: &'static str,
-    input_states: &'static [&'static str],
-    output_states: &'static [&'static str],
-    allowed_modeled_exits: &'static [&'static str],
-    rust_module: &'static str,
-    rust_verifier: &'static str,
-    rust_verifiers: &'static [&'static str],
-    lean_rule: &'static str,
-    lean_constructor_arity: usize,
-    lean_required_premises: &'static [&'static str],
-    lean_output_states: &'static [&'static str],
-    lean_theorem: &'static str,
-    template_assumption_fields: &'static [&'static str],
-    rust_event_kinds: &'static [&'static str],
+    #[error("Lean rule manifest is missing `{item}`")]
+    LeanManifestMissing { item: String },
 }
 
 pub fn required_obligation_rule_ids() -> &'static [&'static str] {
@@ -97,13 +121,22 @@ pub fn parse_obligation_rule_catalog(source: &str) -> Result<ObligationRuleCatal
     })
 }
 
+pub fn load_lean_rule_manifest() -> Result<LeanRuleManifest, RuleSyncError> {
+    parse_lean_rule_manifest(
+        LEAN_CORE_SOURCE,
+        LEAN_OBLIGATION_RULES_SOURCE,
+        &[LEAN_PRESERVATION_SOURCE, LEAN_NO_SILENT_LOSS_SOURCE],
+    )
+}
+
 pub fn validate_obligation_rule_catalog(
     catalog: &ObligationRuleCatalog,
 ) -> Result<(), RuleSyncError> {
     let rules_by_id = rules_by_id(catalog)?;
     verify_required_rules(&rules_by_id)?;
     verify_rule_fields(catalog)?;
-    verify_rule_expectations(&rules_by_id)
+    let lean_manifest = load_lean_rule_manifest()?;
+    verify_lean_manifest_with_rules(&rules_by_id, &lean_manifest)
 }
 
 fn rules_by_id<'a>(
@@ -160,6 +193,7 @@ fn verify_rule_fields(catalog: &ObligationRuleCatalog) -> Result<(), RuleSyncErr
         verify_non_empty_list(&rule.id, "examples", &rule.examples)?;
         verify_non_empty_list(&rule.id, "negative_examples", &rule.negative_examples)?;
         verify_primary_verifier(rule)?;
+        verify_field_backed_verifiers(rule)?;
     }
     Ok(())
 }
@@ -210,91 +244,422 @@ fn verify_primary_verifier(rule: &ObligationRule) -> Result<(), RuleSyncError> {
     ))
 }
 
-fn verify_rule_expectations(
-    rules_by_id: &BTreeMap<&str, &ObligationRule>,
-) -> Result<(), RuleSyncError> {
-    for expectation in rule_expectations() {
-        let rule =
-            rules_by_id
-                .get(expectation.id)
-                .ok_or_else(|| RuleSyncError::MissingRequiredRule {
-                    id: expectation.id.to_owned(),
-                })?;
-        verify_list_field(
-            rule,
-            "input_states",
-            expectation.input_states,
-            &rule.input_states,
-        )?;
-        verify_list_field(
-            rule,
-            "output_states",
-            expectation.output_states,
-            &rule.output_states,
-        )?;
-        verify_list_field(
-            rule,
-            "allowed_modeled_exits",
-            expectation.allowed_modeled_exits,
-            &rule.allowed_modeled_exits,
-        )?;
-        verify_list_field(
-            rule,
-            "rust_event_kinds",
-            expectation.rust_event_kinds,
-            &rule.rust_event_kinds,
-        )?;
-        verify_text_field(
-            rule,
-            "rust_module",
-            expectation.rust_module,
-            &rule.rust_module,
-        )?;
-        verify_text_field(
-            rule,
-            "rust_verifier",
-            expectation.rust_verifier,
-            &rule.rust_verifier,
-        )?;
-        verify_list_field(
+fn verify_field_backed_verifiers(rule: &ObligationRule) -> Result<(), RuleSyncError> {
+    for field in &rule.required_certificate_fields {
+        let Some(required_verifier) = verifier_for_certificate_field(field) else {
+            continue;
+        };
+        if rule
+            .rust_verifiers
+            .iter()
+            .any(|verifier| verifier == required_verifier)
+        {
+            continue;
+        }
+        return Err(drift(
             rule,
             "rust_verifiers",
-            expectation.rust_verifiers,
-            &rule.rust_verifiers,
+            required_verifier.to_owned(),
+            rule.rust_verifiers.join(","),
+        ));
+    }
+    Ok(())
+}
+
+fn verifier_for_certificate_field(field: &str) -> Option<&'static str> {
+    match field {
+        "core.async_model.cancel_edges" => Some("verify_cancel_edges"),
+        "core.async_model.future_state_obligations" => Some("verify_future_state_obligations"),
+        _ => None,
+    }
+}
+
+fn verify_lean_manifest_with_rules(
+    rules_by_id: &BTreeMap<&str, &ObligationRule>,
+    lean_manifest: &LeanRuleManifest,
+) -> Result<(), RuleSyncError> {
+    for id in REQUIRED_RULE_IDS {
+        let rule = rules_by_id
+            .get(id)
+            .ok_or_else(|| RuleSyncError::MissingRequiredRule { id: id.to_owned() })?;
+        let lean_rule =
+            lean_manifest
+                .rule(id)
+                .ok_or_else(|| RuleSyncError::LeanManifestMissing {
+                    item: format!("rule `{id}`"),
+                })?;
+        verify_string_list_field(
+            rule,
+            "input_states",
+            &lean_rule.input_states,
+            &rule.input_states,
         )?;
-        verify_text_field(rule, "lean_rule", expectation.lean_rule, &rule.lean_rule)?;
+        verify_string_list_field(
+            rule,
+            "output_states",
+            &lean_rule.output_states,
+            &rule.output_states,
+        )?;
+        verify_string_list_field(
+            rule,
+            "allowed_modeled_exits",
+            &lean_rule.allowed_modeled_exits,
+            &rule.allowed_modeled_exits,
+        )?;
+        verify_text_field(rule, "lean_rule", &lean_rule.constructor, &rule.lean_rule)?;
         verify_usize_field(
             rule,
             "lean_constructor_arity",
-            expectation.lean_constructor_arity,
+            lean_rule.constructor_arity,
             rule.lean_constructor_arity,
         )?;
-        verify_list_field(
+        verify_string_list_field(
             rule,
             "lean_required_premises",
-            expectation.lean_required_premises,
+            &lean_rule.required_premises,
             &rule.lean_required_premises,
         )?;
-        verify_list_field(
+        verify_string_list_field(
             rule,
             "lean_output_states",
-            expectation.lean_output_states,
+            &lean_rule.output_states,
             &rule.lean_output_states,
         )?;
-        verify_text_field(
-            rule,
-            "lean_theorem",
-            expectation.lean_theorem,
-            &rule.lean_theorem,
-        )?;
-        verify_list_field(
-            rule,
-            "template_assumption_fields",
-            expectation.template_assumption_fields,
-            &rule.template_assumption_fields,
-        )?;
+        verify_text_field(rule, "lean_theorem", &lean_rule.theorem, &rule.lean_theorem)?;
+        if id == "opaque" {
+            verify_string_list_field(
+                rule,
+                "template_assumption_fields",
+                &lean_manifest.template_assumption_fields,
+                &rule.template_assumption_fields,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn parse_lean_rule_manifest(
+    core_source: &str,
+    obligation_rules_source: &str,
+    theorem_sources: &[&str],
+) -> Result<LeanRuleManifest, RuleSyncError> {
+    let constructors = parse_lean_constructors(obligation_rules_source);
+    let input_states = parse_rule_state_relation(core_source, "RuleInputState");
+    let output_states = parse_rule_state_relation(core_source, "RuleOutputState");
+    let modeled_exits = parse_modeled_exits(obligation_rules_source);
+    let theorem_names = parse_theorem_names(theorem_sources);
+    let template_assumption_fields = parse_template_assumption_fields(core_source)?;
+    let mut rules = Vec::new();
+    for id in REQUIRED_RULE_IDS {
+        let constructor = format!("step_{id}");
+        let constructor_shape = constructors.get(constructor.as_str()).ok_or_else(|| {
+            RuleSyncError::LeanManifestMissing {
+                item: format!("constructor `{constructor}`"),
+            }
+        })?;
+        let theorem = format!("preservation_{id}");
+        if !theorem_names.contains(theorem.as_str()) {
+            return Err(RuleSyncError::LeanManifestMissing {
+                item: format!("theorem `{theorem}`"),
+            });
+        }
+        rules.push(LeanRuleShape {
+            id: id.to_owned(),
+            constructor,
+            constructor_arity: constructor_shape.arity,
+            required_premises: constructor_shape.required_premises.clone(),
+            input_states: input_states.get(id).cloned().unwrap_or_default(),
+            output_states: output_states.get(id).cloned().unwrap_or_default(),
+            allowed_modeled_exits: modeled_exits.get(id).cloned().unwrap_or_default(),
+            theorem,
+        });
+    }
+    Ok(LeanRuleManifest {
+        rules,
+        template_assumption_fields,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct LeanConstructorShape {
+    arity: usize,
+    required_premises: Vec<String>,
+}
+
+fn parse_lean_constructors(source: &str) -> BTreeMap<String, LeanConstructorShape> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut constructors = BTreeMap::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if !trimmed.starts_with("| step_") {
+            index += 1;
+            continue;
+        }
+        let mut signature = trimmed.to_owned();
+        index += 1;
+        while index < lines.len()
+            && !signature.contains(" Step ")
+            && !signature.contains(" ModeledExitStep ")
+        {
+            signature.push(' ');
+            signature.push_str(lines[index].trim());
+            index += 1;
+        }
+        if !signature.contains(" Step ") && !signature.contains(" ModeledExitStep ") {
+            continue;
+        }
+        let name = signature
+            .strip_prefix("| ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .unwrap_or_default()
+            .to_owned();
+        let parameter_groups = constructor_parameter_groups(&signature);
+        constructors.insert(
+            name,
+            LeanConstructorShape {
+                arity: parameter_groups.len(),
+                required_premises: constructor_required_premises(&parameter_groups),
+            },
+        );
+    }
+    constructors
+}
+
+fn constructor_parameter_groups(signature: &str) -> Vec<String> {
+    let end = signature
+        .find(" Step ")
+        .or_else(|| signature.find(" ModeledExitStep "))
+        .unwrap_or(signature.len());
+    let mut groups = Vec::new();
+    let mut depth = 0usize;
+    let mut start = None;
+    for (index, character) in signature[..end].char_indices() {
+        match character {
+            '(' => {
+                if depth == 0 {
+                    start = Some(index + 1);
+                }
+                depth += 1;
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some(group_start) = start.take() {
+                        groups.push(signature[group_start..index].trim().to_owned());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    groups
+}
+
+fn constructor_required_premises(parameter_groups: &[String]) -> Vec<String> {
+    let mut premises = Vec::new();
+    for group in parameter_groups {
+        if let Some(premise) = premise_name_for_parameter(group) {
+            premises.push(premise.to_owned());
+        }
+    }
+    premises
+}
+
+fn premise_name_for_parameter(group: &str) -> Option<&'static str> {
+    if group.starts_with("nonempty ") {
+        return Some("nonempty_id");
+    }
+    if group.starts_with("projection ") {
+        return Some("projection");
+    }
+    if group.starts_with("owned ") && group.contains("requiresState") {
+        return Some("requires_owned");
+    }
+    if group.starts_with("precondition ") && group.contains("dischargePrecondition") {
+        return Some("owned_or_transferred");
+    }
+    if group.starts_with("safe ") && group.contains("noUnresolvedLocal") {
+        return Some("no_unresolved_local");
+    }
+    if group.starts_with("cancelEvidence ") {
+        return Some("cancel_edge_evidence");
+    }
+    if group.starts_with("futureObligation ") {
+        return Some("future_state_obligation_evidence");
+    }
+    if group.starts_with("recorded ") && group.contains("cancellationEvidenceRecorded") {
+        return Some("cancellation_evidence_recorded");
+    }
+    if group.starts_with("precondition ") && group.contains("opaqueBoundaryPrecondition") {
+        return Some("opaque_boundary_precondition");
+    }
+    if group.starts_with("current ") && group.contains("templateAssumptionIsCurrent") {
+        return Some("template_assumption_current");
+    }
+    if group.starts_with("matched ") && group.contains("templateAssumptionMatches") {
+        return Some("template_assumption_matches_requirement");
+    }
+    if group.starts_with("recorded ") && group.contains("opaqueLedgerRecorded") {
+        return Some("opaque_ledger_recorded");
+    }
+    None
+}
+
+fn parse_rule_state_relation(source: &str, relation: &str) -> BTreeMap<String, Vec<String>> {
+    let normalized = source.split_whitespace().collect::<Vec<_>>().join(" ");
+    let marker = format!("{relation} RuleId.");
+    let mut states_by_rule = BTreeMap::<String, BTreeSet<String>>::new();
+    for segment in normalized.split(marker.as_str()).skip(1) {
+        let Some((rule, state_segment)) = segment.split_once(" ObligationState.") else {
+            continue;
+        };
+        let state = state_segment
+            .chars()
+            .take_while(|character| character.is_ascii_alphanumeric())
+            .collect::<String>();
+        if state.is_empty() {
+            continue;
+        }
+        states_by_rule
+            .entry(rule_name(rule).to_owned())
+            .or_default()
+            .insert(state_name(&state));
+    }
+    states_by_rule
+        .into_iter()
+        .map(|(rule, states)| (rule, states.into_iter().collect()))
+        .collect()
+}
+
+fn parse_modeled_exits(source: &str) -> BTreeMap<String, Vec<String>> {
+    let constructors = parse_lean_constructor_signatures(source);
+    let mut exits = BTreeMap::new();
+    for (constructor, signature) in constructors {
+        let Some(rule) = constructor.strip_prefix("step_") else {
+            continue;
+        };
+        let Some(exit) = signature
+            .split("ModeledExit.")
+            .nth(1)
+            .map(|segment| {
+                segment
+                    .chars()
+                    .take_while(|character| character.is_ascii_alphanumeric())
+                    .collect::<String>()
+            })
+            .filter(|exit| !exit.is_empty())
+        else {
+            continue;
+        };
+        if REQUIRED_RULE_IDS.contains(&rule) {
+            exits.insert(rule.to_owned(), vec![modeled_exit_name(&exit)]);
+        }
+    }
+    exits
+}
+
+fn parse_lean_constructor_signatures(source: &str) -> BTreeMap<String, String> {
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut signatures = BTreeMap::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if !trimmed.starts_with("| step_") {
+            index += 1;
+            continue;
+        }
+        let mut signature = trimmed.to_owned();
+        index += 1;
+        while index < lines.len()
+            && !signature.contains(" Step ")
+            && !signature.contains(" ModeledExitStep ")
+        {
+            signature.push(' ');
+            signature.push_str(lines[index].trim());
+            index += 1;
+        }
+        if !signature.contains(" Step ") && !signature.contains(" ModeledExitStep ") {
+            continue;
+        }
+        let name = signature
+            .strip_prefix("| ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .unwrap_or_default()
+            .to_owned();
+        signatures.insert(name, signature);
+    }
+    signatures
+}
+
+fn parse_theorem_names(sources: &[&str]) -> BTreeSet<String> {
+    sources
+        .iter()
+        .flat_map(|source| source.lines())
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("theorem ")
+                .and_then(|rest| rest.split_whitespace().next())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn parse_template_assumption_fields(source: &str) -> Result<Vec<String>, RuleSyncError> {
+    let mut fields = Vec::new();
+    let mut in_template_assumption = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "structure TemplateAssumption where" {
+            in_template_assumption = true;
+            continue;
+        }
+        if !in_template_assumption {
+            continue;
+        }
+        if trimmed.starts_with("deriving ") {
+            break;
+        }
+        let Some((field, _)) = trimmed.split_once(" : ") else {
+            continue;
+        };
+        let mapped = TEMPLATE_ASSUMPTION_FIELDS
+            .iter()
+            .find_map(|(lean_field, catalog_field)| {
+                (*lean_field == field).then_some((*catalog_field).to_owned())
+            })
+            .ok_or_else(|| RuleSyncError::LeanManifestMissing {
+                item: format!("template field `{field}`"),
+            })?;
+        fields.push(mapped);
+    }
+    if fields.is_empty() {
+        return Err(RuleSyncError::LeanManifestMissing {
+            item: "TemplateAssumption fields".to_owned(),
+        });
+    }
+    Ok(fields)
+}
+
+fn rule_name(name: &str) -> &str {
+    name.trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+}
+
+fn state_name(name: &str) -> String {
+    match name {
+        "branchUnresolved" => "branch_unresolved".to_owned(),
+        other => other.to_ascii_lowercase(),
+    }
+}
+
+fn modeled_exit_name(name: &str) -> String {
+    match name {
+        "errorExit" => "error_exit".to_owned(),
+        "breakExit" => "break_exit".to_owned(),
+        "opaqueBoundary" => "opaque_boundary".to_owned(),
+        other => other.to_ascii_lowercase(),
+    }
 }
 
 fn verify_text_field(
@@ -309,13 +674,13 @@ fn verify_text_field(
     Err(drift(rule, field, expected.to_owned(), observed.to_owned()))
 }
 
-fn verify_list_field(
+fn verify_string_list_field(
     rule: &ObligationRule,
     field: &str,
-    expected: &[&str],
+    expected: &[String],
     observed: &[String],
 ) -> Result<(), RuleSyncError> {
-    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    let expected = expected.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let observed = observed.iter().map(String::as_str).collect::<BTreeSet<_>>();
     if expected == observed {
         return Ok(());
@@ -352,157 +717,4 @@ fn drift(rule: &ObligationRule, field: &str, expected: String, observed: String)
         expected,
         observed,
     }
-}
-
-fn rule_expectations() -> Vec<RuleExpectation> {
-    vec![
-        RuleExpectation {
-            id: "create",
-            input_states: &[],
-            output_states: &["owned"],
-            allowed_modeled_exits: &[],
-            rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
-            rust_verifier: "apply_obligation_event::Create",
-            rust_verifiers: &["apply_obligation_event::Create"],
-            lean_rule: "step_create",
-            lean_constructor_arity: 3,
-            lean_required_premises: &["nonempty_id"],
-            lean_output_states: &["owned"],
-            lean_theorem: "preservation_create",
-            template_assumption_fields: &[],
-            rust_event_kinds: &["create"],
-        },
-        RuleExpectation {
-            id: "transfer",
-            input_states: &["owned"],
-            output_states: &["moved", "transferred"],
-            allowed_modeled_exits: &[],
-            rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
-            rust_verifier: "apply_obligation_event::Transfer",
-            rust_verifiers: &["apply_obligation_event::Transfer"],
-            lean_rule: "step_transfer",
-            lean_constructor_arity: 5,
-            lean_required_premises: &["nonempty_id", "projection", "requires_owned"],
-            lean_output_states: &["moved", "transferred"],
-            lean_theorem: "preservation_transfer",
-            template_assumption_fields: &[],
-            rust_event_kinds: &["transfer", "move"],
-        },
-        RuleExpectation {
-            id: "split",
-            input_states: &["owned"],
-            output_states: &["branch_unresolved"],
-            allowed_modeled_exits: &[],
-            rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
-            rust_verifier: "apply_obligation_event::BranchUnresolved",
-            rust_verifiers: &["apply_obligation_event::BranchUnresolved"],
-            lean_rule: "step_split",
-            lean_constructor_arity: 4,
-            lean_required_premises: &["nonempty_id", "requires_owned"],
-            lean_output_states: &["branch_unresolved"],
-            lean_theorem: "preservation_split",
-            template_assumption_fields: &[],
-            rust_event_kinds: &["branch_unresolved"],
-        },
-        RuleExpectation {
-            id: "discharge",
-            input_states: &["owned", "transferred"],
-            output_states: &["resolved"],
-            allowed_modeled_exits: &[],
-            rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
-            rust_verifier: "apply_obligation_event::Discharge",
-            rust_verifiers: &["apply_obligation_event::Discharge"],
-            lean_rule: "step_discharge",
-            lean_constructor_arity: 4,
-            lean_required_premises: &["nonempty_id", "owned_or_transferred"],
-            lean_output_states: &["resolved"],
-            lean_theorem: "preservation_discharge",
-            template_assumption_fields: &[],
-            rust_event_kinds: &["discharge"],
-        },
-        RuleExpectation {
-            id: "return",
-            input_states: &[],
-            output_states: &[],
-            allowed_modeled_exits: &["return"],
-            rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
-            rust_verifier: "reject_unresolved_exit::return",
-            rust_verifiers: &["reject_unresolved_exit::return"],
-            lean_rule: "step_return",
-            lean_constructor_arity: 2,
-            lean_required_premises: &["no_unresolved_local"],
-            lean_output_states: &[],
-            lean_theorem: "preservation_return",
-            template_assumption_fields: &[],
-            rust_event_kinds: &[],
-        },
-        RuleExpectation {
-            id: "cancel",
-            input_states: &[],
-            output_states: &[],
-            allowed_modeled_exits: &["cancel"],
-            rust_module: "crates/compiler/kobo-proof/src/async_model.rs",
-            rust_verifier: "verify_cancel_edges",
-            rust_verifiers: &["verify_cancel_edges", "verify_future_state_obligations"],
-            lean_rule: "step_cancel",
-            lean_constructor_arity: 6,
-            lean_required_premises: &[
-                "no_unresolved_local",
-                "cancel_edge_evidence",
-                "future_state_obligation_evidence",
-                "cancellation_evidence_recorded",
-            ],
-            lean_output_states: &[],
-            lean_theorem: "preservation_cancel",
-            template_assumption_fields: &[],
-            rust_event_kinds: &[],
-        },
-        RuleExpectation {
-            id: "panic",
-            input_states: &[],
-            output_states: &[],
-            allowed_modeled_exits: &["panic"],
-            rust_module: "crates/compiler/kobo-proof/src/obligation.rs",
-            rust_verifier: "reject_unresolved_exit::panic",
-            rust_verifiers: &["reject_unresolved_exit::panic"],
-            lean_rule: "step_panic",
-            lean_constructor_arity: 2,
-            lean_required_premises: &["no_unresolved_local"],
-            lean_output_states: &[],
-            lean_theorem: "preservation_panic",
-            template_assumption_fields: &[],
-            rust_event_kinds: &[],
-        },
-        RuleExpectation {
-            id: "opaque",
-            input_states: &["owned", "resolved", "transferred"],
-            output_states: &["escaped"],
-            allowed_modeled_exits: &["opaque_boundary"],
-            rust_module: "crates/compiler/kobo-proof/src/boundary.rs",
-            rust_verifier: "verify_boundary_policies::Opaque",
-            rust_verifiers: &["verify_boundary_policies::Opaque"],
-            lean_rule: "step_opaque",
-            lean_constructor_arity: 10,
-            lean_required_premises: &[
-                "nonempty_id",
-                "opaque_boundary_precondition",
-                "template_assumption_current",
-                "template_assumption_matches_requirement",
-                "opaque_ledger_recorded",
-            ],
-            lean_output_states: &["escaped"],
-            lean_theorem: "preservation_opaque",
-            template_assumption_fields: &[
-                "confidence",
-                "lean_assumption_name",
-                "obligation_kind",
-                "rust_certificate_field_path",
-                "source",
-                "statement",
-                "template_id",
-                "template_version",
-            ],
-            rust_event_kinds: &["escape"],
-        },
-    ]
 }

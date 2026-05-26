@@ -1,10 +1,10 @@
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, load_obligation_rule_catalog, stable_hash,
-    template_schema_hash, verify_certificate, ArtifactKind, AsyncModelEvidence, BoundaryAssumption,
-    BoundaryPolicy, CoreCfgEdge, CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence,
-    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry,
-    ProofCertificate, ReplayGrade, SourceEvidence, SourceSpan, TemplateSchemaEvidence,
-    VerificationContext, VerificationError,
+    certificate_material_hash, core_material_hash, load_lean_rule_manifest,
+    load_obligation_rule_catalog, stable_hash, template_schema_hash, verify_certificate,
+    ArtifactKind, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CoreCfgEdge, CoreCfgNode,
+    CoreEvidence, FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind,
+    ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, ReplayGrade,
+    SourceEvidence, SourceSpan, TemplateSchemaEvidence, VerificationContext, VerificationError,
 };
 
 const SOURCE: &str = "fn proof_case() { let delivery = Delivery {}; delivery.ack(); }";
@@ -280,6 +280,49 @@ fn rule_opaque_rejects_ledger_entry_without_cfg_edge() {
 }
 
 #[test]
+fn rule_opaque_rejects_cfg_edge_with_only_opaque_target() {
+    let mut certificate = certificate_with_opaque_exit();
+    certificate.core.cfg_edges[0].kind = "goto".to_owned();
+    certificate.core.cfg_edges[0].to = "opaque_boundary".to_owned();
+    rehash_core(&mut certificate);
+    rehash(&mut certificate);
+
+    let error = verify(&certificate)
+        .expect_err("opaque ledger must bind to a CFG edge whose kind and target are opaque");
+
+    assert!(matches!(
+        error,
+        VerificationError::OpaqueEdgeWithoutLedger { .. }
+    ));
+}
+
+#[test]
+fn rule_catalog_matches_parsed_lean_rule_manifest() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let manifest = load_lean_rule_manifest().expect("Lean rule manifest should parse");
+
+    for rule in &catalog.rules {
+        let lean_rule = manifest
+            .rule(rule.id.as_str())
+            .unwrap_or_else(|| panic!("Lean manifest should contain rule `{}`", rule.id));
+
+        assert_eq!(lean_rule.constructor, rule.lean_rule);
+        assert_eq!(lean_rule.constructor_arity, rule.lean_constructor_arity);
+        assert_eq!(lean_rule.required_premises, rule.lean_required_premises);
+        assert_eq!(lean_rule.output_states, rule.lean_output_states);
+    }
+    assert_eq!(
+        manifest.template_assumption_fields,
+        catalog
+            .rules
+            .iter()
+            .find(|rule| rule.id == "opaque")
+            .expect("opaque rule should exist")
+            .template_assumption_fields
+    );
+}
+
+#[test]
 fn rule_opaque_accepts_ledger_entry_for_cfg_edge() {
     let certificate = certificate_with_opaque_exit();
 
@@ -509,6 +552,18 @@ fn verify(
 fn rehash(certificate: &mut ProofCertificate) {
     certificate.certificate_material_hash =
         certificate_material_hash(certificate).expect("certificate hash should serialize");
+}
+
+fn rehash_core(certificate: &mut ProofCertificate) {
+    certificate.core.hash = core_material_hash(
+        &certificate.core.version,
+        &certificate.core.cfg_nodes,
+        &certificate.core.cfg_edges,
+        &certificate.core.loop_facts,
+        &certificate.core.loop_exit_facts,
+        &certificate.core.async_model,
+    )
+    .expect("core hash should serialize");
 }
 
 fn span() -> SourceSpan {

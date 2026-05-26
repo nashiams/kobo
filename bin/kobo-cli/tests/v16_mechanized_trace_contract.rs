@@ -162,7 +162,7 @@ fn opaque_ledger_entries_are_cfg_edge_backed() {
         .core
         .cfg_edges
         .iter()
-        .filter(|edge| edge.kind == "opaque_boundary" || edge.to == "opaque_boundary")
+        .filter(|edge| edge.kind == "opaque_boundary" && edge.to == "opaque_boundary")
         .map(|edge| edge.id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
 
@@ -360,6 +360,22 @@ fn no_silent_loss_is_over_modeled_exit_transition() {
             && source.contains("before obligation.id = some obligation")
             && source.contains("after obligation.id = none"),
         "no-silent-loss theorem must reason over before/after modeled exit states"
+    );
+}
+
+#[test]
+fn no_silent_loss_rejects_unaccounted_state_change_not_only_missing_keys() {
+    let source = no_silent_loss_source();
+
+    assert!(
+        source.contains("inductive SilentLossOnModeledExit")
+            && source.contains("unaccountedStateChange")
+            && source.contains("loss : SilentLossOnModeledExit before after exit obligation"),
+        "no-silent-loss theorem must encode unaccounted unresolved-state changes as silent loss"
+    );
+    assert!(
+        !source.contains("(accounting : PermittedAccountingRule rule)"),
+        "state-change accounting must be derived from the modeled transition, not assumed"
     );
 }
 

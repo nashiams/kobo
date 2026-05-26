@@ -41,8 +41,9 @@ pub use hash::{
     trace_material_hash,
 };
 pub use rule_sync::{
-    load_obligation_rule_catalog, parse_obligation_rule_catalog, required_obligation_rule_ids,
-    validate_obligation_rule_catalog, ObligationRule, ObligationRuleCatalog, RuleSyncError,
+    load_lean_rule_manifest, load_obligation_rule_catalog, parse_obligation_rule_catalog,
+    required_obligation_rule_ids, validate_obligation_rule_catalog, LeanRuleManifest,
+    LeanRuleShape, ObligationRule, ObligationRuleCatalog, RuleSyncError,
 };
 pub use translation::{derive_translation_validation, TranslationValidationInput};
 pub use verify::{

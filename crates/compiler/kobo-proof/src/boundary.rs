@@ -131,7 +131,7 @@ fn verify_opaque_edges_have_ledger(
 }
 
 fn is_opaque_boundary_edge(kind: &str, target: &str) -> bool {
-    kind == "opaque_boundary" || target == "opaque_boundary"
+    kind == "opaque_boundary" && target == "opaque_boundary"
 }
 
 fn verify_exact_replay_boundaries(certificate: &ProofCertificate) -> Result<(), VerificationError> {

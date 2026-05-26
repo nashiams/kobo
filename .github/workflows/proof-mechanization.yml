@@ -22,12 +22,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: leanprover/lean-action@v1
-      - run: lake build
-      - run: lake env lean proof/lean/KoboCore.lean
-      - run: lake env lean proof/lean/ObligationRules.lean
-      - run: lake env lean proof/lean/Preservation.lean
-      - run: lake env lean proof/lean/NoSilentLoss.lean
-      - run: lake env lean proof/lean/CertificateSoundness.lean
+      - run: lake build KoboProof
+        working-directory: proof/lean
+      - run: lake env lean KoboCore.lean
+        working-directory: proof/lean
+      - run: lake env lean ObligationRules.lean
+        working-directory: proof/lean
+      - run: lake env lean Preservation.lean
+        working-directory: proof/lean
+      - run: lake env lean NoSilentLoss.lean
+        working-directory: proof/lean
+      - run: lake env lean SampleTrace.lean
+        working-directory: proof/lean
+      - run: lake env lean CertificateSoundness.lean
+        working-directory: proof/lean
       - name: Reject unfinished Lean proofs
         shell: bash
         run: |

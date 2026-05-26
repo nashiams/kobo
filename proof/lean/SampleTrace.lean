@@ -110,7 +110,8 @@ theorem sample_trace_has_opaque_ledger : sampleEvidence.opaqueLedgerRecorded = t
 
 theorem sample_opaque_ledger_recorded :
     opaqueLedgerRecorded sampleLedger delivery "external.queue" := by
-  repeat constructor <;> decide
+  unfold opaqueLedgerRecorded opaqueLedgerBindsCfgEdge sampleLedger delivery
+  decide
 
 theorem sample_after_create_has_owned_delivery :
     requiresState sampleAfterCreate delivery ObligationState.owned := by

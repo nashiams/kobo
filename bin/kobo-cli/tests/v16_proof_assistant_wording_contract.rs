@@ -46,6 +46,22 @@ fn proof_ci_rejects_unchecked_lean_debt_markers() {
     }
 }
 
+#[test]
+fn proof_ci_builds_named_lean_library_target() {
+    let workflow =
+        std::fs::read_to_string(repo_root().join(".github/workflows/proof-mechanization.yml"))
+            .expect("proof mechanization workflow should exist");
+
+    assert!(
+        workflow.contains("lake build KoboProof"),
+        "proof CI must build the named Lean library target, not only the default Lake target"
+    );
+    assert!(
+        workflow.contains("working-directory: proof/lean"),
+        "proof CI must run the named Lean build from the Lean package directory"
+    );
+}
+
 fn proof_docs() -> String {
     [
         "proof/README.md",

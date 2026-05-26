@@ -9,12 +9,14 @@ The sample accepted .kproof trace has a matching mechanized trace model. That br
 Local release commands:
 
 ```powershell
-lake build
-lake env lean proof/lean/KoboCore.lean
-lake env lean proof/lean/ObligationRules.lean
-lake env lean proof/lean/Preservation.lean
-lake env lean proof/lean/NoSilentLoss.lean
-lake env lean proof/lean/CertificateSoundness.lean
+cd proof/lean
+lake build KoboProof
+lake env lean KoboCore.lean
+lake env lean ObligationRules.lean
+lake env lean Preservation.lean
+lake env lean NoSilentLoss.lean
+lake env lean SampleTrace.lean
+lake env lean CertificateSoundness.lean
 ```
 
 The Lean toolchain is pinned in `lean-toolchain` and mirrored in `proof/lean/lean-toolchain` for tools opened from the proof directory.

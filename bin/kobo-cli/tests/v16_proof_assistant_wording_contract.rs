@@ -62,6 +62,20 @@ fn proof_ci_builds_named_lean_library_target() {
     );
 }
 
+#[test]
+fn proof_docs_use_named_lean_library_target() {
+    let docs = proof_docs();
+
+    assert!(
+        docs.contains("lake build KoboProof"),
+        "proof docs must tell release reviewers to build the named Lean library target"
+    );
+    assert!(
+        !docs.contains("lake build\n"),
+        "proof docs must not document plain `lake build`, which can miss the release library target"
+    );
+}
+
 fn proof_docs() -> String {
     [
         "proof/README.md",

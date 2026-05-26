@@ -122,11 +122,19 @@ pub fn parse_obligation_rule_catalog(source: &str) -> Result<ObligationRuleCatal
 }
 
 pub fn load_lean_rule_manifest() -> Result<LeanRuleManifest, RuleSyncError> {
-    parse_lean_rule_manifest(
+    parse_lean_rule_manifest_sources(
         LEAN_CORE_SOURCE,
         LEAN_OBLIGATION_RULES_SOURCE,
         &[LEAN_PRESERVATION_SOURCE, LEAN_NO_SILENT_LOSS_SOURCE],
     )
+}
+
+pub fn parse_lean_rule_manifest_sources(
+    core_source: &str,
+    obligation_rules_source: &str,
+    theorem_sources: &[&str],
+) -> Result<LeanRuleManifest, RuleSyncError> {
+    parse_lean_rule_manifest(core_source, obligation_rules_source, theorem_sources)
 }
 
 pub fn validate_obligation_rule_catalog(
@@ -366,11 +374,22 @@ fn verify_lean_rules_have_catalog_entries(
     lean_manifest: &LeanRuleManifest,
 ) -> Result<(), RuleSyncError> {
     for lean_rule in &lean_manifest.rules {
-        if rules_by_id.contains_key(lean_rule.id.as_str()) {
+        let Some(rule) = rules_by_id.get(lean_rule.id.as_str()) else {
+            return Err(RuleSyncError::LeanManifestMissing {
+                item: format!(
+                    "catalog entry for Lean constructor `{}`",
+                    lean_rule.constructor
+                ),
+            });
+        };
+        if rule.lean_rule == lean_rule.constructor {
             continue;
         }
         return Err(RuleSyncError::LeanManifestMissing {
-            item: format!("catalog entry for Lean rule `{}`", lean_rule.id),
+            item: format!(
+                "catalog entry for Lean constructor `{}`",
+                lean_rule.constructor
+            ),
         });
     }
     Ok(())
@@ -390,7 +409,7 @@ fn parse_lean_rule_manifest(
     let template_assumption_fields = parse_template_assumption_fields(core_source)?;
     let mut rules = Vec::new();
     for (constructor, signature) in constructor_signatures {
-        let Some(id) = rule_id_for_constructor_signature(&signature) else {
+        let Some(id) = rule_id_for_constructor_signature(&constructor, &signature) else {
             continue;
         };
         let constructor_shape = constructors.get(constructor.as_str()).ok_or_else(|| {
@@ -428,33 +447,8 @@ struct LeanConstructorShape {
 }
 
 fn parse_lean_constructors(source: &str) -> BTreeMap<String, LeanConstructorShape> {
-    let lines = source.lines().collect::<Vec<_>>();
     let mut constructors = BTreeMap::new();
-    let mut index = 0;
-    while index < lines.len() {
-        let trimmed = lines[index].trim();
-        if !trimmed.starts_with("| step_") {
-            index += 1;
-            continue;
-        }
-        let mut signature = trimmed.to_owned();
-        index += 1;
-        while index < lines.len()
-            && !signature.contains(" Step ")
-            && !signature.contains(" ModeledExitStep ")
-        {
-            signature.push(' ');
-            signature.push_str(lines[index].trim());
-            index += 1;
-        }
-        if !signature.contains(" Step ") && !signature.contains(" ModeledExitStep ") {
-            continue;
-        }
-        let name = signature
-            .strip_prefix("| ")
-            .and_then(|rest| rest.split_whitespace().next())
-            .unwrap_or_default()
-            .to_owned();
+    for (name, signature) in parse_lean_constructor_signatures(source) {
         let parameter_groups = constructor_parameter_groups(&signature);
         constructors.insert(
             name,
@@ -585,11 +579,21 @@ fn parse_modeled_exits(source: &str) -> BTreeMap<String, Vec<String>> {
     exits
 }
 
-fn rule_id_for_constructor_signature(signature: &str) -> Option<String> {
+fn rule_id_for_constructor_signature(constructor: &str, signature: &str) -> Option<String> {
     if signature.contains(" Step ") {
-        return rule_id_from_step_signature(signature);
+        return rule_id_from_step_signature(signature)
+            .or_else(|| rule_id_from_constructor(constructor));
     }
-    modeled_exit_rule_for_signature(signature).map(|(rule, _)| rule)
+    if signature.contains(" ModeledExitStep ") {
+        if let Some((rule, _)) = modeled_exit_rule_for_signature(signature) {
+            return Some(rule);
+        }
+        if is_ignored_modeled_exit_signature(signature) {
+            return None;
+        }
+        return rule_id_from_constructor(constructor);
+    }
+    None
 }
 
 fn rule_id_from_step_signature(signature: &str) -> Option<String> {
@@ -602,6 +606,20 @@ fn modeled_exit_rule_for_signature(signature: &str) -> Option<(String, String)> 
     }
     let exit = lean_name_after_marker(signature, "ModeledExit.")?;
     modeled_exit_rule_id(&exit).map(|rule| (rule, exit))
+}
+
+fn is_ignored_modeled_exit_signature(signature: &str) -> bool {
+    matches!(
+        lean_name_after_marker(signature, "ModeledExit.").as_deref(),
+        Some("errorExit" | "breakExit")
+    )
+}
+
+fn rule_id_from_constructor(constructor: &str) -> Option<String> {
+    constructor
+        .strip_prefix("step_")
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
 }
 
 fn lean_name_after_marker(source: &str, marker: &str) -> Option<String> {
@@ -629,23 +647,35 @@ fn parse_lean_constructor_signatures(source: &str) -> BTreeMap<String, String> {
     let lines = source.lines().collect::<Vec<_>>();
     let mut signatures = BTreeMap::new();
     let mut index = 0;
+    let mut in_rule_inductive = false;
     while index < lines.len() {
         let trimmed = lines[index].trim();
+        if is_rule_constructor_inductive(trimmed) {
+            in_rule_inductive = true;
+            index += 1;
+            continue;
+        }
+        if in_rule_inductive && is_top_level_lean_declaration(trimmed) {
+            in_rule_inductive = false;
+            index += 1;
+            continue;
+        }
+        if !in_rule_inductive {
+            index += 1;
+            continue;
+        }
         if !trimmed.starts_with("| step_") {
             index += 1;
             continue;
         }
         let mut signature = trimmed.to_owned();
         index += 1;
-        while index < lines.len()
-            && !signature.contains(" Step ")
-            && !signature.contains(" ModeledExitStep ")
-        {
+        while index < lines.len() && !has_constructor_result_type(&signature) {
             signature.push(' ');
             signature.push_str(lines[index].trim());
             index += 1;
         }
-        if !signature.contains(" Step ") && !signature.contains(" ModeledExitStep ") {
+        if !has_constructor_result_type(&signature) {
             continue;
         }
         let name = signature
@@ -656,6 +686,24 @@ fn parse_lean_constructor_signatures(source: &str) -> BTreeMap<String, String> {
         signatures.insert(name, signature);
     }
     signatures
+}
+
+fn is_rule_constructor_inductive(trimmed: &str) -> bool {
+    trimmed.starts_with("inductive Step ") || trimmed.starts_with("inductive ModeledExitStep ")
+}
+
+fn is_top_level_lean_declaration(trimmed: &str) -> bool {
+    trimmed.starts_with("abbrev ")
+        || trimmed.starts_with("def ")
+        || trimmed.starts_with("end ")
+        || trimmed.starts_with("inductive ")
+        || trimmed.starts_with("namespace ")
+        || trimmed.starts_with("structure ")
+        || trimmed.starts_with("theorem ")
+}
+
+fn has_constructor_result_type(signature: &str) -> bool {
+    signature.contains(" Step ") || signature.contains(" ModeledExitStep ")
 }
 
 fn parse_theorem_names(sources: &[&str]) -> BTreeSet<String> {

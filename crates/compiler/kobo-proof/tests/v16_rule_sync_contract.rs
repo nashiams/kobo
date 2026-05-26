@@ -1,15 +1,21 @@
 use kobo_proof::{
     certificate_material_hash, core_material_hash, load_lean_rule_manifest,
-    load_obligation_rule_catalog, stable_hash, template_schema_hash,
-    validate_obligation_rule_catalog, validate_obligation_rule_catalog_against_lean_manifest,
-    verify_certificate, ArtifactKind, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy,
-    CoreCfgEdge, CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence, LeanRuleShape,
-    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry,
-    ProofCertificate, ReplayGrade, RuleSyncError, SourceEvidence, SourceSpan,
-    TemplateSchemaEvidence, VerificationContext, VerificationError,
+    load_obligation_rule_catalog, parse_lean_rule_manifest_sources, stable_hash,
+    template_schema_hash, validate_obligation_rule_catalog,
+    validate_obligation_rule_catalog_against_lean_manifest, verify_certificate, ArtifactKind,
+    AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CoreCfgEdge, CoreCfgNode, CoreEvidence,
+    FunctionSummary, HashEvidence, LeanRuleShape, ObligationEvent, ObligationEventKind,
+    ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, ReplayGrade,
+    RuleSyncError, SourceEvidence, SourceSpan, TemplateSchemaEvidence, VerificationContext,
+    VerificationError,
 };
 
 const SOURCE: &str = "fn proof_case() { let delivery = Delivery {}; delivery.ack(); }";
+const LEAN_CORE_SOURCE: &str = include_str!("../../../../proof/lean/KoboCore.lean");
+const LEAN_OBLIGATION_RULES_SOURCE: &str =
+    include_str!("../../../../proof/lean/ObligationRules.lean");
+const LEAN_PRESERVATION_SOURCE: &str = include_str!("../../../../proof/lean/Preservation.lean");
+const LEAN_NO_SILENT_LOSS_SOURCE: &str = include_str!("../../../../proof/lean/NoSilentLoss.lean");
 
 #[test]
 fn rule_create_records_owned_obligation() {
@@ -370,8 +376,77 @@ fn rule_catalog_rejects_lean_rule_without_catalog_entry() {
     assert!(matches!(
         error,
         RuleSyncError::LeanManifestMissing { item }
-            if item == "catalog entry for Lean rule `ghost`"
+            if item == "catalog entry for Lean constructor `step_ghost`"
     ));
+}
+
+#[test]
+fn rule_catalog_rejects_source_lean_constructor_without_catalog_entry() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let obligation_rules_source = obligation_rules_source_with_extra_step_constructor(
+        "| step_transfer_ghost (env : Env) : Step env RuleId.transfer env",
+    );
+    let manifest = parse_lean_rule_manifest_sources(
+        LEAN_CORE_SOURCE,
+        &obligation_rules_source,
+        &[LEAN_PRESERVATION_SOURCE, LEAN_NO_SILENT_LOSS_SOURCE],
+    )
+    .expect("source-level Lean manifest should parse");
+
+    assert!(
+        manifest
+            .rules
+            .iter()
+            .any(|rule| rule.constructor == "step_transfer_ghost"),
+        "source parser must surface same-ID Lean constructor drift"
+    );
+    let error = validate_obligation_rule_catalog_against_lean_manifest(&catalog, &manifest)
+        .expect_err("extra source-level Lean constructors must have catalog entries");
+
+    assert!(matches!(
+        error,
+        RuleSyncError::LeanManifestMissing { item }
+            if item == "catalog entry for Lean constructor `step_transfer_ghost`"
+    ));
+}
+
+#[test]
+fn rule_catalog_rejects_generic_source_lean_step_without_catalog_entry() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let obligation_rules_source = obligation_rules_source_with_extra_step_constructor(
+        "| step_generic (env next : Env) (rule : RuleId) : Step env rule next",
+    );
+    let preservation_source =
+        format!("{LEAN_PRESERVATION_SOURCE}\ntheorem preservation_generic : True := by trivial\n");
+    let manifest = parse_lean_rule_manifest_sources(
+        LEAN_CORE_SOURCE,
+        &obligation_rules_source,
+        &[&preservation_source, LEAN_NO_SILENT_LOSS_SOURCE],
+    )
+    .expect("generic source-level Lean manifest should parse");
+
+    assert!(
+        manifest
+            .rules
+            .iter()
+            .any(|rule| rule.constructor == "step_generic"),
+        "source parser must not skip generic Step constructors"
+    );
+    let error = validate_obligation_rule_catalog_against_lean_manifest(&catalog, &manifest)
+        .expect_err("generic source-level Lean steps must have catalog entries");
+
+    assert!(matches!(
+        error,
+        RuleSyncError::LeanManifestMissing { item }
+            if item == "catalog entry for Lean constructor `step_generic`"
+    ));
+}
+
+fn obligation_rules_source_with_extra_step_constructor(constructor: &str) -> String {
+    LEAN_OBLIGATION_RULES_SOURCE.replace(
+        "\ninductive TraceAccepted",
+        &format!("\n  {constructor}\n\ninductive TraceAccepted"),
+    )
 }
 
 #[test]

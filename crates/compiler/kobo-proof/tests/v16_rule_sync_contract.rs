@@ -1,10 +1,12 @@
 use kobo_proof::{
     certificate_material_hash, core_material_hash, load_lean_rule_manifest,
-    load_obligation_rule_catalog, stable_hash, template_schema_hash, verify_certificate,
-    ArtifactKind, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy, CoreCfgEdge, CoreCfgNode,
-    CoreEvidence, FunctionSummary, HashEvidence, ObligationEvent, ObligationEventKind,
-    ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, ReplayGrade,
-    SourceEvidence, SourceSpan, TemplateSchemaEvidence, VerificationContext, VerificationError,
+    load_obligation_rule_catalog, stable_hash, template_schema_hash,
+    validate_obligation_rule_catalog, validate_obligation_rule_catalog_against_lean_manifest,
+    verify_certificate, ArtifactKind, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy,
+    CoreCfgEdge, CoreCfgNode, CoreEvidence, FunctionSummary, HashEvidence, LeanRuleShape,
+    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry,
+    ProofCertificate, ReplayGrade, RuleSyncError, SourceEvidence, SourceSpan,
+    TemplateSchemaEvidence, VerificationContext, VerificationError,
 };
 
 const SOURCE: &str = "fn proof_case() { let delivery = Delivery {}; delivery.ack(); }";
@@ -320,6 +322,56 @@ fn rule_catalog_matches_parsed_lean_rule_manifest() {
             .expect("opaque rule should exist")
             .template_assumption_fields
     );
+}
+
+#[test]
+fn rule_catalog_rejects_entry_without_lean_counterpart() {
+    let mut catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let mut ghost_rule = catalog
+        .rules
+        .iter()
+        .find(|rule| rule.id == "create")
+        .expect("create rule should exist")
+        .clone();
+    ghost_rule.id = "ghost".to_owned();
+    ghost_rule.name = "Ghost".to_owned();
+    ghost_rule.lean_rule = "step_ghost".to_owned();
+    ghost_rule.lean_theorem = "preservation_ghost".to_owned();
+    catalog.rules.push(ghost_rule);
+
+    let error = validate_obligation_rule_catalog(&catalog)
+        .expect_err("extra catalog rules must have a Lean counterpart");
+
+    assert!(matches!(
+        error,
+        RuleSyncError::LeanManifestMissing { item }
+            if item == "Lean counterpart for catalog rule `ghost`"
+    ));
+}
+
+#[test]
+fn rule_catalog_rejects_lean_rule_without_catalog_entry() {
+    let catalog = load_obligation_rule_catalog().expect("rule catalog should parse");
+    let mut manifest = load_lean_rule_manifest().expect("Lean rule manifest should parse");
+    manifest.rules.push(LeanRuleShape {
+        id: "ghost".to_owned(),
+        constructor: "step_ghost".to_owned(),
+        constructor_arity: 1,
+        required_premises: Vec::new(),
+        input_states: Vec::new(),
+        output_states: Vec::new(),
+        allowed_modeled_exits: Vec::new(),
+        theorem: "preservation_ghost".to_owned(),
+    });
+
+    let error = validate_obligation_rule_catalog_against_lean_manifest(&catalog, &manifest)
+        .expect_err("extra Lean rules must have a catalog entry");
+
+    assert!(matches!(
+        error,
+        RuleSyncError::LeanManifestMissing { item }
+            if item == "catalog entry for Lean rule `ghost`"
+    ));
 }
 
 #[test]

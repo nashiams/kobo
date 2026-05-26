@@ -132,11 +132,18 @@ pub fn load_lean_rule_manifest() -> Result<LeanRuleManifest, RuleSyncError> {
 pub fn validate_obligation_rule_catalog(
     catalog: &ObligationRuleCatalog,
 ) -> Result<(), RuleSyncError> {
+    let lean_manifest = load_lean_rule_manifest()?;
+    validate_obligation_rule_catalog_against_lean_manifest(catalog, &lean_manifest)
+}
+
+pub fn validate_obligation_rule_catalog_against_lean_manifest(
+    catalog: &ObligationRuleCatalog,
+    lean_manifest: &LeanRuleManifest,
+) -> Result<(), RuleSyncError> {
     let rules_by_id = rules_by_id(catalog)?;
     verify_required_rules(&rules_by_id)?;
     verify_rule_fields(catalog)?;
-    let lean_manifest = load_lean_rule_manifest()?;
-    verify_lean_manifest_with_rules(&rules_by_id, &lean_manifest)
+    verify_lean_manifest_with_rules(&rules_by_id, lean_manifest)
 }
 
 fn rules_by_id<'a>(
@@ -278,15 +285,16 @@ fn verify_lean_manifest_with_rules(
     rules_by_id: &BTreeMap<&str, &ObligationRule>,
     lean_manifest: &LeanRuleManifest,
 ) -> Result<(), RuleSyncError> {
-    for id in REQUIRED_RULE_IDS {
-        let rule = rules_by_id
-            .get(id)
-            .ok_or_else(|| RuleSyncError::MissingRequiredRule { id: id.to_owned() })?;
+    verify_catalog_rules_have_lean_counterparts(rules_by_id, lean_manifest)?;
+    verify_lean_rules_have_catalog_entries(rules_by_id, lean_manifest)?;
+    for (id, rule) in rules_by_id {
+        let rule_id = *id;
+        let rule = *rule;
         let lean_rule =
             lean_manifest
-                .rule(id)
+                .rule(rule_id)
                 .ok_or_else(|| RuleSyncError::LeanManifestMissing {
-                    item: format!("rule `{id}`"),
+                    item: format!("Lean counterpart for catalog rule `{rule_id}`"),
                 })?;
         verify_string_list_field(
             rule,
@@ -326,7 +334,7 @@ fn verify_lean_manifest_with_rules(
             &rule.lean_output_states,
         )?;
         verify_text_field(rule, "lean_theorem", &lean_rule.theorem, &rule.lean_theorem)?;
-        if id == "opaque" {
+        if rule_id == "opaque" {
             verify_string_list_field(
                 rule,
                 "template_assumption_fields",
@@ -338,20 +346,53 @@ fn verify_lean_manifest_with_rules(
     Ok(())
 }
 
+fn verify_catalog_rules_have_lean_counterparts(
+    rules_by_id: &BTreeMap<&str, &ObligationRule>,
+    lean_manifest: &LeanRuleManifest,
+) -> Result<(), RuleSyncError> {
+    for id in rules_by_id.keys() {
+        if lean_manifest.rule(id).is_some() {
+            continue;
+        }
+        return Err(RuleSyncError::LeanManifestMissing {
+            item: format!("Lean counterpart for catalog rule `{id}`"),
+        });
+    }
+    Ok(())
+}
+
+fn verify_lean_rules_have_catalog_entries(
+    rules_by_id: &BTreeMap<&str, &ObligationRule>,
+    lean_manifest: &LeanRuleManifest,
+) -> Result<(), RuleSyncError> {
+    for lean_rule in &lean_manifest.rules {
+        if rules_by_id.contains_key(lean_rule.id.as_str()) {
+            continue;
+        }
+        return Err(RuleSyncError::LeanManifestMissing {
+            item: format!("catalog entry for Lean rule `{}`", lean_rule.id),
+        });
+    }
+    Ok(())
+}
+
 fn parse_lean_rule_manifest(
     core_source: &str,
     obligation_rules_source: &str,
     theorem_sources: &[&str],
 ) -> Result<LeanRuleManifest, RuleSyncError> {
     let constructors = parse_lean_constructors(obligation_rules_source);
+    let constructor_signatures = parse_lean_constructor_signatures(obligation_rules_source);
     let input_states = parse_rule_state_relation(core_source, "RuleInputState");
     let output_states = parse_rule_state_relation(core_source, "RuleOutputState");
     let modeled_exits = parse_modeled_exits(obligation_rules_source);
     let theorem_names = parse_theorem_names(theorem_sources);
     let template_assumption_fields = parse_template_assumption_fields(core_source)?;
     let mut rules = Vec::new();
-    for id in REQUIRED_RULE_IDS {
-        let constructor = format!("step_{id}");
+    for (constructor, signature) in constructor_signatures {
+        let Some(id) = rule_id_for_constructor_signature(&signature) else {
+            continue;
+        };
         let constructor_shape = constructors.get(constructor.as_str()).ok_or_else(|| {
             RuleSyncError::LeanManifestMissing {
                 item: format!("constructor `{constructor}`"),
@@ -364,13 +405,13 @@ fn parse_lean_rule_manifest(
             });
         }
         rules.push(LeanRuleShape {
-            id: id.to_owned(),
+            id: id.clone(),
             constructor,
             constructor_arity: constructor_shape.arity,
             required_premises: constructor_shape.required_premises.clone(),
-            input_states: input_states.get(id).cloned().unwrap_or_default(),
-            output_states: output_states.get(id).cloned().unwrap_or_default(),
-            allowed_modeled_exits: modeled_exits.get(id).cloned().unwrap_or_default(),
+            input_states: input_states.get(id.as_str()).cloned().unwrap_or_default(),
+            output_states: output_states.get(id.as_str()).cloned().unwrap_or_default(),
+            allowed_modeled_exits: modeled_exits.get(id.as_str()).cloned().unwrap_or_default(),
             theorem,
         });
     }
@@ -535,28 +576,53 @@ fn parse_rule_state_relation(source: &str, relation: &str) -> BTreeMap<String, V
 fn parse_modeled_exits(source: &str) -> BTreeMap<String, Vec<String>> {
     let constructors = parse_lean_constructor_signatures(source);
     let mut exits = BTreeMap::new();
-    for (constructor, signature) in constructors {
-        let Some(rule) = constructor.strip_prefix("step_") else {
+    for signature in constructors.values() {
+        let Some((rule, exit)) = modeled_exit_rule_for_signature(signature) else {
             continue;
         };
-        let Some(exit) = signature
-            .split("ModeledExit.")
-            .nth(1)
-            .map(|segment| {
-                segment
-                    .chars()
-                    .take_while(|character| character.is_ascii_alphanumeric())
-                    .collect::<String>()
-            })
-            .filter(|exit| !exit.is_empty())
-        else {
-            continue;
-        };
-        if REQUIRED_RULE_IDS.contains(&rule) {
-            exits.insert(rule.to_owned(), vec![modeled_exit_name(&exit)]);
-        }
+        exits.insert(rule, vec![modeled_exit_name(&exit)]);
     }
     exits
+}
+
+fn rule_id_for_constructor_signature(signature: &str) -> Option<String> {
+    if signature.contains(" Step ") {
+        return rule_id_from_step_signature(signature);
+    }
+    modeled_exit_rule_for_signature(signature).map(|(rule, _)| rule)
+}
+
+fn rule_id_from_step_signature(signature: &str) -> Option<String> {
+    lean_name_after_marker(signature, "RuleId.")
+}
+
+fn modeled_exit_rule_for_signature(signature: &str) -> Option<(String, String)> {
+    if !signature.contains(" ModeledExitStep ") {
+        return None;
+    }
+    let exit = lean_name_after_marker(signature, "ModeledExit.")?;
+    modeled_exit_rule_id(&exit).map(|rule| (rule, exit))
+}
+
+fn lean_name_after_marker(source: &str, marker: &str) -> Option<String> {
+    source
+        .split(marker)
+        .nth(1)
+        .map(|segment| {
+            segment
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect::<String>()
+        })
+        .filter(|name| !name.is_empty())
+}
+
+fn modeled_exit_rule_id(exit: &str) -> Option<String> {
+    match exit {
+        "errorExit" | "breakExit" => None,
+        "opaqueBoundary" => Some("opaque".to_owned()),
+        other => Some(modeled_exit_name(other)),
+    }
 }
 
 fn parse_lean_constructor_signatures(source: &str) -> BTreeMap<String, String> {

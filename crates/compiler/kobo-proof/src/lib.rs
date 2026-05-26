@@ -42,8 +42,9 @@ pub use hash::{
 };
 pub use rule_sync::{
     load_lean_rule_manifest, load_obligation_rule_catalog, parse_obligation_rule_catalog,
-    required_obligation_rule_ids, validate_obligation_rule_catalog, LeanRuleManifest,
-    LeanRuleShape, ObligationRule, ObligationRuleCatalog, RuleSyncError,
+    required_obligation_rule_ids, validate_obligation_rule_catalog,
+    validate_obligation_rule_catalog_against_lean_manifest, LeanRuleManifest, LeanRuleShape,
+    ObligationRule, ObligationRuleCatalog, RuleSyncError,
 };
 pub use translation::{derive_translation_validation, TranslationValidationInput};
 pub use verify::{

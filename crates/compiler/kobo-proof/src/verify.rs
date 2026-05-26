@@ -7,6 +7,7 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerificationContext {
     pub source: String,
+    pub source_map: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -15,6 +16,8 @@ pub struct VerificationReport {
     pub core_hash: String,
     pub checked_obligation_events: usize,
     pub certificate_material_hash: String,
+    pub translation_validation_status: String,
+    pub bounded_wording: Vec<String>,
 }
 
 pub fn parse_certificate_json(source: &str) -> Result<ProofCertificate, VerificationError> {
@@ -37,6 +40,9 @@ pub fn verify_certificate(
     crate::adapter::verify_adapter_confidence(certificate)?;
     crate::candidate::verify_candidate_admission(certificate)?;
     crate::boundary::verify_boundary_hashes(certificate)?;
+    crate::invariant::verify_loop_invariants(certificate)?;
+    crate::bounded::verify_bounded_evidence(certificate)?;
+    crate::translation::verify_translation_validation(certificate, context.source_map.as_deref())?;
     crate::obligation::verify_cfg_edge_transitions(certificate)?;
     let checked_obligation_events = crate::obligation::replay_obligation_events(certificate)?;
     let certificate_hash = verify_certificate_hash(certificate)?;
@@ -45,6 +51,16 @@ pub fn verify_certificate(
         core_hash: certificate.core.hash.clone(),
         checked_obligation_events,
         certificate_material_hash: certificate_hash,
+        translation_validation_status: certificate
+            .translation_validation
+            .status
+            .as_str()
+            .to_owned(),
+        bounded_wording: certificate
+            .bounded_evidence
+            .iter()
+            .map(|evidence| evidence.wording.clone())
+            .collect(),
     })
 }
 
@@ -455,6 +471,8 @@ fn verify_core_hash(certificate: &ProofCertificate) -> Result<(), VerificationEr
         &certificate.core.version,
         &certificate.core.cfg_nodes,
         &certificate.core.cfg_edges,
+        &certificate.core.loop_facts,
+        &certificate.core.loop_exit_facts,
         &certificate.core.async_model,
     )
     .map_err(|error| VerificationError::Parse {

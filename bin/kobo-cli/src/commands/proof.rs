@@ -21,8 +21,9 @@ pub(super) fn cmd_emit(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| file.with_extension("kproof"));
     let artifact_kind = artifact_kind_for_path(&artifact_path)?;
-    let (certificate, source) = emit_certificate(file, target, replay_grade, artifact_kind)?;
-    verify_before_write(&certificate, &source)?;
+    let (certificate, source, source_map) =
+        emit_certificate(file, target, replay_grade, artifact_kind)?;
+    verify_before_write(&certificate, &source, Some(&source_map))?;
     write_certificate(&artifact_path, &certificate)?;
     println!(
         "proof emitted: {} (claim: modeled Core obligation flow)",
@@ -50,11 +51,12 @@ pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
         emit_rejected(artifact, &error, json)?;
         anyhow::bail!("{error}");
     }
-    let source = read_certificate_source(artifact, &certificate)?;
+    let (source, source_map) = read_certificate_source_and_map(artifact, &certificate)?;
     match verify_certificate(
         &certificate,
         &VerificationContext {
             source: source.clone(),
+            source_map,
         },
     ) {
         Ok(report) => {
@@ -87,8 +89,9 @@ pub(super) fn emit_check_proof(
     replay_grade: ProofReplayGradeArg,
 ) -> anyhow::Result<()> {
     let artifact_path = file.with_extension("kproof");
-    let (certificate, source) = emit_certificate(file, None, replay_grade, ArtifactKind::Kproof)?;
-    verify_before_write(&certificate, &source)?;
+    let (certificate, source, source_map) =
+        emit_certificate(file, None, replay_grade, ArtifactKind::Kproof)?;
+    verify_before_write(&certificate, &source, Some(&source_map))?;
     write_certificate(&artifact_path, &certificate)?;
     eprintln!("proof emitted: {}", artifact_path.display());
     Ok(())
@@ -99,7 +102,7 @@ fn emit_certificate(
     target: Option<&str>,
     replay_grade: ProofReplayGradeArg,
     artifact_kind: ArtifactKind,
-) -> anyhow::Result<(ProofCertificate, String)> {
+) -> anyhow::Result<(ProofCertificate, String, String)> {
     let source = std::fs::read_to_string(file)
         .with_context(|| format!("failed to read source {}", file.display()))?;
     let mut session = build_session(file, None)?;
@@ -119,8 +122,9 @@ fn emit_certificate(
             adapter_policies: &session.config.ecosystem_policy.adapters,
             replay_grade: replay_grade.proof_grade(),
             artifact_kind,
+            source_map: Some(&artifacts.source_map),
         })?;
-    Ok((certificate, source))
+    Ok((certificate, source, artifacts.source_map.to_json_string()?))
 }
 
 fn select_scenario_program<'a>(
@@ -140,11 +144,16 @@ fn select_scenario_program<'a>(
     }
 }
 
-fn verify_before_write(certificate: &ProofCertificate, source: &str) -> anyhow::Result<()> {
+fn verify_before_write(
+    certificate: &ProofCertificate,
+    source: &str,
+    source_map: Option<&str>,
+) -> anyhow::Result<()> {
     verify_certificate(
         certificate,
         &VerificationContext {
             source: source.to_owned(),
+            source_map: source_map.map(str::to_owned),
         },
     )
     .map(|_| ())
@@ -166,10 +175,10 @@ fn read_certificate(path: &Path) -> anyhow::Result<ProofCertificate> {
     parse_certificate_json(&source).map_err(|error| anyhow::anyhow!(error))
 }
 
-fn read_certificate_source(
+fn read_certificate_source_and_map(
     artifact: &Path,
     certificate: &ProofCertificate,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Option<String>)> {
     let source_path = PathBuf::from(&certificate.source.path);
     let resolved = if source_path.is_absolute() {
         source_path
@@ -179,8 +188,15 @@ fn read_certificate_source(
             .unwrap_or_else(|| Path::new("."))
             .join(source_path)
     };
-    std::fs::read_to_string(&resolved)
-        .with_context(|| format!("failed to read certificate source {}", resolved.display()))
+    let source = std::fs::read_to_string(&resolved)
+        .with_context(|| format!("failed to read certificate source {}", resolved.display()))?;
+    let source_map = read_source_map_for_source(&resolved);
+    Ok((source, source_map))
+}
+
+fn read_source_map_for_source(source_path: &Path) -> Option<String> {
+    let map_path = source_path.with_extension("kobo.map");
+    std::fs::read_to_string(map_path).ok()
 }
 
 fn emit_verified(
@@ -202,14 +218,26 @@ fn emit_verified(
                 "core_hash": report.core_hash,
                 "checked_obligation_events": report.checked_obligation_events,
                 "certificate_material_hash": report.certificate_material_hash,
+                "translation_validation_status": &report.translation_validation_status,
+                "bounded_wording": &report.bounded_wording,
             }))?
         );
     } else {
+        let translation = match report.translation_validation_status.as_str() {
+            "validated" => "translation validated",
+            "core_only" => "Core proof only",
+            "not_generated" => "generated Rust trace not present",
+            "failed" => "translation validation failed",
+            other => other,
+        };
         println!(
-            "proof verified: {} ({} obligation event(s) replayed)",
+            "proof verified: {} ({} obligation event(s) replayed, {translation})",
             artifact.display(),
             report.checked_obligation_events
         );
+        for wording in &report.bounded_wording {
+            println!("{wording}");
+        }
     }
     Ok(())
 }

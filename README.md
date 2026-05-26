@@ -29,6 +29,29 @@ Kobo can replay modeled wards and recorded boundaries. Unknown crate internals
 stay outside the replay claim unless they are exposed through recorded boundary
 evidence.
 
+## Proof Boundaries
+
+Kobo proof artifacts use deliberately narrow wording. `proof: modeled Core obligation flow`
+means the verifier checked the modeled Kobo Core obligation facts under recorded
+assumptions, loop invariants, and declared bounds. It does not prove generated Rust binary behavior
+or arbitrary library internals.
+
+Loop proof is accepted through inferred protocol invariants, checked user
+invariants, or complete bounded enumeration. Complete finite exploration may
+say `bounded proof: all <N> histories explored under declared bounds`; sampled,
+timed-out, duplicate-inflated, or dimension-incomplete exploration must say
+`evidence only`.
+
+Generated Rust-facing claims require translation validation. `translation validated`
+means codegen-emitted lowering metadata preserves the modeled Core obligation
+trace and source-map anchors for proof-relevant events. It is not a whole-program
+Rust correctness claim.
+
+Proof assistant mechanization is a release credibility layer over the same narrow
+obligation core. v0.16 begins mechanized soundness for Kobo's obligation core and
+proof verifier. The sample accepted .kproof trace has a matching mechanized trace
+model, and that bridge remains sample-scoped.
+
 ## CLI Workflow
 
 The primary workflow is:

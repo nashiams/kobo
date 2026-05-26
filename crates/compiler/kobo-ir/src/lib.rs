@@ -43,7 +43,8 @@ pub use ownership::{
 };
 pub use resource::ResourceKind;
 pub use scenario::{
-    ScenarioBoundary, ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
+    ProtocolTemplateDefinition, ProtocolTemplateRegistry, ScenarioBoundary,
+    ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
     ScenarioCoreCfgBlock, ScenarioCoreCfgEdge, ScenarioCoreCfgFacts, ScenarioCoreTerminatorKind,
     ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioLifecycleTemplate,
     ScenarioLifecycleTemplateSource, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind,

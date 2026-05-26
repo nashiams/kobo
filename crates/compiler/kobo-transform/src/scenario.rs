@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
-    KoboSpan, MustCallObligation, ScenarioBoundary, ScenarioBoundaryCallArgument,
-    ScenarioBoundaryPolicy, ScenarioCallGraphScc, ScenarioCoreTerminatorKind,
-    ScenarioCoverageFacts, ScenarioExternalCallShape, ScenarioLifecycleTemplate,
-    ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind, ScenarioProgram,
+    KoboSpan, MustCallObligation, ProtocolTemplateRegistry, ScenarioBoundary,
+    ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioCallGraphScc,
+    ScenarioCoreTerminatorKind, ScenarioCoverageFacts, ScenarioExternalCallShape,
+    ScenarioLifecycleTemplate, ScenarioModeledBoundary, ScenarioOp, ScenarioOpKind,
+    ScenarioProgram,
 };
 use kobo_parser::KoboFile;
 use quote::ToTokens;
@@ -69,17 +70,25 @@ struct InferredLifecycleCreation {
     span: KoboSpan,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BlockFlow {
+    Fallthrough,
+    Continue { loop_id: String },
+    Break { loop_id: String },
+    Return,
+    Mixed { flows: Vec<BlockFlow> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LoopFrame {
+    id: String,
+    label: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 struct MethodShape {
     return_type: Option<String>,
     consumes_receiver: bool,
-}
-
-#[derive(Clone, Debug)]
-struct LifecycleTemplateShape {
-    template_id: &'static str,
-    type_name: &'static str,
-    actions: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +123,8 @@ struct ScenarioLowerer<'a> {
     operations: Vec<ScenarioOp>,
     coverage: ScenarioCoverageFacts,
     active_functions: Vec<String>,
+    loop_stack: Vec<LoopFrame>,
+    next_loop_id: usize,
 }
 
 pub fn build_scenario_programs(
@@ -171,11 +182,13 @@ fn lower_function(
             ..ScenarioCoverageFacts::default()
         },
         active_functions: Vec::new(),
+        loop_stack: Vec::new(),
+        next_loop_id: 0,
     };
     let mut env = BindingEnv::with_imports(imports.clone());
     lowerer.execute_function(&function.sig.ident.to_string(), function, &mut env);
     lowerer.operations.push(ScenarioOp {
-        span: KoboSpan::generated(ast.file_id),
+        span: ast.span_from_syn(function.sig.ident.span()),
         kind: ScenarioOpKind::Return,
     });
     let boundaries = boundaries_from_operations(&lowerer.operations);
@@ -650,31 +663,105 @@ impl<'a> ScenarioLowerer<'a> {
         }
     }
 
-    fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) {
+    fn execute_block(&mut self, block: &'a Block, env: &mut BindingEnv) -> BlockFlow {
         let saved_imports = env.imports.clone();
         for statement in &block.stmts {
             if let Stmt::Item(Item::Use(item_use)) = statement {
                 env.bind_imports_from_use(item_use);
                 continue;
             }
-            self.execute_statement(statement, env);
+            let flow = self.execute_statement(statement, env);
+            if flow != BlockFlow::Fallthrough {
+                env.imports = saved_imports;
+                return flow;
+            }
         }
         env.imports = saved_imports;
+        BlockFlow::Fallthrough
     }
 
-    fn execute_statement(&mut self, statement: &'a Stmt, env: &mut BindingEnv) {
+    fn execute_statement(&mut self, statement: &'a Stmt, env: &mut BindingEnv) -> BlockFlow {
         match statement {
-            Stmt::Local(local) => self.execute_local(local, env),
+            Stmt::Local(local) => {
+                self.execute_local(local, env);
+                BlockFlow::Fallthrough
+            }
             Stmt::Expr(expr, _) => self.execute_expr(expr, env),
-            Stmt::Item(_) => {}
+            Stmt::Item(_) => BlockFlow::Fallthrough,
             Stmt::Macro(statement_macro) => {
                 if self.record_panic_macro(&statement_macro.mac) {
-                    return;
+                    return BlockFlow::Return;
                 }
                 if !self.record_spawn_macro(&statement_macro.mac) {
                     self.unsupported_macro(&statement_macro.mac);
                 }
+                BlockFlow::Fallthrough
             }
+        }
+    }
+
+    fn push_loop_frame(&mut self, label: Option<String>) -> LoopFrame {
+        let index = self.next_loop_id;
+        self.next_loop_id += 1;
+        let id = match label.as_deref() {
+            Some(label) => format!("loop-{label}-{index}"),
+            None => format!("loop-{index}"),
+        };
+        let frame = LoopFrame { id, label };
+        self.loop_stack.push(frame.clone());
+        frame
+    }
+
+    fn pop_loop_frame(&mut self, loop_id: &str) {
+        if self
+            .loop_stack
+            .last()
+            .is_some_and(|frame| frame.id == loop_id)
+        {
+            self.loop_stack.pop();
+        }
+    }
+
+    fn resolve_loop_frame(&self, label: Option<&syn::Lifetime>) -> Option<LoopFrame> {
+        match label.map(lifetime_label_name) {
+            Some(label) => self
+                .loop_stack
+                .iter()
+                .rev()
+                .find(|frame| frame.label.as_deref() == Some(label.as_str()))
+                .cloned(),
+            None => self.loop_stack.last().cloned(),
+        }
+    }
+
+    fn finish_loop_flow(
+        &mut self,
+        flow: BlockFlow,
+        frame: &LoopFrame,
+        can_exit: bool,
+        node: &impl Spanned,
+    ) -> BlockFlow {
+        match flow {
+            BlockFlow::Fallthrough => {
+                self.operations.push(ScenarioOp {
+                    span: self.span(node),
+                    kind: ScenarioOpKind::LoopBackEdge {
+                        loop_id: frame.id.clone(),
+                        can_exit,
+                    },
+                });
+                BlockFlow::Fallthrough
+            }
+            BlockFlow::Continue { loop_id } if loop_id == frame.id => BlockFlow::Fallthrough,
+            BlockFlow::Break { loop_id } if loop_id == frame.id => BlockFlow::Fallthrough,
+            BlockFlow::Mixed { flows } => {
+                let remaining = flows
+                    .into_iter()
+                    .filter(|flow| !loop_consumes_flow(flow, frame))
+                    .collect::<Vec<_>>();
+                combined_non_fallthrough_flow(remaining)
+            }
+            flow => flow,
         }
     }
 
@@ -704,6 +791,7 @@ impl<'a> ScenarioLowerer<'a> {
         if let Some(creation) = self.local_lifecycle_creation(local, init.expr.as_ref(), env) {
             if expr_contains_await(init.expr.as_ref()) {
                 self.record_unsupported_construct("lifecycle_method_await_initializer");
+                self.execute_expr(init.expr.as_ref(), env);
             }
             env.bind_obligation(
                 creation.binding.clone(),
@@ -817,12 +905,9 @@ impl<'a> ScenarioLowerer<'a> {
         lifecycle_template_from_shape(&method_name, method_shape, self.method_shapes).map(
             |template| InferredLifecycleCreation {
                 binding,
-                type_name: template.type_name.to_owned(),
-                actions: template.actions,
-                template: ScenarioLifecycleTemplate::inferred(
-                    template.template_id,
-                    template.template_id,
-                ),
+                type_name: template.obligation_kind.to_owned(),
+                actions: template.terminal_action_strings(),
+                template: ScenarioLifecycleTemplate::from_protocol_definition(template),
                 span: self.span(call),
             },
         )
@@ -871,13 +956,15 @@ impl<'a> ScenarioLowerer<'a> {
         ))
     }
 
-    fn execute_expr(&mut self, expr: &'a Expr, env: &mut BindingEnv) {
+    fn execute_expr(&mut self, expr: &'a Expr, env: &mut BindingEnv) -> BlockFlow {
         match expr {
             Expr::MethodCall(call) => self.execute_method_call(call, env),
             Expr::Call(call) => self.execute_call(call, env),
-            Expr::If(expr_if) => self.execute_if(expr_if, env),
-            Expr::Match(expr_match) => self.execute_match(expr_match, env),
-            Expr::Async(expr_async) => self.execute_async(expr_async, env),
+            Expr::If(expr_if) => return self.execute_if(expr_if, env),
+            Expr::Match(expr_match) => return self.execute_match(expr_match, env),
+            Expr::Async(expr_async) => {
+                self.execute_async(expr_async, env);
+            }
             Expr::Await(await_expr) => {
                 let timeout_boundary = self.timeout_await_boundary(await_expr.base.as_ref(), env);
                 self.record_core_terminator(
@@ -897,12 +984,12 @@ impl<'a> ScenarioLowerer<'a> {
                             action: "await".to_owned(),
                         },
                     });
-                    return;
+                    return BlockFlow::Fallthrough;
                 }
                 self.execute_expr(await_expr.base.as_ref(), env);
             }
             Expr::Try(expr_try) => self.execute_try(expr_try, env),
-            Expr::Block(block) => self.execute_block(&block.block, env),
+            Expr::Block(block) => return self.execute_block(&block.block, env),
             Expr::Array(array) => {
                 for element in &array.elems {
                     self.execute_expr(element, env);
@@ -920,25 +1007,69 @@ impl<'a> ScenarioLowerer<'a> {
                 if let Some(value) = expr_break.expr.as_deref() {
                     self.execute_expr(value, env);
                 }
+                self.record_loop_control_unresolved(expr_break, env, "break");
+                let frame = self.resolve_loop_frame(expr_break.label.as_ref());
+                let loop_id = frame
+                    .as_ref()
+                    .map(|frame| frame.id.clone())
+                    .unwrap_or_else(|| "loop-unknown".to_owned());
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_break),
+                    kind: ScenarioOpKind::LoopBreak {
+                        loop_id: loop_id.clone(),
+                    },
+                });
+                return BlockFlow::Break { loop_id };
             }
-            Expr::Cast(cast) => self.execute_expr(cast.expr.as_ref(), env),
-            Expr::Closure(closure) => self.execute_expr(closure.body.as_ref(), env),
-            Expr::Field(field) => self.execute_expr(field.base.as_ref(), env),
+            Expr::Cast(cast) => {
+                self.execute_expr(cast.expr.as_ref(), env);
+            }
+            Expr::Closure(closure) => {
+                self.execute_expr(closure.body.as_ref(), env);
+            }
+            Expr::Field(field) => {
+                self.execute_expr(field.base.as_ref(), env);
+            }
             Expr::ForLoop(expr_for) => {
                 self.execute_expr(expr_for.expr.as_ref(), env);
-                self.execute_block(&expr_for.body, env);
+                let frame = self.push_loop_frame(loop_label(expr_for.label.as_ref()));
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_for),
+                    kind: ScenarioOpKind::LoopStart {
+                        loop_id: frame.id.clone(),
+                        label: frame.label.clone(),
+                    },
+                });
+                let flow = self.execute_block(&expr_for.body, env);
+                self.pop_loop_frame(&frame.id);
+                return self.finish_loop_flow(flow, &frame, true, expr_for);
             }
-            Expr::Group(group) => self.execute_expr(group.expr.as_ref(), env),
+            Expr::Group(group) => {
+                self.execute_expr(group.expr.as_ref(), env);
+            }
             Expr::Index(index) => {
                 self.execute_expr(index.expr.as_ref(), env);
                 self.execute_expr(index.index.as_ref(), env);
             }
-            Expr::Let(expr_let) => self.execute_expr(expr_let.expr.as_ref(), env),
-            Expr::Loop(expr_loop) => self.operations.push(ScenarioOp {
-                span: self.span(expr_loop),
-                kind: ScenarioOpKind::Loop,
-            }),
-            Expr::Paren(paren) => self.execute_expr(paren.expr.as_ref(), env),
+            Expr::Let(expr_let) => {
+                self.execute_expr(expr_let.expr.as_ref(), env);
+            }
+            Expr::Loop(expr_loop) => {
+                let frame = self.push_loop_frame(loop_label(expr_loop.label.as_ref()));
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_loop),
+                    kind: ScenarioOpKind::LoopStart {
+                        loop_id: frame.id.clone(),
+                        label: frame.label.clone(),
+                    },
+                });
+                let flow = self.execute_block(&expr_loop.body, env);
+                self.pop_loop_frame(&frame.id);
+                return self.finish_loop_flow(flow, &frame, false, expr_loop);
+            }
+            Expr::Paren(paren) => {
+                self.execute_expr(paren.expr.as_ref(), env);
+            }
             Expr::Range(range) => {
                 if let Some(start) = range.start.as_deref() {
                     self.execute_expr(start, env);
@@ -947,7 +1078,9 @@ impl<'a> ScenarioLowerer<'a> {
                     self.execute_expr(end, env);
                 }
             }
-            Expr::Reference(reference) => self.execute_expr(reference.expr.as_ref(), env),
+            Expr::Reference(reference) => {
+                self.execute_expr(reference.expr.as_ref(), env);
+            }
             Expr::Repeat(repeat) => {
                 self.execute_expr(repeat.expr.as_ref(), env);
                 self.execute_expr(repeat.len.as_ref(), env);
@@ -960,17 +1093,31 @@ impl<'a> ScenarioLowerer<'a> {
                     self.execute_expr(rest, env);
                 }
             }
-            Expr::TryBlock(try_block) => self.execute_block(&try_block.block, env),
+            Expr::TryBlock(try_block) => return self.execute_block(&try_block.block, env),
             Expr::Tuple(tuple) => {
                 for element in &tuple.elems {
                     self.execute_expr(element, env);
                 }
             }
-            Expr::Unary(unary) => self.execute_expr(unary.expr.as_ref(), env),
-            Expr::Unsafe(expr_unsafe) => self.execute_block(&expr_unsafe.block, env),
+            Expr::Unary(unary) => {
+                self.execute_expr(unary.expr.as_ref(), env);
+            }
+            Expr::Unsafe(expr_unsafe) => {
+                self.execute_block(&expr_unsafe.block, env);
+            }
             Expr::While(expr_while) => {
                 self.execute_expr(expr_while.cond.as_ref(), env);
-                self.execute_block(&expr_while.body, env);
+                let frame = self.push_loop_frame(loop_label(expr_while.label.as_ref()));
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_while),
+                    kind: ScenarioOpKind::LoopStart {
+                        loop_id: frame.id.clone(),
+                        label: frame.label.clone(),
+                    },
+                });
+                let flow = self.execute_block(&expr_while.body, env);
+                self.pop_loop_frame(&frame.id);
+                return self.finish_loop_flow(flow, &frame, true, expr_while);
             }
             Expr::Yield(expr_yield) => {
                 if let Some(value) = expr_yield.expr.as_deref() {
@@ -979,7 +1126,7 @@ impl<'a> ScenarioLowerer<'a> {
             }
             Expr::Macro(expr_macro) => {
                 if self.record_panic_macro(&expr_macro.mac) {
-                    return;
+                    return BlockFlow::Return;
                 }
                 if !self.record_spawn_macro(&expr_macro.mac) {
                     self.unsupported_macro(&expr_macro.mac);
@@ -1007,9 +1154,26 @@ impl<'a> ScenarioLowerer<'a> {
                     vec!["return".to_owned()],
                     expr_return,
                 );
+                return BlockFlow::Return;
+            }
+            Expr::Continue(expr_continue) => {
+                self.record_loop_control_unresolved(expr_continue, env, "continue");
+                let frame = self.resolve_loop_frame(expr_continue.label.as_ref());
+                let loop_id = frame
+                    .as_ref()
+                    .map(|frame| frame.id.clone())
+                    .unwrap_or_else(|| "loop-unknown".to_owned());
+                self.operations.push(ScenarioOp {
+                    span: self.span(expr_continue),
+                    kind: ScenarioOpKind::LoopContinue {
+                        loop_id: loop_id.clone(),
+                    },
+                });
+                return BlockFlow::Continue { loop_id };
             }
             _ => {}
         }
+        BlockFlow::Fallthrough
     }
 
     fn execute_try(&mut self, expr_try: &'a ExprTry, env: &mut BindingEnv) {
@@ -1023,15 +1187,16 @@ impl<'a> ScenarioLowerer<'a> {
         self.execute_expr(expr_try.expr.as_ref(), env);
     }
 
-    fn execute_if(&mut self, expr_if: &'a ExprIf, env: &mut BindingEnv) {
+    fn execute_if(&mut self, expr_if: &'a ExprIf, env: &mut BindingEnv) -> BlockFlow {
         let condition_value = self.eval_bool(expr_if.cond.as_ref(), env);
         self.execute_expr(expr_if.cond.as_ref(), env);
         match condition_value {
             Some(true) => self.execute_block(&expr_if.then_branch, env),
             Some(false) => {
                 if let Some((_, else_expr)) = expr_if.else_branch.as_ref() {
-                    self.execute_expr(else_expr.as_ref(), env);
+                    return self.execute_expr(else_expr.as_ref(), env);
                 }
+                BlockFlow::Fallthrough
             }
             None => {
                 self.operations.push(ScenarioOp {
@@ -1040,12 +1205,27 @@ impl<'a> ScenarioLowerer<'a> {
                 });
                 let mut then_env = env.clone();
                 let mut else_env = env.clone();
-                self.execute_block(&expr_if.then_branch, &mut then_env);
-                if let Some((_, else_expr)) = expr_if.else_branch.as_ref() {
-                    self.execute_expr(else_expr.as_ref(), &mut else_env);
-                }
+                let then_flow = self.execute_block(&expr_if.then_branch, &mut then_env);
+                let else_flow = if let Some((_, else_expr)) = expr_if.else_branch.as_ref() {
+                    self.execute_expr(else_expr.as_ref(), &mut else_env)
+                } else {
+                    BlockFlow::Fallthrough
+                };
+                self.record_control_flow_unresolved(expr_if, &then_env, &then_flow, "then");
+                self.record_control_flow_unresolved(expr_if, &else_env, &else_flow, "else");
                 self.record_branch_unresolved(expr_if, env, &then_env, &else_env);
-                merge_branch_env(env, then_env, else_env);
+                let mut fallthrough_envs = Vec::new();
+                if then_flow == BlockFlow::Fallthrough {
+                    fallthrough_envs.push(then_env);
+                }
+                if else_flow == BlockFlow::Fallthrough {
+                    fallthrough_envs.push(else_env);
+                }
+                if !fallthrough_envs.is_empty() {
+                    merge_branch_envs(env, fallthrough_envs);
+                    return BlockFlow::Fallthrough;
+                }
+                common_branch_flow(then_flow, else_flow)
             }
         }
     }
@@ -1069,7 +1249,39 @@ impl<'a> ScenarioLowerer<'a> {
         }
     }
 
-    fn execute_match(&mut self, expr_match: &'a ExprMatch, env: &mut BindingEnv) {
+    fn record_control_flow_unresolved(
+        &mut self,
+        node: &impl Spanned,
+        branch_env: &BindingEnv,
+        flow: &BlockFlow,
+        _edge: &str,
+    ) {
+        if *flow == BlockFlow::Fallthrough {
+            return;
+        }
+        for binding in branch_env.active_obligations() {
+            self.operations.push(ScenarioOp {
+                span: self.span(node),
+                kind: ScenarioOpKind::BranchUnresolved { binding },
+            });
+        }
+    }
+
+    fn record_loop_control_unresolved(
+        &mut self,
+        node: &impl Spanned,
+        env: &BindingEnv,
+        _edge: &str,
+    ) {
+        for binding in env.active_obligations() {
+            self.operations.push(ScenarioOp {
+                span: self.span(node),
+                kind: ScenarioOpKind::BranchUnresolved { binding },
+            });
+        }
+    }
+
+    fn execute_match(&mut self, expr_match: &'a ExprMatch, env: &mut BindingEnv) -> BlockFlow {
         let discriminant = self.eval_bool(expr_match.expr.as_ref(), env);
         self.execute_expr(expr_match.expr.as_ref(), env);
         if discriminant.is_some() {
@@ -1078,11 +1290,10 @@ impl<'a> ScenarioLowerer<'a> {
                     if let Some((_, guard)) = arm.guard.as_ref() {
                         self.execute_expr(guard.as_ref(), env);
                     }
-                    self.execute_expr(arm.body.as_ref(), env);
-                    break;
+                    return self.execute_expr(arm.body.as_ref(), env);
                 }
             }
-            return;
+            return BlockFlow::Fallthrough;
         }
 
         self.operations.push(ScenarioOp {
@@ -1093,16 +1304,27 @@ impl<'a> ScenarioLowerer<'a> {
         });
         let before = env.clone();
         let mut arm_envs = Vec::new();
+        let mut fallthrough_envs = Vec::new();
+        let mut flows = Vec::new();
         for arm in &expr_match.arms {
             let mut arm_env = before.clone();
             if let Some((_, guard)) = arm.guard.as_ref() {
                 self.execute_expr(guard.as_ref(), &mut arm_env);
             }
-            self.execute_expr(arm.body.as_ref(), &mut arm_env);
+            let flow = self.execute_expr(arm.body.as_ref(), &mut arm_env);
+            self.record_control_flow_unresolved(expr_match, &arm_env, &flow, "match arm");
+            if flow == BlockFlow::Fallthrough {
+                fallthrough_envs.push(arm_env.clone());
+            }
+            flows.push(flow);
             arm_envs.push(arm_env);
         }
         self.record_multi_branch_unresolved(expr_match, &before, &arm_envs);
-        merge_branch_envs(env, arm_envs);
+        if !fallthrough_envs.is_empty() {
+            merge_branch_envs(env, fallthrough_envs);
+            return BlockFlow::Fallthrough;
+        }
+        common_multi_branch_flow(&flows)
     }
 
     fn record_multi_branch_unresolved(
@@ -2137,45 +2359,19 @@ fn lifecycle_template_from_shape(
     method_name: &str,
     method_shape: &MethodShape,
     method_shapes: &MethodShapeMap,
-) -> Option<LifecycleTemplateShape> {
+) -> Option<kobo_ir::ProtocolTemplateDefinition> {
     let return_type = method_shape.return_type.as_deref()?;
-    match method_name {
-        "recv"
-            if type_has_terminal_action(return_type, &queue_delivery_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "queue_delivery",
-                type_name: "Delivery",
-                actions: queue_delivery_actions(),
-            })
-        }
-        "begin" if type_has_terminal_action(return_type, &transaction_actions(), method_shapes) => {
-            Some(LifecycleTemplateShape {
-                template_id: "transaction",
-                type_name: "Transaction",
-                actions: transaction_actions(),
-            })
-        }
-        "acquire" | "lock" | "try_acquire"
-            if type_has_terminal_action(return_type, &lock_permit_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "lock_permit",
-                type_name: "LockPermit",
-                actions: lock_permit_actions(),
-            })
-        }
-        "open" | "connect" | "accept"
-            if type_has_terminal_action(return_type, &file_socket_actions(), method_shapes) =>
-        {
-            Some(LifecycleTemplateShape {
-                template_id: "file_socket",
-                type_name: "FileSocket",
-                actions: file_socket_actions(),
-            })
-        }
-        _ => None,
-    }
+    ProtocolTemplateRegistry::builtin_templates()
+        .iter()
+        .copied()
+        .find(|template| {
+            template.has_create_method(method_name)
+                && type_has_terminal_action(
+                    return_type,
+                    &template.terminal_action_strings(),
+                    method_shapes,
+                )
+        })
 }
 
 fn is_std_file_open_path(path: &[String]) -> bool {
@@ -2192,8 +2388,72 @@ fn type_name_ends_with(type_name: &str, suffix: &str) -> bool {
     type_name == suffix || type_name.ends_with(&format!("::{suffix}"))
 }
 
-fn merge_branch_env(env: &mut BindingEnv, then_env: BindingEnv, else_env: BindingEnv) {
-    merge_branch_envs(env, vec![then_env, else_env]);
+fn common_branch_flow(left: BlockFlow, right: BlockFlow) -> BlockFlow {
+    if left == right {
+        left
+    } else {
+        combined_non_fallthrough_flow([left, right])
+    }
+}
+
+fn common_multi_branch_flow(flows: &[BlockFlow]) -> BlockFlow {
+    let Some(first) = flows.first().cloned() else {
+        return BlockFlow::Fallthrough;
+    };
+    if flows.iter().all(|flow| flow == &first) {
+        first
+    } else {
+        combined_non_fallthrough_flow(flows.iter().cloned())
+    }
+}
+
+fn combined_non_fallthrough_flow(flows: impl IntoIterator<Item = BlockFlow>) -> BlockFlow {
+    let mut unique_flows = Vec::new();
+    for flow in flows {
+        push_unique_non_fallthrough_flow(&mut unique_flows, flow);
+    }
+    match unique_flows.len() {
+        0 => BlockFlow::Fallthrough,
+        1 => unique_flows.pop().unwrap_or(BlockFlow::Fallthrough),
+        _ => BlockFlow::Mixed {
+            flows: unique_flows,
+        },
+    }
+}
+
+fn push_unique_non_fallthrough_flow(unique_flows: &mut Vec<BlockFlow>, flow: BlockFlow) {
+    match flow {
+        BlockFlow::Fallthrough => {}
+        BlockFlow::Mixed { flows } => {
+            for flow in flows {
+                push_unique_non_fallthrough_flow(unique_flows, flow);
+            }
+        }
+        flow => {
+            if !unique_flows.contains(&flow) {
+                unique_flows.push(flow);
+            }
+        }
+    }
+}
+
+fn loop_consumes_flow(flow: &BlockFlow, frame: &LoopFrame) -> bool {
+    match flow {
+        BlockFlow::Continue { loop_id } | BlockFlow::Break { loop_id } => loop_id == &frame.id,
+        _ => false,
+    }
+}
+
+fn loop_label(label: Option<&syn::Label>) -> Option<String> {
+    label.map(loop_label_name)
+}
+
+fn loop_label_name(label: &syn::Label) -> String {
+    lifetime_label_name(&label.name)
+}
+
+fn lifetime_label_name(label: &syn::Lifetime) -> String {
+    label.ident.to_string()
 }
 
 fn merge_branch_envs(env: &mut BindingEnv, branch_envs: Vec<BindingEnv>) {
@@ -2237,6 +2497,7 @@ fn rust_method_name(action: &str) -> Option<&str> {
     }
 }
 
+#[cfg(test)]
 fn queue_delivery_actions() -> Vec<String> {
     ["ack", "nack", "requeue"]
         .into_iter()
@@ -2244,6 +2505,7 @@ fn queue_delivery_actions() -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn transaction_actions() -> Vec<String> {
     ["commit", "rollback"]
         .into_iter()
@@ -2260,13 +2522,6 @@ fn handler_reply_actions() -> Vec<String> {
 
 fn spawned_task_actions() -> Vec<String> {
     ["await", "abort", "detach-with-policy"]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
-}
-
-fn lock_permit_actions() -> Vec<String> {
-    ["release", "drop-at-safe-boundary"]
         .into_iter()
         .map(str::to_owned)
         .collect()
@@ -2497,6 +2752,25 @@ struct Delivery {}
 struct Db {}
 struct Tx {}
 struct Request {}
+
+impl Queue {
+    fn recv(&self) -> Delivery { Delivery {} }
+}
+
+impl Delivery {
+    fn ack(self) {}
+    fn nack(self) {}
+    fn requeue(self) {}
+}
+
+impl Db {
+    fn begin(&self) -> Tx { Tx {} }
+}
+
+impl Tx {
+    fn commit(self) {}
+    fn rollback(self) {}
+}
 
 #[kobo::handler]
 #[kobo::scenario(profile = "async")]

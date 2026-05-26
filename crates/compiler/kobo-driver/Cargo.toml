@@ -13,6 +13,7 @@ kobo-codegen   = { path = "../kobo-codegen" }
 kobo-debt      = { path = "../kobo-debt" }
 kobo-errors    = { path = "../kobo-errors" }
 kobo-proof     = { path = "../kobo-proof" }
+kobo-sim-core  = { path = "../kobo-sim-core" }
 thiserror      = { workspace = true }
 toml           = { workspace = true }
 serde          = { workspace = true }

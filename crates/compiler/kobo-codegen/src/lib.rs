@@ -13,7 +13,8 @@ use std::path::Path;
 pub use emit::emit_file;
 pub use error_policy::ErrorPolicySite;
 pub use sourcemap::{
-    wrap_source_map, KoboSourceMap, RsSpan, SolverBudgetJson, SolverEvidenceJson, SourceMapEntry,
+    wrap_source_map, KoboSourceMap, LoweringTraceEvent, RsSpan, SolverBudgetJson,
+    SolverEvidenceJson, SourceMapEntry,
 };
 
 /// Annotate lock acquisition order in generated Rust source for inspect output.
@@ -184,8 +185,11 @@ pub fn codegen_file(
     );
     let (rs_source, error_policy_sites) =
         error_policy::resolve_marked_error_policy_sites(rs_source, &lowered.error_policy_markers);
+    sourcemap::add_proof_event_source_entries(&mut entries, &rs_source, kir.scenario_programs());
     let mut source_map = wrap_source_map(kobo_path, rs_path, entries);
     source_map.runtime_evidence = Some(lowered.runtime_evidence.clone());
+    source_map.lowering_trace =
+        sourcemap::build_lowering_trace(kir.scenario_programs(), &source_map);
 
     CodegenOutput {
         rs_source,

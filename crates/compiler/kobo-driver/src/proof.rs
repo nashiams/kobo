@@ -2,20 +2,30 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
 use crate::config::EcosystemAdapterPolicy;
+use kobo_codegen::{KoboSourceMap, LoweringTraceEvent};
 use kobo_ir::{
     lower_core_program, CoreBlock, CoreFunction, CoreStatement, CoreStatementKind,
     CoreTerminatorKind, KoboSpan, ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram,
 };
 use kobo_proof::{
-    certificate_material_hash, core_material_hash, stable_hash, template_schema_hash,
-    AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundaryAssumption, BoundaryPolicy,
-    CancelEdgeEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge,
-    CoreCfgNode, CoreEvidence, CoverageLoss, FunctionSummary, FutureStateLocalEvidence,
-    FutureStateObligationEvidence, HashEvidence, ObligationEvent, ObligationEventKind,
-    ObligationState, ObligationStatus, OpaqueLedgerEntry, ProofCertificate, SelectPathEvidence,
-    SourceEvidence, SourceSpan, SpawnedTaskObligationEvidence, SuspensionStateEvidence,
-    TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, PROOF_CERTIFICATE_SCHEMA_VERSION,
-    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+    bounded_wording as proof_bounded_wording, certificate_material_hash,
+    classify_bounded_completeness, core_material_hash, derive_translation_validation,
+    normalized_bound_hash, stable_hash, template_schema_hash, trace_material_hash,
+    AdapterConfidence, AdapterEvidence, AsyncModelEvidence, BoundDeclaration, BoundDimension,
+    BoundSource, BoundaryAssumption, BoundaryPolicy, BoundedClassificationInput,
+    BoundedCompleteness, BoundedHistoryEvidence, BoundedProofEvidence, CancelEdgeEvidence,
+    CandidateAdmissionEvidence, CandidateAdmissionFact, CoreCfgEdge, CoreCfgNode, CoreEvidence,
+    CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent, CoverageLoss, FunctionSummary,
+    FutureStateLocalEvidence, FutureStateObligationEvidence, GeneratedTraceEvent, HashEvidence,
+    InvariantBindingTemplateEvidence, InvariantConfidence, InvariantPreservation,
+    InvariantTemplateEvidence, InvariantTemplateSource, InvariantTier, LoopInvariantEvidence,
+    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, OpaqueLedgerEntry,
+    ProofCertificate, PrunedHistoryEvidence, SelectPathEvidence, SourceEvidence,
+    SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan, SpawnedTaskObligationEvidence,
+    SuspensionStateEvidence, TemplateSchemaEvidence, TimeoutCancelEdgeEvidence, TraceEventKind,
+    TranslationValidationInput, UserInvariantFactEvidence, UserInvariantPredicate,
+    PROOF_CERTIFICATE_SCHEMA_VERSION, PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA,
+    PROOF_TARGET_VERSION,
 };
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};
@@ -27,6 +37,7 @@ pub struct ProofEmissionInput<'a> {
     pub adapter_policies: &'a [EcosystemAdapterPolicy],
     pub replay_grade: ReplayGrade,
     pub artifact_kind: ArtifactKind,
+    pub source_map: Option<&'a KoboSourceMap>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -35,19 +46,140 @@ pub enum ProofEmissionError {
     Serialize(#[from] serde_json::Error),
 }
 
+#[derive(Clone, Debug)]
+struct UserLoopInvariantDirective {
+    expression: String,
+    obligation_kind: Option<String>,
+    loop_label: Option<String>,
+    source_span: SourceSpan,
+}
+
+#[derive(Debug)]
+struct BoundedHistoryExploration {
+    histories: Vec<kobo_sim_core::BoundedHistory>,
+    enumerated_history_count: u64,
+    expected_complete_history_count: u64,
+    pruned_histories: Vec<PrunedHistoryEvidence>,
+    is_complete: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RequiredBoundDimensions {
+    queue_capacity: Option<u64>,
+    message_count: Option<u64>,
+    retry_attempts: Option<u64>,
+    timeout_paths: Option<u64>,
+    external_boundary_recordings: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParsedLoopEdgeKind {
+    BackEdge,
+    Continue,
+    Break,
+    Condition,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedCoreEdge {
+    target: String,
+    loop_id: Option<String>,
+    loop_edge_kind: Option<ParsedLoopEdgeKind>,
+    loop_entry_block: Option<String>,
+}
+
+#[derive(Default)]
+struct LoopRegionIndex {
+    block_regions: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+}
+
+impl ParsedLoopEdgeKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::BackEdge => "back_edge",
+            Self::Continue => "continue",
+            Self::Break => "break",
+            Self::Condition => "condition",
+        }
+    }
+}
+
+impl RequiredBoundDimensions {
+    fn from_fields(fields: &BTreeMap<String, String>) -> Self {
+        Self {
+            queue_capacity: first_numeric_field(fields, &["queue_capacity"]),
+            message_count: first_numeric_field(fields, &["message_count", "messages"]),
+            retry_attempts: first_numeric_field(fields, &["retry_attempts", "retries"]),
+            timeout_paths: first_numeric_field(fields, &["timeout_paths"]),
+            external_boundary_recordings: first_numeric_field(
+                fields,
+                &[
+                    "external_boundary_recordings",
+                    "external_boundary_models",
+                    "external_boundaries",
+                ],
+            ),
+        }
+    }
+
+    fn has_all_required_dimensions(&self) -> bool {
+        self.queue_capacity.is_some()
+            && self.message_count.is_some()
+            && self.retry_attempts.is_some()
+            && self.timeout_paths.is_some()
+            && self.external_boundary_recordings.is_some()
+    }
+
+    fn push_declarations(&self, bounds: &mut Vec<BoundDeclaration>) {
+        push_bound_if_declared(bounds, BoundDimension::QueueCapacity, self.queue_capacity);
+        push_bound_if_declared(bounds, BoundDimension::MessageCount, self.message_count);
+        push_bound_if_declared(bounds, BoundDimension::RetryAttempts, self.retry_attempts);
+        push_bound_if_declared(bounds, BoundDimension::TimeoutPaths, self.timeout_paths);
+        push_bound_if_declared(
+            bounds,
+            BoundDimension::ExternalBoundaryRecordings,
+            self.external_boundary_recordings,
+        );
+    }
+
+    fn state_dimensions(&self, loop_iteration_bound: u64) -> kobo_sim_core::BoundedStateDimensions {
+        kobo_sim_core::BoundedStateDimensions::from_bounds(
+            Some(loop_iteration_bound),
+            self.queue_capacity,
+            self.message_count,
+            self.retry_attempts,
+            self.timeout_paths,
+            self.external_boundary_recordings,
+        )
+    }
+}
+
 pub fn emit_proof_certificate(
     input: ProofEmissionInput<'_>,
 ) -> Result<ProofCertificate, ProofEmissionError> {
     let source_path = input.source_path.display().to_string();
     let core_program = lower_core_program(input.program);
     let cfg_nodes = core_cfg_nodes(&source_path, input.source, &core_program.functions);
-    let cfg_edges = core_cfg_edges(&source_path, input.source, &core_program.functions);
+    let loop_labels = loop_labels_by_id(input.program);
+    let cfg_edges = core_cfg_edges(
+        &source_path,
+        input.source,
+        &core_program.functions,
+        &loop_labels,
+    );
+    let loop_facts = core_loop_facts(&cfg_edges);
+    let loop_exit_facts = core_loop_exit_facts(&cfg_edges);
+    let loop_regions = LoopRegionIndex::from_core(&core_program.functions, &cfg_edges, &loop_facts);
     let (template_hashes, template_schemas) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
         boundary_evidence(&source_path, input.source, input.program)?;
-    let (entry_env, exit_env, obligation_events) =
-        obligation_evidence(&source_path, input.source, &core_program.functions);
+    let (entry_env, exit_env, obligation_events) = obligation_evidence(
+        &source_path,
+        input.source,
+        &core_program.functions,
+        &loop_regions,
+    );
     let async_model = async_model_evidence(
         &source_path,
         input.source,
@@ -58,6 +190,8 @@ pub fn emit_proof_certificate(
         core_program.core_version,
         &cfg_nodes,
         &cfg_edges,
+        &loop_facts,
+        &loop_exit_facts,
         &async_model,
     )?;
     let mut adapter_confidence = adapter_evidence(
@@ -82,6 +216,42 @@ pub fn emit_proof_certificate(
         obligation_events.len(),
     );
     let coverage_loss = coverage_loss(input.program);
+    let user_loop_invariant =
+        user_loop_invariant_directive(&source_path, input.source, input.program);
+    let loop_invariants = loop_invariant_evidence(
+        input.program,
+        &core_program.functions,
+        &loop_facts,
+        &obligation_events,
+        &template_hashes,
+        user_loop_invariant.as_ref(),
+    );
+    let bounded_evidence = bounded_evidence(
+        &source_path,
+        input.source,
+        input.program,
+        &loop_facts,
+        &loop_exit_facts,
+    );
+    let core_obligation_trace = core_trace_evidence(
+        input.program,
+        &obligation_events,
+        &source_path,
+        input.source,
+    );
+    let generated_rust_trace = generated_trace_evidence(
+        &source_path,
+        input.source,
+        input.program,
+        &core_obligation_trace,
+        input.source_map,
+    );
+    let translation_validation = derive_translation_validation(TranslationValidationInput {
+        core_trace: &core_obligation_trace,
+        generated_trace: &generated_rust_trace,
+        has_source_map: input.source_map.is_some(),
+    });
+    let trace_hashes = trace_hashes(&core_obligation_trace, &generated_rust_trace)?;
 
     let mut certificate = ProofCertificate {
         schema_version: PROOF_CERTIFICATE_SCHEMA_VERSION,
@@ -99,6 +269,8 @@ pub fn emit_proof_certificate(
             version: core_program.core_version.to_owned(),
             cfg_nodes,
             cfg_edges,
+            loop_facts,
+            loop_exit_facts,
             async_model,
         },
         replay_grade,
@@ -112,12 +284,962 @@ pub fn emit_proof_certificate(
         exit_env,
         function_summaries,
         coverage_loss,
+        loop_invariants,
+        bounded_evidence,
+        core_obligation_trace,
+        generated_rust_trace,
+        trace_hashes,
+        translation_validation,
         opaque_edge_ledger,
         candidate_admission,
         certificate_material_hash: String::new(),
     };
     certificate.certificate_material_hash = certificate_material_hash(&certificate)?;
     Ok(certificate)
+}
+
+fn core_loop_facts(edges: &[CoreCfgEdge]) -> Vec<CoreLoopBackEdgeFact> {
+    edges
+        .iter()
+        .filter(|edge| is_loop_back_edge(edge))
+        .map(|edge| CoreLoopBackEdgeFact {
+            id: format!("loop-{}-{}", edge.function, edge.id),
+            function: edge.function.clone(),
+            loop_id: edge
+                .loop_id
+                .clone()
+                .unwrap_or_else(|| format!("legacy-{}-{}", edge.function, edge.to)),
+            loop_label: edge.loop_label.clone(),
+            entry_block: edge
+                .loop_entry_block
+                .clone()
+                .unwrap_or_else(|| edge.to.clone()),
+            back_edge_source: edge.from.clone(),
+            back_edge_target: edge.to.clone(),
+            source_span: edge.source_span.clone(),
+        })
+        .collect()
+}
+
+fn core_loop_exit_facts(edges: &[CoreCfgEdge]) -> Vec<CoreLoopExitFact> {
+    edges
+        .iter()
+        .filter_map(|edge| {
+            let exit_kind = loop_exit_kind(edge)?;
+            let entry_block = edge.loop_entry_block.clone()?;
+            Some(CoreLoopExitFact {
+                id: format!("loop-exit-{}-{}", edge.function, edge.id),
+                function: edge.function.clone(),
+                loop_id: edge
+                    .loop_id
+                    .clone()
+                    .unwrap_or_else(|| format!("legacy-{}-{entry_block}", edge.function)),
+                loop_label: edge.loop_label.clone(),
+                entry_block,
+                exit_source: edge.from.clone(),
+                exit_kind: exit_kind.to_owned(),
+                exit_target: edge.to.clone(),
+                source_span: edge.source_span.clone(),
+            })
+        })
+        .collect()
+}
+
+fn is_loop_back_edge(edge: &CoreCfgEdge) -> bool {
+    match edge.loop_edge_kind.as_deref() {
+        Some("back_edge" | "continue") => true,
+        Some(_) => false,
+        None => is_legacy_back_edge(edge),
+    }
+}
+
+fn loop_exit_kind(edge: &CoreCfgEdge) -> Option<&'static str> {
+    match edge.loop_edge_kind.as_deref() {
+        Some("break") => Some("break"),
+        Some("condition") => Some("condition"),
+        _ => None,
+    }
+}
+
+fn is_legacy_back_edge(edge: &CoreCfgEdge) -> bool {
+    let Some(source_index) = block_index(&edge.from) else {
+        return false;
+    };
+    let Some(target_index) = block_index(&edge.to) else {
+        return false;
+    };
+    target_index <= source_index
+}
+
+fn block_index(block: &str) -> Option<usize> {
+    block.strip_prefix("bb")?.parse().ok()
+}
+
+fn loop_invariant_evidence(
+    program: &ScenarioProgram,
+    functions: &[CoreFunction],
+    loop_facts: &[CoreLoopBackEdgeFact],
+    obligation_events: &[ObligationEvent],
+    template_hashes: &[HashEvidence],
+    user_loop_invariant: Option<&UserLoopInvariantDirective>,
+) -> Vec<LoopInvariantEvidence> {
+    if loop_facts.is_empty() {
+        return Vec::new();
+    }
+    let template_by_binding = template_by_binding(program);
+    let type_by_binding = type_by_binding(program);
+    let replay_by_function = functions
+        .iter()
+        .map(|function| (function.name.as_str(), function_obligation_replay(function)))
+        .collect::<BTreeMap<_, _>>();
+    loop_facts
+        .iter()
+        .filter_map(|fact| {
+            let user_invariant = user_invariant_for_fact(user_loop_invariant, fact, loop_facts);
+            let scoped_bindings = created_bindings_for_loop(fact, obligation_events);
+            let relevant_bindings = scoped_bindings
+                .iter()
+                .filter(|binding| {
+                    user_invariant
+                        .and_then(|directive| directive.obligation_kind.as_deref())
+                        .map(|kind| {
+                            type_by_binding
+                                .get(binding.as_str())
+                                .is_some_and(|type_name| type_name == kind)
+                        })
+                        .unwrap_or_else(|| template_by_binding.contains_key(binding.as_str()))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let user_domain_bindings =
+                user_invariant_domain_bindings(user_invariant, &type_by_binding);
+            let checked_bindings = user_domain_bindings
+                .as_ref()
+                .unwrap_or(&relevant_bindings)
+                .clone();
+            let first_binding = relevant_bindings.first();
+            if user_invariant.is_none() && first_binding.is_none() {
+                return None;
+            }
+            let template_binding = first_binding.or_else(|| checked_bindings.first());
+            let template = template_binding
+                .and_then(|binding| template_by_binding.get(binding.as_str()).copied());
+            let binding_templates = invariant_binding_templates(
+                &relevant_bindings,
+                &template_by_binding,
+                &type_by_binding,
+                template_hashes,
+            );
+            let obligation_kind = type_by_binding
+                .get(template_binding.map(String::as_str).unwrap_or_default())
+                .cloned()
+                .or_else(|| user_invariant.and_then(|directive| directive.obligation_kind.clone()))
+                .unwrap_or_else(|| "obligation".to_owned());
+            let replay = replay_by_function.get(fact.function.as_str())?;
+            let entry_states = replay
+                .block_entry_envs
+                .get(&fact.entry_block)
+                .map(|env| env_states_for_bindings(env, &checked_bindings))
+                .unwrap_or_default();
+            let back_edge_states = replay
+                .block_exit_envs
+                .get(&fact.back_edge_source)
+                .map(|env| env_states_for_bindings(env, &checked_bindings))
+                .unwrap_or_default();
+            let entry_leak = entry_states.iter().any(|state| {
+                checked_bindings.contains(&state.binding)
+                    && matches!(
+                        state.state,
+                        ObligationStatus::Owned
+                            | ObligationStatus::Moved
+                            | ObligationStatus::BranchUnresolved
+                    )
+            });
+            let back_edge_leak = back_edge_states.iter().any(|state| {
+                checked_bindings.contains(&state.binding)
+                    && matches!(
+                        state.state,
+                        ObligationStatus::Owned
+                            | ObligationStatus::Moved
+                            | ObligationStatus::BranchUnresolved
+                    )
+            });
+            let malformed_user_invariant =
+                user_invariant.is_some_and(|directive| directive.obligation_kind.is_none());
+            let unknown_user_kind = malformed_user_invariant
+                || (user_invariant.is_some()
+                    && user_domain_bindings.as_ref().map_or(true, Vec::is_empty));
+            let preservation = if entry_leak || back_edge_leak || unknown_user_kind {
+                InvariantPreservation::Failed
+            } else {
+                InvariantPreservation::Preserved
+            };
+            let user_fact = user_invariant.and_then(|directive| {
+                user_domain_bindings.as_ref().and_then(|domain_bindings| {
+                    user_invariant_fact(&fact.loop_id, directive, domain_bindings, template)
+                })
+            });
+            Some(LoopInvariantEvidence {
+                id: fact.id.clone(),
+                function: fact.function.clone(),
+                loop_id: fact.loop_id.clone(),
+                loop_label: fact.loop_label.clone(),
+                entry_block: fact.entry_block.clone(),
+                back_edge_source: fact.back_edge_source.clone(),
+                back_edge_target: fact.back_edge_target.clone(),
+                tier: user_invariant
+                    .map(|_| InvariantTier::User)
+                    .unwrap_or(InvariantTier::Inferred),
+                expression: user_invariant
+                    .map(|directive| directive.expression.clone())
+                    .unwrap_or_else(|| format!("no_pending({obligation_kind})")),
+                source_span: user_invariant
+                    .map(|directive| directive.source_span.clone())
+                    .unwrap_or_else(|| fact.source_span.clone()),
+                obligations_created: relevant_bindings,
+                entry_states,
+                back_edge_states,
+                preservation,
+                template: template.map(|template| InvariantTemplateEvidence {
+                    id: template.id.clone(),
+                    version: lifecycle_template_version(template),
+                    schema_hash: template_hash(template, template_hashes),
+                    source: invariant_template_source(&template.source),
+                    confidence: invariant_confidence(&template.confidence),
+                    obligation_kind,
+                    lifecycle_owner: template.lifecycle_owner.clone(),
+                }),
+                binding_templates,
+                user_fact,
+                downgrade_reason: user_invariant_downgrade_reason(
+                    user_invariant,
+                    malformed_user_invariant,
+                    unknown_user_kind,
+                    entry_leak,
+                    back_edge_leak,
+                ),
+            })
+        })
+        .collect()
+}
+
+fn user_invariant_for_fact<'a>(
+    directive: Option<&'a UserLoopInvariantDirective>,
+    fact: &CoreLoopBackEdgeFact,
+    loop_facts: &[CoreLoopBackEdgeFact],
+) -> Option<&'a UserLoopInvariantDirective> {
+    let directive = directive?;
+    if let Some(loop_label) = directive.loop_label.as_deref() {
+        return fact
+            .loop_label
+            .as_deref()
+            .is_some_and(|label| label == loop_label)
+            .then_some(directive);
+    }
+    let function_loop_count = loop_facts
+        .iter()
+        .filter(|loop_fact| loop_fact.function == fact.function)
+        .count();
+    (function_loop_count == 1).then_some(directive)
+}
+
+fn user_invariant_domain_bindings(
+    user_invariant: Option<&UserLoopInvariantDirective>,
+    type_by_binding: &BTreeMap<&str, String>,
+) -> Option<Vec<String>> {
+    let obligation_kind = user_invariant?.obligation_kind.as_deref()?;
+    Some(
+        type_by_binding
+            .iter()
+            .filter(|(_, type_name)| type_name.as_str() == obligation_kind)
+            .map(|(binding, _)| (*binding).to_owned())
+            .collect(),
+    )
+}
+
+fn user_invariant_fact(
+    loop_id: &str,
+    directive: &UserLoopInvariantDirective,
+    domain_bindings: &[String],
+    template: Option<&kobo_ir::ScenarioLifecycleTemplate>,
+) -> Option<UserInvariantFactEvidence> {
+    let obligation_kind = directive.obligation_kind.clone()?;
+    Some(UserInvariantFactEvidence {
+        loop_id: loop_id.to_owned(),
+        predicate: UserInvariantPredicate::NoPending,
+        obligation_kind,
+        lifecycle_owner: template.map(|template| template.lifecycle_owner.clone()),
+        template_id: template.map(|template| template.id.clone()),
+        template_version: template.map(|template| lifecycle_template_version(template)),
+        domain_bindings: domain_bindings.to_vec(),
+    })
+}
+
+fn invariant_binding_templates(
+    bindings: &[String],
+    template_by_binding: &BTreeMap<&str, &kobo_ir::ScenarioLifecycleTemplate>,
+    type_by_binding: &BTreeMap<&str, String>,
+    template_hashes: &[HashEvidence],
+) -> Vec<InvariantBindingTemplateEvidence> {
+    bindings
+        .iter()
+        .filter_map(|binding| {
+            let template = template_by_binding.get(binding.as_str()).copied()?;
+            let obligation_kind = type_by_binding
+                .get(binding.as_str())
+                .cloned()
+                .unwrap_or_else(|| "obligation".to_owned());
+            Some(InvariantBindingTemplateEvidence {
+                binding: binding.clone(),
+                id: template.id.clone(),
+                version: lifecycle_template_version(template),
+                schema_hash: template_hash(template, template_hashes),
+                source: invariant_template_source(&template.source),
+                confidence: invariant_confidence(&template.confidence),
+                obligation_kind,
+                lifecycle_owner: template.lifecycle_owner.clone(),
+            })
+        })
+        .collect()
+}
+
+fn created_bindings_for_loop(
+    fact: &CoreLoopBackEdgeFact,
+    obligation_events: &[ObligationEvent],
+) -> Vec<String> {
+    obligation_events
+        .iter()
+        .filter(|event| event.kind == ObligationEventKind::Create)
+        .filter(|event| {
+            event
+                .loop_regions
+                .iter()
+                .any(|loop_id| loop_id == &fact.loop_id)
+        })
+        .filter_map(|event| event.binding.clone())
+        .collect()
+}
+
+fn user_invariant_downgrade_reason(
+    user_loop_invariant: Option<&UserLoopInvariantDirective>,
+    malformed_user_invariant: bool,
+    unknown_user_kind: bool,
+    entry_leak: bool,
+    back_edge_leak: bool,
+) -> Option<String> {
+    if user_loop_invariant.is_some() && malformed_user_invariant {
+        return Some("malformed user invariant expression".to_owned());
+    }
+    if user_loop_invariant.is_some() && unknown_user_kind {
+        return Some("unknown obligation kind in user invariant".to_owned());
+    }
+    if entry_leak {
+        return Some("user invariant is not true at loop entry".to_owned());
+    }
+    back_edge_leak.then(|| "unresolved obligation reaches loop back-edge".to_owned())
+}
+
+fn user_loop_invariant_directive(
+    source_path: &str,
+    source: &str,
+    program: &ScenarioProgram,
+) -> Option<UserLoopInvariantDirective> {
+    let file = syn::parse_file(source).ok()?;
+    let function = file.items.iter().find_map(|item| match item {
+        syn::Item::Fn(function) if function.sig.ident == program.target => Some(function),
+        _ => None,
+    })?;
+    let attr = function
+        .attrs
+        .iter()
+        .find(|attr| syn_path_ends_with(attr.path(), &["kobo", "invariant"]))?;
+    let fields = attr_name_value_fields(attr)?;
+    let expression = fields.get("expression")?.clone();
+    let obligation_kind = no_pending_obligation_kind(&expression);
+    let loop_label = fields
+        .get("loop_label")
+        .or_else(|| fields.get("loop"))
+        .cloned();
+    let source_span = source_span_for_user_invariant(source_path, source, &expression);
+    Some(UserLoopInvariantDirective {
+        expression,
+        obligation_kind,
+        loop_label,
+        source_span,
+    })
+}
+
+fn no_pending_obligation_kind(expression: &str) -> Option<String> {
+    let obligation_kind = expression
+        .strip_prefix("no_pending(")?
+        .strip_suffix(')')?
+        .trim();
+    (!obligation_kind.is_empty()).then(|| obligation_kind.to_owned())
+}
+
+fn source_span_for_user_invariant(source_path: &str, source: &str, expression: &str) -> SourceSpan {
+    let start = source.find(expression).unwrap_or(0);
+    source_span_from_range(
+        source_path,
+        source,
+        start,
+        start.saturating_add(expression.len()),
+    )
+}
+
+fn bounded_evidence(
+    source_path: &str,
+    source: &str,
+    program: &ScenarioProgram,
+    loop_facts: &[CoreLoopBackEdgeFact],
+    loop_exit_facts: &[CoreLoopExitFact],
+) -> Vec<BoundedProofEvidence> {
+    let Ok(file) = syn::parse_file(source) else {
+        return Vec::new();
+    };
+    file.items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == program.target => {
+                bounded_attr(function).map(|fields| {
+                    bounded_evidence_from_fields(
+                        source_path,
+                        source,
+                        program,
+                        loop_facts,
+                        loop_exit_facts,
+                        &fields,
+                    )
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn bounded_attr(function: &syn::ItemFn) -> Option<BTreeMap<String, String>> {
+    function
+        .attrs
+        .iter()
+        .find(|attr| syn_path_ends_with(attr.path(), &["kobo", "bounded"]))
+        .and_then(attr_name_value_fields)
+}
+
+fn attr_name_value_fields(attr: &syn::Attribute) -> Option<BTreeMap<String, String>> {
+    let syn::Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let entries = list
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated,
+        )
+        .ok()?;
+    let mut fields = BTreeMap::new();
+    for entry in entries {
+        let key = entry
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())?;
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(value),
+            ..
+        }) = entry.value
+        else {
+            continue;
+        };
+        fields.insert(key, value.value());
+    }
+    Some(fields)
+}
+
+fn bounded_evidence_from_fields(
+    _source_path: &str,
+    _source: &str,
+    program: &ScenarioProgram,
+    loop_facts: &[CoreLoopBackEdgeFact],
+    loop_exit_facts: &[CoreLoopExitFact],
+    fields: &BTreeMap<String, String>,
+) -> BoundedProofEvidence {
+    let history_bound = numeric_field(fields, "histories").unwrap_or_default();
+    let loop_iteration_bound = numeric_field(fields, "loop_iterations").unwrap_or(1);
+    let scheduler_dimensions = dimension_values(fields, "scheduler");
+    let fault_dimensions = dimension_values(fields, "fault");
+    let cancellation_points = dimension_values(fields, "cancellation");
+    let required_dimensions = RequiredBoundDimensions::from_fields(fields);
+    let exploration = bounded_history_exploration(
+        &program.target,
+        history_bound,
+        numeric_field(fields, "unique_histories"),
+        &scheduler_dimensions,
+        &fault_dimensions,
+        &cancellation_points,
+        loop_iteration_bound,
+        &required_dimensions,
+    );
+    let expected_complete_history_count = Some(exploration.expected_complete_history_count);
+    let declared_expected = numeric_field(fields, "expected");
+    let declared_completeness =
+        bounded_completeness(fields.get("completeness").map(String::as_str));
+    let completeness = classify_bounded_completeness(&BoundedClassificationInput {
+        declared: declared_completeness,
+        declared_expected,
+        is_complete: exploration.is_complete,
+        expected_complete_history_count: exploration.expected_complete_history_count,
+        enumerated_history_count: exploration.enumerated_history_count,
+        has_scheduler_dimensions: !scheduler_dimensions.is_empty(),
+        has_fault_dimensions: !fault_dimensions.is_empty(),
+        has_cancellation_points: !cancellation_points.is_empty(),
+        has_required_dimensions: required_dimensions.has_all_required_dimensions(),
+    });
+    let wording = proof_bounded_wording(
+        &completeness,
+        exploration.enumerated_history_count,
+        expected_complete_history_count,
+    );
+    let canonical_histories = canonical_histories(exploration.histories);
+    let bounds = bound_declarations(
+        exploration.expected_complete_history_count,
+        loop_iteration_bound,
+        &fault_dimensions,
+        &cancellation_points,
+        &required_dimensions,
+    );
+    let mut evidence = BoundedProofEvidence {
+        id: format!("bounded-{}", program.target),
+        function: program.target.clone(),
+        loop_ids: loop_facts
+            .iter()
+            .filter(|fact| fact.function == program.target)
+            .map(|fact| fact.id.clone())
+            .chain(
+                loop_exit_facts
+                    .iter()
+                    .filter(|fact| fact.function == program.target)
+                    .map(|fact| fact.id.clone()),
+            )
+            .collect(),
+        normalized_bound_hash: String::new(),
+        bounds,
+        enumerated_history_count: exploration.enumerated_history_count,
+        expected_complete_history_count,
+        scheduler_dimensions,
+        fault_dimensions,
+        cancellation_points,
+        canonical_histories,
+        pruned_histories: exploration.pruned_histories,
+        completeness,
+        wording,
+    };
+    evidence.normalized_bound_hash = normalized_bound_hash(&evidence);
+    evidence
+}
+
+fn bounded_history_exploration(
+    function: &str,
+    history_bound: u64,
+    unique_history_count: Option<u64>,
+    scheduler_dimensions: &[String],
+    fault_dimensions: &[String],
+    cancellation_points: &[String],
+    loop_iteration_bound: u64,
+    required_dimensions: &RequiredBoundDimensions,
+) -> BoundedHistoryExploration {
+    let sim_exploration = kobo_sim_core::explore_bounded_histories(
+        function,
+        history_bound,
+        scheduler_dimensions,
+        fault_dimensions,
+        cancellation_points,
+        &required_dimensions.state_dimensions(loop_iteration_bound),
+    );
+    let mut histories = sim_exploration.histories;
+    let original_history_count = histories.len() as u64;
+    let mut pruned_histories = Vec::new();
+    if let Some(unique_history_count) = unique_history_count {
+        if unique_history_count < original_history_count {
+            histories.truncate(unique_history_count as usize);
+            pruned_histories.push(PrunedHistoryEvidence {
+                id: format!("pruned-{function}"),
+                reason: format!(
+                    "{} duplicate histories collapsed before completeness evaluation",
+                    original_history_count - unique_history_count
+                ),
+            });
+        } else if unique_history_count > original_history_count {
+            pruned_histories.push(PrunedHistoryEvidence {
+                id: format!("pruned-{function}"),
+                reason: format!(
+                    "declared unique history count {unique_history_count} exceeds {original_history_count} explored histories"
+                ),
+            });
+        }
+    }
+    BoundedHistoryExploration {
+        enumerated_history_count: histories.len() as u64,
+        expected_complete_history_count: sim_exploration.expected_history_count,
+        histories,
+        is_complete: sim_exploration.is_complete && pruned_histories.is_empty(),
+        pruned_histories,
+    }
+}
+
+fn canonical_histories(
+    histories: Vec<kobo_sim_core::BoundedHistory>,
+) -> Vec<BoundedHistoryEvidence> {
+    histories
+        .into_iter()
+        .map(|history| BoundedHistoryEvidence {
+            id: history.id,
+            scheduler: history.scheduler,
+            fault: history.fault,
+            cancellation: history.cancellation,
+            loop_iteration: history.loop_iteration,
+            queue_capacity: history.queue_capacity,
+            message_count: history.message_count,
+            retry_attempts: history.retry_attempts,
+            timeout_path: history.timeout_path,
+            external_boundary_recording: history.external_boundary_recording,
+            history_hash: history.history_hash,
+        })
+        .collect()
+}
+
+fn bound_declarations(
+    history_bound: u64,
+    loop_iteration_bound: u64,
+    fault_dimensions: &[String],
+    cancellation_points: &[String],
+    required_dimensions: &RequiredBoundDimensions,
+) -> Vec<BoundDeclaration> {
+    let mut bounds = vec![BoundDeclaration {
+        dimension: BoundDimension::SchedulerHistories,
+        value: history_bound,
+        source: BoundSource::Ward,
+        proof_relevant: true,
+    }];
+    bounds.push(BoundDeclaration {
+        dimension: BoundDimension::LoopIterations,
+        value: loop_iteration_bound,
+        source: BoundSource::Ward,
+        proof_relevant: true,
+    });
+    if !fault_dimensions.is_empty() {
+        bounds.push(BoundDeclaration {
+            dimension: BoundDimension::FaultInjectionChoices,
+            value: fault_dimensions.len() as u64,
+            source: BoundSource::Ward,
+            proof_relevant: true,
+        });
+    }
+    if !cancellation_points.is_empty() {
+        bounds.push(BoundDeclaration {
+            dimension: BoundDimension::CancellationPoints,
+            value: cancellation_points.len() as u64,
+            source: BoundSource::Ward,
+            proof_relevant: true,
+        });
+    }
+    required_dimensions.push_declarations(&mut bounds);
+    bounds
+}
+
+fn core_trace_evidence(
+    program: &ScenarioProgram,
+    obligation_events: &[ObligationEvent],
+    source_path: &str,
+    source: &str,
+) -> Vec<CoreTraceEvent> {
+    let template_by_binding = template_by_binding(program);
+    let events_by_statement = obligation_events
+        .iter()
+        .filter_map(|event| statement_index_from_event(&event.id).map(|index| (index, event)))
+        .collect::<BTreeMap<_, _>>();
+    let has_obligation_events = !obligation_events.is_empty();
+    program
+        .operations
+        .iter()
+        .enumerate()
+        .filter_map(|(operation_index, operation)| {
+            if !has_obligation_events && matches!(operation.kind, ScenarioOpKind::Return) {
+                return None;
+            }
+            let event = events_by_statement.get(&operation_index).copied();
+            let kind = event
+                .and_then(|event| trace_event_kind(&event.kind))
+                .or_else(|| trace_event_kind_from_operation(&operation.kind))?;
+            let template = event
+                .and_then(|event| event.binding.as_deref())
+                .and_then(|binding| template_by_binding.get(binding));
+            let binding = event.and_then(|event| event.binding.clone());
+            let source_span = event
+                .map(|event| event.source_span.clone())
+                .unwrap_or_else(|| source_span_from_kobo(source_path, source, operation.span));
+            let id = event
+                .map(|event| format!("core-{}-{}", program.target, event.id))
+                .unwrap_or_else(|| format!("core-{}-term-{operation_index}", program.target));
+            Some(CoreTraceEvent {
+                id,
+                kind,
+                binding,
+                order: operation_index as u64,
+                source_span,
+                template_id: template.map(|template| template.id.clone()),
+                template_version: template.map(|template| lifecycle_template_version(template)),
+            })
+        })
+        .collect()
+}
+
+fn statement_index_from_event(event_id: &str) -> Option<usize> {
+    event_id.strip_prefix("stmt-")?.parse().ok()
+}
+
+fn trace_event_kind_from_operation(kind: &ScenarioOpKind) -> Option<TraceEventKind> {
+    match kind {
+        ScenarioOpKind::Return => Some(TraceEventKind::Return),
+        ScenarioOpKind::CoreTerminator { kind, .. } => Some(trace_event_kind_from_terminator(kind)),
+        _ => None,
+    }
+}
+
+fn trace_event_kind_from_terminator(kind: &kobo_ir::ScenarioCoreTerminatorKind) -> TraceEventKind {
+    match kind {
+        kobo_ir::ScenarioCoreTerminatorKind::Return => TraceEventKind::Return,
+        kobo_ir::ScenarioCoreTerminatorKind::ErrorExit => TraceEventKind::ErrorExit,
+        kobo_ir::ScenarioCoreTerminatorKind::Panic => TraceEventKind::Panic,
+        kobo_ir::ScenarioCoreTerminatorKind::Await => TraceEventKind::Cancel,
+        kobo_ir::ScenarioCoreTerminatorKind::OpaqueBoundary => TraceEventKind::OpaqueBoundary,
+    }
+}
+
+fn generated_trace_evidence(
+    source_path: &str,
+    source: &str,
+    program: &ScenarioProgram,
+    core_trace: &[CoreTraceEvent],
+    source_map: Option<&KoboSourceMap>,
+) -> Vec<GeneratedTraceEvent> {
+    let Some(source_map) = source_map else {
+        return Vec::new();
+    };
+    let mut used_lowering_events = BTreeSet::new();
+    core_trace
+        .iter()
+        .filter_map(|event| {
+            let (index, lowering_event) =
+                lowering_trace_event_for_core(source_map, program, event, &used_lowering_events)?;
+            used_lowering_events.insert(index);
+            Some(GeneratedTraceEvent {
+                id: format!("generated-{}", event.id),
+                core_event_id: lowering_event.core_event_id.clone(),
+                kind: event.kind.clone(),
+                binding: event.binding.clone(),
+                order: lowering_event.order,
+                source_map_anchor: SourceMapAnchorEvidence {
+                    id: lowering_event.source_map_entry_id.clone(),
+                    status: SourceMapAnchorStatus::Mapped,
+                    generated_span: generated_source_span(source_map, lowering_event),
+                    kobo_span: source_span_from_kobo_span(
+                        source_path,
+                        source,
+                        &lowering_event.kobo_span,
+                    ),
+                },
+                lowering_phase: lowering_event.lowering_phase.clone(),
+                template_id: lowering_event
+                    .template_id
+                    .clone()
+                    .or(event.template_id.clone()),
+                template_version: lowering_event
+                    .template_version
+                    .clone()
+                    .or(event.template_version.clone()),
+            })
+        })
+        .collect()
+}
+
+fn trace_hashes(
+    core_trace: &[CoreTraceEvent],
+    generated_trace: &[GeneratedTraceEvent],
+) -> Result<Vec<HashEvidence>, serde_json::Error> {
+    Ok(vec![
+        HashEvidence {
+            id: "core_obligation_trace".to_owned(),
+            hash: trace_material_hash(&core_trace)?,
+        },
+        HashEvidence {
+            id: "generated_rust_trace".to_owned(),
+            hash: trace_material_hash(&generated_trace)?,
+        },
+    ])
+}
+
+fn template_by_binding(
+    program: &ScenarioProgram,
+) -> BTreeMap<&str, &kobo_ir::ScenarioLifecycleTemplate> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::CreateObligation {
+                binding,
+                template: Some(template),
+                ..
+            } => Some((binding.as_str(), template)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn type_by_binding(program: &ScenarioProgram) -> BTreeMap<&str, String> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::CreateObligation {
+                binding, type_name, ..
+            } => Some((binding.as_str(), type_name.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn lifecycle_template_version(template: &kobo_ir::ScenarioLifecycleTemplate) -> String {
+    if matches!(template.source, ScenarioLifecycleTemplateSource::Inference) {
+        return "0.1".to_owned();
+    }
+    template.schema_version.to_string()
+}
+
+fn template_hash(
+    template: &kobo_ir::ScenarioLifecycleTemplate,
+    template_hashes: &[HashEvidence],
+) -> String {
+    template_hashes
+        .iter()
+        .find(|hash| hash.id == template.id)
+        .map(|hash| hash.hash.clone())
+        .unwrap_or_else(|| stable_hash(&template.id))
+}
+
+fn invariant_template_source(source: &ScenarioLifecycleTemplateSource) -> InvariantTemplateSource {
+    match source {
+        ScenarioLifecycleTemplateSource::Declaration => InvariantTemplateSource::Declaration,
+        ScenarioLifecycleTemplateSource::Inference => InvariantTemplateSource::BuiltIn,
+    }
+}
+
+fn invariant_confidence(confidence: &str) -> InvariantConfidence {
+    match confidence {
+        "exact_template" | "exact" => InvariantConfidence::Exact,
+        "sampled" => InvariantConfidence::Sampled,
+        "metadata-only" | "metadata_only" => InvariantConfidence::MetadataOnly,
+        _ => InvariantConfidence::Modeled,
+    }
+}
+
+fn numeric_field(fields: &BTreeMap<String, String>, key: &str) -> Option<u64> {
+    fields.get(key)?.parse().ok()
+}
+
+fn first_numeric_field(fields: &BTreeMap<String, String>, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| numeric_field(fields, key))
+}
+
+fn push_bound_if_declared(
+    bounds: &mut Vec<BoundDeclaration>,
+    dimension: BoundDimension,
+    value: Option<u64>,
+) {
+    let Some(value) = value else {
+        return;
+    };
+    bounds.push(BoundDeclaration {
+        dimension,
+        value,
+        source: BoundSource::Ward,
+        proof_relevant: true,
+    });
+}
+
+fn dimension_values(fields: &BTreeMap<String, String>, key: &str) -> Vec<String> {
+    fields
+        .get(key)
+        .into_iter()
+        .flat_map(|value| value.split(['|', ',']))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn bounded_completeness(value: Option<&str>) -> BoundedCompleteness {
+    match value {
+        Some("complete") => BoundedCompleteness::Complete,
+        Some("timeout") => BoundedCompleteness::Timeout,
+        Some("incomplete") => BoundedCompleteness::Incomplete,
+        Some("sampled") | None => BoundedCompleteness::Sampled,
+        Some(_) => BoundedCompleteness::Incomplete,
+    }
+}
+
+fn trace_event_kind(kind: &ObligationEventKind) -> Option<TraceEventKind> {
+    match kind {
+        ObligationEventKind::Create => Some(TraceEventKind::Create),
+        ObligationEventKind::Discharge => Some(TraceEventKind::Discharge),
+        ObligationEventKind::Transfer => Some(TraceEventKind::Transfer),
+        ObligationEventKind::Move => Some(TraceEventKind::Move),
+        ObligationEventKind::Escape => Some(TraceEventKind::Escape),
+        ObligationEventKind::BranchUnresolved
+        | ObligationEventKind::UnsupportedContainer
+        | ObligationEventKind::Call => None,
+    }
+}
+
+fn lowering_trace_event_for_core<'a>(
+    source_map: &'a KoboSourceMap,
+    program: &ScenarioProgram,
+    event: &CoreTraceEvent,
+    used: &BTreeSet<usize>,
+) -> Option<(usize, &'a LoweringTraceEvent)> {
+    source_map
+        .lowering_trace
+        .iter()
+        .enumerate()
+        .filter(|(index, lowering_event)| {
+            !used.contains(index)
+                && lowering_event.core_event_id == event.id
+                && lowering_event.function == program.target
+                && lowering_event.kind == event.kind.as_str()
+                && lowering_event.binding == event.binding
+                && lowering_event.order == event.order
+        })
+        .min_by_key(|(_, lowering_event)| {
+            lowering_event
+                .kobo_span
+                .start
+                .abs_diff(event.source_span.start as u32)
+        })
+}
+
+fn generated_source_span(
+    source_map: &KoboSourceMap,
+    lowering_event: &LoweringTraceEvent,
+) -> SourceSpan {
+    SourceSpan {
+        path: source_map.generated_file().to_owned(),
+        line: lowering_event.rs_span.line,
+        start: lowering_event.rs_span.column_start,
+        end: lowering_event.rs_span.column_end,
+        mapped: true,
+        snippet: String::new(),
+    }
+}
+
+fn source_span_from_kobo_span(source_path: &str, source: &str, span: &KoboSpan) -> SourceSpan {
+    source_span_from_kobo(source_path, source, *span)
 }
 
 fn core_cfg_nodes(source_path: &str, source: &str, functions: &[CoreFunction]) -> Vec<CoreCfgNode> {
@@ -133,7 +1255,12 @@ fn core_cfg_nodes(source_path: &str, source: &str, functions: &[CoreFunction]) -
         .collect()
 }
 
-fn core_cfg_edges(source_path: &str, source: &str, functions: &[CoreFunction]) -> Vec<CoreCfgEdge> {
+fn core_cfg_edges(
+    source_path: &str,
+    source: &str,
+    functions: &[CoreFunction],
+    loop_labels: &BTreeMap<String, Option<String>>,
+) -> Vec<CoreCfgEdge> {
     functions
         .iter()
         .flat_map(|function| {
@@ -143,28 +1270,211 @@ fn core_cfg_edges(source_path: &str, source: &str, functions: &[CoreFunction]) -
                         .edges
                         .iter()
                         .enumerate()
-                        .map(move |(edge_index, edge)| CoreCfgEdge {
-                            id: format!(
-                                "{}:{}:{}:{edge_index}",
-                                function.name, block.id, terminator.id
-                            ),
-                            function: function.name.clone(),
-                            from: block.id.clone(),
-                            to: edge
-                                .strip_prefix("goto:")
-                                .unwrap_or(edge.as_str())
-                                .to_owned(),
-                            kind: terminator.kind.as_str().to_owned(),
-                            source_span: source_span_from_kobo(
-                                source_path,
-                                source,
-                                terminator.source_span,
-                            ),
+                        .map(move |(edge_index, edge)| {
+                            let parsed_edge = parse_core_edge(edge);
+                            let loop_label = parsed_edge
+                                .loop_id
+                                .as_deref()
+                                .and_then(|loop_id| loop_labels.get(loop_id))
+                                .cloned()
+                                .flatten();
+                            CoreCfgEdge {
+                                id: format!(
+                                    "{}:{}:{}:{edge_index}",
+                                    function.name, block.id, terminator.id
+                                ),
+                                function: function.name.clone(),
+                                from: block.id.clone(),
+                                to: parsed_edge.target,
+                                kind: terminator.kind.as_str().to_owned(),
+                                loop_id: parsed_edge.loop_id,
+                                loop_label,
+                                loop_edge_kind: parsed_edge
+                                    .loop_edge_kind
+                                    .map(|kind| kind.as_str().to_owned()),
+                                loop_entry_block: parsed_edge.loop_entry_block,
+                                source_span: source_span_from_kobo(
+                                    source_path,
+                                    source,
+                                    terminator.source_span,
+                                ),
+                            }
                         })
                 })
             })
         })
         .collect()
+}
+
+fn loop_labels_by_id(program: &ScenarioProgram) -> BTreeMap<String, Option<String>> {
+    program
+        .operations
+        .iter()
+        .filter_map(|operation| match &operation.kind {
+            ScenarioOpKind::LoopStart { loop_id, label } => Some((loop_id.clone(), label.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn parse_core_edge(edge: &str) -> ParsedCoreEdge {
+    if let Some(target) = edge.strip_prefix("goto:") {
+        return ParsedCoreEdge::plain(target);
+    }
+    if let Some(payload) = edge.strip_prefix("loop_back:") {
+        return parse_loop_target_edge(payload, ParsedLoopEdgeKind::BackEdge, edge);
+    }
+    if let Some(payload) = edge.strip_prefix("loop_continue:") {
+        return parse_loop_target_edge(payload, ParsedLoopEdgeKind::Continue, edge);
+    }
+    if let Some(payload) = edge.strip_prefix("loop_exit:") {
+        return parse_loop_exit_edge(payload, edge);
+    }
+    ParsedCoreEdge::plain(edge)
+}
+
+fn parse_loop_target_edge(
+    payload: &str,
+    kind: ParsedLoopEdgeKind,
+    fallback: &str,
+) -> ParsedCoreEdge {
+    let Some((loop_id, target)) = payload.rsplit_once(':') else {
+        return ParsedCoreEdge::plain(fallback);
+    };
+    ParsedCoreEdge {
+        target: target.to_owned(),
+        loop_id: Some(loop_id.to_owned()),
+        loop_edge_kind: Some(kind),
+        loop_entry_block: Some(target.to_owned()),
+    }
+}
+
+fn parse_loop_exit_edge(payload: &str, fallback: &str) -> ParsedCoreEdge {
+    let parts = payload.splitn(4, ':').collect::<Vec<_>>();
+    if parts.len() == 4 {
+        let loop_edge_kind = parsed_exit_kind(parts[0]);
+        return ParsedCoreEdge {
+            target: parts[3].to_owned(),
+            loop_id: Some(parts[1].to_owned()),
+            loop_edge_kind,
+            loop_entry_block: Some(parts[2].to_owned()),
+        };
+    }
+    parse_legacy_loop_exit_edge(payload).unwrap_or_else(|| ParsedCoreEdge::plain(fallback))
+}
+
+fn parse_legacy_loop_exit_edge(payload: &str) -> Option<ParsedCoreEdge> {
+    let mut parts = payload.splitn(3, ':');
+    let kind = parts.next()?;
+    let entry_block = parts.next()?.to_owned();
+    let target = parts
+        .next()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{kind}_exit"));
+    Some(ParsedCoreEdge {
+        target,
+        loop_id: None,
+        loop_edge_kind: parsed_exit_kind(kind),
+        loop_entry_block: Some(entry_block),
+    })
+}
+
+fn parsed_exit_kind(kind: &str) -> Option<ParsedLoopEdgeKind> {
+    match kind {
+        "break" => Some(ParsedLoopEdgeKind::Break),
+        "condition" => Some(ParsedLoopEdgeKind::Condition),
+        _ => None,
+    }
+}
+
+impl ParsedCoreEdge {
+    fn plain(target: &str) -> Self {
+        Self {
+            target: target.to_owned(),
+            loop_id: None,
+            loop_edge_kind: None,
+            loop_entry_block: None,
+        }
+    }
+}
+
+impl LoopRegionIndex {
+    fn from_core(
+        functions: &[CoreFunction],
+        edges: &[CoreCfgEdge],
+        loop_facts: &[CoreLoopBackEdgeFact],
+    ) -> Self {
+        let mut index = Self::default();
+        for function in functions {
+            for fact in loop_facts
+                .iter()
+                .filter(|fact| fact.function == function.name.as_str())
+            {
+                let region_blocks = loop_region_blocks(function, edges, fact);
+                for block_id in region_blocks {
+                    push_unique_loop_region(
+                        index
+                            .block_regions
+                            .entry(function.name.clone())
+                            .or_default()
+                            .entry(block_id)
+                            .or_default(),
+                        fact.loop_id.clone(),
+                    );
+                }
+            }
+        }
+        index
+    }
+
+    fn loop_regions_for_block(&self, function: &str, block: &str) -> Vec<String> {
+        self.block_regions
+            .get(function)
+            .and_then(|regions| regions.get(block))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+fn loop_region_blocks(
+    function: &CoreFunction,
+    edges: &[CoreCfgEdge],
+    fact: &CoreLoopBackEdgeFact,
+) -> BTreeSet<String> {
+    let known_blocks = function
+        .blocks
+        .iter()
+        .map(|block| block.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let function_edges = edges
+        .iter()
+        .filter(|edge| edge.function == function.name.as_str())
+        .collect::<Vec<_>>();
+    let mut visited = BTreeSet::new();
+    let mut queued = VecDeque::from([fact.entry_block.clone()]);
+    while let Some(block_id) = queued.pop_front() {
+        if !known_blocks.contains(block_id.as_str()) || !visited.insert(block_id.clone()) {
+            continue;
+        }
+        for edge in function_edges.iter().filter(|edge| edge.from == block_id) {
+            if !edge.to.starts_with("bb") || !known_blocks.contains(edge.to.as_str()) {
+                continue;
+            }
+            if edge.loop_id.as_deref() == Some(fact.loop_id.as_str())
+                && edge.loop_edge_kind.is_some()
+            {
+                continue;
+            }
+            queued.push_back(edge.to.clone());
+        }
+    }
+    visited
+}
+
+fn push_unique_loop_region(regions: &mut Vec<String>, loop_id: String) {
+    if !regions.contains(&loop_id) {
+        regions.push(loop_id);
+    }
 }
 
 fn block_span(block: &CoreBlock) -> KoboSpan {
@@ -202,7 +1512,7 @@ fn template_evidence(
         };
         let template_source = match template.source {
             ScenarioLifecycleTemplateSource::Declaration => "declaration",
-            ScenarioLifecycleTemplateSource::Inference => "inference",
+            ScenarioLifecycleTemplateSource::Inference => "built_in",
         };
         let schema = TemplateSchemaEvidence {
             id: template.id.clone(),
@@ -211,6 +1521,9 @@ fn template_evidence(
             schema_version: template.schema_version,
             confidence: template.confidence.clone(),
             source: template_source.to_owned(),
+            lifecycle_owner: template.lifecycle_owner.clone(),
+            cancel_policy: template.cancel_policy.clone(),
+            registry_source: template.registry_source.clone(),
             source_span: source_span_from_kobo(source_path, source, operation.span),
         };
         let hash = template_schema_hash(&schema)?;
@@ -1031,6 +2344,7 @@ fn obligation_evidence(
     source_path: &str,
     source: &str,
     functions: &[CoreFunction],
+    loop_regions: &LoopRegionIndex,
 ) -> (
     Vec<ObligationState>,
     Vec<ObligationState>,
@@ -1057,6 +2371,8 @@ fn obligation_evidence(
                         kind,
                         binding: statement.binding.clone(),
                         action: statement.action.clone(),
+                        loop_regions: loop_regions
+                            .loop_regions_for_block(&function.name, &block.id),
                         source_span: source_span_from_kobo(
                             source_path,
                             source,
@@ -1106,16 +2422,20 @@ fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationRepl
         let entry_env = block_entry_envs.get(&block.id).cloned().unwrap_or_default();
         let exit_env = apply_block_obligation_statements(block, entry_env);
         for target in block_successor_targets(block) {
+            if is_back_edge_between_blocks(&block.id, &target) {
+                continue;
+            }
             let Some(target_block) = blocks.get(target.as_str()) else {
                 continue;
             };
+            let discovered = !block_entry_envs.contains_key(&target_block.id);
             let changed = merge_block_entry_env(
                 block_entry_envs
                     .entry(target_block.id.clone())
                     .or_insert_with(BTreeMap::new),
                 &exit_env,
             );
-            if changed {
+            if discovered || changed {
                 queued.push_back(target_block.id.clone());
             }
         }
@@ -1136,8 +2456,14 @@ fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationRepl
     let terminal_envs = function
         .blocks
         .iter()
-        .filter(|block| block_successor_targets(block).is_empty())
-        .filter_map(|block| block_exit_envs.get(&block.id).cloned())
+        .filter_map(|block| {
+            let targets = block_successor_targets(block);
+            let is_terminal =
+                targets.is_empty() || targets.iter().any(|target| modeled_exit_target(target));
+            is_terminal
+                .then(|| block_exit_envs.get(&block.id).cloned())
+                .flatten()
+        })
         .collect::<Vec<_>>();
 
     FunctionObligationReplay {
@@ -1145,6 +2471,16 @@ fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationRepl
         block_exit_envs,
         terminal_envs,
     }
+}
+
+fn is_back_edge_between_blocks(source: &str, target: &str) -> bool {
+    let Some(source_index) = block_index(source) else {
+        return false;
+    };
+    let Some(target_index) = block_index(target) else {
+        return false;
+    };
+    target_index <= source_index
 }
 
 fn apply_block_obligation_statements(
@@ -1162,8 +2498,16 @@ fn block_successor_targets(block: &CoreBlock) -> Vec<String> {
         .terminators
         .iter()
         .flat_map(|terminator| terminator.edges.iter())
-        .filter_map(|edge| edge.strip_prefix("goto:").map(str::to_owned))
+        .map(|edge| core_successor_target(edge))
         .collect()
+}
+
+fn core_successor_target(edge: &str) -> String {
+    parse_core_edge(edge).target
+}
+
+fn modeled_exit_target(target: &str) -> bool {
+    matches!(target, "return" | "error_exit" | "panic" | "break_exit")
 }
 
 fn merge_block_entry_env(
@@ -1423,6 +2767,19 @@ fn obligation_event_kind(kind: &CoreStatementKind) -> Option<ObligationEventKind
 
 fn env_states(env: &BTreeMap<String, ObligationStatus>) -> Vec<ObligationState> {
     env.iter()
+        .map(|(binding, state)| ObligationState {
+            binding: binding.clone(),
+            state: state.clone(),
+        })
+        .collect()
+}
+
+fn env_states_for_bindings(
+    env: &BTreeMap<String, ObligationStatus>,
+    bindings: &[String],
+) -> Vec<ObligationState> {
+    env.iter()
+        .filter(|(binding, _)| bindings.contains(binding))
         .map(|(binding, state)| ObligationState {
             binding: binding.clone(),
             state: state.clone(),

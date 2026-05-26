@@ -1,6 +1,7 @@
 # Rust build outputs
 /target/
 /target-*/
+/.lake/
 
 # Generated fixture and CLI outputs
 /tests/fixtures/*.exe

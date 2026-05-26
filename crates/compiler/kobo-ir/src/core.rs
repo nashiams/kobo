@@ -90,15 +90,20 @@ pub fn lower_program(program: &ScenarioProgram) -> CoreProgram {
         let statements = statement_from_operation(index, operation)
             .into_iter()
             .collect();
-        let mut terminators =
-            terminators_from_operation(index, operation, next.as_deref(), modeled_ops.len());
+        let mut terminators = terminators_from_operation(
+            index,
+            operation,
+            next.as_deref(),
+            modeled_ops.len(),
+            &modeled_ops,
+        );
         let successors = if terminators.is_empty() {
             next.iter().cloned().collect::<Vec<_>>()
         } else {
             terminators
                 .iter()
                 .flat_map(|terminator| terminator.edges.iter())
-                .filter_map(|edge| edge.strip_prefix("goto:").map(str::to_owned))
+                .filter_map(|edge| core_successor_target(edge))
                 .collect::<Vec<_>>()
         };
         if terminators.is_empty() {
@@ -202,6 +207,12 @@ fn apply_kir_cfg_successors(
         .collect::<BTreeSet<_>>();
 
     for (index, block) in blocks.iter_mut().enumerate() {
+        if modeled_ops
+            .get(index)
+            .is_some_and(|operation| uses_scenario_control_successors(&operation.kind))
+        {
+            continue;
+        }
         let Some(cfg_block) = op_to_cfg_block.get(index).and_then(|block| *block) else {
             continue;
         };
@@ -210,12 +221,15 @@ fn apply_kir_cfg_successors(
             if *from != cfg_block {
                 continue;
             }
+            if from == to {
+                if let Some(successor) = same_cfg_successor(index, &cfg_to_core_blocks, *to) {
+                    push_unique_successor(&mut successors, successor);
+                }
+                continue;
+            }
             if let Some(core_indexes) = cfg_to_core_blocks.get(to) {
                 for core_index in core_indexes {
-                    let successor = format!("bb{core_index}");
-                    if successor != block.id && !successors.contains(&successor) {
-                        successors.push(successor);
-                    }
+                    push_unique_successor(&mut successors, format!("bb{core_index}"));
                 }
             }
         }
@@ -223,6 +237,38 @@ fn apply_kir_cfg_successors(
             block.successors = successors;
             sync_terminator_successor_edges(block);
         }
+    }
+}
+
+fn uses_scenario_control_successors(kind: &ScenarioOpKind) -> bool {
+    matches!(
+        kind,
+        ScenarioOpKind::LoopStart { .. }
+            | ScenarioOpKind::Loop
+            | ScenarioOpKind::LoopBackEdge { .. }
+            | ScenarioOpKind::LoopContinue { .. }
+            | ScenarioOpKind::LoopBreak { .. }
+    )
+}
+
+fn same_cfg_successor(
+    index: usize,
+    cfg_to_core_blocks: &BTreeMap<u32, Vec<usize>>,
+    cfg_block: u32,
+) -> Option<String> {
+    let core_indexes = cfg_to_core_blocks.get(&cfg_block)?;
+    let position = core_indexes
+        .iter()
+        .position(|core_index| *core_index == index)?;
+    let target = core_indexes
+        .get(position + 1)
+        .or_else(|| core_indexes.first())?;
+    Some(format!("bb{target}"))
+}
+
+fn push_unique_successor(successors: &mut Vec<String>, successor: String) {
+    if !successors.contains(&successor) {
+        successors.push(successor);
     }
 }
 
@@ -357,6 +403,10 @@ fn statement_from_operation(index: usize, operation: &ScenarioOp) -> Option<Core
         | ScenarioOpKind::Select { .. }
         | ScenarioOpKind::RawNondeterminism { .. }
         | ScenarioOpKind::UncontrolledEffect { .. }
+        | ScenarioOpKind::LoopStart { .. }
+        | ScenarioOpKind::LoopBackEdge { .. }
+        | ScenarioOpKind::LoopContinue { .. }
+        | ScenarioOpKind::LoopBreak { .. }
         | ScenarioOpKind::Loop
         | ScenarioOpKind::Return => None,
     }
@@ -367,6 +417,7 @@ fn terminators_from_operation(
     operation: &ScenarioOp,
     next: Option<&str>,
     block_count: usize,
+    modeled_ops: &[&ScenarioOp],
 ) -> Vec<CoreTerminator> {
     match &operation.kind {
         ScenarioOpKind::CoreTerminator {
@@ -404,16 +455,120 @@ fn terminators_from_operation(
                 source_span: operation.span,
             }]
         }
-        ScenarioOpKind::Loop => vec![CoreTerminator {
+        ScenarioOpKind::Loop => {
+            let loop_entry_index = legacy_loop_entry_index(modeled_ops, index);
+            let mut edges = vec![format!("goto:bb{loop_entry_index}")];
+            if let Some(next) = next {
+                edges.push(format!("goto:{next}"));
+            }
+            vec![CoreTerminator {
+                id: format!("term-{index}"),
+                kind: CoreTerminatorKind::Goto,
+                boundary: None,
+                policy: None,
+                edges,
+                source_span: operation.span,
+            }]
+        }
+        ScenarioOpKind::LoopBackEdge { loop_id, can_exit } => {
+            let entry_block = loop_entry_block_for_id(modeled_ops, index, loop_id);
+            let mut edges = vec![format!("loop_back:{loop_id}:{entry_block}")];
+            if *can_exit {
+                if let Some(next) = next {
+                    edges.push(format!(
+                        "loop_exit:condition:{loop_id}:{entry_block}:{next}"
+                    ));
+                }
+            }
+            vec![CoreTerminator {
+                id: format!("term-{index}"),
+                kind: CoreTerminatorKind::Goto,
+                boundary: None,
+                policy: None,
+                edges,
+                source_span: operation.span,
+            }]
+        }
+        ScenarioOpKind::LoopContinue { loop_id } => vec![CoreTerminator {
             id: format!("term-{index}"),
             kind: CoreTerminatorKind::Goto,
             boundary: None,
             policy: None,
-            edges: vec![format!("goto:bb{index}")],
+            edges: vec![format!(
+                "loop_continue:{loop_id}:{}",
+                loop_entry_block_for_id(modeled_ops, index, loop_id)
+            )],
             source_span: operation.span,
         }],
+        ScenarioOpKind::LoopBreak { loop_id } => {
+            let exit_target = next.unwrap_or("break_exit");
+            let entry_block = loop_entry_block_for_id(modeled_ops, index, loop_id);
+            vec![CoreTerminator {
+                id: format!("term-{index}-break"),
+                kind: CoreTerminatorKind::Goto,
+                boundary: None,
+                policy: None,
+                edges: vec![format!(
+                    "loop_exit:break:{loop_id}:{entry_block}:{exit_target}"
+                )],
+                source_span: operation.span,
+            }]
+        }
         _ => Vec::new(),
     }
+}
+
+fn legacy_loop_entry_index(modeled_ops: &[&ScenarioOp], loop_index: usize) -> usize {
+    modeled_ops[..loop_index]
+        .iter()
+        .rposition(|operation| {
+            matches!(
+                operation.kind,
+                ScenarioOpKind::LoopStart { .. } | ScenarioOpKind::Loop
+            )
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0)
+}
+
+fn loop_entry_block_for_id(
+    modeled_ops: &[&ScenarioOp],
+    loop_index: usize,
+    loop_id: &str,
+) -> String {
+    let entry_index = modeled_ops[..loop_index]
+        .iter()
+        .rposition(|operation| match &operation.kind {
+            ScenarioOpKind::LoopStart {
+                loop_id: candidate, ..
+            } => candidate == loop_id,
+            _ => false,
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    format!("bb{entry_index}")
+}
+
+fn core_successor_target(edge: &str) -> Option<String> {
+    if let Some(target) = edge.strip_prefix("goto:") {
+        return Some(target.to_owned());
+    }
+    if let Some(payload) = edge.strip_prefix("loop_back:") {
+        return payload
+            .rsplit_once(':')
+            .map(|(_, target)| target.to_owned());
+    }
+    if let Some(payload) = edge.strip_prefix("loop_continue:") {
+        return payload
+            .rsplit_once(':')
+            .map(|(_, target)| target.to_owned());
+    }
+    if let Some(payload) = edge.strip_prefix("loop_exit:") {
+        return payload
+            .rsplit_once(':')
+            .map(|(_, target)| target.to_owned());
+    }
+    None
 }
 
 fn select_branch_edges(
@@ -489,5 +644,72 @@ impl CoreTerminatorKind {
             Self::Await => "await",
             Self::OpaqueBoundary => "opaque_boundary",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        FileId, ScenarioCoreCfgBlock, ScenarioCoreCfgEdge, ScenarioCoreCfgFacts,
+        ScenarioCoverageFacts,
+    };
+
+    use super::*;
+
+    #[test]
+    fn kir_self_loop_cfg_preserves_operation_order_instead_of_complete_graph() {
+        let program = ScenarioProgram {
+            file_id: FileId(0),
+            target: "queue_loop_case".to_owned(),
+            source_hash: "hash".to_owned(),
+            operations: vec![
+                ScenarioOp {
+                    span: span(10, 20),
+                    kind: ScenarioOpKind::CreateObligation {
+                        binding: "delivery".to_owned(),
+                        type_name: "Delivery".to_owned(),
+                        actions: vec!["ack".to_owned()],
+                        template: None,
+                    },
+                },
+                ScenarioOp {
+                    span: span(21, 30),
+                    kind: ScenarioOpKind::Discharge {
+                        binding: "delivery".to_owned(),
+                        action: "ack".to_owned(),
+                    },
+                },
+                ScenarioOp {
+                    span: span(31, 40),
+                    kind: ScenarioOpKind::Loop,
+                },
+            ],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts {
+                core_cfg: Some(ScenarioCoreCfgFacts {
+                    blocks: vec![ScenarioCoreCfgBlock {
+                        id: 6,
+                        kir_nodes: vec![20, 21, 22],
+                        span_start: 10,
+                        span_end: 40,
+                    }],
+                    edges: vec![ScenarioCoreCfgEdge { from: 6, to: 6 }],
+                }),
+                ..ScenarioCoverageFacts::default()
+            },
+        };
+
+        let core = lower_program(&program);
+        let blocks = &core.functions[0].blocks;
+        assert_eq!(blocks[0].successors, vec!["bb1"]);
+        assert_eq!(blocks[1].successors, vec!["bb2"]);
+        assert_eq!(blocks[2].successors, vec!["bb0"]);
+        assert_eq!(blocks[0].terminators[0].edges, vec!["goto:bb1"]);
+        assert_eq!(blocks[1].terminators[0].edges, vec!["goto:bb2"]);
+        assert_eq!(blocks[2].terminators[0].edges, vec!["goto:bb0"]);
+    }
+
+    fn span(start: u32, end: u32) -> KoboSpan {
+        KoboSpan::new(start, end, FileId(0))
     }
 }

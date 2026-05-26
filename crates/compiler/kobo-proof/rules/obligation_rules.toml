@@ -1,0 +1,167 @@
+[[rules]]
+id = "create"
+name = "Create"
+input_states = []
+output_states = ["owned"]
+allowed_modeled_exits = []
+rust_event_kinds = ["create"]
+required_certificate_fields = ["obligation_events.kind", "obligation_events.binding", "obligation_events.state_after"]
+rust_module = "crates/compiler/kobo-proof/src/obligation.rs"
+rust_verifier = "apply_obligation_event::Create"
+rust_verifiers = ["apply_obligation_event::Create"]
+rust_test = "rule_create_records_owned_obligation"
+lean_rule = "step_create"
+lean_constructor_arity = 3
+lean_required_premises = ["nonempty_id"]
+lean_output_states = ["owned"]
+lean_theorem = "preservation_create"
+template_assumption_fields = []
+examples = ["receive creates an owned Delivery obligation"]
+negative_examples = ["comment text mentioning receive creates no obligation"]
+
+[[rules]]
+id = "transfer"
+name = "Transfer"
+input_states = ["owned"]
+output_states = ["moved", "transferred"]
+allowed_modeled_exits = []
+rust_event_kinds = ["transfer", "move"]
+required_certificate_fields = ["obligation_events.kind", "obligation_events.binding", "obligation_events.state_before", "obligation_events.state_after"]
+rust_module = "crates/compiler/kobo-proof/src/obligation.rs"
+rust_verifier = "apply_obligation_event::Transfer"
+rust_verifiers = ["apply_obligation_event::Transfer"]
+rust_test = "rule_transfer_moves_owned_obligation_to_callee"
+lean_rule = "step_transfer"
+lean_constructor_arity = 5
+lean_required_premises = ["nonempty_id", "projection", "requires_owned"]
+lean_output_states = ["moved", "transferred"]
+lean_theorem = "preservation_transfer"
+template_assumption_fields = []
+examples = ["helper summary accepts a Delivery obligation"]
+negative_examples = ["unknown helper cannot silently discharge an owned obligation"]
+
+[[rules]]
+id = "split"
+name = "Split"
+input_states = ["owned"]
+output_states = ["branch_unresolved"]
+allowed_modeled_exits = []
+rust_event_kinds = ["branch_unresolved"]
+required_certificate_fields = ["core.cfg_edges", "obligation_events.state_before", "obligation_events.state_after"]
+rust_module = "crates/compiler/kobo-proof/src/obligation.rs"
+rust_verifier = "apply_obligation_event::BranchUnresolved"
+rust_verifiers = ["apply_obligation_event::BranchUnresolved"]
+rust_test = "rule_split_requires_branch_state_join_evidence"
+lean_rule = "step_split"
+lean_constructor_arity = 4
+lean_required_premises = ["nonempty_id", "requires_owned"]
+lean_output_states = ["branch_unresolved"]
+lean_theorem = "preservation_split"
+template_assumption_fields = []
+examples = ["branch analysis keeps one local owner while a transfer path is recorded"]
+negative_examples = ["resolved on one branch and owned on another cannot join as resolved"]
+
+[[rules]]
+id = "discharge"
+name = "Discharge"
+input_states = ["owned", "transferred"]
+output_states = ["resolved"]
+allowed_modeled_exits = []
+rust_event_kinds = ["discharge"]
+required_certificate_fields = ["obligation_events.kind", "obligation_events.binding", "obligation_events.state_before", "obligation_events.state_after"]
+rust_module = "crates/compiler/kobo-proof/src/obligation.rs"
+rust_verifier = "apply_obligation_event::Discharge"
+rust_verifiers = ["apply_obligation_event::Discharge"]
+rust_test = "rule_discharge_resolves_transferred_obligation"
+lean_rule = "step_discharge"
+lean_constructor_arity = 4
+lean_required_premises = ["nonempty_id", "owned_or_transferred"]
+lean_output_states = ["resolved"]
+lean_theorem = "preservation_discharge"
+template_assumption_fields = []
+examples = ["delivery.ack resolves the Delivery obligation"]
+negative_examples = ["dropping an owned delivery is not a discharge"]
+
+[[rules]]
+id = "return"
+name = "Return"
+input_states = []
+output_states = []
+allowed_modeled_exits = ["return"]
+rust_event_kinds = []
+required_certificate_fields = ["core.cfg_edges.kind", "exit_env", "function_summaries.exit_env"]
+rust_module = "crates/compiler/kobo-proof/src/obligation.rs"
+rust_verifier = "reject_unresolved_exit::return"
+rust_verifiers = ["reject_unresolved_exit::return"]
+rust_test = "rule_return_rejects_unresolved_local_exit"
+lean_rule = "step_return"
+lean_constructor_arity = 2
+lean_required_premises = ["no_unresolved_local"]
+lean_output_states = []
+lean_theorem = "preservation_return"
+template_assumption_fields = []
+examples = ["function return is accepted when no unresolved local obligation remains"]
+negative_examples = ["returning while a Delivery is still owned is rejected"]
+
+[[rules]]
+id = "cancel"
+name = "Cancel"
+input_states = []
+output_states = []
+allowed_modeled_exits = ["cancel"]
+rust_event_kinds = []
+required_certificate_fields = ["core.async_model.cancel_edges", "core.async_model.future_state_obligations"]
+rust_module = "crates/compiler/kobo-proof/src/async_model.rs"
+rust_verifier = "verify_cancel_edges"
+rust_verifiers = ["verify_cancel_edges", "verify_future_state_obligations"]
+rust_test = "rule_cancel_requires_future_state_obligation_evidence"
+lean_rule = "step_cancel"
+lean_constructor_arity = 6
+lean_required_premises = ["no_unresolved_local", "cancel_edge_evidence", "future_state_obligation_evidence", "cancellation_evidence_recorded"]
+lean_output_states = []
+lean_theorem = "preservation_cancel"
+template_assumption_fields = []
+examples = ["await suspension records a future-drop cancel edge"]
+negative_examples = ["loser select path cannot drop an owned delivery without evidence"]
+
+[[rules]]
+id = "panic"
+name = "Panic"
+input_states = []
+output_states = []
+allowed_modeled_exits = ["panic"]
+rust_event_kinds = []
+required_certificate_fields = ["core.cfg_edges.kind", "exit_env", "core_obligation_trace.kind"]
+rust_module = "crates/compiler/kobo-proof/src/obligation.rs"
+rust_verifier = "reject_unresolved_exit::panic"
+rust_verifiers = ["reject_unresolved_exit::panic"]
+rust_test = "rule_panic_rejects_unresolved_local_exit"
+lean_rule = "step_panic"
+lean_constructor_arity = 2
+lean_required_premises = ["no_unresolved_local"]
+lean_output_states = []
+lean_theorem = "preservation_panic"
+template_assumption_fields = []
+examples = ["panic terminator is modeled as an exit edge"]
+negative_examples = ["panic cannot turn an owned obligation into success"]
+
+[[rules]]
+id = "opaque"
+name = "Opaque Boundary"
+input_states = ["owned", "resolved", "transferred"]
+output_states = ["escaped"]
+allowed_modeled_exits = ["opaque_boundary"]
+rust_event_kinds = ["escape"]
+required_certificate_fields = ["boundary_assumptions.policy", "opaque_edge_ledger", "core_obligation_trace.kind"]
+rust_module = "crates/compiler/kobo-proof/src/boundary.rs"
+rust_verifier = "verify_boundary_policies::Opaque"
+rust_verifiers = ["verify_boundary_policies::Opaque"]
+rust_test = "rule_opaque_requires_ledger_entry"
+lean_rule = "step_opaque"
+lean_constructor_arity = 10
+lean_required_premises = ["nonempty_id", "opaque_boundary_precondition", "template_assumption_current", "template_assumption_matches_requirement", "opaque_ledger_recorded"]
+lean_output_states = ["escaped"]
+lean_theorem = "preservation_opaque"
+template_assumption_fields = ["template_id", "template_version", "obligation_kind", "statement", "source", "confidence", "rust_certificate_field_path", "lean_assumption_name"]
+examples = ["opaque external boundary records a ledger entry before escape"]
+negative_examples = ["opaque boundary without ledger is rejected"]

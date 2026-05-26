@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    CoreCfgEdge, ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus,
-    ProofCertificate, VerificationError,
+    CoreCfgEdge, InvariantPreservation, ObligationEvent, ObligationEventKind, ObligationState,
+    ObligationStatus, ProofCertificate, VerificationError,
 };
 
 pub(crate) type ObligationEnv = BTreeMap<String, ObligationStatus>;
 
 struct CfgReplay {
+    block_entry_envs: BTreeMap<String, ObligationEnv>,
     block_exit_envs: BTreeMap<String, ObligationEnv>,
     terminal_envs: Vec<ObligationEnv>,
     checked_events: usize,
@@ -34,6 +35,12 @@ pub(crate) fn block_obligation_envs(
     certificate: &ProofCertificate,
 ) -> Result<BTreeMap<String, ObligationEnv>, VerificationError> {
     replay_cfg_obligations(certificate).map(|replay| replay.block_exit_envs)
+}
+
+pub(crate) fn block_obligation_entry_envs(
+    certificate: &ProofCertificate,
+) -> Result<BTreeMap<String, ObligationEnv>, VerificationError> {
+    replay_cfg_obligations(certificate).map(|replay| replay.block_entry_envs)
 }
 
 pub(crate) fn event_state_map(states: &[ObligationState]) -> ObligationEnv {
@@ -73,6 +80,7 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
         .min_by_key(|node| block_index(&node.id).unwrap_or(usize::MAX))
     else {
         return Ok(CfgReplay {
+            block_entry_envs: BTreeMap::new(),
             block_exit_envs: BTreeMap::new(),
             terminal_envs: Vec::new(),
             checked_events: 0,
@@ -116,37 +124,39 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
             .unwrap_or_default();
         let mut has_block_successor = false;
         for edge in outgoing {
-            if modeled_exit_target(edge.to.as_str()) {
+            let target = core_successor_target(edge.to.as_str());
+            if modeled_exit_target(target.as_str()) {
                 reject_unresolved_exit_on_edge(&edge.id, &exit_env)?;
                 terminal_envs.push(exit_env.clone());
                 continue;
             }
-            if !edge.to.starts_with("bb") {
+            if !target.starts_with("bb") {
                 continue;
             }
             has_block_successor = true;
-            if !nodes.contains_key(edge.to.as_str()) {
+            if !nodes.contains_key(target.as_str()) {
                 return Err(VerificationError::CfgEdgeTransitionMismatch {
                     edge: edge.id.clone(),
-                    reason: format!("unknown target block {}", edge.to),
+                    reason: format!("unknown target block {target}"),
                 });
             }
-            match block_entry_envs.get(edge.to.as_str()) {
+            match block_entry_envs.get(target.as_str()) {
                 Some(existing) if existing == &exit_env => {}
+                Some(_) if is_invariant_back_edge(certificate, edge) => {}
                 Some(existing) => {
                     return Err(VerificationError::CfgEdgeTransitionMismatch {
                         edge: edge.id.clone(),
                         reason: format!(
                             "target block {} expects {}, observed {}",
-                            edge.to,
+                            target,
                             format_env(existing),
                             format_env(&exit_env)
                         ),
                     });
                 }
                 None => {
-                    block_entry_envs.insert(edge.to.clone(), exit_env.clone());
-                    queued.push_back(edge.to.clone());
+                    block_entry_envs.insert(target.clone(), exit_env.clone());
+                    queued.push_back(target);
                 }
             }
         }
@@ -173,9 +183,19 @@ fn replay_cfg_obligations(certificate: &ProofCertificate) -> Result<CfgReplay, V
     }
 
     Ok(CfgReplay {
+        block_entry_envs,
         block_exit_envs,
         terminal_envs,
         checked_events: checked_event_ids.len(),
+    })
+}
+
+fn is_invariant_back_edge(certificate: &ProofCertificate, edge: &CoreCfgEdge) -> bool {
+    certificate.loop_invariants.iter().any(|invariant| {
+        invariant.function == edge.function
+            && invariant.back_edge_source == edge.from
+            && invariant.back_edge_target == edge.to
+            && invariant.preservation == InvariantPreservation::Preserved
     })
 }
 
@@ -189,11 +209,70 @@ fn replay_block_event(
         return Ok(entry_env.clone());
     };
     verify_env_exact(&event.state_before, entry_env)?;
+    verify_event_precondition(event, entry_env)?;
     let mut observed = entry_env.clone();
     apply_obligation_event(event, &mut observed);
     verify_env_exact(&event.state_after, &observed)?;
     checked_event_ids.insert(event.id.clone());
     Ok(observed)
+}
+
+fn verify_event_precondition(
+    event: &ObligationEvent,
+    env: &ObligationEnv,
+) -> Result<(), VerificationError> {
+    let Some(binding) = event.binding.as_ref() else {
+        return Ok(());
+    };
+    let observed = env.get(binding);
+    let allowed = match event.kind {
+        ObligationEventKind::Create => observed.is_none(),
+        ObligationEventKind::Transfer
+        | ObligationEventKind::Move
+        | ObligationEventKind::BranchUnresolved => {
+            matches!(observed, Some(ObligationStatus::Owned))
+        }
+        ObligationEventKind::Discharge => {
+            matches!(
+                observed,
+                Some(ObligationStatus::Owned | ObligationStatus::Transferred)
+            )
+        }
+        ObligationEventKind::Escape => {
+            matches!(
+                observed,
+                Some(
+                    ObligationStatus::Owned
+                        | ObligationStatus::Transferred
+                        | ObligationStatus::Resolved
+                )
+            )
+        }
+        ObligationEventKind::UnsupportedContainer | ObligationEventKind::Call => true,
+    };
+    if allowed {
+        return Ok(());
+    }
+    Err(VerificationError::ObligationReplayMismatch {
+        binding: binding.clone(),
+        expected: expected_precondition(&event.kind).to_owned(),
+        observed: observed
+            .map(ObligationStatus::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    })
+}
+
+fn expected_precondition(kind: &ObligationEventKind) -> &'static str {
+    match kind {
+        ObligationEventKind::Create => "absent",
+        ObligationEventKind::Transfer
+        | ObligationEventKind::Move
+        | ObligationEventKind::BranchUnresolved => "owned",
+        ObligationEventKind::Discharge => "owned|transferred",
+        ObligationEventKind::Escape => "owned|transferred|resolved",
+        ObligationEventKind::UnsupportedContainer | ObligationEventKind::Call => "any",
+    }
 }
 
 fn edges_by_source(edges: &[CoreCfgEdge]) -> BTreeMap<&str, Vec<&CoreCfgEdge>> {
@@ -260,6 +339,7 @@ fn reject_unresolved_exit(env: &ObligationEnv) -> Result<(), VerificationError> 
         if state.is_unresolved_exit() {
             return Err(VerificationError::UnresolvedExitObligation {
                 binding: binding.clone(),
+                state: state.as_str().to_owned(),
             });
         }
     }
@@ -274,7 +354,10 @@ fn reject_unresolved_exit_on_edge(
         if state.is_unresolved_exit() {
             return Err(VerificationError::CfgEdgeTransitionMismatch {
                 edge: edge_id.to_owned(),
-                reason: format!("unresolved obligation {binding} reaches modeled edge exit"),
+                reason: format!(
+                    "unresolved obligation {binding} reaches modeled edge exit as {}",
+                    state.as_str()
+                ),
             });
         }
     }
@@ -282,7 +365,23 @@ fn reject_unresolved_exit_on_edge(
 }
 
 fn modeled_exit_target(target: &str) -> bool {
-    matches!(target, "return" | "error_exit" | "panic")
+    matches!(
+        target,
+        "return" | "error_exit" | "panic" | "break_exit" | "opaque_boundary"
+    )
+}
+
+fn core_successor_target(target: &str) -> String {
+    let Some(payload) = target.strip_prefix("loop_exit:") else {
+        return target.to_owned();
+    };
+    let parts = payload.split(':').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [_, _, _, exit_target] => (*exit_target).to_owned(),
+        [_, _, exit_target] => (*exit_target).to_owned(),
+        [kind, ..] => format!("{kind}_exit"),
+        [] => "break_exit".to_owned(),
+    }
 }
 
 fn format_env(env: &ObligationEnv) -> String {

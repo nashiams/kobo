@@ -1,0 +1,44 @@
+name: proof-mechanization
+
+on:
+  pull_request:
+  push:
+    branches:
+      - alpha
+
+jobs:
+  rust-rule-sync:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -q -p kobo-proof
+      - run: cargo test -q -p kobo-cli --test v16_obligation_rule_sync_contract
+      - run: cargo test -q -p kobo-cli --test v16_mechanized_trace_contract
+      - run: cargo test -q -p kobo-cli --test v16_proof_assistant_wording_contract
+
+  lean-mechanization:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+      - run: lake build KoboProof
+        working-directory: proof/lean
+      - run: lake env lean KoboCore.lean
+        working-directory: proof/lean
+      - run: lake env lean ObligationRules.lean
+        working-directory: proof/lean
+      - run: lake env lean Preservation.lean
+        working-directory: proof/lean
+      - run: lake env lean NoSilentLoss.lean
+        working-directory: proof/lean
+      - run: lake env lean SampleTrace.lean
+        working-directory: proof/lean
+      - run: lake env lean CertificateSoundness.lean
+        working-directory: proof/lean
+      - name: Reject unfinished Lean proofs
+        shell: bash
+        run: |
+          if grep -R -n -E '\b(sorry|admit|axiom)\b|constant\s+.*:' proof/lean; then
+            exit 1
+          fi

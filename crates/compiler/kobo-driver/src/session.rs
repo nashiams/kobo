@@ -20,12 +20,12 @@ pub struct CompileSession {
     /// Dev profile still respects KOBO_DIAG=1 for opt-in instrumentation.
     pub diag_enabled: bool,
     /// Byte-offset spans of functions annotated with `#[kobo::relax]` in the source file.
-    /// Used at render time to suppress `Severity::Warning` diagnostics in checked mode [G5].
+    /// Used at render time to suppress `Severity::Warning` diagnostics in checked mode.
     pub relaxed_fn_ranges: Vec<KoboSpan>,
     /// True when the guarantee profile was set by a CLI flag.
     pub cli_profile_override: bool,
     /// Struct names annotated with `#[kobo::engine]` in the source. Used by the
-    /// solver to impose PlainOwned ceiling constraints on engine resources [S-3].
+    /// solver to impose PlainOwned ceiling constraints on engine resources.
     pub engine_struct_names: Vec<String>,
     /// Parser-recovered source regions skipped by downstream diagnostic phases.
     pub poisoned_spans: Vec<KoboSpan>,
@@ -41,7 +41,7 @@ pub enum PoisonStatus {
 
 impl CompileSession {
     pub fn new(config: KoboConfig) -> Self {
-        // Mode check before env var — KOBO_DIAG=0 does NOT override checked mode [Trap 1].
+        // Checked mode remains authoritative even when KOBO_DIAG=0 is set.
         let diag_enabled = config.guarantee_policy.diag_always_active()
             || std::env::var("KOBO_DIAG").as_deref() == Ok("1");
         Self {
@@ -162,7 +162,7 @@ impl CompileSession {
 /// Returns `true` when `span` falls within any of the relaxed function byte-offset ranges.
 ///
 /// Used by the rendering path to suppress `Severity::Warning` diagnostics inside
-/// `#[kobo::relax]`-annotated functions in checked mode [G5].
+/// `#[kobo::relax]`-annotated functions in checked mode.
 pub fn is_inside_relaxed_fn(span: KoboSpan, relaxed_fn_ranges: &[KoboSpan]) -> bool {
     relaxed_fn_ranges.iter().any(|fn_span| {
         fn_span.file_id == span.file_id && span.start >= fn_span.start && span.end <= fn_span.end
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn checked_profile_kobo_diag_0_still_enabled() {
-        // KOBO_DIAG=0 must NOT override checked mode [Invariant R03 / Trap 1].
+        // KOBO_DIAG=0 must not override checked mode.
         std::env::set_var("KOBO_DIAG", "0");
         let config = KoboConfig {
             guarantee_policy: GuaranteePolicy::for_profile(GuaranteeProfile::Checked),
@@ -265,7 +265,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// G5: is_inside_relaxed_fn filter tests
+// is_inside_relaxed_fn filter tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

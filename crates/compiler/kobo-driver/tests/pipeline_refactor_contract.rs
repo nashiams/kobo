@@ -546,7 +546,14 @@ fn no_new_vague_module_names_are_added() {
     ];
     let vague_names = ["util.rs", "helpers.rs", "misc.rs", "common.rs"];
     let mut unexpected = Vec::new();
-    collect_vague_module_paths(&repo_root(), &vague_names, &allowed, &mut unexpected);
+    for source_root in ["bin", "crates", "editors", "proof", "tests"] {
+        collect_vague_module_paths(
+            &repo_path(source_root),
+            &vague_names,
+            &allowed,
+            &mut unexpected,
+        );
+    }
     unexpected.sort();
 
     assert!(
@@ -573,7 +580,7 @@ fn collect_vague_module_paths(
 
         if path.is_dir() {
             if file_name.starts_with('.')
-                || matches!(file_name, "claude-spec" | "target")
+                || file_name == "target"
                 || file_name.starts_with("target-")
             {
                 continue;

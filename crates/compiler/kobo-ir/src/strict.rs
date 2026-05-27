@@ -1,6 +1,6 @@
 /// @strict IR types.
 ///
-/// All types related to @strict blocks live here (Invariant C09).
+/// All types related to @strict blocks live here.
 /// No @strict types are defined in kobo-transform or kobo-codegen.
 use crate::node_id::KirNodeId;
 use crate::span::KoboSpan;
@@ -23,7 +23,7 @@ pub struct CapturedBinding {
     pub access_spans: Vec<KoboSpan>,
 }
 
-/// Nested @strict block info, recorded before flattening (F-07).
+/// Nested @strict block info, recorded before flattening.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NestedStrictBlock {
     pub span: KoboSpan,
@@ -48,14 +48,14 @@ pub struct CaptureSet {
 
 /// How a closure captures a binding.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive] // F-01
+#[non_exhaustive]
 pub enum ClosureCaptureMode {
     ByRef,
     ByRefMut,
     ByValue,
 }
 
-/// Detail about one captured binding inside a closure (F-01).
+/// Detail about one captured binding inside a closure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosureCaptureDetail {
     pub binding_id: KirNodeId,
@@ -78,8 +78,8 @@ pub enum StrictBoundaryViolation {
     ClosureCapture {
         closure_span: KoboSpan,
         captured_binding_id: KirNodeId,
-        is_move_closure: bool,               // F-01
-        captures: Vec<ClosureCaptureDetail>, // F-01
+        is_move_closure: bool,
+        captures: Vec<ClosureCaptureDetail>,
     },
 
     /// K0043: value moved inside @strict block.
@@ -91,7 +91,7 @@ pub enum StrictBoundaryViolation {
     /// K0063: @strict block inside async context without @strict async fn.
     AsyncContext { async_fn_span: KoboSpan },
 
-    /// Labeled break/continue crosses @strict boundary (R-13, Trap 22).
+    /// Labeled break/continue crosses @strict boundary.
     LabeledCrossBoundary {
         label: String,
         break_or_continue_span: KoboSpan,
@@ -100,14 +100,14 @@ pub enum StrictBoundaryViolation {
 }
 
 /// A boundary fact emitted by the transform for the driver to convert into
-/// a KDiagnostic. Invariant C05: transform emits facts, not diagnostics.
+/// a KDiagnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StrictBoundaryFact {
     pub block_span: KoboSpan,
     pub violation: StrictBoundaryViolation,
 }
 
-/// Mode for @strict function lowering (F-04).
+/// Mode for @strict function lowering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StrictFnMode {
     /// Full @strict: parameters are not wrapped, body is an implicit @strict block.

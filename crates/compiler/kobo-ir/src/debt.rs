@@ -12,7 +12,7 @@ use crate::span::KoboSpan;
 ///
 /// The type lives in `kobo-ir` so it can be read by both the driver and
 /// `kobo-debt` without introducing a dependency between those crates.
-/// Invariant C04: this must remain in `kobo-ir` only.
+/// This must remain in `kobo-ir` only.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WarnEarlyFact {
     pub node_id: KirNodeId,
@@ -29,7 +29,7 @@ pub struct WarnEarlyFact {
 /// The four structural ownership patterns Kobo detects for debt reporting.
 ///
 /// K0080-P codes are always `note` severity — never `warning` or `error`.
-/// They are advisory only. Invariant C08.
+/// They are advisory only.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WarnEarlyPattern {
     /// K0080-P1: bidirectional `Rc<RefCell<T>>` links — Rc cycle will leak.
@@ -59,7 +59,7 @@ pub enum WarnEarlyPattern {
     /// K0080-P3: shared mutable state mutated from 3+ distinct call sites.
     ///
     /// Count is distinct caller _function_ boundaries, not raw mutation events.
-    /// A loop in one function that mutates 100 times counts as 1 site. (Trap 13)
+    /// A loop in one function that mutates 100 times counts as 1 site.
     SharedMutableAt3PlusSites {
         binding_id: KirNodeId,
         /// Number of distinct caller function identities.
@@ -111,7 +111,7 @@ pub struct DebtSiteRecord {
 /// Counts of KIR nodes per ownership tier in a compiled source.
 ///
 /// Populated by walking `OwnershipTier` nodes in the frozen KIR.
-/// Never derived from text search over generated `.rs` files. (Invariant C05)
+/// Never derived from text search over generated `.rs` files.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct WrapperInventory {
     pub plain_owned: usize,
@@ -152,7 +152,7 @@ pub struct AcknowledgedDebtRecord {
 /// The ownership debt JSON schema uses `schema_version = 1`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DebtReport {
-    /// Always `1`. Bump on breaking JSON schema changes. (Trap 18)
+    /// Always `1`. Bump on breaking JSON schema changes.
     pub schema_version: u32,
     pub file_count: usize,
     pub line_count: usize,
@@ -166,7 +166,7 @@ pub struct DebtReport {
     pub acknowledged: Vec<AcknowledgedDebtRecord>,
     /// Per-site records for each `RcMutShared` node.
     pub sites: Vec<DebtSiteRecord>,
-    /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
+    /// Sites tagged with `#[kobo::migrate]`; metadata-only.
     pub migrate_tagged: Vec<MigrateSite>,
 }
 

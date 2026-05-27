@@ -3,8 +3,8 @@ fn allowed_mechanized_soundness_wording_is_documented() {
     let docs = proof_docs();
 
     assert!(
-        docs.contains("begins mechanized soundness for Kobo's obligation core and proof verifier"),
-        "docs must use the allowed v0.16 mechanized-soundness wording"
+        docs.contains("mechanized model covers Kobo's obligation core and proof verifier"),
+        "docs must use the allowed mechanized-soundness wording"
     );
     assert!(
         docs.contains("sample accepted .kproof trace has a matching mechanized trace model"),

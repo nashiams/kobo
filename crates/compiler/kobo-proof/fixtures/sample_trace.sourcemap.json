@@ -10,7 +10,7 @@
         "end": 81,
         "start": 0
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "order": 0,
       "rs_span": {
         "column_end": 8,
@@ -31,7 +31,7 @@
         "end": 81,
         "start": 0
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "order": 1,
       "rs_span": {
         "column_end": 18,
@@ -52,7 +52,7 @@
         "end": 81,
         "start": 0
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "order": 2,
       "rs_span": {
         "column_end": 28,
@@ -73,7 +73,7 @@
         "end": 81,
         "start": 0
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "order": 3,
       "rs_span": {
         "column_end": 38,
@@ -94,7 +94,7 @@
         "end": 81,
         "start": 0
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "order": 4,
       "rs_span": {
         "column_end": 48,
@@ -115,7 +115,7 @@
         "end": 81,
         "start": 0
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "order": 5,
       "rs_span": {
         "column_end": 58,

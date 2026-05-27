@@ -607,7 +607,7 @@ fn first(items: &[u8]) -> &u8 {
 
     // edge-case tests
 
-    /// &'static str is NEVER erased (Trap 5).
+    /// &'static str is never erased.
     #[test]
     fn static_lifetime_always_preserved() {
         let input = r#"fn get_name() -> &'static str { "hello" }"#;

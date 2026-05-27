@@ -41,7 +41,7 @@ pub(super) fn render_diagnostics_with_format(
     let renderer = DiagnosticRenderer::new(color, DiagnosticOutputFormat::HumanCard);
 
     for diagnostic in session.visible_diagnostics() {
-        // G5: suppress Severity::Warning diagnostics inside #[kobo::relax] ranges in checked mode.
+        // Suppress Severity::Warning diagnostics inside #[kobo::relax] ranges in checked mode.
         if diagnostic.severity == Severity::Warning
             && session.guarantee_policy().is_checked()
             && kobo_driver::is_inside_relaxed_fn(

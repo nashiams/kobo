@@ -10,10 +10,9 @@
 // Priority: P4 is emitted first, P2 supersedes P1 when both match the same struct.
 // P3 is binding-level, the others are struct-level.
 //
-// Trap 7: must NOT emit KDiagnostic here — only produce WarnEarlyFact values.
-// Trap 13: P3 site_count comes from SharedBindingFacts.mutable_sites (function
-//           boundaries), not raw mutation event counts.
-// Invariant C04: types consumed here (KirStructDef, WarnEarlyFact) live in kobo-ir.
+// This pass must not emit KDiagnostic directly; it only produces WarnEarlyFact values.
+// P3 site_count comes from SharedBindingFacts.mutable_sites (function boundaries),
+// not raw mutation event counts. Types consumed here live in kobo-ir.
 
 use kobo_ir::{FieldTypeShape, Kir, KirNodeId, WarnEarlyFact, WarnEarlyPattern};
 
@@ -217,7 +216,7 @@ fn detect_p1_bidirectional(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
 /// boundaries (call sites).
 ///
 /// `mutable_sites` in `SharedBindingFacts` counts distinct caller function
-/// identities, not raw mutation events (Trap 13).
+/// identities, not raw mutation events.
 fn detect_p3_shared_mutable(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
     for binding in kir.transform_facts().bindings.iter() {
         if binding.shared_facts.mutable_sites < 3 {

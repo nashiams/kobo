@@ -7,14 +7,13 @@
 // The runtime gate (`KOBO_DIAG=1`) controls whether Drop emits output.
 // The feature gate controls whether counters exist at all.
 //
-// Invariant C01: counter fields must be INSIDE an Rc alongside the RefCell value
-// so that all clones share a single counter set. A field on the outer struct is
-// NOT shared across Rc::clone. This implementation uses a separate Rc<DiagCounters>
-// for the counter allocation, keeping it alive as long as any DiagOwner or any
-// live DiagRef/DiagRefMut guard exists.
+// Counter fields must be inside an Rc alongside the RefCell value so all clones
+// share a single counter set. A field on the outer struct is not shared across
+// Rc::clone. This implementation uses a separate Rc<DiagCounters> for the
+// counter allocation, keeping it alive as long as any DiagOwner or live guard exists.
 //
-// Invariant C02: this file may not import any kobo-* compiler crate.
-// Invariant C06: every counter increment uses saturating_add, never +=.
+// This file may not import any kobo-* compiler crate.
+// Every counter increment uses saturating_add, never +=.
 
 #[cfg(feature = "diag")]
 use std::cell::Cell;
@@ -60,7 +59,7 @@ impl DiagCounters {
     }
 
     /// Increment a u64 counter using saturating arithmetic. Sets `saturated`
-    /// when the counter reaches u64::MAX. Invariant C06.
+    /// when the counter reaches u64::MAX.
     fn saturating_increment(counter: &Cell<u64>, saturated: &Cell<bool>) {
         let prev = counter.get();
         let next = prev.saturating_add(1);
@@ -151,7 +150,6 @@ impl<'a, V> DerefMut for DiagRefMut<'a, V> {
 ///
 /// Counters are shared across all clones via `Rc<DiagCounters>`.
 /// `source_location` is a `&'static str` baked at codegen time — never heap-allocated.
-/// Invariant C01, C09.
 #[cfg(feature = "diag")]
 pub struct DiagOwner<T> {
     inner: T,
@@ -197,7 +195,7 @@ impl<V> DiagOwner<Rc<RefCell<V>>> {
     pub fn borrow_mut(&self) -> DiagRefMut<'_, V> {
         // Contention: borrow_mut attempted while ≥1 immutable borrow is live.
         // Count the attempt BEFORE calling inner.borrow_mut() so the counter is
-        // visible even if RefCell panics. Trap 2: count the attempt, not success.
+        // visible even if RefCell panics.
         if self.counters.active_borrows.get() > 0 {
             DiagCounters::saturating_increment(
                 &self.counters.contention_count,
@@ -254,7 +252,7 @@ impl<T> Drop for DiagOwner<T> {
         // Runtime gate: emit when either of these is true:
         //   (a) KOBO_DIAG=1   — explicit opt-in in script mode
         //   (b) KOBO_CHECKED_MODE=1 — set by the driver when running a checked-mode binary
-        //                              checked mode always emits DiagOwner output [G1-§1.4]
+        //                              checked mode always emits DiagOwner output
         // We do NOT check the feature gate here — feature="diag" controls counter existence;
         // this gate controls whether the output is suppressed at runtime.
         let explicit_opt_in = std::env::var("KOBO_DIAG").as_deref() == Ok("1");
@@ -279,8 +277,7 @@ impl<T> Drop for DiagOwner<T> {
             return;
         }
 
-        // Structured [kobo-diag] output block. Format is a STABLE Invariant
-        // Frozen public diagnostic layout: do not change field names or order.
+        // Structured [kobo-diag] output block with stable field names and order.
         eprintln!(
             "\n[kobo-diag] {loc} — (Rc<RefCell<T>>)",
             loc = self.source_location,

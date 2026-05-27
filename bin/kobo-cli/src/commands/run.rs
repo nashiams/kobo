@@ -49,7 +49,7 @@ pub(super) fn cmd_run(
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
-    // §3.3b: Render K-code warnings on success path [BUG-01 / R02].
+    // Render K-code warnings on the success path.
     render_diagnostics(&session);
     if let Some(policy) = guarantee_policy.as_ref() {
         policy::emit_policy_summary(policy);
@@ -59,7 +59,7 @@ pub(super) fn cmd_run(
     }
 
     let mut run_cmd = Command::new(&binary_path);
-    // Runtime layer [G1 §1.4 / R6-04]: in checked profile DiagOwner output must
+    // In checked profile, DiagOwner output must
     // appear without requiring the user to set KOBO_DIAG=1 manually.
     // We propagate KOBO_CHECKED_MODE=1 to the child so kobo-diag::DiagOwner
     // knows to emit on Drop even without the manual opt-in env var.
@@ -158,7 +158,7 @@ pub(super) fn cmd_inspect(
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
-    // §3.3b: Render K-code warnings on success path too [R6-06].
+    // Render K-code warnings on the success path too.
     render_diagnostics(&session);
 
     // S-21: Apply lifetime erasure when requested for compatibility-profile output.

@@ -42,7 +42,7 @@ impl super::Lowerer<'_> {
 
                 // P5: detect @strict blocks by span-matching against ast.strict_blocks().
                 // The span uses the INNER block's span (node.block.span()), which is stable
-                // across postprocess_strict_markers (Invariant C06, Trap 17).
+                // across postprocess_strict_markers.
                 let bspan = self.ast.span_from_syn(block.block.span());
                 let strict_kblock = self
                     .ast

@@ -1,11 +1,9 @@
 //! Guard counter for deterministic `__kobo_guard_{N}` name generation.
-//!
-//! Invariant C08: one instance per function, shared across ALL @strict blocks.
 
 /// Monotonically-incrementing counter for guard name generation.
 ///
-/// One instance per function — shared across ALL @strict blocks within that
-/// function so that guard names never collide (Trap 16).
+/// One instance per function, shared across all @strict blocks within that
+/// function so guard names never collide.
 pub struct StrictGuardCounter {
     next_n: usize,
 }

@@ -1,4 +1,4 @@
-/// Detect labeled break/continue crossing @strict boundary (Trap 22, R-13).
+/// Detect labeled break/continue crossing @strict boundary.
 ///
 /// Heuristic: any labeled break/continue inside the block is flagged
 /// (conservative; exact label resolution requires CFG).

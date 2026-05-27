@@ -1,6 +1,6 @@
 /// Insert `.clone()` calls for shared bindings crossing spawn boundaries.
 ///
-/// Rules (R-02 resolution):
+/// Clone injection rules:
 /// - Binding is Copy type → skip clone, just capture
 /// - Binding is shared (tier Arc*/Rc*) → clone before spawn
 /// - Binding is consumed (moved into spawn, dead after) → move, no clone

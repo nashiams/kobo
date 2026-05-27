@@ -413,7 +413,7 @@
           "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
         }
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "template_id": "queue_delivery",
       "template_version": "0.1"
     },
@@ -443,7 +443,7 @@
           "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
         }
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "template_id": "queue_delivery",
       "template_version": "0.1"
     },
@@ -473,7 +473,7 @@
           "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
         }
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "template_id": "queue_delivery",
       "template_version": "0.1"
     },
@@ -503,7 +503,7 @@
           "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
         }
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "template_id": "queue_delivery",
       "template_version": "0.1"
     },
@@ -533,7 +533,7 @@
           "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
         }
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "template_id": "queue_delivery",
       "template_version": "0.1"
     },
@@ -563,7 +563,7 @@
           "snippet": "fn proof_case() { let delivery = Delivery {}; helper(delivery); delivery.ack(); }"
         }
       },
-      "lowering_phase": "v16_sample_fixture",
+      "lowering_phase": "sample_trace_fixture",
       "template_id": "queue_delivery",
       "template_version": "0.1"
     }
@@ -575,7 +575,7 @@
     },
     {
       "id": "generated_rust_trace",
-      "hash": "cd4f3897735f759e"
+      "hash": "41e69897b6f49ffe"
     }
   ],
   "translation_validation": {
@@ -590,5 +590,5 @@
     }
   ],
   "candidate_admission": [],
-  "certificate_material_hash": "aa0d267bcf856eb9"
+  "certificate_material_hash": "9e12aba992f22671"
 }

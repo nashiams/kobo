@@ -22,7 +22,7 @@ pub(super) fn cmd_fmt(file: &Path) -> anyhow::Result<()> {
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
-    // §3.3b: Render K-code warnings on success path too [R6-06].
+    // Render K-code warnings on the success path too.
     render_diagnostics(&session);
     run_rustfmt_file(&artifacts.rs_path)?;
 

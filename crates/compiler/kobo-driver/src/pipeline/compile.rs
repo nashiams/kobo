@@ -42,8 +42,8 @@ fn compile_codegen_artifacts(
         artifacts.file_id,
     )?;
 
-    // G4 §4.4: In checked mode, filter wrapper noise and remap surviving
-    // warnings to.kobo spans, then push into session.diagnostics [R6-02].
+    // In checked mode, filter wrapper noise and remap surviving warnings to
+    // .kobo spans before pushing them into session.diagnostics.
     // ORDER IS CRITICAL: filter(§4.2) must use.rs spans → remap(§4.3) → merge.
     if session.guarantee_policy().is_checked() && !compile_output.rustc_warnings.is_empty() {
         let kobo_regions = extract_kobo_regions(&artifacts.rs_source);

@@ -53,15 +53,15 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     let warn_early = detect_warn_early(&kir);
     kir.set_warn_early_facts(warn_early);
 
-    // G5: store relaxed function ranges and parse errors for the driver.
+    // Store relaxed function ranges and parse errors for the driver.
     kir.set_relaxed_fn_ranges(built.relaxed_fn_ranges);
     kir.set_relax_attr_errors(built.relax_attr_errors);
 
-    // G6: store migrate sites — metadata-only, zero codegen effect [R05].
+    // Store migrate sites as metadata-only, zero codegen effect.
     kir.set_migrate_sites(built.migrate_sites);
     kir.set_must_call_obligations(built.must_call_obligations);
     kir.set_must_call_attr_errors(built.must_call_attr_errors);
-    // Stage: store method mutability map for codegen borrow/borrow_mut selection.
+    // Store method mutability map for codegen borrow/borrow_mut selection.
     kir.set_method_mutability(built.method_mutability);
 
     // Run @strict analysis after finalized TierDecisions.
@@ -85,7 +85,7 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
         for kblock in ast.strict_blocks() {
             let mut cap = analyze_strict_capture_set(kblock, &transform_facts, &kir, &sc);
 
-            // Collect nested @strict blocks within this block and flatten (R-12).
+            // Collect nested @strict blocks within this block and flatten.
             let nested: Vec<_> = ast
                 .strict_blocks()
                 .iter()
@@ -113,7 +113,7 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     }
 
     // Build strict_fn_modes map for all @strict fns.
-    // BUG-6 fix: async strict fns now use Full mode instead of AsyncDeferred.
+    // Async strict fns now use Full mode instead of AsyncDeferred.
     // K0063 informational emission handles the async constraint communication.
     {
         use kobo_ir::StrictFnMode;

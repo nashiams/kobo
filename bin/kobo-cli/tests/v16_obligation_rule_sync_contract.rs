@@ -411,7 +411,7 @@ fn proof_verifier_sources() -> String {
 
 fn sample_kproof_source() -> String {
     std::fs::read_to_string(
-        repo_root().join("crates/compiler/kobo-proof/fixtures/v16_sample.kproof"),
+        repo_root().join("crates/compiler/kobo-proof/fixtures/sample_trace.kproof"),
     )
     .expect("sample .kproof fixture should exist")
 }

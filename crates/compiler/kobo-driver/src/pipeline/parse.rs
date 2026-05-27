@@ -140,7 +140,7 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     );
     kir.set_field_capability_views(field_capability_views);
 
-    // G5: copy relaxed fn ranges into session so the rendering path can filter warnings.
+    // Copy relaxed fn ranges into session so the rendering path can filter warnings.
     session.relaxed_fn_ranges = kir.relaxed_fn_ranges().to_vec();
 
     // S-3: Mark KIR nodes whose binding type matches an engine struct.

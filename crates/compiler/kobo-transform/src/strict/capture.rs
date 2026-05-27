@@ -1,7 +1,6 @@
 /// Capture-set analysis for @strict blocks.
 ///
-/// Reference: P3 Task 3.1. Invariant C01: exactly ONE definition of
-/// `analyze_strict_capture_set` in the entire codebase.
+/// `analyze_strict_capture_set` is the single source of truth for this pass.
 use kobo_ir::{CaptureAccessKind, CaptureSet, CapturedBinding, Kir, KoboSpan, TransformFacts};
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;
@@ -10,8 +9,6 @@ use super::capture_visitor::{AccessKind, AccessRecord, StrictCaptureVisitor};
 use super::span_convert::SpanConvert;
 
 /// THE single source of truth for capture set computation.
-///
-/// Invariant C01: exactly one definition of this function in the entire codebase.
 pub fn analyze_strict_capture_set(
     block: &KoboBlock,
     transform_facts: &TransformFacts,
@@ -35,7 +32,7 @@ pub fn analyze_strict_capture_set(
 }
 
 /// Merge access records into CapturedBinding entries.
-/// Per R-12: max(Read, Write) = Write for the same binding.
+/// max(Read, Write) = Write for the same binding.
 fn build_captured_bindings(accesses: Vec<AccessRecord>) -> Vec<CapturedBinding> {
     use std::collections::HashMap;
 

@@ -327,7 +327,7 @@ mod tests {
         assert!(!contains_word("MyArc<T>", "Arc"));
     }
 
-    // ─── BUG-08 tests: remove_kobo_imports should catch ALL kobo_* prefixes ───
+    // remove_kobo_imports should catch all kobo_* prefixes.
 
     #[test]
     fn strip_kobo_ir_import() {
@@ -376,7 +376,7 @@ mod tests {
         assert!(!output.contains("kobo_ir"));
     }
 
-    // ─── BUG-11 tests: Mutex import is async-context-aware ───
+    // Mutex import is async-context-aware.
 
     #[test]
     fn mutex_uses_tokio_in_async_context() {
@@ -418,7 +418,7 @@ mod tests {
 
     // edge-case tests
 
-    /// Trap 10: ALL kobo_ crate imports must be stripped.
+    /// All kobo_ crate imports must be stripped.
     #[test]
     fn strips_all_kobo_crate_prefixes() {
         let input = "use kobo_diag::DiagOwner;\nuse kobo_ir::Kir;\nuse kobo_transform::tiered;\nuse kobo_analysis::analyze;\nuse kobo_debt::Debt;\nuse kobo_errors::Severity;\nuse kobo::runtime::Ctx;\nuse std::sync::Arc;\n";
@@ -436,7 +436,7 @@ mod tests {
         );
     }
 
-    /// Trap 10: __kobo_ macro markers stripped.
+    /// __kobo_ macro markers stripped.
     #[test]
     fn strips_kobo_markers() {
         let input = "__kobo_spawn_block!({ body });\n__kobo_select_arm!(rx);\nlet x = 1;\n";
@@ -445,7 +445,7 @@ mod tests {
         assert!(output.contains("let x = 1"));
     }
 
-    /// Trap 10: #[kobo::*] attributes stripped.
+    /// #[kobo::*] attributes stripped.
     #[test]
     fn strips_kobo_attributes() {
         let input = "#[kobo::handler]\n#[kobo::tick(100ms)]\nasync fn handle() {}\n";

@@ -102,7 +102,7 @@ pub struct FieldCapabilityView {
     pub fields: Vec<FieldCapabilityField>,
 }
 
-/// The target element tagged by `#[kobo::migrate]` [G6 / R05].
+/// The target element tagged by `#[kobo::migrate]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MigrateTarget {
     /// `#[kobo::migrate] fn f() {... }`
@@ -113,9 +113,9 @@ pub enum MigrateTarget {
     Parameter,
 }
 
-/// Metadata-only site tagged for future migration [R05].
+/// Metadata-only site tagged for future migration.
 /// Populated during transform walk, consumed by `kobo debt`.
-/// Has ZERO effect on codegen or runtime [Invariant R05 / Trap 4].
+/// Has zero effect on codegen or runtime.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MigrateSite {
     pub span: KoboSpan,
@@ -137,25 +137,25 @@ pub struct Kir {
     struct_defs: Vec<KirStructDef>,
     /// K0080-P structural warnings detected by the warn_early pass.
     warn_early_facts: Vec<WarnEarlyFact>,
-    /// Capture sets for all @strict blocks in this file (Invariant C09).
+    /// Capture sets for all @strict blocks in this file.
     strict_capture_sets: Vec<CaptureSet>,
-    /// Boundary violation facts for all @strict blocks (Invariant C09, C05).
+    /// Boundary violation facts for all @strict blocks.
     strict_boundary_facts: Vec<StrictBoundaryFact>,
     /// Mode for each @strict fn (Full or AsyncDeferred), keyed by fn span.
     strict_fn_modes: HashMap<KoboSpan, StrictFnMode>,
     /// Byte-offset spans of functions annotated with `#[kobo::relax]`.
-    /// Used by the driver to suppress warnings from diagnostics inside these ranges [G5].
+    /// Used by the driver to suppress warnings from diagnostics inside these ranges.
     relaxed_fn_ranges: Vec<KoboSpan>,
-    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
+    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes.
     relax_attr_errors: Vec<RelaxAttrError>,
-    /// Sites tagged with `#[kobo::migrate]` — metadata-only, zero codegen effect [G6 / R05].
+    /// Sites tagged with `#[kobo::migrate]`; metadata-only, zero codegen effect.
     migrate_sites: Vec<MigrateSite>,
     must_call_obligations: Vec<MustCallObligation>,
     must_call_attr_errors: Vec<MustCallAttrError>,
     field_capability_views: Vec<FieldCapabilityView>,
     /// Method name → `true` if `&mut self`, scanned from impl blocks + config.
     method_mutability: HashMap<String, bool>,
-    /// S-3: KIR node IDs whose bindings belong to engine struct types.
+    /// KIR node IDs whose bindings belong to engine struct types.
     /// These are capped at PlainOwned by the solver/codegen.
     engine_ceiling_nodes: HashSet<KirNodeId>,
     /// Compiler-owned replay scenario facts produced while KIR is built.
@@ -339,12 +339,12 @@ impl Kir {
         self.method_mutability = map;
     }
 
-    /// S-3: Check if a node is capped to PlainOwned due to engine struct membership.
+    /// Check if a node is capped to PlainOwned due to engine struct membership.
     pub fn is_engine_ceiling(&self, id: KirNodeId) -> bool {
         self.engine_ceiling_nodes.contains(&id)
     }
 
-    /// S-3: Mark nodes as belonging to engine struct types.
+    /// Mark nodes as belonging to engine struct types.
     pub fn set_engine_ceiling_nodes(&mut self, nodes: HashSet<KirNodeId>) {
         self.engine_ceiling_nodes = nodes;
     }

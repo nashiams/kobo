@@ -1,6 +1,6 @@
 /// K0042: closure inside @strict block captures a captured binding.
 ///
-/// Invariant C05: produces facts, NOT KDiagnostic.
+/// Produces StrictBoundaryFact values, not diagnostics.
 use kobo_ir::{
     CaptureSet, ClosureCaptureDetail, ClosureCaptureMode, KirNodeId, KoboSpan, StrictBoundaryFact,
     StrictBoundaryViolation, TransformFacts,

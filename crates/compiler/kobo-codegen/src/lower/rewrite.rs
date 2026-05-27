@@ -116,7 +116,7 @@ impl<'a> Lowerer<'a> {
         match item {
             syn::Item::Fn(function) => {
                 self.apply_executor_attribute(function);
-                // P5: check if this is an @strict fn (by span matching against ast.strict_fns()).
+                // Check if this is an @strict fn by span matching against ast.strict_fns().
                 use syn::spanned::Spanned;
                 let fn_span = self.ast.span_from_syn(function.span());
                 if let Some(kfn) = self
@@ -206,7 +206,7 @@ impl<'a> Lowerer<'a> {
     fn lower_impl_block(&mut self, item_impl: &mut syn::ItemImpl) {
         util::strip_kobo_attrs(&mut item_impl.attrs);
 
-        // S-20: Detect split-borrow sites and apply destructuring.
+        // Detect split-borrow sites and apply destructuring.
         let items_snapshot: Vec<syn::Item> = vec![syn::Item::Impl(item_impl.clone())];
         let split_sites = kobo_analysis::split_borrow::detect_split_borrow_sites(&items_snapshot);
 
@@ -268,7 +268,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_function(&mut self, function: &mut syn::ItemFn) {
         let lowered_handler = handler::lower_item_function(self.ast, function);
-        // S-16: #[kobo::tick(rate=N)] → inject interval loop before lowering body.
+        // #[kobo::tick(rate=N)] injects an interval loop before lowering body.
         let tick_rate = function.attrs.iter().find_map(tick::parse_tick_rate);
         if let Some(rate) = tick_rate {
             // Remove the tick attribute.
@@ -297,14 +297,14 @@ impl<'a> Lowerer<'a> {
             function.block.stmts = preamble;
             function.block.stmts.push(loop_body);
         }
-        // S-10: #[kobo::handler] → wrap body in per-request isolation boundary.
+        // #[kobo::handler] wraps the body in a per-request isolation boundary.
         let is_handler = !lowered_handler
             && function.attrs.iter().any(|attr| {
                 let segments: Vec<_> = attr.path().segments.iter().collect();
                 segments.len() == 2 && segments[0].ident == "kobo" && segments[1].ident == "handler"
             });
         if is_handler {
-            // S-56: Per-request isolation — clone Arc params into locals, then wrap in catch_unwind.
+            // Per-request isolation clones Arc params into locals, then wraps in catch_unwind.
             let original_stmts = std::mem::take(&mut function.block.stmts);
 
             // Generate clone statements for Arc-typed parameters.
@@ -358,7 +358,7 @@ impl<'a> Lowerer<'a> {
             }
         }
         util::strip_kobo_attrs(&mut function.attrs);
-        // Reset guard counter per function (Invariant C08 / Trap 16).
+        // Reset guard counter per function.
         self.strict_counter = StrictGuardCounter::new();
         let prior_async_context = self.in_async_context;
         let prior_needs_local_set = self.needs_local_set;
@@ -429,7 +429,7 @@ impl<'a> Lowerer<'a> {
             let syn::FnArg::Typed(argument) = input else {
                 continue;
             };
-            // Strip #[kobo::...] attributes from parameters [BUG-03 / Trap 17].
+            // Strip #[kobo::...] attributes from parameters.
             util::strip_kobo_attrs(&mut argument.attrs);
             let Some(binding) = binding_for_pat(self.ast, &argument.pat) else {
                 continue;

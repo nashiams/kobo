@@ -3,7 +3,7 @@
 /// Detects move patterns: let-binding, function call by-value, method call
 /// by-value, match scrutinee, return expression.
 ///
-/// Invariant C05: produces facts, NOT KDiagnostic.
+/// Produces StrictBoundaryFact values, not diagnostics.
 use kobo_ir::{CaptureSet, KirNodeId, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;

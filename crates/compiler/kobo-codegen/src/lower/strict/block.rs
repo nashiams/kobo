@@ -1,8 +1,7 @@
 /// Lower a single @strict block to safe Rust.
 ///
-/// Task 5.1 + 5.2 + 5.3.
-/// Contracts enforced: C02 (guard all exits), C04 (no borrow in body),
-/// C06 (@strict never in output), C08 (deterministic guard names).
+/// Enforces guard-all-exits, no borrows in the rewritten body, stripped
+/// @strict markers, and deterministic guard names.
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
@@ -15,14 +14,14 @@ use crate::CodegenOptions;
 /// Lower a single @strict block to safe Rust.
 ///
 /// Reads CaptureSet from KIR. Emits guard extraction, body rewriting via
-/// raw-reference rebinding, and guard drops on all exit paths (Invariant C02).
+/// raw-reference rebinding, and guard drops on all exit paths.
 pub fn lower_strict_block(
     stmts: &[syn::Stmt],
     capture_set: &CaptureSet,
     counter: &mut StrictGuardCounter,
     _options: &CodegenOptions,
 ) -> TokenStream {
-    // Trap 18: empty capture set → pass through block body verbatim, no guards.
+    // An empty capture set passes through the block body verbatim with no guards.
     if capture_set.bindings.is_empty() {
         return quote! { { #(#stmts)* } };
     }
@@ -84,7 +83,7 @@ fn build_rebind_stmts(guard_indices: &[usize], capture_set: &CaptureSet) -> Vec<
         .collect()
 }
 
-/// Drop stmts in LIFO order (Invariant C02 normal exit path).
+/// Guard drops are emitted in LIFO order for the normal exit path.
 fn build_drop_stmts(guard_indices: &[usize]) -> Vec<TokenStream> {
     guard_indices
         .iter()
@@ -112,7 +111,7 @@ fn emit_block_body(
             {
                 #(#guard_stmts)*
                 #(#rebind_stmts)*
-                // kobo: @strict entry — guard-wrapped closure for ? propagation (C02)
+                // kobo: @strict entry - guard-wrapped closure for ? propagation
                 let __kobo_strict_result = (|| { #(#stmts)* })();
                 #(#drop_stmts)*
                 __kobo_strict_result?
@@ -125,7 +124,7 @@ fn emit_block_body(
             {
                 #(#guard_stmts)*
                 #(#rebind_stmts)*
-                // kobo: @strict entry — CF enum closure for break/continue (C02)
+                // kobo: @strict entry - CF enum closure for break/continue
                 let #cf_result_ident = (|| {
                     #(#stmts)*
                     __KoboStrictCf::Fallthrough(())
@@ -137,11 +136,11 @@ fn emit_block_body(
     } else {
         quote! {
             {
-                // kobo: @strict entry — borrow extracted
+                // kobo: @strict entry - borrow extracted
                 #(#guard_stmts)*
                 #(#rebind_stmts)*
                 #(#stmts)*
-                // kobo: @strict exit — guards dropped (LIFO)
+                // kobo: @strict exit - guards dropped (LIFO)
                 #(#drop_stmts)*
             }
         }
@@ -368,7 +367,7 @@ mod tests {
         assert_eq!(
             ts1.to_string(),
             ts2.to_string(),
-            "same input must produce same output (Invariant C08)"
+            "same input must produce the same deterministic guard output"
         );
     }
 
@@ -390,7 +389,7 @@ mod tests {
         assert!(s1.contains("__kobo_guard_0"), "first block uses guard_0");
         assert!(
             s2.contains("__kobo_guard_1"),
-            "second block uses guard_1 (shared counter, Trap 16)"
+            "second block uses guard_1 from the shared counter"
         );
         assert!(
             !s2.contains("__kobo_guard_0"),
@@ -490,11 +489,11 @@ mod tests {
         let s = token_str(ts);
         assert!(
             !s.contains("@strict"),
-            "@strict keyword must not appear in output (C06)"
+            "@strict keyword must not appear in output"
         );
         assert!(
             !s.contains("__kobo_strict"),
-            "#[__kobo_strict] marker must not appear in output (C06)"
+            "#[__kobo_strict] marker must not appear in output"
         );
     }
 }

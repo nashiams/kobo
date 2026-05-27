@@ -4,8 +4,8 @@ version = "0.4.0"
 edition = "2021"
 publish = true
 
-# Ships to crates.io — used by generated .rs files at runtime.
-# Zero kobo-* deps. Contract C02.
+# Ships to crates.io and is used by generated .rs files at runtime.
+# Zero kobo-* dependencies.
 [features]
 diag = []
 

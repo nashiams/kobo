@@ -1,6 +1,4 @@
 /// Lower an @strict fn declaration.
-///
-/// Task 5.4. All @strict fns use Full mode since BUG-6 fix.
 use proc_macro2::TokenStream;
 use quote::quote;
 
@@ -24,7 +22,7 @@ pub fn lower_strict_fn(
 ) -> TokenStream {
     let mut inner = func.inner.clone();
 
-    // Strip the @strict marker attribute from the fn (Invariant C06).
+    // Strip the @strict marker attribute from the fn.
     inner.attrs.retain(|a| {
         !(a.path().is_ident("__kobo_strict")
             || a.path().segments.len() == 1 && a.path().segments[0].ident == "__kobo_strict")
@@ -32,7 +30,7 @@ pub fn lower_strict_fn(
 
     match mode {
         StrictFnMode::AsyncDeferred => {
-            // BUG-6 fix: transform now always assigns Full. This arm is unreachable
+            // Transform now always assigns Full. This arm is unreachable
             // but kept for exhaustive matching. If reached, treat as Full.
             if let Some(cs) = capture_set {
                 if !cs.bindings.is_empty() {

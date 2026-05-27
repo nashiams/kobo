@@ -2,13 +2,13 @@
 
 Kobo emits independently checked proof artifacts for modeled obligation flow. The proof surface is Kobo Core evidence: source hash, Core hash, CFG nodes and edges, obligation events, environments, `template_schemas[]` entries with stable `template_schema` and numeric `schema_version` fields, boundary assumptions, async cancellation evidence, adapter confidence, replay grade, and candidate-track admission metadata.
 
-Proof artifacts use explicit public header fields: `schema_version`, `proof_target_version`, `semantic_schema`, `artifact_kind`, and `claim_scope`. The verifier accepts only the public path contracts: `.kproof` files with `artifact_kind = "kproof"` and `.kwit.proof.json` files with `artifact_kind = "kwit.proof.json"`.
+Proof artifacts use explicit public header fields: `schema_version`, `proof_target_version`, `semantic_schema`, `artifact_kind`, and `claim_scope`. The verifier accepts only the public artifact formats: `.kproof` files with `artifact_kind = "kproof"` and `.kwit.proof.json` files with `artifact_kind = "kwit.proof.json"`.
 
 The verifier in `kobo-proof` checks the artifact from certificate data. It rejects stale hashes, unknown unversioned fields, unknown event or boundary values, missing async cancel evidence, unresolved obligations, and replay claims that cross disallowed boundary or adapter evidence.
 
 ## Core Claim
 
-The proof claim ends at Kobo Core. v0.14 does not prove generated Rust binary behavior, translation validation, arbitrary Tokio behavior, or correctness of arbitrary external crate effects.
+The proof claim ends at Kobo Core. It does not prove generated Rust binary behavior, translation validation, arbitrary Tokio behavior, or correctness of arbitrary external crate effects.
 
 ## Explicit Non-Goals
 

@@ -123,7 +123,7 @@ fn kproof_records_required_hashes_and_template_schemas() {
     assert_eq!(template_schema["schema_version"], 1);
     assert!(
         template_schema.get("version").is_none(),
-        "proof artifacts should not expose roadmap-stage template versions: {artifact}"
+        "proof artifacts should not expose internal milestone template versions: {artifact}"
     );
     assert!(
         artifact["boundary_assumption_hashes"].as_array().is_some(),
@@ -228,8 +228,8 @@ fn release_docs_state_scope_non_goals_and_honesty_gates() {
         .join("..")
         .join("..")
         .join("docs")
-        .join("proof-artifacts-v014.md");
-    let docs = fs::read_to_string(&docs_path).expect("v0.14 proof docs should exist");
+        .join("proof-artifacts.md");
+    let docs = fs::read_to_string(&docs_path).expect("proof docs should exist");
 
     for required in [
         "independently checked proof artifacts for modeled obligation flow",

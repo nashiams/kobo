@@ -96,7 +96,7 @@ mod tests {
     use super::collect_box_reasons;
 
     #[test]
-    fn recursive_structs_do_not_produce_box_reason_in_v0_3() {
+    fn recursive_structs_do_not_produce_box_reason() {
         let source = r#"
 struct Node {
     next: Node,

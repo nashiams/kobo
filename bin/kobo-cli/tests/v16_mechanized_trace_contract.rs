@@ -437,14 +437,14 @@ fn core_trace_rule_id(event: &kobo_proof::CoreTraceEvent) -> Option<&'static str
 
 fn sample_kproof_source() -> String {
     std::fs::read_to_string(
-        repo_root().join("crates/compiler/kobo-proof/fixtures/v16_sample.kproof"),
+        repo_root().join("crates/compiler/kobo-proof/fixtures/sample_trace.kproof"),
     )
     .expect("sample .kproof fixture should exist")
 }
 
 fn sample_source_map_source() -> String {
     std::fs::read_to_string(
-        repo_root().join("crates/compiler/kobo-proof/fixtures/v16_sample.sourcemap.json"),
+        repo_root().join("crates/compiler/kobo-proof/fixtures/sample_trace.sourcemap.json"),
     )
     .expect("sample source map fixture should exist")
 }

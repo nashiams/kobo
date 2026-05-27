@@ -1029,7 +1029,7 @@ mod tests {
 
     // edge-case tests
 
-    /// Trap 2: Arc<Mutex<T>> is banned — ArcMutShared maps to Arc<RwLock<T>>.
+    /// Arc<Mutex<T>> is banned; ArcMutShared maps to Arc<RwLock<T>>.
     #[test]
     fn arc_mut_shared_label_is_rwlock_not_mutex() {
         // ArcMutShared must never generate Mutex in output

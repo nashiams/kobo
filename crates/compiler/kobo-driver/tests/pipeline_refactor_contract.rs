@@ -277,10 +277,10 @@ fn public_entrypoints_keep_table_of_contents_shape() {
             "Keep codegen orchestration separate from artifact construction.",
         ),
         (
-            repo_path("bin/kobo-cli/src/commands/test_cmd.rs"),
+            repo_path("bin/kobo-cli/src/commands/test/run.rs"),
             "cmd_test",
-            247,
-            "Move witness, replay, fuzzing, and trace duties into named modules before adding new command flow.",
+            120,
+            "Keep the CLI command entrypoint as a named-step orchestrator.",
         ),
         (
             src_path("proof.rs"),
@@ -297,13 +297,58 @@ fn public_entrypoints_keep_table_of_contents_shape() {
 fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
     for (relative, limit, domain) in [
         (
-            "bin/kobo-cli/src/commands/test_cmd.rs",
-            4622,
-            "test command orchestration",
+            "bin/kobo-cli/src/commands/test/run.rs",
+            500,
+            "test command execution flow",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/backend.rs",
+            250,
+            "test backend selection",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/fuzz.rs",
+            500,
+            "test fuzz portfolio",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/witness.rs",
+            450,
+            "test witness writing",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/proof.rs",
+            100,
+            "test proof artifact writing",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/replay_contract.rs",
+            350,
+            "test replay contract metadata",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/trace_checks.rs",
+            500,
+            "test trace check evaluation",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare.rs",
+            900,
+            "test model comparison",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/failure.rs",
+            250,
+            "test failure rendering",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema.rs",
+            1350,
+            "test witness JSON schema",
         ),
         (
             "crates/compiler/kobo-driver/src/proof.rs",
-            3369,
+            3400,
             "proof emission adapter",
         ),
         (

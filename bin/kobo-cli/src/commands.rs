@@ -25,6 +25,7 @@ mod session;
 mod sim;
 mod sim_model;
 mod summary_validation;
+#[path = "commands/test/mod.rs"]
 mod test_cmd;
 mod watch;
 mod witness_evidence;

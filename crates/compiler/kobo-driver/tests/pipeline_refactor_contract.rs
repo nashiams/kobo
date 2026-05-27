@@ -532,6 +532,111 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             250,
             "simulation terminal failure events",
         ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/mod.rs",
+            50,
+            "source map module facade",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/entries.rs",
+            125,
+            "source map entry construction",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/proof_anchors.rs",
+            250,
+            "source map proof event anchor matching",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/syntax_anchors.rs",
+            375,
+            "generated Rust proof event scanning",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/lowering_trace.rs",
+            225,
+            "source map lowering trace events",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/lookup.rs",
+            75,
+            "source map span lookup",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/json.rs",
+            50,
+            "source map JSON wrapper construction",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/spans.rs",
+            50,
+            "source map Rust span helpers",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/mod.rs",
+            150,
+            "rewrite module facade and lowerer state",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/items.rs",
+            200,
+            "rewrite item lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/functions.rs",
+            225,
+            "rewrite function body lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/statements.rs",
+            350,
+            "rewrite statement lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/anchors.rs",
+            50,
+            "rewrite lowering anchors",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/attrs.rs",
+            50,
+            "rewrite executor attributes",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/parallel_gate.rs",
+            175,
+            "rewrite parallel safety gate",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/receivers.rs",
+            125,
+            "rewrite receiver mutation analysis",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/spawn_captures.rs",
+            150,
+            "rewrite spawn capture analysis",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/field_capability.rs",
+            50,
+            "rewrite field capability identifiers",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/syntax_support.rs",
+            225,
+            "rewrite syntax support lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/expr.rs",
+            500,
+            "rewrite expression lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/local.rs",
+            350,
+            "rewrite local binding lowering",
+        ),
     ] {
         assert_file_line_ratchet(&repo_path(relative), limit, domain);
     }
@@ -540,7 +645,6 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
 #[test]
 fn no_new_vague_module_names_are_added() {
     let allowed = [
-        "crates/compiler/kobo-codegen/src/lower/rewrite/util.rs",
         "crates/compiler/kobo-driver/src/pipeline/util.rs",
         "crates/compiler/kobo-transform/src/builder/helpers.rs",
     ];

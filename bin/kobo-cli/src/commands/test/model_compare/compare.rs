@@ -6,6 +6,20 @@ use super::execute::{execute_ward_model, model_run_json};
 use super::parse::parse_model_comparison_spec;
 use super::{ModelComparisonFailure, ModelComparisonSpec, WardModelRun};
 
+struct ModelTraceDifference {
+    index: usize,
+    model: Option<String>,
+    implementation: Option<String>,
+    span: (usize, usize),
+}
+
+struct ModelObligationDifference {
+    binding: String,
+    model: Option<String>,
+    implementation: Option<String>,
+    span: (usize, usize),
+}
+
 pub(crate) fn apply_model_vs_implementation(
     source_path: &str,
     source: &str,
@@ -203,13 +217,6 @@ fn model_obligation_comparison_json(
     })
 }
 
-struct ModelTraceDifference {
-    index: usize,
-    model: Option<String>,
-    implementation: Option<String>,
-    span: (usize, usize),
-}
-
 impl ModelTraceDifference {
     fn label(&self) -> String {
         format!(
@@ -227,13 +234,6 @@ impl ModelTraceDifference {
             "implementation": self.implementation,
         })
     }
-}
-
-struct ModelObligationDifference {
-    binding: String,
-    model: Option<String>,
-    implementation: Option<String>,
-    span: (usize, usize),
 }
 
 impl ModelObligationDifference {

@@ -34,6 +34,11 @@ pub(super) struct EvaluatedTraceCheck {
     trace_excerpt: Vec<serde_json::Value>,
 }
 
+pub(super) struct WardBlock<'a> {
+    pub(super) body: &'a str,
+    pub(super) body_start: usize,
+}
+
 pub(super) fn apply_trace_checks(source_path: &str, source: &str, run: &mut FullDepthRun) {
     if run.failure.is_some() {
         return;
@@ -298,11 +303,6 @@ pub(super) fn parse_trace_check_expression(expression: &str) -> Option<(TraceChe
     } else {
         Some((kind, event))
     }
-}
-
-pub(super) struct WardBlock<'a> {
-    pub(super) body: &'a str,
-    pub(super) body_start: usize,
 }
 
 pub(super) fn ward_blocks(source: &str) -> Vec<WardBlock<'_>> {

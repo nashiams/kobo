@@ -2,6 +2,13 @@ use kobo_errors::KErrorCode;
 use kobo_ir::{ScenarioOpKind, ScenarioProgram};
 use kobo_sim_core::{FullDepthRun, ReplayGuarantee};
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FlagshipDemoFacts {
+    template_ids: Vec<String>,
+    storage_actions: Vec<String>,
+    modeled_boundaries: Vec<String>,
+}
+
 pub(crate) fn flagship_demo_json(
     program: &ScenarioProgram,
     run: &FullDepthRun,
@@ -52,13 +59,6 @@ pub(crate) fn flagship_demo_json(
         });
     }
     serde_json::Value::Null
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct FlagshipDemoFacts {
-    template_ids: Vec<String>,
-    storage_actions: Vec<String>,
-    modeled_boundaries: Vec<String>,
 }
 
 impl FlagshipDemoFacts {

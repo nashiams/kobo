@@ -1,6 +1,8 @@
-use super::{
-    AdapterEvidence, BTreeMap, CandidateAdmissionEvidence, CandidateAdmissionFact, Path,
-    ReplayGrade,
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use kobo_proof::{
+    AdapterEvidence, CandidateAdmissionEvidence, CandidateAdmissionFact, ReplayGrade,
 };
 
 mod inspection;

@@ -8,222 +8,195 @@ use super::{
 impl<'a> ScenarioLowerer<'a> {
     pub(super) fn execute_expr(&mut self, expr: &'a Expr, env: &mut BindingEnv) -> BlockFlow {
         match expr {
-            Expr::MethodCall(call) => self.execute_method_call(call, env),
-            Expr::Call(call) => self.execute_call(call, env),
-            Expr::If(expr_if) => return self.execute_if(expr_if, env),
-            Expr::Match(expr_match) => return self.execute_match(expr_match, env),
+            Expr::MethodCall(call) => {
+                self.execute_method_call(call, env);
+                BlockFlow::Fallthrough
+            }
+            Expr::Call(call) => {
+                self.execute_call(call, env);
+                BlockFlow::Fallthrough
+            }
+            Expr::If(expr_if) => self.execute_if(expr_if, env),
+            Expr::Match(expr_match) => self.execute_match(expr_match, env),
             Expr::Async(expr_async) => {
                 self.execute_async(expr_async, env);
+                BlockFlow::Fallthrough
             }
-            Expr::Await(await_expr) => {
-                let timeout_boundary = self.timeout_await_boundary(await_expr.base.as_ref(), env);
-                self.record_core_terminator(
-                    ScenarioCoreTerminatorKind::Await,
-                    timeout_boundary,
-                    None,
-                    vec!["await_resume".to_owned(), "await_cancel".to_owned()],
-                    expr,
-                );
-                if let Some(binding) =
-                    expr_path_ident(await_expr.base.as_ref()).and_then(|name| env.resolve(&name))
-                {
-                    self.operations.push(ScenarioOp {
-                        span: self.span(expr),
-                        kind: ScenarioOpKind::Discharge {
-                            binding,
-                            action: "await".to_owned(),
-                        },
-                    });
-                    return BlockFlow::Fallthrough;
-                }
-                self.execute_expr(await_expr.base.as_ref(), env);
+            Expr::Await(await_expr) => self.execute_await_expr(await_expr, env),
+            Expr::Try(expr_try) => {
+                self.execute_try(expr_try, env);
+                BlockFlow::Fallthrough
             }
-            Expr::Try(expr_try) => self.execute_try(expr_try, env),
-            Expr::Block(block) => return self.execute_block(&block.block, env),
-            Expr::Array(array) => {
-                for element in &array.elems {
-                    self.execute_expr(element, env);
-                }
-            }
-            Expr::Assign(assign) => {
-                self.execute_expr(assign.left.as_ref(), env);
-                self.execute_expr(assign.right.as_ref(), env);
-            }
-            Expr::Binary(binary) => {
-                self.execute_expr(binary.left.as_ref(), env);
-                self.execute_expr(binary.right.as_ref(), env);
-            }
-            Expr::Break(expr_break) => {
-                if let Some(value) = expr_break.expr.as_deref() {
-                    self.execute_expr(value, env);
-                }
-                self.record_loop_control_unresolved(expr_break, env, "break");
-                let frame = self.resolve_loop_frame(expr_break.label.as_ref());
-                let loop_id = frame
-                    .as_ref()
-                    .map(|frame| frame.id.clone())
-                    .unwrap_or_else(|| "loop-unknown".to_owned());
-                self.operations.push(ScenarioOp {
-                    span: self.span(expr_break),
-                    kind: ScenarioOpKind::LoopBreak {
-                        loop_id: loop_id.clone(),
-                    },
-                });
-                return BlockFlow::Break { loop_id };
-            }
-            Expr::Cast(cast) => {
-                self.execute_expr(cast.expr.as_ref(), env);
-            }
-            Expr::Closure(closure) => {
-                self.execute_expr(closure.body.as_ref(), env);
-            }
-            Expr::Field(field) => {
-                self.execute_expr(field.base.as_ref(), env);
-            }
-            Expr::ForLoop(expr_for) => {
-                self.execute_expr(expr_for.expr.as_ref(), env);
-                let frame = self.push_loop_frame(loop_label(expr_for.label.as_ref()));
-                self.operations.push(ScenarioOp {
-                    span: self.span(expr_for),
-                    kind: ScenarioOpKind::LoopStart {
-                        loop_id: frame.id.clone(),
-                        label: frame.label.clone(),
-                    },
-                });
-                let flow = self.execute_block(&expr_for.body, env);
-                self.pop_loop_frame(&frame.id);
-                return self.finish_loop_flow(flow, &frame, true, expr_for);
-            }
-            Expr::Group(group) => {
-                self.execute_expr(group.expr.as_ref(), env);
-            }
-            Expr::Index(index) => {
-                self.execute_expr(index.expr.as_ref(), env);
-                self.execute_expr(index.index.as_ref(), env);
-            }
-            Expr::Let(expr_let) => {
-                self.execute_expr(expr_let.expr.as_ref(), env);
-            }
-            Expr::Loop(expr_loop) => {
-                let frame = self.push_loop_frame(loop_label(expr_loop.label.as_ref()));
-                self.operations.push(ScenarioOp {
-                    span: self.span(expr_loop),
-                    kind: ScenarioOpKind::LoopStart {
-                        loop_id: frame.id.clone(),
-                        label: frame.label.clone(),
-                    },
-                });
-                let flow = self.execute_block(&expr_loop.body, env);
-                self.pop_loop_frame(&frame.id);
-                return self.finish_loop_flow(flow, &frame, false, expr_loop);
-            }
-            Expr::Paren(paren) => {
-                self.execute_expr(paren.expr.as_ref(), env);
-            }
-            Expr::Range(range) => {
-                if let Some(start) = range.start.as_deref() {
-                    self.execute_expr(start, env);
-                }
-                if let Some(end) = range.end.as_deref() {
-                    self.execute_expr(end, env);
-                }
-            }
-            Expr::Reference(reference) => {
-                self.execute_expr(reference.expr.as_ref(), env);
-            }
-            Expr::Repeat(repeat) => {
-                self.execute_expr(repeat.expr.as_ref(), env);
-                self.execute_expr(repeat.len.as_ref(), env);
-            }
-            Expr::Struct(expr_struct) => {
-                for field in &expr_struct.fields {
-                    self.execute_expr(&field.expr, env);
-                }
-                if let Some(rest) = expr_struct.rest.as_deref() {
-                    self.execute_expr(rest, env);
-                }
-            }
-            Expr::TryBlock(try_block) => return self.execute_block(&try_block.block, env),
-            Expr::Tuple(tuple) => {
-                for element in &tuple.elems {
-                    self.execute_expr(element, env);
-                }
-            }
-            Expr::Unary(unary) => {
-                self.execute_expr(unary.expr.as_ref(), env);
-            }
-            Expr::Unsafe(expr_unsafe) => {
-                self.execute_block(&expr_unsafe.block, env);
-            }
-            Expr::While(expr_while) => {
-                self.execute_expr(expr_while.cond.as_ref(), env);
-                let frame = self.push_loop_frame(loop_label(expr_while.label.as_ref()));
-                self.operations.push(ScenarioOp {
-                    span: self.span(expr_while),
-                    kind: ScenarioOpKind::LoopStart {
-                        loop_id: frame.id.clone(),
-                        label: frame.label.clone(),
-                    },
-                });
-                let flow = self.execute_block(&expr_while.body, env);
-                self.pop_loop_frame(&frame.id);
-                return self.finish_loop_flow(flow, &frame, true, expr_while);
-            }
-            Expr::Yield(expr_yield) => {
-                if let Some(value) = expr_yield.expr.as_deref() {
-                    self.execute_expr(value, env);
-                }
-            }
-            Expr::Macro(expr_macro) => {
-                if self.record_panic_macro(&expr_macro.mac) {
-                    return BlockFlow::Return;
-                }
-                if !self.record_spawn_macro(&expr_macro.mac) {
-                    self.unsupported_macro(&expr_macro.mac);
-                }
-            }
-            Expr::Return(expr_return) => {
-                if let Some(binding) = expr_return
-                    .expr
-                    .as_deref()
-                    .and_then(expr_path_ident)
-                    .and_then(|name| env.resolve(&name))
-                {
-                    self.operations.push(ScenarioOp {
-                        span: self.span(expr_return),
-                        kind: ScenarioOpKind::Discharge {
-                            binding,
-                            action: "return".to_owned(),
-                        },
-                    });
-                }
-                self.record_core_terminator(
-                    ScenarioCoreTerminatorKind::Return,
-                    None,
-                    None,
-                    vec!["return".to_owned()],
-                    expr_return,
-                );
-                return BlockFlow::Return;
-            }
-            Expr::Continue(expr_continue) => {
-                self.record_loop_control_unresolved(expr_continue, env, "continue");
-                let frame = self.resolve_loop_frame(expr_continue.label.as_ref());
-                let loop_id = frame
-                    .as_ref()
-                    .map(|frame| frame.id.clone())
-                    .unwrap_or_else(|| "loop-unknown".to_owned());
-                self.operations.push(ScenarioOp {
-                    span: self.span(expr_continue),
-                    kind: ScenarioOpKind::LoopContinue {
-                        loop_id: loop_id.clone(),
-                    },
-                });
-                return BlockFlow::Continue { loop_id };
-            }
-            _ => {}
+            Expr::Block(block) => self.execute_block(&block.block, env),
+            Expr::Break(expr_break) => self.execute_break_expr(expr_break, env),
+            Expr::ForLoop(expr_for) => self.execute_for_loop_expr(expr_for, env),
+            Expr::Loop(expr_loop) => self.execute_loop_expr(expr_loop, env),
+            Expr::TryBlock(try_block) => self.execute_block(&try_block.block, env),
+            Expr::While(expr_while) => self.execute_while_expr(expr_while, env),
+            Expr::Macro(expr_macro) => self.execute_macro_expr(expr_macro),
+            Expr::Return(expr_return) => self.execute_return_expr(expr_return, env),
+            Expr::Continue(expr_continue) => self.execute_continue_expr(expr_continue, env),
+            _ => self.execute_structural_expr(expr, env),
+        }
+    }
+
+    fn execute_await_expr(
+        &mut self,
+        await_expr: &'a syn::ExprAwait,
+        env: &mut BindingEnv,
+    ) -> BlockFlow {
+        let timeout_boundary = self.timeout_await_boundary(await_expr.base.as_ref(), env);
+        self.record_core_terminator(
+            ScenarioCoreTerminatorKind::Await,
+            timeout_boundary,
+            None,
+            vec!["await_resume".to_owned(), "await_cancel".to_owned()],
+            await_expr,
+        );
+        if let Some(binding) =
+            expr_path_ident(await_expr.base.as_ref()).and_then(|name| env.resolve(&name))
+        {
+            self.operations.push(ScenarioOp {
+                span: self.span(await_expr),
+                kind: ScenarioOpKind::Discharge {
+                    binding,
+                    action: "await".to_owned(),
+                },
+            });
+            return BlockFlow::Fallthrough;
+        }
+        self.execute_expr(await_expr.base.as_ref(), env);
+        BlockFlow::Fallthrough
+    }
+
+    fn execute_break_expr(
+        &mut self,
+        expr_break: &'a syn::ExprBreak,
+        env: &mut BindingEnv,
+    ) -> BlockFlow {
+        if let Some(value) = expr_break.expr.as_deref() {
+            self.execute_expr(value, env);
+        }
+        self.record_loop_control_unresolved(expr_break, env, "break");
+        let frame = self.resolve_loop_frame(expr_break.label.as_ref());
+        let loop_id = frame
+            .as_ref()
+            .map(|frame| frame.id.clone())
+            .unwrap_or_else(|| "loop-unknown".to_owned());
+        self.operations.push(ScenarioOp {
+            span: self.span(expr_break),
+            kind: ScenarioOpKind::LoopBreak {
+                loop_id: loop_id.clone(),
+            },
+        });
+        BlockFlow::Break { loop_id }
+    }
+
+    fn execute_for_loop_expr(
+        &mut self,
+        expr_for: &'a syn::ExprForLoop,
+        env: &mut BindingEnv,
+    ) -> BlockFlow {
+        self.execute_expr(expr_for.expr.as_ref(), env);
+        let frame = self.push_loop_frame(loop_label(expr_for.label.as_ref()));
+        self.record_loop_start(&frame, expr_for);
+        let flow = self.execute_block(&expr_for.body, env);
+        self.pop_loop_frame(&frame.id);
+        self.finish_loop_flow(flow, &frame, true, expr_for)
+    }
+
+    fn execute_loop_expr(
+        &mut self,
+        expr_loop: &'a syn::ExprLoop,
+        env: &mut BindingEnv,
+    ) -> BlockFlow {
+        let frame = self.push_loop_frame(loop_label(expr_loop.label.as_ref()));
+        self.record_loop_start(&frame, expr_loop);
+        let flow = self.execute_block(&expr_loop.body, env);
+        self.pop_loop_frame(&frame.id);
+        self.finish_loop_flow(flow, &frame, false, expr_loop)
+    }
+
+    fn execute_while_expr(
+        &mut self,
+        expr_while: &'a syn::ExprWhile,
+        env: &mut BindingEnv,
+    ) -> BlockFlow {
+        self.execute_expr(expr_while.cond.as_ref(), env);
+        let frame = self.push_loop_frame(loop_label(expr_while.label.as_ref()));
+        self.record_loop_start(&frame, expr_while);
+        let flow = self.execute_block(&expr_while.body, env);
+        self.pop_loop_frame(&frame.id);
+        self.finish_loop_flow(flow, &frame, true, expr_while)
+    }
+
+    fn execute_macro_expr(&mut self, expr_macro: &'a syn::ExprMacro) -> BlockFlow {
+        if self.record_panic_macro(&expr_macro.mac) {
+            return BlockFlow::Return;
+        }
+        if !self.record_spawn_macro(&expr_macro.mac) {
+            self.unsupported_macro(&expr_macro.mac);
         }
         BlockFlow::Fallthrough
+    }
+
+    fn execute_return_expr(
+        &mut self,
+        expr_return: &'a syn::ExprReturn,
+        env: &mut BindingEnv,
+    ) -> BlockFlow {
+        if let Some(binding) = expr_return
+            .expr
+            .as_deref()
+            .and_then(expr_path_ident)
+            .and_then(|name| env.resolve(&name))
+        {
+            self.operations.push(ScenarioOp {
+                span: self.span(expr_return),
+                kind: ScenarioOpKind::Discharge {
+                    binding,
+                    action: "return".to_owned(),
+                },
+            });
+        }
+        self.record_core_terminator(
+            ScenarioCoreTerminatorKind::Return,
+            None,
+            None,
+            vec!["return".to_owned()],
+            expr_return,
+        );
+        BlockFlow::Return
+    }
+
+    fn execute_continue_expr(
+        &mut self,
+        expr_continue: &'a syn::ExprContinue,
+        env: &mut BindingEnv,
+    ) -> BlockFlow {
+        self.record_loop_control_unresolved(expr_continue, env, "continue");
+        let frame = self.resolve_loop_frame(expr_continue.label.as_ref());
+        let loop_id = frame
+            .as_ref()
+            .map(|frame| frame.id.clone())
+            .unwrap_or_else(|| "loop-unknown".to_owned());
+        self.operations.push(ScenarioOp {
+            span: self.span(expr_continue),
+            kind: ScenarioOpKind::LoopContinue {
+                loop_id: loop_id.clone(),
+            },
+        });
+        BlockFlow::Continue { loop_id }
+    }
+
+    fn record_loop_start(&mut self, frame: &super::LoopFrame, node: &impl Spanned) {
+        self.operations.push(ScenarioOp {
+            span: self.span(node),
+            kind: ScenarioOpKind::LoopStart {
+                loop_id: frame.id.clone(),
+                label: frame.label.clone(),
+            },
+        });
     }
 
     pub(super) fn execute_try(&mut self, expr_try: &'a ExprTry, env: &mut BindingEnv) {

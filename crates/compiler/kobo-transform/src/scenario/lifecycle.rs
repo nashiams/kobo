@@ -5,6 +5,17 @@ use super::{
     Path, ProtocolTemplateRegistry, ScenarioLifecycleTemplate, ScenarioLowerer, ScenarioOp,
     ScenarioOpKind, UnsupportedContainerShape,
 };
+
+struct AwaitVisitor {
+    found: bool,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
+    fn visit_expr_await(&mut self, _expr: &'ast syn::ExprAwait) {
+        self.found = true;
+    }
+}
+
 impl<'a> ScenarioLowerer<'a> {
     pub(super) fn execute_local(&mut self, local: &'a Local, env: &mut BindingEnv) {
         let Some(init) = &local.init else {
@@ -259,16 +270,6 @@ pub(super) fn expr_static_type_from_initializer(expr: &Expr) -> Option<String> {
 }
 
 pub(super) fn expr_contains_await(expr: &Expr) -> bool {
-    struct AwaitVisitor {
-        found: bool,
-    }
-
-    impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
-        fn visit_expr_await(&mut self, _expr: &'ast syn::ExprAwait) {
-            self.found = true;
-        }
-    }
-
     let mut visitor = AwaitVisitor { found: false };
     syn::visit::visit_expr(&mut visitor, expr);
     visitor.found

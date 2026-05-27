@@ -2,6 +2,11 @@ use super::backend::backend_for_profile;
 use super::{declarations, serde_json, FullDepthRun, Path, ReplayGuarantee, ScenarioEvent};
 use crate::commands::ecosystem;
 
+pub(super) struct ShrunkEventStream {
+    pub(super) events: Vec<ScenarioEvent>,
+    pub(super) removed_event_ids: Vec<usize>,
+}
+
 pub(super) fn validate_run_boundary_declarations(
     file: &Path,
     config: &kobo_driver::KoboConfig,
@@ -89,11 +94,6 @@ pub(super) fn exactness_json(run: &FullDepthRun) -> &'static str {
         ReplayGuarantee::Partial => "partial",
         ReplayGuarantee::NotReplayable => "evidence_only",
     }
-}
-
-pub(super) struct ShrunkEventStream {
-    pub(super) events: Vec<ScenarioEvent>,
-    pub(super) removed_event_ids: Vec<usize>,
 }
 
 pub(super) fn shrink_event_stream(

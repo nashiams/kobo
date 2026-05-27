@@ -1,9 +1,19 @@
-use super::{
-    block_index, parse_core_edge, source_span_from_kobo, BTreeMap, CoreBlock, CoreFunction,
-    CoreStatement, CoreStatementKind, CoverageLoss, FunctionSummary, LoopRegionIndex,
-    ObligationEvent, ObligationEventKind, ObligationState, ObligationStatus, ScenarioProgram,
-    VecDeque,
+use std::collections::{BTreeMap, VecDeque};
+
+use kobo_ir::{CoreBlock, CoreFunction, CoreStatement, CoreStatementKind, ScenarioProgram};
+use kobo_proof::{
+    CoverageLoss, FunctionSummary, ObligationEvent, ObligationEventKind, ObligationState,
+    ObligationStatus,
 };
+
+use super::core_cfg::{block_index, parse_core_edge, LoopRegionIndex};
+use super::source_spans::source_span_from_kobo;
+
+pub(super) struct FunctionObligationReplay {
+    pub(super) block_entry_envs: BTreeMap<String, BTreeMap<String, ObligationStatus>>,
+    pub(super) block_exit_envs: BTreeMap<String, BTreeMap<String, ObligationStatus>>,
+    pub(super) terminal_envs: Vec<BTreeMap<String, ObligationStatus>>,
+}
 
 pub(super) fn obligation_evidence(
     source_path: &str,
@@ -53,12 +63,6 @@ pub(super) fn obligation_evidence(
     }
     let exit_env = env_states(&merge_terminal_envs(&terminal_envs));
     (entry_env, exit_env, events)
-}
-
-pub(super) struct FunctionObligationReplay {
-    pub(super) block_entry_envs: BTreeMap<String, BTreeMap<String, ObligationStatus>>,
-    pub(super) block_exit_envs: BTreeMap<String, BTreeMap<String, ObligationStatus>>,
-    pub(super) terminal_envs: Vec<BTreeMap<String, ObligationStatus>>,
 }
 
 pub(super) fn function_obligation_replay(function: &CoreFunction) -> FunctionObligationReplay {

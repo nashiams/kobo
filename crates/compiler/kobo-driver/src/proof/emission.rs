@@ -1,19 +1,32 @@
-use super::{
-    adapter_adjusted_replay_grade, adapter_evidence, async_model_evidence, boundary_evidence,
-    bounded_evidence, candidate_admission_evidence, certificate_material_hash, core_cfg_edges,
-    core_cfg_nodes, core_loop_exit_facts, core_loop_facts, core_material_hash, core_trace_evidence,
-    coverage_loss, derive_translation_validation, function_summaries, generated_trace_evidence,
-    loop_invariant_evidence, loop_labels_by_id, lower_core_program, obligation_evidence,
-    runtime_boundary_adapter_evidence, sort_adapter_evidence, stable_hash, template_evidence,
-    trace_hashes, user_loop_invariant_directive, AdapterEvidence, ArtifactKind, AsyncModelEvidence,
-    BoundaryAssumption, BoundedProofEvidence, CandidateAdmissionEvidence, CoreCfgEdge, CoreCfgNode,
-    CoreEvidence, CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent, CoverageLoss,
-    EcosystemAdapterPolicy, FunctionSummary, GeneratedTraceEvent, HashEvidence, KoboSourceMap,
-    LoopInvariantEvidence, LoopRegionIndex, ObligationEvent, ObligationState, OpaqueLedgerEntry,
-    Path, ProofCertificate, ReplayGrade, RuntimeBoundaryEvidence, ScenarioProgram, SourceEvidence,
-    TemplateSchemaEvidence, TranslationValidationInput, PROOF_CERTIFICATE_SCHEMA_VERSION,
-    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+use std::path::Path;
+
+use crate::config::EcosystemAdapterPolicy;
+use kobo_codegen::KoboSourceMap;
+use kobo_ir::{lower_core_program, ScenarioProgram};
+use kobo_proof::{
+    core_material_hash, derive_translation_validation, AdapterEvidence, ArtifactKind,
+    AsyncModelEvidence, BoundaryAssumption, CandidateAdmissionEvidence, CoreCfgEdge, CoreCfgNode,
+    CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent, CoverageLoss, FunctionSummary,
+    GeneratedTraceEvent, HashEvidence, LoopInvariantEvidence, ObligationEvent, ObligationState,
+    OpaqueLedgerEntry, ProofCertificate, ReplayGrade, TranslationValidationInput,
 };
+
+use super::async_model::async_model_evidence;
+use super::boundaries::{
+    adapter_adjusted_replay_grade, adapter_evidence, boundary_evidence,
+    runtime_boundary_adapter_evidence, sort_adapter_evidence, RuntimeBoundaryEvidence,
+};
+use super::bounded::bounded_evidence;
+use super::candidates::candidate_admission_evidence;
+use super::certificate::certificate_with_material_hash;
+use super::core_cfg::{
+    core_cfg_edges, core_cfg_nodes, core_loop_exit_facts, core_loop_facts, loop_labels_by_id,
+    LoopRegionIndex,
+};
+use super::loop_invariants::{loop_invariant_evidence, user_loop_invariant_directive};
+use super::obligations::{coverage_loss, function_summaries, obligation_evidence};
+use super::templates::template_evidence;
+use super::traces::{core_trace_evidence, generated_trace_evidence, trace_hashes};
 pub struct ProofEmissionInput<'a> {
     pub source_path: &'a Path,
     pub source: &'a str,
@@ -31,42 +44,42 @@ pub enum ProofEmissionError {
     Serialize(#[from] serde_json::Error),
 }
 
-struct CoreEvidenceParts {
-    core_program: kobo_ir::CoreProgram,
-    cfg_nodes: Vec<CoreCfgNode>,
-    cfg_edges: Vec<CoreCfgEdge>,
-    loop_facts: Vec<CoreLoopBackEdgeFact>,
-    loop_exit_facts: Vec<CoreLoopExitFact>,
-    loop_regions: LoopRegionIndex,
-    async_model: AsyncModelEvidence,
-    hash: String,
+pub(super) struct CoreEvidenceParts {
+    pub(super) core_program: kobo_ir::CoreProgram,
+    pub(super) cfg_nodes: Vec<CoreCfgNode>,
+    pub(super) cfg_edges: Vec<CoreCfgEdge>,
+    pub(super) loop_facts: Vec<CoreLoopBackEdgeFact>,
+    pub(super) loop_exit_facts: Vec<CoreLoopExitFact>,
+    pub(super) loop_regions: LoopRegionIndex,
+    pub(super) async_model: AsyncModelEvidence,
+    pub(super) hash: String,
 }
 
-struct BoundaryEvidenceParts {
-    hashes: Vec<HashEvidence>,
-    assumptions: Vec<BoundaryAssumption>,
-    opaque_ledger: Vec<OpaqueLedgerEntry>,
+pub(super) struct BoundaryEvidenceParts {
+    pub(super) hashes: Vec<HashEvidence>,
+    pub(super) assumptions: Vec<BoundaryAssumption>,
+    pub(super) opaque_ledger: Vec<OpaqueLedgerEntry>,
 }
 
-struct ObligationEvidenceParts {
-    entry_env: Vec<ObligationState>,
-    exit_env: Vec<ObligationState>,
-    events: Vec<ObligationEvent>,
-    function_summaries: Vec<FunctionSummary>,
-    coverage_loss: Vec<CoverageLoss>,
+pub(super) struct ObligationEvidenceParts {
+    pub(super) entry_env: Vec<ObligationState>,
+    pub(super) exit_env: Vec<ObligationState>,
+    pub(super) events: Vec<ObligationEvent>,
+    pub(super) function_summaries: Vec<FunctionSummary>,
+    pub(super) coverage_loss: Vec<CoverageLoss>,
 }
 
-struct AdapterEvidenceParts {
-    replay_grade: ReplayGrade,
-    confidence: Vec<AdapterEvidence>,
-    candidate_admission: Vec<CandidateAdmissionEvidence>,
+pub(super) struct AdapterEvidenceParts {
+    pub(super) replay_grade: ReplayGrade,
+    pub(super) confidence: Vec<AdapterEvidence>,
+    pub(super) candidate_admission: Vec<CandidateAdmissionEvidence>,
 }
 
-struct TraceEvidenceParts {
-    core_trace: Vec<CoreTraceEvent>,
-    generated_trace: Vec<GeneratedTraceEvent>,
-    hashes: Vec<HashEvidence>,
-    translation_validation: kobo_proof::TranslationValidationEvidence,
+pub(super) struct TraceEvidenceParts {
+    pub(super) core_trace: Vec<CoreTraceEvent>,
+    pub(super) generated_trace: Vec<GeneratedTraceEvent>,
+    pub(super) hashes: Vec<HashEvidence>,
+    pub(super) translation_validation: kobo_proof::TranslationValidationEvidence,
 }
 
 pub fn emit_proof_certificate(
@@ -95,7 +108,7 @@ pub fn emit_proof_certificate(
     );
     let traces = build_trace_evidence(&source_path, &input, &obligations.events)?;
 
-    let mut certificate = assemble_certificate(
+    certificate_with_material_hash(
         input,
         source_path,
         core,
@@ -107,9 +120,8 @@ pub fn emit_proof_certificate(
         loop_invariants,
         bounded_evidence,
         traces,
-    );
-    certificate.certificate_material_hash = certificate_material_hash(&certificate)?;
-    Ok(certificate)
+    )
+    .map_err(ProofEmissionError::Serialize)
 }
 
 fn build_core_evidence(
@@ -266,60 +278,4 @@ fn build_trace_evidence(
         hashes,
         translation_validation,
     })
-}
-
-fn assemble_certificate(
-    input: ProofEmissionInput<'_>,
-    source_path: String,
-    core: CoreEvidenceParts,
-    boundaries: BoundaryEvidenceParts,
-    obligations: ObligationEvidenceParts,
-    adapters: AdapterEvidenceParts,
-    template_hashes: Vec<HashEvidence>,
-    template_schemas: Vec<TemplateSchemaEvidence>,
-    loop_invariants: Vec<LoopInvariantEvidence>,
-    bounded_evidence: Vec<BoundedProofEvidence>,
-    traces: TraceEvidenceParts,
-) -> ProofCertificate {
-    ProofCertificate {
-        schema_version: PROOF_CERTIFICATE_SCHEMA_VERSION,
-        proof_target_version: PROOF_TARGET_VERSION.to_owned(),
-        semantic_schema: PROOF_SEMANTIC_SCHEMA.to_owned(),
-        artifact_kind: input.artifact_kind,
-        claim_scope: PROOF_CLAIM_SCOPE.to_owned(),
-        compiler_version: env!("CARGO_PKG_VERSION").to_owned(),
-        source: SourceEvidence {
-            path: source_path,
-            hash: stable_hash(input.source),
-        },
-        core: CoreEvidence {
-            hash: core.hash,
-            version: core.core_program.core_version.to_owned(),
-            cfg_nodes: core.cfg_nodes,
-            cfg_edges: core.cfg_edges,
-            loop_facts: core.loop_facts,
-            loop_exit_facts: core.loop_exit_facts,
-            async_model: core.async_model,
-        },
-        replay_grade: adapters.replay_grade,
-        template_hashes,
-        template_schemas,
-        boundary_assumption_hashes: boundaries.hashes,
-        boundary_assumptions: boundaries.assumptions,
-        adapter_confidence: adapters.confidence,
-        obligation_events: obligations.events,
-        entry_env: obligations.entry_env,
-        exit_env: obligations.exit_env,
-        function_summaries: obligations.function_summaries,
-        coverage_loss: obligations.coverage_loss,
-        loop_invariants,
-        bounded_evidence,
-        core_obligation_trace: traces.core_trace,
-        generated_rust_trace: traces.generated_trace,
-        trace_hashes: traces.hashes,
-        translation_validation: traces.translation_validation,
-        opaque_edge_ledger: boundaries.opaque_ledger,
-        candidate_admission: adapters.candidate_admission,
-        certificate_material_hash: String::new(),
-    }
 }

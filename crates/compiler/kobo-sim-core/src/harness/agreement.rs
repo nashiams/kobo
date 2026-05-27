@@ -6,6 +6,14 @@ use crate::error::{Result, SimCoreError};
 use super::run_generated_harness;
 use kobo_ir::ScenarioProgram;
 
+enum TraceAgreement {
+    Matched,
+    SemanticOnly,
+    Diverged,
+    CoverageIncomplete,
+    BoundaryPartial,
+}
+
 pub fn check_harness_agreement(
     program: &ScenarioProgram,
     generated_rust: &str,
@@ -161,14 +169,6 @@ fn merge_harness_recordings(run: &mut FullDepthRun, harness_events: &[ScenarioEv
             })
             .and_then(|event| event.io.clone());
     }
-}
-
-enum TraceAgreement {
-    Matched,
-    SemanticOnly,
-    Diverged,
-    CoverageIncomplete,
-    BoundaryPartial,
 }
 
 fn agreement_label(agreement: TraceAgreement) -> String {

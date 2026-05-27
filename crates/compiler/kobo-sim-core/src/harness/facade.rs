@@ -15,6 +15,33 @@ use super::record_boundary::{
     BoundaryFacadeRecordCapture,
 };
 
+struct BoundaryFacade {
+    functions: FunctionTree,
+    methods: BTreeMap<String, BTreeMap<String, Vec<BoundaryFacadeEvent>>>,
+}
+
+enum FunctionTree {
+    Module(BTreeMap<String, FunctionTree>),
+    Function(Vec<BoundaryFacadeEvent>),
+}
+
+#[derive(Clone)]
+struct BoundaryFacadeEvent {
+    event: ScenarioEvent,
+    record_capture: Option<BoundaryFacadeRecordCapture>,
+}
+
+enum BoundaryFacadeTarget {
+    Function {
+        module_path: Vec<String>,
+        function_name: String,
+    },
+    Method {
+        type_name: String,
+        method_name: String,
+    },
+}
+
 pub(super) fn external_boundary_support_source(
     program: &ScenarioProgram,
     generated_rust: &str,
@@ -171,11 +198,6 @@ pub(super) fn external_boundary_support_source(
     Ok(source)
 }
 
-struct BoundaryFacade {
-    functions: FunctionTree,
-    methods: BTreeMap<String, BTreeMap<String, Vec<BoundaryFacadeEvent>>>,
-}
-
 impl Default for BoundaryFacade {
     fn default() -> Self {
         Self {
@@ -212,11 +234,6 @@ fn facade_struct_names(facade: &BoundaryFacade) -> Vec<String> {
     names
 }
 
-enum FunctionTree {
-    Module(BTreeMap<String, FunctionTree>),
-    Function(Vec<BoundaryFacadeEvent>),
-}
-
 impl FunctionTree {
     fn has_record_capture(&self) -> bool {
         match self {
@@ -224,23 +241,6 @@ impl FunctionTree {
             Self::Function(events) => events.iter().any(|event| event.record_capture.is_some()),
         }
     }
-}
-
-#[derive(Clone)]
-struct BoundaryFacadeEvent {
-    event: ScenarioEvent,
-    record_capture: Option<BoundaryFacadeRecordCapture>,
-}
-
-enum BoundaryFacadeTarget {
-    Function {
-        module_path: Vec<String>,
-        function_name: String,
-    },
-    Method {
-        type_name: String,
-        method_name: String,
-    },
 }
 
 fn boundary_facade_target(

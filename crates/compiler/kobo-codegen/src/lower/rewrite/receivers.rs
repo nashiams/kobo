@@ -1,5 +1,10 @@
 use quote::ToTokens;
 
+struct MutationVisitor {
+    source: String,
+    found: bool,
+}
+
 pub(super) fn iterator_source_ident(expr: &syn::Expr) -> Option<syn::Ident> {
     let syn::Expr::MethodCall(method_call) = expr else {
         return None;
@@ -31,11 +36,6 @@ pub(super) fn block_mutates_binding_name(block: &syn::Block, source: &str) -> bo
 
 pub(super) fn block_mentions_ward_boundary(block: &syn::Block) -> bool {
     block.to_token_stream().to_string().contains("ward")
-}
-
-struct MutationVisitor {
-    source: String,
-    found: bool,
 }
 
 impl<'ast> syn::visit::Visit<'ast> for MutationVisitor {

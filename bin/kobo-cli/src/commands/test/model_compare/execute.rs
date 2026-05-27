@@ -1,5 +1,13 @@
 use super::{ModelComparisonSpec, WardModelRun, WardModelStep, WardModelStepKind};
 
+struct WardModelInterpreter {
+    seed: u64,
+    events: Vec<String>,
+    states: Vec<(String, String)>,
+    obligations: Vec<(String, String)>,
+    scheduler_preset: Option<String>,
+}
+
 pub(crate) fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardModelRun {
     let mut interpreter = WardModelInterpreter::new(seed);
     for step in &spec.steps {
@@ -21,14 +29,6 @@ pub(crate) fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardM
         scheduler_preset,
         steps_executed: spec.steps.len(),
     }
-}
-
-struct WardModelInterpreter {
-    seed: u64,
-    events: Vec<String>,
-    states: Vec<(String, String)>,
-    obligations: Vec<(String, String)>,
-    scheduler_preset: Option<String>,
 }
 
 impl WardModelInterpreter {

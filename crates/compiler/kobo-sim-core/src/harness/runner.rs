@@ -17,6 +17,13 @@ pub(super) struct HarnessRun {
     pub(super) engine: String,
 }
 
+struct HarnessProcess {
+    command: Vec<String>,
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
 pub(super) fn run_generated_harness(
     program: &ScenarioProgram,
     generated_rust: &str,
@@ -90,13 +97,6 @@ fn harness_execution_scope(options: &ScenarioOptions) -> &'static str {
         "async" | "distributed" | "madsim" => "generated-user-rust-adapter",
         _ => "generated-user-rust",
     }
-}
-
-struct HarnessProcess {
-    command: Vec<String>,
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
 }
 
 fn run_rustc_harness(harness_dir: &PathBuf, harness_rs_path: &PathBuf) -> Result<HarnessProcess> {

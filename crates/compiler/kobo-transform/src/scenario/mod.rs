@@ -29,6 +29,7 @@ mod external_boundary;
 mod imports;
 mod lifecycle;
 mod lowerer;
+mod structural_expr;
 mod syntax;
 #[cfg(test)]
 mod tests;

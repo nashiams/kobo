@@ -965,24 +965,9 @@ fn all_production_rust_files_have_readability_budgets() {
 #[test]
 fn no_new_vague_module_names_are_added() {
     let allowed = ["crates/compiler/kobo-transform/src/builder/helpers.rs"];
-    let vague_names = [
-        "util",
-        "util.rs",
-        "helpers",
-        "helpers.rs",
-        "misc",
-        "misc.rs",
-        "common",
-        "common.rs",
-    ];
     let mut unexpected = Vec::new();
     for source_root in ["bin", "crates", "editors", "proof", "tests"] {
-        collect_vague_module_paths(
-            &repo_path(source_root),
-            &vague_names,
-            &allowed,
-            &mut unexpected,
-        );
+        collect_vague_module_paths(&repo_path(source_root), &allowed, &mut unexpected);
     }
     unexpected.sort();
 
@@ -992,12 +977,7 @@ fn no_new_vague_module_names_are_added() {
     );
 }
 
-fn collect_vague_module_paths(
-    root: &Path,
-    vague_names: &[&str],
-    allowed: &[&str],
-    unexpected: &mut Vec<String>,
-) {
+fn collect_vague_module_paths(root: &Path, allowed: &[&str], unexpected: &mut Vec<String>) {
     let Ok(entries) = fs::read_dir(root) else {
         return;
     };
@@ -1015,7 +995,7 @@ fn collect_vague_module_paths(
             {
                 continue;
             }
-            if vague_names.contains(&file_name) {
+            if is_vague_module_name(file_name) {
                 let relative = path
                     .strip_prefix(repo_root())
                     .expect("scanned path should be below repo root")
@@ -1025,11 +1005,11 @@ fn collect_vague_module_paths(
                     unexpected.push(relative);
                 }
             }
-            collect_vague_module_paths(&path, vague_names, allowed, unexpected);
+            collect_vague_module_paths(&path, allowed, unexpected);
             continue;
         }
 
-        if !vague_names.contains(&file_name) {
+        if !is_vague_module_name(file_name) {
             continue;
         }
 
@@ -1044,18 +1024,19 @@ fn collect_vague_module_paths(
     }
 }
 
+fn is_vague_module_name(file_name: &str) -> bool {
+    let stem = file_name.strip_suffix(".rs").unwrap_or(file_name);
+    matches!(stem, "util" | "helpers" | "misc" | "common")
+        || stem.ends_with("_util")
+        || stem.ends_with("_helpers")
+        || stem.ends_with("_misc")
+        || stem.ends_with("_common")
+}
+
 #[test]
 fn readable_split_surfaces_do_not_use_wildcard_imports() {
-    let roots = [
-        "bin/kobo-cli/src/commands/test",
-        "crates/compiler/kobo-codegen/src/lower/rewrite",
-        "crates/compiler/kobo-codegen/src/sourcemap",
-        "crates/compiler/kobo-driver/src/proof",
-        "crates/compiler/kobo-sim-core/src/harness",
-        "crates/compiler/kobo-transform/src/scenario",
-    ];
     let mut violations = Vec::new();
-    for root in roots {
+    for root in readable_split_roots() {
         collect_wildcard_imports(&repo_path(root), &mut violations);
     }
     violations.sort();
@@ -1096,7 +1077,104 @@ fn collect_wildcard_imports(root: &Path, violations: &mut Vec<String>) {
 }
 
 fn wildcard_import_line(line: &str) -> bool {
-    line.starts_with("use ") && line.ends_with("::*;") && !line.starts_with("use syn::visit::")
+    line.contains("use ") && line.contains("::*")
+}
+
+#[test]
+fn readable_split_surfaces_keep_types_before_functions() {
+    let mut violations = Vec::new();
+    for root in readable_split_roots() {
+        collect_late_type_declarations(&repo_path(root), &mut violations);
+    }
+    violations.sort();
+
+    assert!(
+        violations.is_empty(),
+        "readable split surfaces must declare structs/enums/type aliases before behavior: {violations:?}"
+    );
+}
+
+fn readable_split_roots() -> [&'static str; 6] {
+    [
+        "bin/kobo-cli/src/commands/test",
+        "crates/compiler/kobo-codegen/src/lower/rewrite",
+        "crates/compiler/kobo-codegen/src/sourcemap",
+        "crates/compiler/kobo-driver/src/proof",
+        "crates/compiler/kobo-sim-core/src/harness",
+        "crates/compiler/kobo-transform/src/scenario",
+    ]
+}
+
+fn collect_late_type_declarations(root: &Path, violations: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_late_type_declarations(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = strip_comments_and_strings(&read_required(&path));
+        let mut first_function_line = None;
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("mod tests") {
+                break;
+            }
+            if first_function_line.is_none() && is_function_declaration(trimmed) {
+                first_function_line = Some(index + 1);
+                continue;
+            }
+            if let Some(function_line) = first_function_line {
+                if is_type_declaration(trimmed) {
+                    violations.push(format!(
+                        "{}:{}: type declaration appears after first function on line {}",
+                        relative,
+                        index + 1,
+                        function_line
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn is_function_declaration(line: &str) -> bool {
+    line.starts_with("fn ")
+        || line.starts_with("pub fn ")
+        || line.starts_with("pub(crate) fn ")
+        || line.starts_with("pub(super) fn ")
+        || line.starts_with("const fn ")
+        || line.starts_with("pub const fn ")
+        || line.starts_with("async fn ")
+        || line.starts_with("pub async fn ")
+        || line.starts_with("pub(crate) async fn ")
+        || line.starts_with("pub(super) async fn ")
+}
+
+fn is_type_declaration(line: &str) -> bool {
+    line.starts_with("struct ")
+        || line.starts_with("pub struct ")
+        || line.starts_with("pub(crate) struct ")
+        || line.starts_with("pub(super) struct ")
+        || line.starts_with("enum ")
+        || line.starts_with("pub enum ")
+        || line.starts_with("pub(crate) enum ")
+        || line.starts_with("pub(super) enum ")
+        || line.starts_with("type ")
+        || line.starts_with("pub type ")
+        || line.starts_with("pub(crate) type ")
+        || line.starts_with("pub(super) type ")
 }
 
 #[test]

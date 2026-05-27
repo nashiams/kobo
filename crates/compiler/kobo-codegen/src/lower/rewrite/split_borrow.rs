@@ -7,6 +7,10 @@ use kobo_analysis::split_borrow::{FieldAccessKind, SplitBorrowSite};
 use std::collections::HashMap;
 use syn::visit_mut::VisitMut;
 
+struct SelfFieldReplacer {
+    field_kinds: HashMap<String, FieldAccessKind>,
+}
+
 /// Apply split-borrow destructuring to a method based on detected sites.
 ///
 /// Returns `true` if rewriting was applied.
@@ -83,12 +87,6 @@ fn build_destructure_stmt(field_kinds: &HashMap<String, FieldAccessKind>) -> syn
     parse_quote! {
         let Self { #(#field_pats),*, .. } = self;
     }
-}
-
-/// Replaces `self.field` expressions with bare `field` identifiers.
-/// For assignment targets, inserts dereference since destructured fields are `&mut T`.
-struct SelfFieldReplacer {
-    field_kinds: HashMap<String, FieldAccessKind>,
 }
 
 impl VisitMut for SelfFieldReplacer {

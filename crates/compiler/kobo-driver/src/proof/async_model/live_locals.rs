@@ -6,6 +6,47 @@ use kobo_parser::{
     preprocess_spawn_blocks, strict_keyword_configs,
 };
 
+struct AwaitVisitor {
+    count: usize,
+}
+
+struct StmtUseVisitor<'a> {
+    uses: &'a mut BTreeSet<String>,
+}
+
+struct ExprUseVisitor<'a> {
+    uses: &'a mut BTreeSet<String>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
+    fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
+        self.count += 1;
+        syn::visit::visit_expr_await(self, expr);
+    }
+}
+
+impl<'a, 'ast> syn::visit::Visit<'ast> for StmtUseVisitor<'a> {
+    fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+        if expr.qself.is_none() && expr.path.segments.len() == 1 {
+            if let Some(segment) = expr.path.segments.first() {
+                self.uses.insert(segment.ident.to_string());
+            }
+        }
+        syn::visit::visit_expr_path(self, expr);
+    }
+}
+
+impl<'a, 'ast> syn::visit::Visit<'ast> for ExprUseVisitor<'a> {
+    fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+        if expr.qself.is_none() && expr.path.segments.len() == 1 {
+            if let Some(segment) = expr.path.segments.first() {
+                self.uses.insert(segment.ident.to_string());
+            }
+        }
+        syn::visit::visit_expr_path(self, expr);
+    }
+}
+
 pub(super) fn parsed_live_locals_by_await(source: &str, target: &str) -> Vec<Vec<String>> {
     let Some(file) = parse_source_for_async_model(source) else {
         return Vec::new();
@@ -379,17 +420,6 @@ pub(super) fn ident_uses_in_expr(expr: &syn::Expr) -> BTreeSet<String> {
 }
 
 pub(super) fn expr_await_count(expr: &syn::Expr) -> usize {
-    struct AwaitVisitor {
-        count: usize,
-    }
-
-    impl<'ast> syn::visit::Visit<'ast> for AwaitVisitor {
-        fn visit_expr_await(&mut self, expr: &'ast syn::ExprAwait) {
-            self.count += 1;
-            syn::visit::visit_expr_await(self, expr);
-        }
-    }
-
     let mut visitor = AwaitVisitor { count: 0 };
     syn::visit::visit_expr(&mut visitor, expr);
     visitor.count
@@ -439,41 +469,11 @@ pub(super) fn collect_pat_bindings(pattern: &syn::Pat, bindings: &mut BTreeSet<S
 }
 
 pub(super) fn collect_ident_uses_in_stmt(statement: &syn::Stmt, uses: &mut BTreeSet<String>) {
-    struct UseVisitor<'a> {
-        uses: &'a mut BTreeSet<String>,
-    }
-
-    impl<'a, 'ast> syn::visit::Visit<'ast> for UseVisitor<'a> {
-        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
-            if expr.qself.is_none() && expr.path.segments.len() == 1 {
-                if let Some(segment) = expr.path.segments.first() {
-                    self.uses.insert(segment.ident.to_string());
-                }
-            }
-            syn::visit::visit_expr_path(self, expr);
-        }
-    }
-
-    let mut visitor = UseVisitor { uses };
+    let mut visitor = StmtUseVisitor { uses };
     syn::visit::visit_stmt(&mut visitor, statement);
 }
 
 pub(super) fn collect_ident_uses_in_expr(expr: &syn::Expr, uses: &mut BTreeSet<String>) {
-    struct UseVisitor<'a> {
-        uses: &'a mut BTreeSet<String>,
-    }
-
-    impl<'a, 'ast> syn::visit::Visit<'ast> for UseVisitor<'a> {
-        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
-            if expr.qself.is_none() && expr.path.segments.len() == 1 {
-                if let Some(segment) = expr.path.segments.first() {
-                    self.uses.insert(segment.ident.to_string());
-                }
-            }
-            syn::visit::visit_expr_path(self, expr);
-        }
-    }
-
-    let mut visitor = UseVisitor { uses };
+    let mut visitor = ExprUseVisitor { uses };
     syn::visit::visit_expr(&mut visitor, expr);
 }

@@ -1,9 +1,14 @@
-use super::{
-    classify_bounded_completeness, normalized_bound_hash, proof_bounded_wording,
-    syn_path_ends_with, BTreeMap, BoundDeclaration, BoundDimension, BoundSource,
-    BoundedClassificationInput, BoundedCompleteness, BoundedHistoryEvidence, BoundedProofEvidence,
-    CoreLoopBackEdgeFact, CoreLoopExitFact, PrunedHistoryEvidence, ScenarioProgram,
+use std::collections::BTreeMap;
+
+use kobo_ir::ScenarioProgram;
+use kobo_proof::{
+    bounded_wording as proof_bounded_wording, classify_bounded_completeness, normalized_bound_hash,
+    BoundDeclaration, BoundDimension, BoundSource, BoundedClassificationInput, BoundedCompleteness,
+    BoundedHistoryEvidence, BoundedProofEvidence, CoreLoopBackEdgeFact, CoreLoopExitFact,
+    PrunedHistoryEvidence,
 };
+
+use super::candidates::syn_path_ends_with;
 
 #[derive(Debug)]
 pub(super) struct BoundedHistoryExploration {

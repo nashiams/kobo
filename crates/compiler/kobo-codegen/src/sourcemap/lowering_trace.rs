@@ -27,6 +27,12 @@ pub struct LoweringTraceEvent {
     pub template_version: Option<String>,
 }
 
+pub(super) struct TraceEventSource<'a> {
+    pub(super) kind: &'static str,
+    pub(super) binding: Option<String>,
+    pub(super) template: Option<&'a ScenarioLifecycleTemplate>,
+}
+
 pub(crate) fn build_lowering_trace(
     programs: &[ScenarioProgram],
     source_map: &KoboSourceMap,
@@ -105,12 +111,6 @@ pub(super) fn core_event_id_for_operation(
         return format!("core-{function}-stmt-{order}");
     }
     format!("core-{function}-term-{order}")
-}
-
-pub(super) struct TraceEventSource<'a> {
-    pub(super) kind: &'static str,
-    pub(super) binding: Option<String>,
-    pub(super) template: Option<&'a ScenarioLifecycleTemplate>,
 }
 
 pub(super) fn lowering_event_from_operation<'a>(

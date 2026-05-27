@@ -1,10 +1,15 @@
-use super::{
-    lifecycle_template_version, line_snippet, one_based_line_for_offset, source_span_from_kobo,
-    template_by_binding, trace_material_hash, BTreeMap, BTreeSet, CoreTraceEvent,
-    GeneratedTraceEvent, HashEvidence, KoboSourceMap, KoboSpan, LoweringTraceEvent,
-    ObligationEvent, ObligationEventKind, ScenarioOpKind, ScenarioProgram, SourceMapAnchorEvidence,
-    SourceMapAnchorStatus, SourceSpan, TraceEventKind,
+use std::collections::{BTreeMap, BTreeSet};
+
+use kobo_codegen::{KoboSourceMap, LoweringTraceEvent};
+use kobo_ir::{KoboSpan, ScenarioOpKind, ScenarioProgram};
+use kobo_proof::{
+    trace_material_hash, CoreTraceEvent, GeneratedTraceEvent, HashEvidence, ObligationEvent,
+    ObligationEventKind, SourceMapAnchorEvidence, SourceMapAnchorStatus, SourceSpan,
+    TraceEventKind,
 };
+
+use super::source_spans::{line_snippet, one_based_line_for_offset, source_span_from_kobo};
+use super::templates::{lifecycle_template_version, template_by_binding};
 
 pub(super) fn core_trace_evidence(
     program: &ScenarioProgram,

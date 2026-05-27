@@ -1,5 +1,83 @@
 use std::path::Path;
 
+struct HiddenHeapVisitor {
+    count: usize,
+}
+
+struct CastVisitor {
+    count: usize,
+}
+
+struct HiddenGlobalVisitor {
+    found: bool,
+}
+
+struct ContextBindingVisitor {
+    found: bool,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for HiddenHeapVisitor {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(function) = call.func.as_ref() {
+            if path_is_heap_constructor(&function.path) {
+                self.count += 1;
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if matches!(
+            call.method.to_string().as_str(),
+            "with_capacity" | "try_with_capacity" | "collect" | "to_vec" | "to_string"
+        ) {
+            self.count += 1;
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if path_last_ident_is(&mac.path, "vec") || path_last_ident_is(&mac.path, "format") {
+            self.count += 1;
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for CastVisitor {
+    fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
+        self.count += 1;
+        syn::visit::visit_expr_cast(self, cast);
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for HiddenGlobalVisitor {
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if matches!(item.mutability, syn::StaticMutability::Mut(_)) {
+            self.found = true;
+        }
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if path_last_ident_is(&mac.path, "lazy_static")
+            || path_last_ident_is(&mac.path, "thread_local")
+        {
+            self.found = true;
+        }
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for ContextBindingVisitor {
+    fn visit_pat_ident(&mut self, pat: &'ast syn::PatIdent) {
+        if pat.ident == "ctx" {
+            self.found = true;
+        }
+        syn::visit::visit_pat_ident(self, pat);
+    }
+}
+
 pub(super) fn read_project_config(source_path: &Path) -> Option<toml::Value> {
     for directory in source_path.parent().into_iter().flat_map(Path::ancestors) {
         let config_path = directory.join("Kobo.toml");
@@ -36,55 +114,12 @@ pub(super) fn file_uses_nightly_features(file: &syn::File) -> bool {
 }
 
 pub(super) fn file_hidden_heap_site_count(file: &syn::File) -> usize {
-    struct HiddenHeapVisitor {
-        count: usize,
-    }
-
-    impl<'ast> syn::visit::Visit<'ast> for HiddenHeapVisitor {
-        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-            if let syn::Expr::Path(function) = call.func.as_ref() {
-                if path_is_heap_constructor(&function.path) {
-                    self.count += 1;
-                }
-            }
-            syn::visit::visit_expr_call(self, call);
-        }
-
-        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-            if matches!(
-                call.method.to_string().as_str(),
-                "with_capacity" | "try_with_capacity" | "collect" | "to_vec" | "to_string"
-            ) {
-                self.count += 1;
-            }
-            syn::visit::visit_expr_method_call(self, call);
-        }
-
-        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-            if path_last_ident_is(&mac.path, "vec") || path_last_ident_is(&mac.path, "format") {
-                self.count += 1;
-            }
-            syn::visit::visit_macro(self, mac);
-        }
-    }
-
     let mut visitor = HiddenHeapVisitor { count: 0 };
     syn::visit::visit_file(&mut visitor, file);
     visitor.count
 }
 
 pub(super) fn file_cast_site_count(file: &syn::File) -> usize {
-    struct CastVisitor {
-        count: usize,
-    }
-
-    impl<'ast> syn::visit::Visit<'ast> for CastVisitor {
-        fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
-            self.count += 1;
-            syn::visit::visit_expr_cast(self, cast);
-        }
-    }
-
     let mut visitor = CastVisitor { count: 0 };
     syn::visit::visit_file(&mut visitor, file);
     visitor.count
@@ -116,47 +151,12 @@ pub(super) fn item_has_hidden_impl(item: &syn::Item) -> bool {
 }
 
 pub(super) fn file_has_hidden_globals(file: &syn::File) -> bool {
-    struct HiddenGlobalVisitor {
-        found: bool,
-    }
-
-    impl<'ast> syn::visit::Visit<'ast> for HiddenGlobalVisitor {
-        fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-            if matches!(item.mutability, syn::StaticMutability::Mut(_)) {
-                self.found = true;
-            }
-            syn::visit::visit_item_static(self, item);
-        }
-
-        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
-            if path_last_ident_is(&mac.path, "lazy_static")
-                || path_last_ident_is(&mac.path, "thread_local")
-            {
-                self.found = true;
-            }
-            syn::visit::visit_macro(self, mac);
-        }
-    }
-
     let mut visitor = HiddenGlobalVisitor { found: false };
     syn::visit::visit_file(&mut visitor, file);
     visitor.found
 }
 
 pub(super) fn file_has_context_binding(file: &syn::File) -> bool {
-    struct ContextBindingVisitor {
-        found: bool,
-    }
-
-    impl<'ast> syn::visit::Visit<'ast> for ContextBindingVisitor {
-        fn visit_pat_ident(&mut self, pat: &'ast syn::PatIdent) {
-            if pat.ident == "ctx" {
-                self.found = true;
-            }
-            syn::visit::visit_pat_ident(self, pat);
-        }
-    }
-
     let mut visitor = ContextBindingVisitor { found: false };
     syn::visit::visit_file(&mut visitor, file);
     visitor.found

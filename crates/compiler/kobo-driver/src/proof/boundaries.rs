@@ -1,8 +1,11 @@
-use super::{
-    source_span_from_kobo, stable_hash, AdapterConfidence, AdapterEvidence, BoundaryAssumption,
-    BoundaryPolicy, CoreCfgEdge, EcosystemAdapterPolicy, HashEvidence, OpaqueLedgerEntry,
-    ReplayGrade, ScenarioOpKind, ScenarioProgram, SourceSpan,
+use crate::config::EcosystemAdapterPolicy;
+use kobo_ir::{ScenarioOpKind, ScenarioProgram};
+use kobo_proof::{
+    stable_hash, AdapterConfidence, AdapterEvidence, BoundaryAssumption, BoundaryPolicy,
+    CoreCfgEdge, HashEvidence, OpaqueLedgerEntry, ReplayGrade, SourceSpan,
 };
+
+use super::source_spans::source_span_from_kobo;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeBoundaryEvidence {

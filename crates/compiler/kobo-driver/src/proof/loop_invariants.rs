@@ -1,11 +1,20 @@
-use super::{
-    attr_name_value_fields, env_states_for_bindings, function_obligation_replay,
+use std::collections::BTreeMap;
+
+use kobo_ir::{CoreFunction, ScenarioProgram};
+use kobo_proof::{
+    CoreLoopBackEdgeFact, HashEvidence, InvariantBindingTemplateEvidence, InvariantPreservation,
+    InvariantTemplateEvidence, InvariantTier, LoopInvariantEvidence, ObligationEvent,
+    ObligationEventKind, ObligationStatus, SourceSpan, UserInvariantFactEvidence,
+    UserInvariantPredicate,
+};
+
+use super::bounded::attr_name_value_fields;
+use super::candidates::syn_path_ends_with;
+use super::obligations::{env_states_for_bindings, function_obligation_replay};
+use super::source_spans::source_span_from_range;
+use super::templates::{
     invariant_confidence, invariant_template_source, lifecycle_template_version,
-    source_span_from_range, syn_path_ends_with, template_by_binding, template_hash,
-    type_by_binding, BTreeMap, CoreFunction, CoreLoopBackEdgeFact, HashEvidence,
-    InvariantBindingTemplateEvidence, InvariantPreservation, InvariantTemplateEvidence,
-    InvariantTier, LoopInvariantEvidence, ObligationEvent, ObligationEventKind, ObligationStatus,
-    ScenarioProgram, SourceSpan, UserInvariantFactEvidence, UserInvariantPredicate,
+    template_by_binding, template_hash, type_by_binding,
 };
 
 #[derive(Clone, Debug)]

@@ -1,8 +1,12 @@
-use super::{
-    source_span_from_kobo, stable_hash, template_schema_hash, BTreeMap, HashEvidence,
-    InvariantConfidence, InvariantTemplateSource, ScenarioLifecycleTemplateSource, ScenarioOpKind,
-    ScenarioProgram, TemplateSchemaEvidence,
+use std::collections::BTreeMap;
+
+use kobo_ir::{ScenarioLifecycleTemplateSource, ScenarioOpKind, ScenarioProgram};
+use kobo_proof::{
+    stable_hash, template_schema_hash, HashEvidence, InvariantConfidence, InvariantTemplateSource,
+    TemplateSchemaEvidence,
 };
+
+use super::source_spans::source_span_from_kobo;
 
 pub(super) fn template_by_binding(
     program: &ScenarioProgram,

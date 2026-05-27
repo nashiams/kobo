@@ -1,7 +1,9 @@
-use super::{
-    source_span_from_kobo, BTreeMap, BTreeSet, CoreBlock, CoreCfgEdge, CoreCfgNode, CoreFunction,
-    CoreLoopBackEdgeFact, CoreLoopExitFact, KoboSpan, ScenarioOpKind, ScenarioProgram, VecDeque,
-};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use kobo_ir::{CoreBlock, CoreFunction, KoboSpan, ScenarioOpKind, ScenarioProgram};
+use kobo_proof::{CoreCfgEdge, CoreCfgNode, CoreLoopBackEdgeFact, CoreLoopExitFact};
+
+use super::source_spans::source_span_from_kobo;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ParsedLoopEdgeKind {

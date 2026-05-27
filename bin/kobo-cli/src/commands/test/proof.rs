@@ -12,12 +12,14 @@ pub(super) fn write_proof_artifact(
     if run.failure.is_some() {
         return Ok(());
     }
+    let runtime_boundaries = runtime_boundary_evidence(run);
     let certificate =
         kobo_driver::proof::emit_proof_certificate(kobo_driver::proof::ProofEmissionInput {
             source_path: file,
             source: &document.source,
             program: scenario_program,
             adapter_policies: &config.ecosystem_policy.adapters,
+            runtime_boundaries: &runtime_boundaries,
             replay_grade: proof_replay_grade(&run.replay_guarantee),
             artifact_kind: kobo_driver::proof::ArtifactKind::KwitProofJson,
             source_map: Some(source_map),

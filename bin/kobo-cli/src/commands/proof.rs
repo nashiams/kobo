@@ -120,6 +120,7 @@ fn emit_certificate(
             source: &source,
             program,
             adapter_policies: &session.config.ecosystem_policy.adapters,
+            runtime_boundaries: &[],
             replay_grade: replay_grade.proof_grade(),
             artifact_kind,
             source_map: Some(&artifacts.source_map),

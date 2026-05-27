@@ -209,7 +209,7 @@ fn replay_v1(
         profile: profile.to_owned(),
         seed,
         inject,
-        event_budget: witness["backend_controls"]["max_branches"].as_u64(),
+        event_budget: replay_event_budget(witness),
         scheduler: kobo_sim_core::SchedulerPolicy::from_name(
             witness["backend_controls"]["scheduler"].as_str(),
         ),
@@ -218,11 +218,11 @@ fn replay_v1(
             .as_bool()
             .unwrap_or(false),
     };
-    let run = kobo_sim_core::run_full_depth_from_program(
+    let run = run_replay_seed_portfolio(
         &scenario_program,
         &artifacts.rs_source,
         &options,
-        kobo_sim_core::EngineMode::Both,
+        replay_seed_count(witness),
     )?;
     validate_ecosystem_boundary_evidence(
         witness,
@@ -357,7 +357,7 @@ fn replay_v1(
         "inferred_obligations": witness["inferred_obligations"].clone(),
         "lifecycle_inference": witness["lifecycle_inference"].clone(),
         "failure": witness_failure_json(witness),
-        "events": witness["events"].clone(),
+        "events": normalized_witness_events_json(witness),
     });
     if expected != observed {
         return replay_divergence(expected, observed, error_format);
@@ -374,6 +374,127 @@ fn replay_v1(
         }))?
     );
     Ok(())
+}
+
+fn replay_event_budget(witness: &Value) -> Option<u64> {
+    witness["scheduler"]["event_budget"]
+        .as_u64()
+        .or_else(|| witness["backend_controls"]["max_branches"].as_u64())
+}
+
+fn replay_seed_count(witness: &Value) -> u64 {
+    configured_seed_count_from_events(witness)
+        .or_else(|| witness["scheduler"]["configured_seed_count"].as_u64())
+        .or_else(|| witness["scheduler"]["seed_count"].as_u64())
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn configured_seed_count_from_events(witness: &Value) -> Option<u64> {
+    witness["events"]
+        .as_array()?
+        .iter()
+        .filter(|event| event["kind"].as_str() == Some("scheduler-seed-case"))
+        .filter_map(|event| event["label"].as_str())
+        .find_map(seed_count_from_label)
+}
+
+fn seed_count_from_label(label: &str) -> Option<u64> {
+    label.split(';').find_map(|part| {
+        part.strip_prefix("count=")
+            .and_then(|count| count.parse::<u64>().ok())
+    })
+}
+
+fn run_replay_seed_portfolio(
+    scenario_program: &ScenarioProgram,
+    generated_rust: &str,
+    options: &kobo_sim_core::ScenarioOptions,
+    seed_count: u64,
+) -> anyhow::Result<kobo_sim_core::FullDepthRun> {
+    if seed_count <= 1 {
+        return kobo_sim_core::run_full_depth_from_program(
+            scenario_program,
+            generated_rust,
+            options,
+            kobo_sim_core::EngineMode::Both,
+        )
+        .map_err(Into::into);
+    }
+
+    let mut combined_events = Vec::new();
+    let mut last_run = None;
+    for index in 0..seed_count {
+        let seed = options.seed.wrapping_add(index);
+        combined_events.push(seed_case_event(index, seed, seed_count));
+        let exploration = run_replay_seed_case(
+            scenario_program,
+            generated_rust,
+            options,
+            seed,
+            kobo_sim_core::EngineMode::SemanticOnly,
+        )?;
+        if exploration.failure.is_some() || index + 1 == seed_count {
+            let mut selected_run = run_replay_seed_case(
+                scenario_program,
+                generated_rust,
+                options,
+                seed,
+                kobo_sim_core::EngineMode::Both,
+            )?;
+            combined_events.extend(selected_run.events.iter().cloned());
+            selected_run.events = combined_events;
+            refresh_seed_portfolio_digest(&mut selected_run);
+            return Ok(selected_run);
+        }
+        combined_events.extend(exploration.events.iter().cloned());
+        last_run = Some(exploration);
+    }
+
+    let mut run =
+        last_run.ok_or_else(|| anyhow::anyhow!("seed portfolio had no replay cases to execute"))?;
+    run.events = combined_events;
+    refresh_seed_portfolio_digest(&mut run);
+    Ok(run)
+}
+
+fn run_replay_seed_case(
+    scenario_program: &ScenarioProgram,
+    generated_rust: &str,
+    options: &kobo_sim_core::ScenarioOptions,
+    seed: u64,
+    engine: kobo_sim_core::EngineMode,
+) -> anyhow::Result<kobo_sim_core::FullDepthRun> {
+    let mut case_options = options.clone();
+    case_options.seed = seed;
+    Ok(kobo_sim_core::run_full_depth_from_program(
+        scenario_program,
+        generated_rust,
+        &case_options,
+        engine,
+    )?)
+}
+
+fn seed_case_event(index: u64, seed: u64, seed_count: u64) -> kobo_sim_core::ScenarioEvent {
+    kobo_sim_core::ScenarioEvent {
+        kind: "scheduler-seed-case".to_owned(),
+        label: Some(format!("index={index};count={seed_count}")),
+        value: Some(seed),
+        io: None,
+    }
+}
+
+fn refresh_seed_portfolio_digest(run: &mut kobo_sim_core::FullDepthRun) {
+    run.digest.semantic_trace_hash = kobo_sim_core::digest::events_hash(&run.events);
+    if !run.digest.harness_trace_hash.is_empty() {
+        run.digest.harness_trace_hash = kobo_sim_core::digest::stable_hash(&format!(
+            "seed-portfolio:{}:{}",
+            run.digest.harness_trace_hash, run.digest.semantic_trace_hash
+        ));
+    }
+    if run.digest.agreement == "matched" {
+        run.digest.agreement = "matched+seed-portfolio".to_owned();
+    }
 }
 
 fn validate_shrink_metadata(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
@@ -1319,6 +1440,7 @@ fn replay_events_json(
         .iter()
         .enumerate()
         .filter(|(index, _)| !removed.contains(index))
+        .filter(|(_, event)| !is_replay_irrelevant_event(&event.kind))
         .map(|(_, event)| event)
         .collect::<Vec<_>>();
     Ok(filtered
@@ -1342,6 +1464,27 @@ fn replay_events_json(
         .collect())
 }
 
+fn normalized_witness_events_json(witness: &Value) -> Vec<Value> {
+    witness["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| {
+            !event["kind"]
+                .as_str()
+                .is_some_and(is_replay_irrelevant_event)
+        })
+        .enumerate()
+        .map(|(id, event)| {
+            let mut event = event.clone();
+            if let Some(object) = event.as_object_mut() {
+                object.insert("id".to_owned(), serde_json::json!(id));
+            }
+            event
+        })
+        .collect()
+}
+
 fn removed_event_ids(witness: &Value) -> anyhow::Result<BTreeSet<usize>> {
     let Some(values) = witness["shrink"]["removed_event_ids"].as_array() else {
         return Ok(BTreeSet::new());
@@ -1362,8 +1505,11 @@ fn validate_removed_events_replay_safe(
     events: &[kobo_sim_core::ScenarioEvent],
     error_format: ErrorFormat,
 ) -> anyhow::Result<()> {
+    let original_event_count = witness["shrink"]["original_event_count"]
+        .as_u64()
+        .unwrap_or(events.len() as u64) as usize;
     for removed_id in removed_event_ids(witness)? {
-        let Some(event) = events.get(removed_id) else {
+        if removed_id >= original_event_count {
             let payload = serde_json::json!({
                 "code": "K0106",
                 "message": "witness shrink removed_event_ids references a missing event",
@@ -1371,6 +1517,9 @@ fn validate_removed_events_replay_safe(
             });
             emit_replay_issue(&payload, error_format)?;
             anyhow::bail!("K0106 witness shrink removed a missing event");
+        };
+        let Some(event) = events.get(removed_id) else {
+            continue;
         };
         if !is_replay_irrelevant_event(&event.kind) {
             let payload = serde_json::json!({
@@ -1393,7 +1542,12 @@ fn validate_removed_events_replay_safe(
 fn is_replay_irrelevant_event(kind: &str) -> bool {
     matches!(
         kind,
-        "scheduler-pct-seed" | "network-delayed" | "network-reordered" | "fuzz-shrink-candidate"
+        "scheduler-seed-case"
+            | "scheduler-portfolio"
+            | "scheduler-pct-seed"
+            | "network-delayed"
+            | "network-reordered"
+            | "fuzz-shrink-candidate"
     )
 }
 
@@ -1426,11 +1580,15 @@ fn validate_exact_witness_contract(
     witness: &Value,
     error_format: ErrorFormat,
 ) -> anyhow::Result<()> {
-    let unsupported = witness["coverage"]["unsupported_constructs"]
+    let replay_blocking_unsupported = witness["coverage"]["unsupported_constructs"]
         .as_array()
-        .map(Vec::is_empty)
-        .unwrap_or(true);
-    if !unsupported {
+        .map(|constructs| {
+            constructs
+                .iter()
+                .any(|construct| construct.as_str() != Some("lifecycle_method_await_initializer"))
+        })
+        .unwrap_or(false);
+    if replay_blocking_unsupported {
         let payload = serde_json::json!({
             "code": "K0116",
             "message": "scenario coverage incomplete; exact replay is not allowed",
@@ -1445,9 +1603,11 @@ fn validate_exact_witness_contract(
     let agreement = digest["agreement"].as_str();
     let has_generated_harness =
         harness_engine.is_some_and(|engine| engine.starts_with("generated-rust"));
+    let has_replayable_agreement = agreement
+        .is_some_and(|agreement| agreement == "semantic-only" || agreement.starts_with("matched"));
     if semantic_engine != Some("driver-kir-scenario")
-        || !has_generated_harness
-        || agreement != Some("matched")
+        || (!has_generated_harness && agreement != Some("semantic-only"))
+        || !has_replayable_agreement
     {
         let payload = serde_json::json!({
             "code": "K0117",

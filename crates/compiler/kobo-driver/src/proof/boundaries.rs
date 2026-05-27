@@ -1,5 +1,12 @@
 use super::*;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeBoundaryEvidence {
+    pub boundary: String,
+    pub policy: kobo_ir::ScenarioBoundaryPolicy,
+    pub has_recorded_io: bool,
+}
+
 pub(super) fn boundary_evidence(
     source_path: &str,
     source: &str,
@@ -101,6 +108,35 @@ pub fn adapter_evidence(
                 .unwrap_or_else(|| "configured ecosystem adapter".to_owned()),
         });
     }
+    sort_adapter_evidence(&mut evidence);
+    evidence
+}
+
+pub fn runtime_boundary_adapter_evidence(
+    boundaries: &[RuntimeBoundaryEvidence],
+    requested_replay_grade: ReplayGrade,
+) -> Vec<AdapterEvidence> {
+    let mut evidence = boundaries
+        .iter()
+        .filter(|boundary| {
+            boundary.has_recorded_io
+                && matches!(boundary.policy, kobo_ir::ScenarioBoundaryPolicy::Record)
+        })
+        .map(|boundary| AdapterEvidence {
+            boundary: boundary.boundary.clone(),
+            adapter: "recorded-boundary-capture".to_owned(),
+            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            confidence: AdapterConfidence::Exact,
+            replay_grade: requested_replay_grade.clone(),
+            outcome: "proof".to_owned(),
+            reason: "recorded boundary I/O capture".to_owned(),
+        })
+        .collect::<Vec<_>>();
+    sort_adapter_evidence(&mut evidence);
+    evidence
+}
+
+pub(super) fn sort_adapter_evidence(evidence: &mut Vec<AdapterEvidence>) {
     evidence.sort_by(|left, right| {
         (&left.boundary, &left.adapter, &left.version).cmp(&(
             &right.boundary,
@@ -113,7 +149,6 @@ pub fn adapter_evidence(
             && left.adapter == right.adapter
             && left.version == right.version
     });
-    evidence
 }
 
 pub fn adapter_adjusted_replay_grade(

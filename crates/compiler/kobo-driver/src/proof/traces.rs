@@ -11,13 +11,16 @@ pub(super) fn core_trace_evidence(
         .iter()
         .filter_map(|event| statement_index_from_event(&event.id).map(|index| (index, event)))
         .collect::<BTreeMap<_, _>>();
-    let has_obligation_events = !obligation_events.is_empty();
+    let has_traceable_obligation_events = obligation_events
+        .iter()
+        .any(|event| trace_event_kind(&event.kind).is_some());
     program
         .operations
         .iter()
         .enumerate()
         .filter_map(|(operation_index, operation)| {
-            if !has_obligation_events && matches!(operation.kind, ScenarioOpKind::Return) {
+            if !has_traceable_obligation_events && matches!(operation.kind, ScenarioOpKind::Return)
+            {
                 return None;
             }
             let event = events_by_statement.get(&operation_index).copied();

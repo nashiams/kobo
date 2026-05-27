@@ -5,6 +5,7 @@ pub struct ProofEmissionInput<'a> {
     pub source: &'a str,
     pub program: &'a ScenarioProgram,
     pub adapter_policies: &'a [EcosystemAdapterPolicy],
+    pub runtime_boundaries: &'a [RuntimeBoundaryEvidence],
     pub replay_grade: ReplayGrade,
     pub artifact_kind: ArtifactKind,
     pub source_map: Option<&'a KoboSourceMap>,
@@ -183,6 +184,11 @@ fn build_adapter_evidence(input: &ProofEmissionInput<'_>) -> AdapterEvidencePart
         input.adapter_policies,
         input.replay_grade.clone(),
     );
+    confidence.extend(runtime_boundary_adapter_evidence(
+        input.runtime_boundaries,
+        input.replay_grade.clone(),
+    ));
+    sort_adapter_evidence(&mut confidence);
     let replay_grade = adapter_adjusted_replay_grade(input.replay_grade.clone(), &confidence);
     for adapter in &mut confidence {
         adapter.replay_grade = replay_grade.clone();

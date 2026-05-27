@@ -365,10 +365,7 @@ fn reject_unresolved_exit_on_edge(
 }
 
 fn modeled_exit_target(target: &str) -> bool {
-    matches!(
-        target,
-        "return" | "error_exit" | "panic" | "break_exit" | "opaque_boundary"
-    )
+    matches!(target, "return" | "error_exit" | "panic" | "break_exit")
 }
 
 fn core_successor_target(target: &str) -> String {

@@ -288,6 +288,12 @@ fn public_entrypoints_keep_table_of_contents_shape() {
             120,
             "Keep proof emission as a named-step adapter over evidence-family builders.",
         ),
+        (
+            repo_path("crates/compiler/kobo-transform/src/scenario/lowerer.rs"),
+            "build_scenario_programs",
+            120,
+            "Keep scenario extraction as collection plus named lowering stages.",
+        ),
     ] {
         assert_function_line_limit(&path, function_name, limit, reason);
     }
@@ -402,9 +408,69 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "proof source span mapping",
         ),
         (
-            "crates/compiler/kobo-transform/src/scenario.rs",
-            2846,
-            "scenario lowering",
+            "crates/compiler/kobo-transform/src/scenario/mod.rs",
+            175,
+            "scenario module facade and shared state",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/lowerer.rs",
+            200,
+            "scenario lowering orchestration",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/collect.rs",
+            120,
+            "scenario AST collection",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/imports.rs",
+            75,
+            "scenario import alias collection",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/boundary_policy.rs",
+            100,
+            "scenario boundary policy collection",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/call_graph.rs",
+            175,
+            "scenario call graph analysis",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/env.rs",
+            100,
+            "scenario binding environment",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/control_flow.rs",
+            350,
+            "scenario control-flow lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/lifecycle.rs",
+            500,
+            "scenario lifecycle inference",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/expr_lower.rs",
+            450,
+            "scenario expression lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/calls.rs",
+            300,
+            "scenario call lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/external_boundary.rs",
+            400,
+            "scenario external boundary lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/syntax.rs",
+            300,
+            "scenario syntax fact extraction",
         ),
         (
             "crates/compiler/kobo-sim-core/src/harness.rs",

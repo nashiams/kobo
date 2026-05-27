@@ -1,5 +1,11 @@
 use super::*;
 
+use kobo_ir::FileId;
+use kobo_parser::{
+    preprocess_bridge_blocks, preprocess_concurrent_sugar, preprocess_kobo_keywords,
+    preprocess_spawn_blocks, strict_keyword_configs,
+};
+
 pub(super) fn async_model_evidence(
     source_path: &str,
     source: &str,
@@ -194,7 +200,7 @@ pub(super) fn canonical_select_result_hash(
 }
 
 pub(super) fn parsed_live_locals_by_await(source: &str, target: &str) -> Vec<Vec<String>> {
-    let Ok(file) = syn::parse_file(source) else {
+    let Some(file) = parse_source_for_async_model(source) else {
         return Vec::new();
     };
     let Some(function) = file.items.iter().find_map(|item| match item {
@@ -233,6 +239,21 @@ pub(super) fn parsed_live_locals_by_await(source: &str, target: &str) -> Vec<Vec
                 .map(|locals| locals.into_iter().collect::<Vec<_>>())
         })
         .collect()
+}
+
+fn parse_source_for_async_model(source: &str) -> Option<syn::File> {
+    syn::parse_file(source)
+        .or_else(|_| syn::parse_file(&preprocess_kobo_source_for_syn(source)))
+        .ok()
+}
+
+fn preprocess_kobo_source_for_syn(source: &str) -> String {
+    let (rewritten, _) = preprocess_concurrent_sugar(source);
+    let configs = strict_keyword_configs();
+    let (rewritten, _) = preprocess_kobo_keywords(&rewritten, &configs);
+    let (rewritten, _) = preprocess_spawn_blocks(&rewritten, FileId(0));
+    let (rewritten, _) = preprocess_bridge_blocks(&rewritten);
+    rewritten
 }
 
 pub(super) fn await_live_locals_in_stmt(

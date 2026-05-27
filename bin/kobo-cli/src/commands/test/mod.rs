@@ -36,17 +36,21 @@ mod model_compare;
 mod proof;
 mod replay_contract;
 mod run;
+mod runtime_boundary;
+mod seed_portfolio;
 mod trace_checks;
 mod witness;
 
 pub(super) use backend::BackendExpertOptions;
 use backend::{parse_engine, reserved_backend_fit_json, ProfileRoles};
 use failure::emit_failure;
-use fuzz::{run_fuzz_portfolio, run_seed_portfolio, FuzzPlan};
+use fuzz::{run_fuzz_portfolio, FuzzPlan};
 use json_schema::scheduler_json;
 use model_compare::apply_model_vs_implementation;
 use replay_contract::validate_run_boundary_declarations;
 pub(super) use run::cmd_test;
+use runtime_boundary::runtime_boundary_evidence;
+use seed_portfolio::run_seed_portfolio;
 use trace_checks::apply_trace_checks;
 use witness::{print_events, write_run_witness};
 

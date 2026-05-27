@@ -238,15 +238,55 @@ fn generated_anchor_for_operation(
     let role = generated_anchor_role(operation)?;
     let binding = event.binding.as_deref();
     let detail = generated_anchor_detail(operation);
-    let (index, anchor) = anchors.iter().enumerate().find(|(index, anchor)| {
-        !used_anchors[*index]
-            && anchor.function == program.target
+    let anchor_matches = |index: usize, anchor: &GeneratedProofEventAnchor| {
+        !used_anchors[index]
             && anchor.kind == event.kind
             && anchor.binding.as_deref() == binding
             && anchor.detail == detail
             && anchor.role == role
-    })?;
-    used_anchors[index] = true;
+    };
+    let reusable_anchor_matches = |anchor: &GeneratedProofEventAnchor| {
+        anchor.kind == event.kind
+            && anchor.binding.as_deref() == binding
+            && anchor.detail == detail
+            && anchor.role == role
+    };
+    let helper_anchor_matches = |index: usize, anchor: &GeneratedProofEventAnchor| {
+        !used_anchors[index]
+            && matches!(role, GeneratedProofEventRole::Discharge)
+            && anchor.kind == event.kind
+            && anchor.detail == detail
+            && anchor.role == role
+    };
+    let reusable_helper_anchor_matches = |anchor: &GeneratedProofEventAnchor| {
+        matches!(role, GeneratedProofEventRole::Discharge)
+            && anchor.kind == event.kind
+            && anchor.detail == detail
+            && anchor.role == role
+    };
+    let (index, anchor) = anchors
+        .iter()
+        .enumerate()
+        .find(|(index, anchor)| anchor.function == program.target && anchor_matches(*index, anchor))
+        .or_else(|| {
+            anchors.iter().enumerate().find(|(_, anchor)| {
+                anchor.function != program.target && reusable_anchor_matches(anchor)
+            })
+        })
+        .or_else(|| {
+            anchors.iter().enumerate().find(|(_, anchor)| {
+                anchor.function != program.target && reusable_helper_anchor_matches(anchor)
+            })
+        })
+        .or_else(|| {
+            anchors
+                .iter()
+                .enumerate()
+                .find(|(index, anchor)| helper_anchor_matches(*index, anchor))
+        })?;
+    if anchor.function == program.target {
+        used_anchors[index] = true;
+    }
     Some(anchor.rs_span.clone())
 }
 
@@ -413,6 +453,13 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
                     GeneratedProofEventRole::Create,
                     event_expr_span(init.expr.as_ref()),
                 );
+                self.push_anchor(
+                    "discharge",
+                    Some(binding.to_string()),
+                    Some("suppressed".to_owned()),
+                    GeneratedProofEventRole::Discharge,
+                    local.span(),
+                );
             }
             if let Some(binding) = expr_path_ident(init.expr.as_ref()) {
                 self.push_anchor(
@@ -518,6 +565,15 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
     }
 
     fn visit_expr_return(&mut self, expr_return: &'ast syn::ExprReturn) {
+        if let Some(binding) = expr_return.expr.as_deref().and_then(expr_path_ident) {
+            self.push_anchor(
+                "discharge",
+                Some(binding),
+                Some("return".to_owned()),
+                GeneratedProofEventRole::Discharge,
+                expr_return.span(),
+            );
+        }
         self.push_anchor(
             "return",
             None,
@@ -657,11 +713,17 @@ pub(crate) fn build_lowering_trace(
         .iter()
         .flat_map(|program| {
             let template_by_binding = template_by_binding(program);
+            let has_obligation_trace_events = has_obligation_trace_events(program);
             program
                 .operations
                 .iter()
                 .enumerate()
                 .filter_map(move |(order, operation)| {
+                    if !has_obligation_trace_events
+                        && matches!(operation.kind, ScenarioOpKind::Return)
+                    {
+                        return None;
+                    }
                     let event =
                         lowering_event_from_operation(&operation.kind, &template_by_binding)?;
                     let core_event_id =
@@ -686,6 +748,19 @@ pub(crate) fn build_lowering_trace(
                 })
         })
         .collect()
+}
+
+fn has_obligation_trace_events(program: &ScenarioProgram) -> bool {
+    program.operations.iter().any(|operation| {
+        matches!(
+            operation.kind,
+            ScenarioOpKind::CreateObligation { .. }
+                | ScenarioOpKind::Discharge { .. }
+                | ScenarioOpKind::Transfer { .. }
+                | ScenarioOpKind::MoveBinding { .. }
+                | ScenarioOpKind::ExternalBoundary { .. }
+        )
+    })
 }
 
 fn proof_source_map_entry_id(function: &str, order: usize) -> String {
@@ -1149,6 +1224,66 @@ mod lowering_trace_tests {
     }
 
     #[test]
+    fn synthetic_return_is_omitted_when_no_obligation_trace_exists() {
+        let file_id = FileId(1);
+        let span = kobo_ir::KoboSpan::new(10, 20, file_id);
+        let operations = vec![
+            terminator(span, ScenarioCoreTerminatorKind::ErrorExit),
+            ScenarioOp {
+                span,
+                kind: ScenarioOpKind::Return,
+            },
+        ];
+        let entries = operations
+            .iter()
+            .enumerate()
+            .map(|(order, operation)| SourceMapEntry {
+                id: format!("proof-map-trace_case-{order}"),
+                core_event_id: Some(super::core_event_id_for_operation(
+                    "trace_case",
+                    order,
+                    &operation.kind,
+                )),
+                binding_name: "proof".to_owned(),
+                kobo_span: span,
+                rs_span: RsSpan {
+                    line: order + 1,
+                    column_start: 1,
+                    column_end: 8,
+                },
+                ownership_tier: "proof-event".to_owned(),
+                solver_outcome: None,
+                decision_source: None,
+                solver_node_id: None,
+            })
+            .collect();
+        let source_map = wrap_source_map(
+            Path::new("src/main.kobo"),
+            Path::new("src/main.rs"),
+            entries,
+        );
+        let program = ScenarioProgram {
+            file_id,
+            target: "trace_case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations,
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        let trace = build_lowering_trace(&[program], &source_map);
+
+        assert_eq!(
+            trace
+                .iter()
+                .map(|event| event.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["error_exit"],
+            "synthetic function-end return should not create an unmatched lowering trace event: {trace:?}"
+        );
+    }
+
+    #[test]
     fn proof_event_anchors_use_generated_function_scope_not_global_snippet() {
         let source = r#"
 fn fallible() -> Result<(), ()> { Ok(()) }
@@ -1208,6 +1343,184 @@ fn second() -> Result<(), ()> {
         assert!(
             entry.rs_span.line > second_function_line,
             "proof anchor must be in second function, not a global text match: {entry:?}"
+        );
+    }
+
+    #[test]
+    fn helper_inlined_events_can_anchor_to_helper_body() {
+        let rs_source = r#"fn helper_reordered(token: Delivery) {
+    token.requeue();
+}
+
+fn helper_case() {
+    let delivery = Delivery {};
+    helper_reordered(delivery);
+}
+"#;
+        let mut entries = Vec::new();
+        let program = ScenarioProgram {
+            file_id: FileId(1),
+            target: "helper_case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span: kobo_ir::KoboSpan::new(20, 35, FileId(1)),
+                kind: ScenarioOpKind::Discharge {
+                    binding: "delivery".to_owned(),
+                    action: "requeue".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        super::add_proof_event_source_entries(&mut entries, rs_source, &[program]);
+
+        let helper_line = line_containing(rs_source, "token.requeue()");
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "proof-map-helper_case-0")
+            .expect("helper-body proof event should get a generated anchor");
+        assert_eq!(
+            entry.rs_span.line, helper_line,
+            "helper summary discharge should anchor to the helper body: {entry:?}"
+        );
+    }
+
+    #[test]
+    fn helper_body_anchors_can_be_reused_for_inlined_caller_events() {
+        let rs_source = r#"fn helper_reordered(token: Delivery) {
+    token.requeue();
+}
+
+fn helper_case() {
+    helper_reordered(Delivery {});
+}
+"#;
+        let mut entries = Vec::new();
+        let helper_program = ScenarioProgram {
+            file_id: FileId(1),
+            target: "helper_reordered".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![
+                ScenarioOp {
+                    span: kobo_ir::KoboSpan::new(1, 10, FileId(1)),
+                    kind: ScenarioOpKind::CreateObligation {
+                        binding: "token".to_owned(),
+                        type_name: "Delivery".to_owned(),
+                        actions: vec!["requeue".to_owned()],
+                        template: None,
+                    },
+                },
+                ScenarioOp {
+                    span: kobo_ir::KoboSpan::new(11, 20, FileId(1)),
+                    kind: ScenarioOpKind::Discharge {
+                        binding: "token".to_owned(),
+                        action: "requeue".to_owned(),
+                    },
+                },
+            ],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+        let caller_program = ScenarioProgram {
+            file_id: FileId(1),
+            target: "helper_case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: helper_program.operations.clone(),
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        super::add_proof_event_source_entries(
+            &mut entries,
+            rs_source,
+            &[helper_program, caller_program],
+        );
+
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.id == "proof-map-helper_case-0"
+                    && entry.core_event_id.as_deref() == Some("core-helper_case-stmt-0")),
+            "inlined caller create should reuse the helper parameter anchor: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.id == "proof-map-helper_case-1"
+                    && entry.core_event_id.as_deref() == Some("core-helper_case-stmt-1")),
+            "inlined caller discharge should reuse the helper body anchor: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn return_expression_discharge_gets_generated_anchor() {
+        let rs_source = r#"fn case() -> Delivery {
+    let returned = Delivery {};
+    return returned;
+}
+"#;
+        let mut entries = Vec::new();
+        let program = ScenarioProgram {
+            file_id: FileId(1),
+            target: "case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span: kobo_ir::KoboSpan::new(20, 35, FileId(1)),
+                kind: ScenarioOpKind::Discharge {
+                    binding: "returned".to_owned(),
+                    action: "return".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        super::add_proof_event_source_entries(&mut entries, rs_source, &[program]);
+
+        let return_line = line_containing(rs_source, "return returned");
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "proof-map-case-0")
+            .expect("return discharge should get a generated anchor");
+        assert_eq!(
+            entry.rs_span.line, return_line,
+            "returning an obligation should anchor the discharge to the return expression: {entry:?}"
+        );
+    }
+
+    #[test]
+    fn reasoned_suppression_discharge_gets_generated_anchor() {
+        let rs_source = r#"fn case() {
+    let suppressed = Delivery {};
+}
+"#;
+        let mut entries = Vec::new();
+        let program = ScenarioProgram {
+            file_id: FileId(1),
+            target: "case".to_owned(),
+            source_hash: "source".to_owned(),
+            operations: vec![ScenarioOp {
+                span: kobo_ir::KoboSpan::new(20, 35, FileId(1)),
+                kind: ScenarioOpKind::Discharge {
+                    binding: "suppressed".to_owned(),
+                    action: "suppressed:tracked elsewhere".to_owned(),
+                },
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+
+        super::add_proof_event_source_entries(&mut entries, rs_source, &[program]);
+
+        let suppression_line = line_containing(rs_source, "let suppressed");
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "proof-map-case-0")
+            .expect("reasoned suppression discharge should get a generated anchor");
+        assert_eq!(
+            entry.rs_span.line, suppression_line,
+            "reasoned suppression should anchor the discharge to the annotated local: {entry:?}"
         );
     }
 

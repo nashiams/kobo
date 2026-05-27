@@ -474,8 +474,63 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
         ),
         (
             "crates/compiler/kobo-sim-core/src/harness.rs",
-            2129,
+            50,
+            "simulation harness facade",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/agreement.rs",
+            225,
             "simulation harness agreement",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/runner.rs",
+            275,
+            "simulation harness process runner",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/source.rs",
+            350,
+            "simulation harness source generation",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/facade.rs",
+            500,
+            "simulation external boundary facade generation",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/facade_manifest.rs",
+            75,
+            "simulation harness facade manifest",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/record_boundary.rs",
+            250,
+            "simulation record boundary capture",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/tokio_support.rs",
+            250,
+            "simulation Tokio support source",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/storage_support.rs",
+            110,
+            "simulation storage support source",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/network_support.rs",
+            90,
+            "simulation network support source",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/events.rs",
+            60,
+            "simulation harness event parsing",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/failures.rs",
+            250,
+            "simulation terminal failure events",
         ),
     ] {
         assert_file_line_ratchet(&repo_path(relative), limit, domain);

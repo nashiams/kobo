@@ -283,10 +283,10 @@ fn public_entrypoints_keep_table_of_contents_shape() {
             "Keep the CLI command entrypoint as a named-step orchestrator.",
         ),
         (
-            src_path("proof.rs"),
+            src_path("proof/emission.rs"),
             "emit_proof_certificate",
-            143,
-            "Move proof evidence families into named modules before growing the driver adapter.",
+            120,
+            "Keep proof emission as a named-step adapter over evidence-family builders.",
         ),
     ] {
         assert_function_line_limit(&path, function_name, limit, reason);
@@ -347,9 +347,59 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "test witness JSON schema",
         ),
         (
-            "crates/compiler/kobo-driver/src/proof.rs",
-            3400,
+            "crates/compiler/kobo-driver/src/proof/emission.rs",
+            325,
             "proof emission adapter",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/core_cfg.rs",
+            400,
+            "proof Core CFG evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/loop_invariants.rs",
+            350,
+            "proof loop invariant evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/bounded.rs",
+            400,
+            "proof bounded exploration evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/traces.rs",
+            250,
+            "proof translation trace evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/templates.rs",
+            150,
+            "proof template evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/boundaries.rs",
+            250,
+            "proof boundary and adapter evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/candidates.rs",
+            650,
+            "proof candidate admission scan",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/obligations.rs",
+            350,
+            "proof obligation replay evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/async_model.rs",
+            675,
+            "proof async model evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/source_spans.rs",
+            100,
+            "proof source span mapping",
         ),
         (
             "crates/compiler/kobo-transform/src/scenario.rs",

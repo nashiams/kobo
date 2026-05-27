@@ -68,7 +68,7 @@ fn uc_fixtures_run_through_migrate_inspect_and_cargo_check() {
             &case.fixture_path,
         );
         assert_success(&first, fixture_name, "first migrate dry-run");
-        assert_migrate_contract(&first, fixture_name);
+        assert_migrate_check(&first, fixture_name);
 
         let second = run_kobo(
             ["migrate", "--dry-run", "--class", "--explain"],
@@ -85,7 +85,7 @@ fn uc_fixtures_run_through_migrate_inspect_and_cargo_check() {
             &case.fixture_path,
         );
         assert_success(&review, fixture_name, "review migrate dry-run");
-        assert_migrate_contract(&review, fixture_name);
+        assert_migrate_check(&review, fixture_name);
         assert!(
             case.root.join(".kobo").join("decisions.toml").exists(),
             "{fixture_name} review run must leave a durable decisions artifact"
@@ -116,7 +116,7 @@ fn uc_fixtures_run_through_migrate_inspect_and_cargo_check() {
     }
 }
 
-fn assert_migrate_contract(output: &CmdOutput, fixture_name: &str) {
+fn assert_migrate_check(output: &CmdOutput, fixture_name: &str) {
     let combined = format!("{}\n{}", output.stdout, output.stderr);
     assert!(
         combined.contains("solver outcome:"),
@@ -140,7 +140,7 @@ fn assert_migrate_contract(output: &CmdOutput, fixture_name: &str) {
     );
     assert!(
         !combined.contains("[K0081]"),
-        "{fixture_name} must fit within the v0.8.1 production solver cap\n{combined}"
+        "{fixture_name} must fit within the production solver cap\n{combined}"
     );
 }
 
@@ -169,7 +169,7 @@ fn assert_solver_evidence(source_map_path: &Path, fixture_name: &str) {
     assert_eq!(
         budget.get("max_cluster_size").and_then(Value::as_u64),
         Some(2048),
-        "{fixture_name} source map must record the v0.8.1 production cluster cap"
+        "{fixture_name} source map must record the production cluster cap"
     );
 
     let mappings = parsed

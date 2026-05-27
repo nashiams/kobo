@@ -83,7 +83,7 @@ fn dump_hello_fixture_reports_expected_tiers() {
 }
 
 #[test]
-fn inspect_tiered_mix_fixture_shows_v03_tiers_and_map_labels() {
+fn inspect_tiered_mix_fixture_shows_legacy_tiers_and_map_labels() {
     let case = FixtureCase::new("inspect-tiered-mix", "tiered_mix.kobo");
     let output = run_kobo(["inspect"], &case.fixture_path);
 
@@ -1149,7 +1149,7 @@ fn main() {
 
 #[test]
 fn test_build_fails_when_generated_project_does_not_compile() {
-    let dir = setup_multi_file_fixture("build-contract-cargo");
+    let dir = setup_multi_file_fixture("build-check-cargo");
     fs::write(
         dir.join("src/main.kobo"),
         r#"mod missing;
@@ -1168,7 +1168,7 @@ fn main() {
 
     assert!(
         !output.status.success(),
-        "contract says build should fail when Cargo compilation fails\nstdout:\n{}\nstderr:\n{}",
+        "check says build should fail when Cargo compilation fails\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

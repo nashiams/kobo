@@ -1,0 +1,35 @@
+---
+source: bin/kobo-cli/tests/k0100_diagnostics_snapshot_checks.rs
+assertion_line: 37
+expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagnostic should serialize\")"
+---
+{
+  "category": "boundary-policy",
+  "code": "K0108",
+  "decision": "Inspect the witness temporal_checks trace excerpt, then update the model, expected event name, or scenario ordering.",
+  "explanation": "Temporal checks are evaluated over ordered witness events with stable event names. Missing or forbidden events are reported separately from replay mismatch diagnostics.",
+  "line": 2,
+  "message": "<temp-path>",
+  "notes": [],
+  "primary": {
+    "byte_end": 42,
+    "byte_start": 1,
+    "column_end": 41,
+    "column_start": 0,
+    "file_id": 0,
+    "file_path": "<source>",
+    "label": "<temp-path>",
+    "line_end": 1,
+    "line_start": 1
+  },
+  "related": [],
+  "schema_version": 1,
+  "secondary": [],
+  "severity": "error",
+  "slug": "replay-obligation-suppressed",
+  "suggestions": [],
+  "suppressed_by": null,
+  "suppression": null,
+  "title": "replay obligation suppressed",
+  "upstream": null
+}

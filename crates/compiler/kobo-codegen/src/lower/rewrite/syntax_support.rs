@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_methods_default_to_borrow_mut_per_contract() {
+    fn unknown_methods_default_to_borrow_mut_per_rule() {
         let method_mutability = HashMap::new();
         let method: syn::Ident = parse_quote!(flush_cache);
         let expr = lowered_receiver_expr(parse_quote!(logger), &method, &method_mutability, None);

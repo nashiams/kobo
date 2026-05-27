@@ -5,7 +5,7 @@ pub(crate) mod codegen;
 mod compile;
 mod parse;
 mod solver;
-mod util;
+mod support;
 
 pub use analysis::{run_check_pipeline, run_pipeline_ordering_check};
 pub use codegen::{
@@ -13,7 +13,7 @@ pub use codegen::{
 };
 pub use compile::{run_and_compile, run_and_compile_with_lifetime_erasure};
 pub use parse::run_kir_phase;
-pub use util::{
+pub use support::{
     apply_lifetime_erasure, effective_guarantee_policy, extract_before_borrow_rewrite,
     lifetime_erasure_debt_report,
 };

@@ -16,7 +16,7 @@ first.
   replace them with runtime-generated names to reject hardcoded symbols.
 - Shifted fixtures must continue to report shifted source lines. A fixed line
   number is a failing implementation.
-- `.kwit` replay fixtures are JSON contracts, not arbitrary blobs.
+- `.kwit` replay fixtures are structured schemas, not arbitrary blobs.
 
 ## Groups
 

@@ -1,0 +1,35 @@
+---
+source: bin/kobo-cli/tests/k0100_diagnostics_snapshot_checks.rs
+assertion_line: 37
+expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagnostic should serialize\")"
+---
+{
+  "category": "liveness",
+  "code": "K0100",
+  "decision": "Call ack, nack, requeue on every path, or record explicit debt if cleanup happens outside this scenario.",
+  "explanation": "Kobo tracks must_call values as obligations. Every return, cancellation, or replayed path must finish the obligation before the value leaves scope.",
+  "line": 8,
+  "message": "<temp-path>",
+  "notes": [],
+  "primary": {
+    "byte_end": 174,
+    "byte_start": 166,
+    "column_end": 24,
+    "column_start": 16,
+    "file_id": 0,
+    "file_path": "<source>",
+    "label": "<temp-path>",
+    "line_end": 7,
+    "line_start": 7
+  },
+  "related": [],
+  "schema_version": 1,
+  "secondary": [],
+  "severity": "error",
+  "slug": "checked-runtime-liveness-token-dropped",
+  "suggestions": [],
+  "suppressed_by": null,
+  "suppression": null,
+  "title": "checked scenario dropped an unresolved liveness token",
+  "upstream": null
+}

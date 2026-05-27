@@ -1,0 +1,35 @@
+---
+source: bin/kobo-cli/tests/k0100_diagnostics_snapshot_checks.rs
+assertion_line: 37
+expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagnostic should serialize\")"
+---
+{
+  "category": "replay",
+  "code": "K0103",
+  "decision": "Model the effect, record the effect stream, move it outside replay, or mark replay debt explicitly.",
+  "explanation": "An uncontrolled effect can change outside Kobo's replay model. The scenario needs a model, a recording, or an explicit debt boundary before Kobo can trust the replay.",
+  "line": 4,
+  "message": "<temp-path>",
+  "notes": [],
+  "primary": {
+    "byte_end": 71,
+    "byte_start": 60,
+    "column_end": 15,
+    "column_start": 4,
+    "file_id": 0,
+    "file_path": "<source>",
+    "label": "<temp-path>",
+    "line_end": 3,
+    "line_start": 3
+  },
+  "related": [],
+  "schema_version": 1,
+  "secondary": [],
+  "severity": "error",
+  "slug": "uncontrolled-effect-blocks-replay",
+  "suggestions": [],
+  "suppressed_by": null,
+  "suppression": null,
+  "title": "scenario cannot replay an uncontrolled effect",
+  "upstream": null
+}

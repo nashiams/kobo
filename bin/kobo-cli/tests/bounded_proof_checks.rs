@@ -1,0 +1,632 @@
+mod cli_common;
+mod proof_common;
+
+use kobo_proof::{certificate_material_hash, ProofCertificate};
+use proof_common::{
+    assert_failure, assert_success, bounded_source, emit_artifact, first_json, path_arg, read_json,
+    run_kobo, s, write_json, TestProject,
+};
+
+fn bounded_source_without_expected(
+    scenario_name: &str,
+    histories: u64,
+    scheduler: &str,
+    fault: &str,
+    cancellation: &str,
+) -> String {
+    format!(
+        r#"
+#[kobo::bounded(histories = "{histories}", completeness = "complete", scheduler = "{scheduler}", fault = "{fault}", cancellation = "{cancellation}", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let _unit = ();
+}}
+"#
+    )
+}
+
+fn bounded_source_with_unique_histories(
+    scenario_name: &str,
+    histories: u64,
+    unique_histories: u64,
+    expected: u64,
+) -> String {
+    format!(
+        r#"
+#[kobo::bounded(histories = "{histories}", unique_histories = "{unique_histories}", expected = "{expected}", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    let _unit = ();
+}}
+"#
+    )
+}
+
+fn bounded_source_with_two_loops(scenario_name: &str) -> String {
+    format!(
+        r#"
+#[kobo::bounded(histories = "1", expected = "1", completeness = "complete", scheduler = "single_thread", fault = "none", cancellation = "none", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
+#[kobo::scenario(profile = "sync")]
+fn {scenario_name}() {{
+    loop {{
+        break;
+    }}
+    loop {{
+        break;
+    }}
+}}
+"#
+    )
+}
+
+#[test]
+fn complete_bounded_evidence_requires_all_proof_relevant_dimensions() {
+    let project = TestProject::new("translation-bounded-required-dimensions");
+    let source = r#"
+#[kobo::bounded(histories = "4", expected = "4", completeness = "complete", scheduler = "fifo|round_robin", fault = "none|timeout", cancellation = "none")]
+#[kobo::scenario(profile = "sync")]
+fn bounded_required_dimensions_case() {
+    let _unit = ();
+}
+"#;
+    let artifact_path = emit_artifact(&project, source, "bounded_required_dimensions_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(
+        artifact["bounded_evidence"][0]["completeness"],
+        "incomplete"
+    );
+    assert!(
+        artifact["bounded_evidence"][0]["wording"]
+            .as_str()
+            .is_some_and(|wording| wording.contains("evidence only")),
+        "complete bounded proof must not omit queue/message/retry/timeout/external bounds: {artifact}"
+    );
+}
+
+#[test]
+fn complete_finite_state_space_emits_bounded_proof_wording() {
+    let project = TestProject::new("translation-bounded-complete");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_complete_case",
+            "complete",
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
+        ),
+        "bounded_complete_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
+    assert_eq!(
+        artifact["bounded_evidence"][0]["enumerated_history_count"],
+        4
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["wording"],
+        "bounded proof: all 4 histories explored under declared bounds"
+    );
+    let dimensions = artifact["bounded_evidence"][0]["bounds"]
+        .as_array()
+        .expect("complete bounded evidence must record bounds")
+        .iter()
+        .map(|bound| {
+            bound["dimension"]
+                .as_str()
+                .expect("dimension should be text")
+        })
+        .collect::<Vec<_>>();
+    for required in [
+        "queue_capacity",
+        "message_count",
+        "retry_attempts",
+        "timeout_paths",
+        "external_boundary_recordings",
+    ] {
+        assert!(
+            dimensions.contains(&required),
+            "complete bounded evidence must record {required}: {artifact}"
+        );
+    }
+}
+
+#[test]
+fn complete_finite_state_space_enumerates_all_proof_relevant_dimensions() {
+    let project = TestProject::new("translation-bounded-all-dimensions");
+    let source = r#"
+#[kobo::bounded(histories = "32", expected = "32", completeness = "complete", scheduler = "fifo|round_robin", fault = "none", cancellation = "none", queue_capacity = "2", message_count = "2", retry_attempts = "2", timeout_paths = "2", external_boundary_recordings = "1")]
+#[kobo::scenario(profile = "sync")]
+fn bounded_all_dimensions_case() {
+    let _unit = ();
+}
+"#;
+    let artifact_path = emit_artifact(&project, source, "bounded_all_dimensions_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
+    assert_eq!(
+        artifact["bounded_evidence"][0]["expected_complete_history_count"],
+        32
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["enumerated_history_count"],
+        32
+    );
+    let histories = artifact["bounded_evidence"][0]["canonical_histories"]
+        .as_array()
+        .expect("complete bounded evidence should record histories");
+    let combinations = histories
+        .iter()
+        .map(|history| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                history["queue_capacity"],
+                history["message_count"],
+                history["retry_attempts"],
+                history["timeout_path"],
+                history["external_boundary_recording"]
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        combinations.len(),
+        16,
+        "canonical histories must vary every finite state dimension: {artifact}"
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["wording"],
+        "bounded proof: all 32 histories explored under declared bounds"
+    );
+}
+
+#[test]
+fn complete_finite_state_space_enumerates_loop_iteration_bounds() {
+    let project = TestProject::new("translation-bounded-loop-iterations");
+    let source = r#"
+#[kobo::bounded(histories = "4", expected = "4", completeness = "complete", scheduler = "fifo|round_robin", fault = "none", cancellation = "none", loop_iterations = "2", queue_capacity = "1", message_count = "1", retry_attempts = "1", timeout_paths = "1", external_boundary_recordings = "0")]
+#[kobo::scenario(profile = "sync")]
+fn bounded_loop_iterations_case() {
+    loop {
+        break;
+    }
+}
+"#;
+    let artifact_path = emit_artifact(&project, source, "bounded_loop_iterations_case");
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
+    assert_eq!(
+        artifact["bounded_evidence"][0]["expected_complete_history_count"],
+        4
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["enumerated_history_count"],
+        4
+    );
+    let histories = artifact["bounded_evidence"][0]["canonical_histories"]
+        .as_array()
+        .expect("complete bounded evidence should record histories");
+    let loop_iterations = histories
+        .iter()
+        .map(|history| {
+            history["loop_iteration"]
+                .as_u64()
+                .expect("history should record loop iteration")
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        loop_iterations,
+        [1, 2].into_iter().collect(),
+        "canonical histories must vary finite loop iteration bounds: {artifact}"
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["wording"],
+        "bounded proof: all 4 histories explored under declared bounds"
+    );
+}
+
+#[test]
+fn sampled_histories_emit_evidence_only_wording() {
+    let project = TestProject::new("translation-bounded-sampled");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_sampled_case",
+            "sampled",
+            2,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
+        ),
+        "bounded_sampled_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "sampled");
+    assert!(
+        artifact["bounded_evidence"][0]["wording"]
+            .as_str()
+            .is_some_and(|wording| wording.contains("evidence only")),
+        "sampled exploration must not claim bounded proof: {artifact}"
+    );
+}
+
+#[test]
+fn timeout_cutoff_cannot_claim_bounded_proof() {
+    let project = TestProject::new("translation-bounded-timeout");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_timeout_case",
+            "timeout",
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
+        ),
+        "bounded_timeout_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "timeout");
+    assert!(
+        artifact["bounded_evidence"][0]["wording"]
+            .as_str()
+            .is_some_and(|wording| wording.contains("evidence only")),
+        "timeout exploration must be evidence-only: {artifact}"
+    );
+}
+
+#[test]
+fn missing_scheduler_dimension_downgrades_to_evidence_only() {
+    let project = TestProject::new("translation-bounded-missing-scheduler");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_missing_scheduler_case",
+            "complete",
+            384,
+            384,
+            None,
+            Some("timeout_or_success"),
+            Some("await_recv"),
+        ),
+        "bounded_missing_scheduler_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(
+        artifact["bounded_evidence"][0]["completeness"],
+        "incomplete"
+    );
+    assert!(
+        artifact["bounded_evidence"][0]["wording"]
+            .as_str()
+            .is_some_and(|wording| wording.contains("evidence only")),
+        "omitted proof-relevant dimensions must not claim bounded proof: {artifact}"
+    );
+}
+
+#[test]
+fn finite_state_space_can_derive_expected_count_from_declared_dimensions() {
+    let project = TestProject::new("translation-bounded-derived-expected");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_without_expected(
+            "bounded_derived_expected_case",
+            4,
+            "fifo|round_robin",
+            "none|timeout",
+            "none",
+        ),
+        "bounded_derived_expected_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(artifact["bounded_evidence"][0]["completeness"], "complete");
+    assert_eq!(
+        artifact["bounded_evidence"][0]["expected_complete_history_count"],
+        4
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["wording"],
+        "bounded proof: all 4 histories explored under declared bounds"
+    );
+}
+
+#[test]
+fn duplicate_histories_do_not_inflate_bounded_completeness() {
+    let project = TestProject::new("translation-bounded-duplicate-histories");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_with_unique_histories("bounded_duplicate_case", 4, 2, 4),
+        "bounded_duplicate_case",
+    );
+    let artifact = read_json(&artifact_path);
+
+    assert_eq!(
+        artifact["bounded_evidence"][0]["completeness"],
+        "incomplete"
+    );
+    assert_eq!(
+        artifact["bounded_evidence"][0]["enumerated_history_count"],
+        2
+    );
+    assert!(
+        artifact["bounded_evidence"][0]["pruned_histories"]
+            .as_array()
+            .is_some_and(|histories| !histories.is_empty()),
+        "duplicate history pruning must be recorded: {artifact}"
+    );
+    assert!(
+        artifact["bounded_evidence"][0]["wording"]
+            .as_str()
+            .is_some_and(|wording| wording.contains("evidence only")),
+        "duplicate-inflated histories must be evidence-only: {artifact}"
+    );
+}
+
+#[test]
+fn proof_verify_json_and_text_report_same_bounded_wording() {
+    let project = TestProject::new("translation-bounded-cli-wording");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_cli_case",
+            "complete",
+            12,
+            12,
+            Some("single_thread|work_stealing|priority|random"),
+            Some("none|timeout|crash"),
+            Some("none"),
+        ),
+        "bounded_cli_case",
+    );
+
+    let json_output = run_kobo(
+        &[
+            s("proof"),
+            s("verify"),
+            s("--json"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+    assert_success(&json_output, "proof verify --json should succeed");
+    let json = first_json(&json_output, "proof verify json");
+    assert_eq!(
+        json["bounded_wording"][0],
+        "bounded proof: all 12 histories explored under declared bounds"
+    );
+
+    let text_output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+    assert_success(&text_output, "proof verify should succeed");
+    assert!(
+        text_output
+            .combined()
+            .contains("bounded proof: all 12 histories explored under declared bounds"),
+        "text output should match JSON bounded wording: {}",
+        text_output.combined()
+    );
+}
+
+#[test]
+fn complete_bounded_evidence_requires_exact_proof_wording() {
+    let project = TestProject::new("translation-bounded-wording-tamper");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_wording_tamper_case",
+            "complete",
+            12,
+            12,
+            Some("single_thread|work_stealing|priority|random"),
+            Some("none|timeout|crash"),
+            Some("none"),
+        ),
+        "bounded_wording_tamper_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.bounded_evidence[0].wording = "bounded proof: trust me".to_owned();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "tampered complete bounded wording should reject proof",
+    );
+    assert!(
+        output.combined().contains("bounded evidence"),
+        "failure should name bounded wording mismatch: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn complete_bounded_evidence_names_every_loop_fact() {
+    let project = TestProject::new("translation-bounded-loop-ids");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_with_two_loops("bounded_loop_ids_case"),
+        "bounded_loop_ids_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let loop_ids = artifact["bounded_evidence"][0]["loop_ids"]
+        .as_array()
+        .expect("bounded evidence should carry loop IDs");
+    let mut fact_ids = artifact["core"]["loop_facts"]
+        .as_array()
+        .expect("Core evidence should carry loop facts")
+        .to_vec();
+    fact_ids.extend(
+        artifact["core"]["loop_exit_facts"]
+            .as_array()
+            .expect("Core evidence should carry loop exit facts")
+            .iter()
+            .cloned(),
+    );
+
+    assert!(
+        fact_ids.len() >= 2,
+        "fixture should produce multiple concrete loop facts: {artifact}"
+    );
+    for fact in &fact_ids {
+        let fact_id = fact["id"].as_str().expect("loop fact should have an ID");
+        assert!(
+            loop_ids.iter().any(|loop_id| loop_id == fact_id),
+            "bounded evidence must name loop fact {fact_id}: {artifact}"
+        );
+    }
+}
+
+#[test]
+fn complete_bounded_evidence_records_canonical_histories() {
+    let project = TestProject::new("translation-bounded-canonical-histories");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_canonical_history_case",
+            "complete",
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
+        ),
+        "bounded_canonical_history_case",
+    );
+    let artifact = read_json(&artifact_path);
+    let histories = artifact["bounded_evidence"][0]["canonical_histories"]
+        .as_array()
+        .expect("bounded evidence should record canonical histories");
+
+    assert_eq!(
+        histories.len(),
+        artifact["bounded_evidence"][0]["enumerated_history_count"]
+            .as_u64()
+            .expect("enumerated count should be numeric") as usize
+    );
+    assert!(
+        histories.iter().all(|history| {
+            history["id"].as_str().is_some_and(|id| !id.is_empty())
+                && history["scheduler"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+                && history["fault"].as_str().is_some_and(|id| !id.is_empty())
+                && history["cancellation"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+                && history["loop_iteration"].as_u64().is_some()
+                && history["queue_capacity"].as_u64().is_some()
+                && history["message_count"].as_u64().is_some()
+                && history["retry_attempts"].as_u64().is_some()
+                && history["timeout_path"].as_u64().is_some()
+                && history["external_boundary_recording"].as_u64().is_some()
+                && history["history_hash"]
+                    .as_str()
+                    .is_some_and(|hash| !hash.is_empty())
+        }),
+        "canonical histories should carry dimensions and hashes: {artifact}"
+    );
+}
+
+#[test]
+fn complete_bounded_evidence_missing_canonical_history_rejects_proof() {
+    let project = TestProject::new("translation-bounded-missing-canonical-history");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source(
+            "bounded_missing_canonical_history_case",
+            "complete",
+            4,
+            4,
+            Some("fifo|round_robin"),
+            Some("none|timeout"),
+            Some("none"),
+        ),
+        "bounded_missing_canonical_history_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.bounded_evidence[0].canonical_histories.pop();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "complete bounded evidence missing a canonical history should reject proof",
+    );
+    assert!(
+        output.combined().contains("bounded evidence"),
+        "failure should name bounded canonical history mismatch: {}",
+        output.combined()
+    );
+}
+
+#[test]
+fn complete_bounded_evidence_missing_loop_id_cannot_cover_loop_fact() {
+    let project = TestProject::new("translation-bounded-missing-loop-id");
+    let artifact_path = emit_artifact(
+        &project,
+        &bounded_source_with_two_loops("bounded_missing_loop_id_case"),
+        "bounded_missing_loop_id_case",
+    );
+    let mut certificate: ProofCertificate =
+        serde_json::from_value(read_json(&artifact_path)).expect("certificate should deserialize");
+    certificate.bounded_evidence[0].loop_ids.pop();
+    certificate.certificate_material_hash.clear();
+    certificate.certificate_material_hash =
+        certificate_material_hash(&certificate).expect("certificate hash should compute");
+    write_json(
+        &artifact_path,
+        &serde_json::to_value(&certificate).expect("certificate should serialize"),
+    );
+
+    let output = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "complete bounded evidence missing a loop ID should reject proof",
+    );
+    assert!(
+        output
+            .combined()
+            .contains("missing a proof-grade back-edge fact"),
+        "failure should name the uncovered loop fact: {}",
+        output.combined()
+    );
+}

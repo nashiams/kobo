@@ -7,7 +7,7 @@ use crate::rustc::{
 use crate::session::CompileSession;
 
 use super::codegen::{run_codegen_pipeline, CodegenArtifacts};
-use super::util::apply_lifetime_erasure;
+use super::support::apply_lifetime_erasure;
 
 pub fn run_and_compile(session: &mut CompileSession, input: &Path) -> Result<PathBuf, ()> {
     let artifacts = run_codegen_pipeline(session, input)?;

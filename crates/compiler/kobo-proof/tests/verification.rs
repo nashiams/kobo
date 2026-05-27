@@ -798,7 +798,7 @@ fn unknown_unversioned_field_rejected() {
 }
 
 #[test]
-fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
+fn loop_back_edge_leak_rejected_from_translation_invariant_evidence() {
     let template_schema = TemplateSchemaEvidence {
         id: "queue_delivery".to_owned(),
         kind: "queue_delivery".to_owned(),
@@ -858,7 +858,7 @@ fn loop_back_edge_leak_rejected_from_v15_invariant_evidence() {
             "downgrade_reason": null
         }]);
     });
-    let certificate = parse_certificate_json(&source).expect("v15 loop fields should parse");
+    let certificate = parse_certificate_json(&source).expect("loop fields should parse");
 
     let error = verify_certificate(&certificate, &context()).unwrap_err();
 
@@ -999,7 +999,7 @@ fn translation_validation_rejects_dropped_discharge_event() {
             "mismatches": []
         });
     });
-    let certificate = parse_certificate_json(&source).expect("v15 trace fields should parse");
+    let certificate = parse_certificate_json(&source).expect("trace fields should parse");
 
     let error = verify_certificate(
         &certificate,

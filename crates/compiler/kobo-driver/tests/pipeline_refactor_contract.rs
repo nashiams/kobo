@@ -677,6 +677,86 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             275,
             "LSP code actions",
         ),
+        (
+            "crates/compiler/kobo-errors/src/registry/mod.rs",
+            350,
+            "diagnostic registry facade and lookup",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/ownership.rs",
+            75,
+            "ownership diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/performance.rs",
+            100,
+            "performance diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/strict_boundary.rs",
+            125,
+            "strict-boundary diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/async_model.rs",
+            125,
+            "async diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/solver.rs",
+            175,
+            "solver diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/migration.rs",
+            100,
+            "migration diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/replay.rs",
+            250,
+            "liveness and replay diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/parser.rs",
+            100,
+            "parser recovery diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/ecosystem.rs",
+            175,
+            "ecosystem boundary diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/mod.rs",
+            75,
+            "diagnostic formatter facade",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/source.rs",
+            175,
+            "diagnostic source label rendering",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/sections.rs",
+            50,
+            "diagnostic guidance sections",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/wrapping.rs",
+            50,
+            "diagnostic text wrapping",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/owner.rs",
+            200,
+            "diagnostic owner performance rendering",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/strict.rs",
+            350,
+            "strict-boundary diagnostic rendering",
+        ),
     ] {
         assert_file_line_ratchet(&repo_path(relative), limit, domain);
     }

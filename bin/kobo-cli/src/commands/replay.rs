@@ -181,7 +181,7 @@ fn replay_v1(
     }
 
     validate_shrink_metadata(witness, error_format)?;
-    validate_exact_witness_contract(witness, error_format)?;
+    validate_exact_witness_scope(witness, error_format)?;
     validate_checkpoint_artifact_available(witness, error_format)?;
     let verified_source = verify_source_identity(witness, witness_path, error_format)?;
     let target = witness_target_scenario(witness)?;
@@ -297,7 +297,7 @@ fn replay_v1(
         ),
         "ecosystem_scope": ecosystem_scope(&run),
         "full_ecosystem_exploration": full_ecosystem_exploration(&run),
-        "replay_contract": replay_contract_json(&run),
+        "replay_contract": replay_scope_json(&run),
         "runtime_profile": runtime_profile,
         "execution_digest": execution_digest_json(&run, &runtime_profile_hash),
         "harness_manifest": run.harness_manifest.clone(),
@@ -802,7 +802,7 @@ fn checkpoint_replay_json(enabled: bool, run: &kobo_sim_core::FullDepthRun) -> V
     })
 }
 
-fn replay_contract_json(run: &kobo_sim_core::FullDepthRun) -> Value {
+fn replay_scope_json(run: &kobo_sim_core::FullDepthRun) -> Value {
     serde_json::json!({
         "scope": ecosystem_scope(run),
         "full_ecosystem_exploration": full_ecosystem_exploration(run),
@@ -1576,10 +1576,7 @@ fn backend_for_profile(profile: &str) -> &'static str {
     }
 }
 
-fn validate_exact_witness_contract(
-    witness: &Value,
-    error_format: ErrorFormat,
-) -> anyhow::Result<()> {
+fn validate_exact_witness_scope(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
     let replay_blocking_unsupported = witness["coverage"]["unsupported_constructs"]
         .as_array()
         .map(|constructs| {
@@ -1617,11 +1614,11 @@ fn validate_exact_witness_contract(
         emit_replay_issue(&payload, error_format)?;
         anyhow::bail!("K0117 exact witness lacks semantic/harness agreement");
     }
-    validate_exact_scope_contract(witness, error_format)?;
+    validate_exact_scope_metadata(witness, error_format)?;
     Ok(())
 }
 
-fn validate_exact_scope_contract(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
+fn validate_exact_scope_metadata(witness: &Value, error_format: ErrorFormat) -> anyhow::Result<()> {
     let scope = witness["replay_contract"]["scope"].as_str();
     let top_level_scope = witness["ecosystem_scope"].as_str();
     let full_ecosystem = witness["replay_contract"]["full_ecosystem_exploration"].as_bool();

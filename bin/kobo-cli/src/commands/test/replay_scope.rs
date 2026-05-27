@@ -55,7 +55,7 @@ pub(super) fn declaration_error_code(policy: &str, key: &str) -> &'static str {
     }
 }
 
-pub(super) fn replay_contract_json(run: &FullDepthRun) -> serde_json::Value {
+pub(super) fn replay_scope_json(run: &FullDepthRun) -> serde_json::Value {
     serde_json::json!({
         "scope": ecosystem_scope(run),
         "full_ecosystem_exploration": full_ecosystem_exploration(run),

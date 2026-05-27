@@ -160,7 +160,7 @@ impl ScenarioLifecycleTemplate {
             kind: "declared_must_call".to_owned(),
             template_schema: "lifecycle-template".to_owned(),
             schema_version: 1,
-            confidence: "declared_contract".to_owned(),
+            confidence: "declared_obligation".to_owned(),
             source: ScenarioLifecycleTemplateSource::Declaration,
             lifecycle_owner: type_name.to_owned(),
             cancel_policy: "declared_terminal_action".to_owned(),

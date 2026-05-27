@@ -122,7 +122,7 @@ fn renamed_delivery_flow() {
     );
     assert_eq!(obligation["binding"], "renamed_delivery");
     assert_eq!(obligation["state"], "discharged");
-    assert_eq!(obligation["confidence"], "declared_contract");
+    assert_eq!(obligation["confidence"], "declared_obligation");
     assert_eq!(obligation["coverage_loss"], Value::Null);
     assert_contains(
         &obligation["terminal_actions"].to_string(),

@@ -328,9 +328,9 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "test proof artifact writing",
         ),
         (
-            "bin/kobo-cli/src/commands/test/replay_contract.rs",
+            "bin/kobo-cli/src/commands/test/replay_scope.rs",
             350,
-            "test replay contract metadata",
+            "test replay scope metadata",
         ),
         (
             "bin/kobo-cli/src/commands/test/trace_checks.rs",

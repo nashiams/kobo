@@ -10,7 +10,7 @@ pub struct BackendCapability {
     pub ecosystem_scope: &'static str,
     pub full_ecosystem_exploration: bool,
     pub registered_boundary_exploration: bool,
-    pub coverage_contract: &'static str,
+    pub coverage_scope: &'static str,
     pub role: &'static str,
 }
 
@@ -40,7 +40,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "generated-user-rust",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: true,
-            coverage_contract: "registered-boundaries-generated-rust",
+            coverage_scope: "registered-boundaries-generated-rust",
             role: "semantic/harness agreement and replay token evidence",
         },
         BackendCapability {
@@ -52,7 +52,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "generated-inputs",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: false,
-            coverage_contract: "generated-inputs-only",
+            coverage_scope: "generated-inputs-only",
             role: "stateful input generation for --fuzz",
         },
         BackendCapability {
@@ -64,7 +64,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "real-loom-generated-user-rust",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: true,
-            coverage_contract: "registered-boundaries-loom-generated-rust",
+            coverage_scope: "registered-boundaries-loom-generated-rust",
             role: "sync profile wraps generated user Rust in loom::model",
         },
         BackendCapability {
@@ -76,7 +76,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "backend-native-unsupported",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: false,
-            coverage_contract: "unsupported-native-adapter",
+            coverage_scope: "unsupported-native-adapter",
             role: "reserved backend pin; native Shuttle execution is rejected until an adapter is linked",
         },
         BackendCapability {
@@ -88,7 +88,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "backend-native-unsupported",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: false,
-            coverage_contract: "unsupported-native-adapter",
+            coverage_scope: "unsupported-native-adapter",
             role: "reserved backend pin; native Turmoil execution is rejected until an adapter is linked",
         },
         BackendCapability {
@@ -100,7 +100,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "backend-native-unsupported",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: false,
-            coverage_contract: "unsupported-native-adapter",
+            coverage_scope: "unsupported-native-adapter",
             role: "reserved backend pin; native Madsim execution is rejected until an adapter is linked",
         },
         BackendCapability {
@@ -112,7 +112,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "generated-user-rust-os-facade",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: true,
-            coverage_contract: "registered-boundaries-storage-facade",
+            coverage_scope: "registered-boundaries-storage-facade",
             role: "storage facade executes generated Rust filesystem operations",
         },
         BackendCapability {
@@ -124,7 +124,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "generated-user-rust-os-facade",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: true,
-            coverage_contract: "registered-boundaries-network-facade",
+            coverage_scope: "registered-boundaries-network-facade",
             role: "network facade executes generated Rust loopback socket operations",
         },
         BackendCapability {
@@ -136,7 +136,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             ecosystem_scope: "generated-user-rust-adapter",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: true,
-            coverage_contract: "full-registered-boundaries-failpoint-adapter",
+            coverage_scope: "full-registered-boundaries-failpoint-adapter",
             role: "compiler-owned failure injection hooks",
         },
     ]

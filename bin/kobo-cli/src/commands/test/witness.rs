@@ -12,9 +12,9 @@ use super::json_schema::{
 };
 use super::model_compare::model_vs_implementation_json;
 use super::proof::{proof_replay_grade, witness_replay_grade, write_proof_artifact};
-use super::replay_contract::{
+use super::replay_scope::{
     backend_replay_evidence_json, backend_replay_id, ecosystem_scope, exactness_json,
-    full_ecosystem_exploration, injections_json, replay_contract_json, shrink_event_stream,
+    full_ecosystem_exploration, injections_json, replay_scope_json, shrink_event_stream,
     shrink_json,
 };
 use super::trace_checks::trace_checks_json;
@@ -194,7 +194,7 @@ pub(super) fn write_run_witness(
         "full_ecosystem_exploration".to_owned(),
         full_ecosystem_exploration(run).into(),
     );
-    object.insert("replay_contract".to_owned(), replay_contract_json(run));
+    object.insert("replay_contract".to_owned(), replay_scope_json(run));
     object.insert(
         "scheduler".to_owned(),
         scheduler_json(

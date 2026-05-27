@@ -338,19 +338,79 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "test trace check evaluation",
         ),
         (
-            "bin/kobo-cli/src/commands/test/model_compare.rs",
-            900,
-            "test model comparison",
-        ),
-        (
             "bin/kobo-cli/src/commands/test/failure.rs",
             250,
             "test failure rendering",
         ),
         (
-            "bin/kobo-cli/src/commands/test/json_schema.rs",
-            1350,
-            "test witness JSON schema",
+            "bin/kobo-cli/src/commands/test/json_schema/mod.rs",
+            50,
+            "test witness JSON schema facade",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/runtime.rs",
+            225,
+            "test witness runtime JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/execution.rs",
+            175,
+            "test witness execution JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/scheduler.rs",
+            100,
+            "test witness scheduler JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/boundaries.rs",
+            350,
+            "test witness boundary JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/obligations.rs",
+            90,
+            "test witness obligation JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/demos.rs",
+            275,
+            "test witness demo JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/failures.rs",
+            175,
+            "test witness failure JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/events.rs",
+            100,
+            "test witness event JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/mod.rs",
+            30,
+            "test model comparison facade",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/types.rs",
+            180,
+            "test model comparison data",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/compare.rs",
+            400,
+            "test model comparison evaluation",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/parse.rs",
+            225,
+            "test model comparison parsing",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/execute.rs",
+            175,
+            "test model comparison execution",
         ),
         (
             "crates/compiler/kobo-driver/src/proof/emission.rs",

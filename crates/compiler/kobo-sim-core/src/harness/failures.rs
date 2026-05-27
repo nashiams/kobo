@@ -1,14 +1,30 @@
+mod boundaries;
+
 use kobo_ir::{ScenarioModeledBoundary, ScenarioOpKind, ScenarioProgram};
 
 use crate::core::{ScenarioEvent, ScenarioOptions};
 use crate::network::NetworkModel;
 use crate::storage::StorageModel;
 
+pub(super) use boundaries::{boundary_label, modeled_boundary_events};
+use boundaries::{core_boundary, first_modeled_boundary};
+
 struct HarnessObligation {
     binding: String,
     actions: Vec<String>,
     is_discharged: bool,
     declaration_span: (usize, usize),
+}
+
+impl HarnessObligation {
+    fn new(binding: String, actions: Vec<String>, declaration_span: (usize, usize)) -> Self {
+        Self {
+            binding,
+            actions,
+            is_discharged: false,
+            declaration_span,
+        }
+    }
 }
 
 pub(super) fn terminal_failure_events(
@@ -21,152 +37,21 @@ pub(super) fn terminal_failure_events(
     let mut network = NetworkModel::default();
     let mut failure_events = None;
     for operation in &program.operations {
-        let span = (
-            operation.span.start as usize,
-            operation.span.end.max(operation.span.start + 1) as usize,
+        let selected_failure = apply_operation_effects(
+            operation,
+            options,
+            &mut obligations,
+            &mut storage,
+            &mut network,
+            &mut events,
         );
-        match &operation.kind {
-            ScenarioOpKind::CreateObligation {
-                binding, actions, ..
-            } => obligations.push(HarnessObligation {
-                binding: binding.clone(),
-                actions: actions.clone(),
-                is_discharged: false,
-                declaration_span: span,
-            }),
-            ScenarioOpKind::Discharge { binding, action } => {
-                storage.note_obligation_action(action);
-                if let Some(obligation) = obligations
-                    .iter_mut()
-                    .rev()
-                    .find(|obligation| obligation.binding == *binding && !obligation.is_discharged)
-                {
-                    if obligation
-                        .actions
-                        .iter()
-                        .any(|candidate| candidate == action)
-                    {
-                        obligation.is_discharged = true;
-                    }
-                }
-            }
-            ScenarioOpKind::Transfer {
-                binding, callee, ..
-            } => events.push(ScenarioEvent {
-                kind: "obligation-transfer".to_owned(),
-                label: Some(format!("{binding}->{callee}")),
-                value: None,
-                io: None,
-            }),
-            ScenarioOpKind::UnsupportedContainer {
-                binding,
-                type_name,
-                container,
-            } => {
-                if failure_events.is_none() {
-                    failure_events = Some(vec![ScenarioEvent {
-                        kind: "unsupported-container".to_owned(),
-                        label: Some(format!("{binding}:{container}:{type_name}")),
-                        value: None,
-                        io: None,
-                    }]);
-                }
-            }
-            ScenarioOpKind::BranchUnresolved { binding } => {
-                if failure_events.is_none() {
-                    failure_events = Some(vec![ScenarioEvent {
-                        kind: "branch-unresolved".to_owned(),
-                        label: Some(binding.clone()),
-                        value: None,
-                        io: None,
-                    }]);
-                }
-            }
-            ScenarioOpKind::ModeledEffect { boundary } => {
-                if failure_events.is_none() {
-                    let active_obligation = obligations
-                        .iter()
-                        .rev()
-                        .find(|obligation| !obligation.is_discharged)
-                        .map(|obligation| {
-                            (obligation.binding.as_str(), obligation.declaration_span)
-                        });
-                    if let Some(failure) = crate::scheduler::schedule_failure(
-                        &core_boundary(boundary),
-                        options,
-                        active_obligation,
-                        span,
-                    ) {
-                        failure_events = Some(failure.events);
-                    }
-                }
-            }
-            ScenarioOpKind::StorageEvent { action } => {
-                if failure_events.is_none() {
-                    if let Some(failure) = storage.apply_action(action, options.seed, span).failure
-                    {
-                        failure_events = Some(failure.events);
-                    }
-                }
-            }
-            ScenarioOpKind::NetworkEvent { action } => {
-                if failure_events.is_none() {
-                    if let Some(failure) = network.apply_action(action, options.seed, span).failure
-                    {
-                        failure_events = Some(failure.events);
-                    }
-                }
-            }
-            ScenarioOpKind::Select { .. } => {}
-            ScenarioOpKind::RawNondeterminism { .. }
-            | ScenarioOpKind::UncontrolledEffect { .. }
-            | ScenarioOpKind::ExternalBoundary { .. }
-            | ScenarioOpKind::CoreTerminator { .. }
-            | ScenarioOpKind::LoopStart { .. }
-            | ScenarioOpKind::LoopBackEdge { .. }
-            | ScenarioOpKind::LoopContinue { .. }
-            | ScenarioOpKind::LoopBreak { .. }
-            | ScenarioOpKind::Loop => {}
-            ScenarioOpKind::MoveBinding { .. } | ScenarioOpKind::Return => {}
-        }
-    }
-    if failure_events.is_none() && has_cancel_injection(options) {
-        if let Some(obligation) = obligations
-            .iter()
-            .find(|obligation| !obligation.is_discharged)
-        {
-            failure_events = Some(vec![ScenarioEvent {
-                kind: "failure-injection-cancel".to_owned(),
-                label: Some(obligation.binding.clone()),
-                value: None,
-                io: None,
-            }]);
-        }
         if failure_events.is_none() {
-            if let Some(boundary) = first_modeled_boundary(program) {
-                failure_events = Some(vec![ScenarioEvent {
-                    kind: "failure-injection-cancel".to_owned(),
-                    label: Some(boundary.to_owned()),
-                    value: None,
-                    io: None,
-                }]);
-            }
+            failure_events = selected_failure;
         }
     }
-
-    if failure_events.is_none() {
-        failure_events = obligations
-            .iter()
-            .find(|obligation| !obligation.is_discharged)
-            .map(|obligation| {
-                vec![ScenarioEvent {
-                    kind: "liveness-token-drop".to_owned(),
-                    label: Some(obligation.binding.clone()),
-                    value: None,
-                    io: None,
-                }]
-            });
-    }
+    failure_events = failure_events
+        .or_else(|| cancel_failure_events(program, &obligations, options))
+        .or_else(|| liveness_failure_events(&obligations));
     if let Some(failure) = failure_events {
         events.extend(failure);
     }
@@ -174,20 +59,159 @@ pub(super) fn terminal_failure_events(
     events
 }
 
-pub(super) fn boundary_label(boundary: &ScenarioModeledBoundary) -> &'static str {
-    match boundary {
-        ScenarioModeledBoundary::WardTime => "ward.time",
-        ScenarioModeledBoundary::WardRandom => "ward.random",
-        ScenarioModeledBoundary::WardTask => "ward.task",
-        ScenarioModeledBoundary::WardTaskLocal => "ward.task.local",
+fn apply_operation_effects(
+    operation: &kobo_ir::ScenarioOp,
+    options: &ScenarioOptions,
+    obligations: &mut Vec<HarnessObligation>,
+    storage: &mut StorageModel,
+    network: &mut NetworkModel,
+    events: &mut Vec<ScenarioEvent>,
+) -> Option<Vec<ScenarioEvent>> {
+    let span = (
+        operation.span.start as usize,
+        operation.span.end.max(operation.span.start + 1) as usize,
+    );
+    match &operation.kind {
+        ScenarioOpKind::CreateObligation {
+            binding, actions, ..
+        } => {
+            obligations.push(HarnessObligation::new(
+                binding.clone(),
+                actions.clone(),
+                span,
+            ));
+            None
+        }
+        ScenarioOpKind::Discharge { binding, action } => {
+            storage.note_obligation_action(action);
+            discharge_obligation(obligations, binding, action);
+            None
+        }
+        ScenarioOpKind::Transfer {
+            binding, callee, ..
+        } => {
+            events.push(transfer_event(binding, callee));
+            None
+        }
+        ScenarioOpKind::UnsupportedContainer {
+            binding,
+            type_name,
+            container,
+        } => Some(unsupported_container_failure(binding, type_name, container)),
+        ScenarioOpKind::BranchUnresolved { binding } => Some(branch_unresolved_failure(binding)),
+        ScenarioOpKind::ModeledEffect { boundary } => {
+            scheduler_failure(boundary, options, obligations, span)
+        }
+        ScenarioOpKind::StorageEvent { action } => storage
+            .apply_action(action, options.seed, span)
+            .failure
+            .map(|failure| failure.events),
+        ScenarioOpKind::NetworkEvent { action } => network
+            .apply_action(action, options.seed, span)
+            .failure
+            .map(|failure| failure.events),
+        _ => None,
     }
 }
 
-pub(super) fn modeled_boundary_events(
+fn discharge_obligation(obligations: &mut [HarnessObligation], binding: &str, action: &str) {
+    let Some(obligation) = obligations
+        .iter_mut()
+        .rev()
+        .find(|obligation| obligation.binding == binding && !obligation.is_discharged)
+    else {
+        return;
+    };
+    if obligation
+        .actions
+        .iter()
+        .any(|candidate| candidate == action)
+    {
+        obligation.is_discharged = true;
+    }
+}
+
+fn transfer_event(binding: &str, callee: &str) -> ScenarioEvent {
+    ScenarioEvent {
+        kind: "obligation-transfer".to_owned(),
+        label: Some(format!("{binding}->{callee}")),
+        value: None,
+        io: None,
+    }
+}
+
+fn unsupported_container_failure(
+    binding: &str,
+    type_name: &str,
+    container: &str,
+) -> Vec<ScenarioEvent> {
+    vec![ScenarioEvent {
+        kind: "unsupported-container".to_owned(),
+        label: Some(format!("{binding}:{container}:{type_name}")),
+        value: None,
+        io: None,
+    }]
+}
+
+fn branch_unresolved_failure(binding: &str) -> Vec<ScenarioEvent> {
+    vec![ScenarioEvent {
+        kind: "branch-unresolved".to_owned(),
+        label: Some(binding.to_owned()),
+        value: None,
+        io: None,
+    }]
+}
+
+fn scheduler_failure(
     boundary: &ScenarioModeledBoundary,
     options: &ScenarioOptions,
-) -> Vec<ScenarioEvent> {
-    crate::scheduler::modeled_boundary_events(&core_boundary(boundary), options)
+    obligations: &[HarnessObligation],
+    span: (usize, usize),
+) -> Option<Vec<ScenarioEvent>> {
+    let active_obligation = obligations
+        .iter()
+        .rev()
+        .find(|obligation| !obligation.is_discharged)
+        .map(|obligation| (obligation.binding.as_str(), obligation.declaration_span));
+    crate::scheduler::schedule_failure(&core_boundary(boundary), options, active_obligation, span)
+        .map(|failure| failure.events)
+}
+
+fn cancel_failure_events(
+    program: &ScenarioProgram,
+    obligations: &[HarnessObligation],
+    options: &ScenarioOptions,
+) -> Option<Vec<ScenarioEvent>> {
+    if !has_cancel_injection(options) {
+        return None;
+    }
+    obligations
+        .iter()
+        .find(|obligation| !obligation.is_discharged)
+        .map(|obligation| obligation.binding.clone())
+        .or_else(|| first_modeled_boundary(program).map(str::to_owned))
+        .map(|label| {
+            vec![ScenarioEvent {
+                kind: "failure-injection-cancel".to_owned(),
+                label: Some(label),
+                value: None,
+                io: None,
+            }]
+        })
+}
+
+fn liveness_failure_events(obligations: &[HarnessObligation]) -> Option<Vec<ScenarioEvent>> {
+    obligations
+        .iter()
+        .find(|obligation| !obligation.is_discharged)
+        .map(|obligation| {
+            vec![ScenarioEvent {
+                kind: "liveness-token-drop".to_owned(),
+                label: Some(obligation.binding.clone()),
+                value: None,
+                io: None,
+            }]
+        })
 }
 
 fn has_cancel_injection(options: &ScenarioOptions) -> bool {
@@ -198,23 +222,4 @@ fn has_cancel_injection(options: &ScenarioOptions) -> bool {
         .split(',')
         .map(str::trim)
         .any(|hook| hook == "cancel")
-}
-
-fn first_modeled_boundary(program: &ScenarioProgram) -> Option<&'static str> {
-    program.operations.iter().find_map(|operation| {
-        if let ScenarioOpKind::ModeledEffect { boundary } = &operation.kind {
-            Some(boundary_label(boundary))
-        } else {
-            None
-        }
-    })
-}
-
-fn core_boundary(boundary: &ScenarioModeledBoundary) -> crate::core::ModeledBoundary {
-    match boundary {
-        ScenarioModeledBoundary::WardTime => crate::core::ModeledBoundary::WardTime,
-        ScenarioModeledBoundary::WardRandom => crate::core::ModeledBoundary::WardRandom,
-        ScenarioModeledBoundary::WardTask => crate::core::ModeledBoundary::WardTask,
-        ScenarioModeledBoundary::WardTaskLocal => crate::core::ModeledBoundary::WardTaskLocal,
-    }
 }

@@ -381,28 +381,24 @@ fn print_success_response(
     executed_seed: u64,
     run: &FullDepthRun,
 ) -> anyhow::Result<()> {
-    let mut response = serde_json::json!({
-        "scenario": run.target,
-        "seed": executed_seed,
-        "sim_profile": context.sim_profile,
-        "status": "passed",
-    });
+    let mut response = serde_json::Map::new();
+    response.insert("scenario".to_owned(), run.target.clone().into());
+    response.insert("seed".to_owned(), serde_json::json!(executed_seed));
+    response.insert("sim_profile".to_owned(), context.sim_profile.clone().into());
+    response.insert("status".to_owned(), "passed".into());
     if context.session.config.sim.show_backend_choices
         || expert_options.has_explicit_backend_controls()
     {
-        let object = response
-            .as_object_mut()
-            .expect("success response should be an object");
-        object.insert("backend_profile".to_owned(), run.profile.clone().into());
-        object.insert(
+        response.insert("backend_profile".to_owned(), run.profile.clone().into());
+        response.insert(
             "backend".to_owned(),
             expert_options.backend_name(&run.profile).into(),
         );
-        object.insert(
+        response.insert(
             "reserved_backend_fit".to_owned(),
             reserved_backend_fit_json(&run.profile),
         );
-        object.insert(
+        response.insert(
             "scheduler".to_owned(),
             scheduler_json(
                 &context.sim_profile,
@@ -412,7 +408,10 @@ fn print_success_response(
             ),
         );
     }
-    println!("{}", serde_json::to_string(&response)?);
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::Value::Object(response))?
+    );
     Ok(())
 }
 

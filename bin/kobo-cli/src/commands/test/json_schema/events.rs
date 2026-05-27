@@ -28,19 +28,15 @@ pub(crate) fn events_json(events: &[ScenarioEvent]) -> Vec<serde_json::Value> {
         .iter()
         .enumerate()
         .map(|(id, event)| {
-            let mut value = serde_json::json!({
-                "id": id,
-                "kind": event.kind.clone(),
-                "label": event.label.clone(),
-                "value": event.value,
-            });
+            let mut object = serde_json::Map::new();
+            object.insert("id".to_owned(), serde_json::json!(id));
+            object.insert("kind".to_owned(), event.kind.clone().into());
+            object.insert("label".to_owned(), event.label.clone().into());
+            object.insert("value".to_owned(), event.value.into());
             if let Some(io) = event.io.as_ref() {
-                value
-                    .as_object_mut()
-                    .expect("event json should be an object")
-                    .insert("io_capture".to_owned(), boundary_io_capture_json(io));
+                object.insert("io_capture".to_owned(), boundary_io_capture_json(io));
             }
-            value
+            serde_json::Value::Object(object)
         })
         .collect()
 }

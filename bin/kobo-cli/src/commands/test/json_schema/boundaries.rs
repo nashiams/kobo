@@ -158,31 +158,30 @@ pub(crate) fn declarations_json(
 pub(crate) fn declaration_metadata_json(
     facts: &declarations::DeclarationFacts,
 ) -> serde_json::Value {
-    let mut value = serde_json::json!({
-        "path": facts.path.display().to_string(),
-        "version": facts.version.clone(),
-        "schema_version": facts.schema_version,
-        "hash": facts.hash.clone(),
-    });
+    let mut object = serde_json::Map::new();
+    object.insert("path".to_owned(), facts.path.display().to_string().into());
+    object.insert("version".to_owned(), facts.version.clone().into());
+    object.insert(
+        "schema_version".to_owned(),
+        serde_json::json!(facts.schema_version),
+    );
+    object.insert("hash".to_owned(), facts.hash.clone().into());
     if let Some(package) = facts.metadata_package.as_ref() {
-        value
-            .as_object_mut()
-            .expect("declaration metadata json should be an object")
-            .insert(
-                "metadata_package".to_owned(),
-                serde_json::json!({
-                    "package": package.package.clone(),
-                    "version": package.version.clone(),
-                    "path": package.path.display().to_string(),
-                    "source": package.source.clone(),
-                    "registry": package.registry.clone(),
-                    "checksum": package.checksum.clone(),
-                    "signed_by": package.signed_by.clone(),
-                    "validated": package.validated,
-                }),
-            );
+        object.insert(
+            "metadata_package".to_owned(),
+            serde_json::json!({
+                "package": package.package.clone(),
+                "version": package.version.clone(),
+                "path": package.path.display().to_string(),
+                "source": package.source.clone(),
+                "registry": package.registry.clone(),
+                "checksum": package.checksum.clone(),
+                "signed_by": package.signed_by.clone(),
+                "validated": package.validated,
+            }),
+        );
     }
-    value
+    serde_json::Value::Object(object)
 }
 
 pub(crate) fn summary_usage_json(

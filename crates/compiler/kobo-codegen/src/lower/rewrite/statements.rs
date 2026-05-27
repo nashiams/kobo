@@ -1,13 +1,14 @@
 use syn::parse_quote;
 
+mod for_loops;
+
 use super::super::binding::binding_for_pat;
 use super::super::borrow_scope::{
     has_later_alias_use, rewritable_method_call, simple_borrow_alias,
 };
-use super::parallel_gate::ParallelSafetyGate;
 use super::receivers::{block_mutates_binding, iterator_source_ident};
 use super::spawn_captures::collect_spawn_captures;
-use super::{clone_inject, parallel, spawn, syntax_support, AnnotationNote, Lowerer, ScopeStack};
+use super::{clone_inject, spawn, syntax_support, AnnotationNote, Lowerer, ScopeStack};
 use crate::TaskLocalEvidence;
 
 impl<'a> Lowerer<'a> {
@@ -109,75 +110,7 @@ impl<'a> Lowerer<'a> {
         match stmt {
             syn::Stmt::Local(local) => self.lower_local(local, scopes),
             syn::Stmt::Item(item) => self.lower_item(item),
-            syn::Stmt::Expr(expr, semi) => {
-                if let syn::Expr::ForLoop(for_loop) = expr {
-                    let policy = parallel::policy_value(&for_loop.attrs)
-                        .unwrap_or_else(|| "outside".to_owned());
-                    let has_explicit_policy = parallel::policy_value(&for_loop.attrs).is_some();
-                    let source_line = self.source_line_for_expr_for_loop(for_loop);
-                    let safety_gate =
-                        self.parallel_safety_gate(for_loop, scopes, has_explicit_policy);
-                    match parallel::lower_for_loop(for_loop, safety_gate.accepted) {
-                        parallel::ParallelLowering::Parallel => {
-                            self.needs_rayon = true;
-                            if has_explicit_policy {
-                                parallel::mark_boundary_policy(for_loop, &policy);
-                            }
-                            self.lower_expr(for_loop.expr.as_mut(), scopes);
-                            self.lower_nested_block(&mut for_loop.body, scopes);
-                            self.parallel_evidence.push(self.parallel_loop_evidence(
-                                for_loop,
-                                scopes,
-                                source_line,
-                                "rayon-par-iter",
-                                &policy,
-                                safety_gate,
-                            ));
-                            *expr = parallel::for_each_adapter_expr(for_loop);
-                            *semi = Some(syn::token::Semi::default());
-                            return;
-                        }
-                        parallel::ParallelLowering::SerialPolicy => {
-                            parallel::mark_serial_policy(for_loop);
-                            self.parallel_evidence.push(self.parallel_loop_evidence(
-                                for_loop,
-                                scopes,
-                                source_line,
-                                "serial",
-                                "serial-order",
-                                ParallelSafetyGate::policy("policy-gate:serial-order"),
-                            ));
-                        }
-                        parallel::ParallelLowering::BoundaryPolicy => {
-                            parallel::mark_boundary_policy(for_loop, &policy);
-                            self.parallel_evidence.push(self.parallel_loop_evidence(
-                                for_loop,
-                                scopes,
-                                source_line,
-                                "boundary-policy",
-                                &policy,
-                                ParallelSafetyGate::policy("policy-gate:ward-boundary"),
-                            ));
-                        }
-                        parallel::ParallelLowering::SafetyBlocked => {
-                            parallel::mark_safety_blocked(for_loop, &safety_gate.blockers);
-                            self.parallel_evidence.push(self.parallel_loop_evidence(
-                                for_loop,
-                                scopes,
-                                source_line,
-                                "blocked-safety",
-                                "safety-gate",
-                                safety_gate,
-                            ));
-                        }
-                        parallel::ParallelLowering::None => {}
-                    }
-                }
-                if semi.is_none() && self.lower_owned_value_expr(expr, scopes) {
-                    return;
-                }
-                self.lower_expr(expr, scopes);
-            }
+            syn::Stmt::Expr(expr, semi) => self.lower_expr_stmt(expr, semi, scopes),
             syn::Stmt::Macro(stmt_macro) => {
                 // Check for spawn block marker macro — wire clone injection.
                 // S-53: Determine spawn strategy based on captured bindings' ownership tiers.
@@ -248,6 +181,25 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+    }
+
+    fn lower_expr_stmt(
+        &mut self,
+        expr: &mut syn::Expr,
+        semi: &mut Option<syn::token::Semi>,
+        scopes: &mut ScopeStack,
+    ) {
+        if let syn::Expr::ForLoop(for_loop) = expr {
+            if let Some(adapter) = self.lower_for_loop_statement(for_loop, scopes) {
+                *expr = adapter;
+                *semi = Some(syn::token::Semi::default());
+                return;
+            }
+        }
+        if semi.is_none() && self.lower_owned_value_expr(expr, scopes) {
+            return;
+        }
+        self.lower_expr(expr, scopes);
     }
 
     fn try_shrink_borrow_alias(

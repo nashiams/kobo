@@ -161,11 +161,14 @@ fn function_names(source: &str) -> Vec<String> {
 }
 
 fn function_line_count(source: &str, function_name: &str) -> Option<usize> {
-    let lines = source.lines().collect::<Vec<_>>();
+    let stripped = strip_comments_and_strings(source);
+    let lines = stripped.lines().collect::<Vec<_>>();
     for (start_index, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        let is_function_header =
-            trimmed.starts_with("fn ") || (trimmed.starts_with("pub") && trimmed.contains(" fn "));
+        let is_function_header = trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("pub(super) fn ");
         if !is_function_header {
             continue;
         }
@@ -340,6 +343,64 @@ fn public_entrypoints_keep_table_of_contents_shape() {
     ] {
         assert_function_line_limit(&path, function_name, limit, reason);
     }
+}
+
+#[test]
+fn proof_live_local_expression_traversal_uses_named_helpers() {
+    assert_function_line_limit(
+        &repo_path(
+            "crates/compiler/kobo-driver/src/proof/async_model/live_locals/expr_traversal.rs",
+        ),
+        "await_live_locals_in_expr",
+        80,
+        "Keep await live-local traversal split by expression family.",
+    );
+}
+
+#[test]
+fn cli_witness_writer_keeps_table_of_contents_shape() {
+    assert_function_line_limit(
+        &repo_path("bin/kobo-cli/src/commands/test/witness.rs"),
+        "write_run_witness",
+        120,
+        "Keep witness output as path preparation, typed JSON assembly, and artifact writing.",
+    );
+    assert_function_line_limit(
+        &repo_path("bin/kobo-cli/src/commands/test/witness.rs"),
+        "build_witness_json",
+        120,
+        "Keep witness JSON assembly split into named schema sections.",
+    );
+}
+
+#[test]
+fn harness_support_keeps_table_of_contents_shape() {
+    assert!(
+        !repo_path("crates/compiler/kobo-sim-core/src/harness.rs").exists(),
+        "harness support should use src/harness/mod.rs instead of a #[path] shim"
+    );
+    assert_function_line_limit(
+        &repo_path("crates/compiler/kobo-sim-core/src/harness/facade.rs"),
+        "external_boundary_support_source",
+        80,
+        "Keep facade support split into collection and rendering steps.",
+    );
+    assert_function_line_limit(
+        &repo_path("crates/compiler/kobo-sim-core/src/harness/failures.rs"),
+        "terminal_failure_events",
+        90,
+        "Keep harness failure selection split by failure domain and precedence.",
+    );
+}
+
+#[test]
+fn rewrite_statement_lowering_uses_named_handlers() {
+    assert_function_line_limit(
+        &repo_path("crates/compiler/kobo-codegen/src/lower/rewrite/statements.rs"),
+        "lower_stmt",
+        90,
+        "Keep statement lowering split by statement family and policy handling.",
+    );
 }
 
 #[test]
@@ -586,7 +647,7 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "scenario syntax fact extraction",
         ),
         (
-            "crates/compiler/kobo-sim-core/src/harness.rs",
+            "crates/compiler/kobo-sim-core/src/harness/mod.rs",
             50,
             "simulation harness facade",
         ),
@@ -609,6 +670,11 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "crates/compiler/kobo-sim-core/src/harness/facade.rs",
             500,
             "simulation external boundary facade generation",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/facade/render.rs",
+            350,
+            "simulation external boundary facade rendering",
         ),
         (
             "crates/compiler/kobo-sim-core/src/harness/facade_manifest.rs",
@@ -644,6 +710,11 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "crates/compiler/kobo-sim-core/src/harness/failures.rs",
             250,
             "simulation terminal failure events",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/failures/boundaries.rs",
+            75,
+            "simulation modeled-boundary failure mapping",
         ),
         (
             "crates/compiler/kobo-codegen/src/sourcemap/mod.rs",
@@ -704,6 +775,11 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "crates/compiler/kobo-codegen/src/lower/rewrite/statements.rs",
             350,
             "rewrite statement lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/statements/for_loops.rs",
+            150,
+            "rewrite statement for-loop lowering",
         ),
         (
             "crates/compiler/kobo-codegen/src/lower/rewrite/anchors.rs",
@@ -964,7 +1040,11 @@ fn all_production_rust_files_have_readability_budgets() {
 
 #[test]
 fn no_new_vague_module_names_are_added() {
-    let allowed = ["crates/compiler/kobo-transform/src/builder/helpers.rs"];
+    let allowed = [
+        "crates/compiler/kobo-driver/src/test_utils.rs",
+        "crates/compiler/kobo-transform/src/builder/helpers.rs",
+        "tests/test_utils.rs",
+    ];
     let mut unexpected = Vec::new();
     for source_root in ["bin", "crates", "editors", "proof", "tests"] {
         collect_vague_module_paths(&repo_path(source_root), &allowed, &mut unexpected);
@@ -1026,11 +1106,27 @@ fn collect_vague_module_paths(root: &Path, allowed: &[&str], unexpected: &mut Ve
 
 fn is_vague_module_name(file_name: &str) -> bool {
     let stem = file_name.strip_suffix(".rs").unwrap_or(file_name);
-    matches!(stem, "util" | "helpers" | "misc" | "common")
-        || stem.ends_with("_util")
-        || stem.ends_with("_helpers")
-        || stem.ends_with("_misc")
-        || stem.ends_with("_common")
+    stem.split('_').any(|part| {
+        matches!(
+            part,
+            "util" | "utils" | "helper" | "helpers" | "misc" | "common"
+        )
+    })
+}
+
+#[test]
+fn vague_module_name_detection_rejects_tokenized_shared_buckets() {
+    for name in [
+        "common_cli.rs",
+        "util_proof.rs",
+        "helpers_proof",
+        "proof_utils.rs",
+    ] {
+        assert!(
+            is_vague_module_name(name),
+            "vague shared module name should be rejected: {name}"
+        );
+    }
 }
 
 #[test]
@@ -1066,18 +1162,65 @@ fn collect_wildcard_imports(root: &Path, violations: &mut Vec<String>) {
             .expect("scanned path should be below repo root")
             .to_string_lossy()
             .replace('\\', "/");
-        let source = read_required(&path);
-        for (index, line) in source.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed == "use super::*;" || wildcard_import_line(trimmed) {
-                violations.push(format!("{}:{}: {}", relative, index + 1, trimmed));
+        collect_wildcard_imports_from_source(&relative, &read_required(&path), violations);
+    }
+}
+
+fn collect_wildcard_imports_from_source(
+    relative: &str,
+    source: &str,
+    violations: &mut Vec<String>,
+) {
+    let mut use_item = String::new();
+    let mut use_item_start = None;
+
+    for (index, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if use_item_start.is_none() && starts_use_item(trimmed) {
+            use_item_start = Some(index + 1);
+        }
+        if use_item_start.is_none() {
+            continue;
+        }
+
+        use_item.push_str(line);
+        use_item.push('\n');
+        if trimmed.ends_with(';') {
+            if wildcard_import_item(&use_item) {
+                let start = use_item_start.expect("use item start is set while collecting");
+                violations.push(format!("{}:{}: {}", relative, start, use_item.trim()));
             }
+            use_item.clear();
+            use_item_start = None;
         }
     }
 }
 
-fn wildcard_import_line(line: &str) -> bool {
-    line.contains("use ") && line.contains("::*")
+fn starts_use_item(line: &str) -> bool {
+    line.starts_with("use ")
+        || line.starts_with("pub use ")
+        || line.starts_with("pub(crate) use ")
+        || line.starts_with("pub(super) use ")
+}
+
+fn wildcard_import_item(item: &str) -> bool {
+    syn::parse_str::<syn::ItemUse>(item)
+        .map(|use_item| use_tree_contains_glob(&use_item.tree))
+        .unwrap_or_else(|_| item.contains("::*"))
+}
+
+fn use_tree_contains_glob(tree: &syn::UseTree) -> bool {
+    match tree {
+        syn::UseTree::Glob(_) => true,
+        syn::UseTree::Group(group) => group.items.iter().any(use_tree_contains_glob),
+        syn::UseTree::Path(path) => use_tree_contains_glob(path.tree.as_ref()),
+        syn::UseTree::Name(_) | syn::UseTree::Rename(_) => false,
+    }
+}
+
+#[test]
+fn wildcard_import_detection_rejects_multiline_group_members() {
+    assert!(wildcard_import_item("use crate::{\n    proof::*,\n};"));
 }
 
 #[test]
@@ -1092,6 +1235,49 @@ fn readable_split_surfaces_keep_types_before_functions() {
         violations.is_empty(),
         "readable split surfaces must declare structs/enums/type aliases before behavior: {violations:?}"
     );
+}
+
+#[test]
+fn cli_test_command_sources_do_not_use_expect() {
+    let mut violations = Vec::new();
+    collect_expect_calls(
+        &repo_path("bin/kobo-cli/src/commands/test"),
+        &mut violations,
+    );
+    violations.sort();
+
+    assert!(
+        violations.is_empty(),
+        "shipped CLI test command code must not use `.expect()`: {violations:?}"
+    );
+}
+
+fn collect_expect_calls(root: &Path, violations: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_expect_calls(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = strip_comments_and_strings(&read_required(&path));
+        for (index, line) in source.lines().enumerate() {
+            if line.contains(".expect(") {
+                violations.push(format!("{}:{}", relative, index + 1));
+            }
+        }
+    }
 }
 
 fn readable_split_roots() -> [&'static str; 6] {

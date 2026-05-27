@@ -1625,7 +1625,7 @@ impl<'a> ScenarioLowerer<'a> {
                     kind: ScenarioCoreTerminatorKind::OpaqueBoundary,
                     boundary: Some(terminator_boundary),
                     policy: Some(terminator_policy),
-                    edges: vec!["opaque_boundary_resume".to_owned()],
+                    edges: vec!["opaque_boundary".to_owned()],
                 },
             });
         }

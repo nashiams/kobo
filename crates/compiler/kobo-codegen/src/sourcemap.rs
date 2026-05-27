@@ -267,9 +267,8 @@ fn generated_anchor_detail(operation: &ScenarioOpKind) -> Option<String> {
         ),
         ScenarioOpKind::CoreTerminator {
             kind: ScenarioCoreTerminatorKind::OpaqueBoundary,
-            boundary,
             ..
-        } => boundary.clone(),
+        } => None,
         _ => None,
     }
 }
@@ -453,6 +452,13 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
             GeneratedProofEventRole::OpaqueBoundary,
             call.span(),
         );
+        self.push_anchor(
+            "opaque_boundary",
+            None,
+            None,
+            GeneratedProofEventRole::OpaqueBoundary,
+            call.span(),
+        );
         visit::visit_expr_method_call(self, call);
     }
 
@@ -487,6 +493,13 @@ impl<'ast> Visit<'ast> for GeneratedEventCollector {
             "opaque_boundary",
             None,
             call_detail,
+            GeneratedProofEventRole::OpaqueBoundary,
+            call.span(),
+        );
+        self.push_anchor(
+            "opaque_boundary",
+            None,
+            None,
             GeneratedProofEventRole::OpaqueBoundary,
             call.span(),
         );

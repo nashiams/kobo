@@ -173,7 +173,7 @@ pub fn emit_proof_certificate(
     let (template_hashes, template_schemas) =
         template_evidence(&source_path, input.source, input.program)?;
     let (boundary_assumption_hashes, boundary_assumptions, opaque_edge_ledger) =
-        boundary_evidence(&source_path, input.source, input.program)?;
+        boundary_evidence(&source_path, input.source, input.program, &cfg_edges)?;
     let (entry_env, exit_env, obligation_events) = obligation_evidence(
         &source_path,
         input.source,
@@ -1540,6 +1540,7 @@ fn boundary_evidence(
     source_path: &str,
     source: &str,
     program: &ScenarioProgram,
+    cfg_edges: &[CoreCfgEdge],
 ) -> Result<
     (
         Vec<HashEvidence>,
@@ -1575,8 +1576,10 @@ fn boundary_evidence(
             hash: hash.clone(),
         });
         if matches!(policy, kobo_ir::ScenarioBoundaryPolicy::Opaque) {
+            let edge_id = opaque_cfg_edge_id_for_span(cfg_edges, &assumption.source_span)
+                .unwrap_or_else(|| id.clone());
             opaque_ledger.push(OpaqueLedgerEntry {
-                edge_id: id.clone(),
+                edge_id,
                 boundary: crate_name.clone(),
                 evidence_hash: hash,
             });
@@ -1584,6 +1587,20 @@ fn boundary_evidence(
         assumptions.push(assumption);
     }
     Ok((hashes, assumptions, opaque_ledger))
+}
+
+fn opaque_cfg_edge_id_for_span(
+    cfg_edges: &[CoreCfgEdge],
+    source_span: &SourceSpan,
+) -> Option<String> {
+    cfg_edges
+        .iter()
+        .find(|edge| {
+            edge.kind == "opaque_boundary"
+                && edge.to == "opaque_boundary"
+                && edge.source_span == *source_span
+        })
+        .map(|edge| edge.id.clone())
 }
 
 pub fn adapter_evidence(

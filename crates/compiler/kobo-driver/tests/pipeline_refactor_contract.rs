@@ -637,6 +637,46 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             350,
             "rewrite local binding lowering",
         ),
+        (
+            "crates/compiler/kobo-lsp/src/lib.rs",
+            50,
+            "LSP facade exports",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/protocol.rs",
+            250,
+            "LSP protocol payload assembly",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/analysis.rs",
+            100,
+            "LSP document analysis orchestration",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/diagnostics.rs",
+            175,
+            "LSP compiler diagnostics",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/navigation.rs",
+            125,
+            "LSP generated Rust navigation",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/document_links.rs",
+            50,
+            "LSP document links",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/ranges.rs",
+            50,
+            "LSP range conversion",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/actions.rs",
+            275,
+            "LSP code actions",
+        ),
     ] {
         assert_file_line_ratchet(&repo_path(relative), limit, domain);
     }

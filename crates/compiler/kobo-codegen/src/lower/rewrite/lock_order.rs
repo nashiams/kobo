@@ -110,7 +110,10 @@ fn extract_lock_binding_name(line: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        detect_lock_sites, extract_lock_binding_name, lock_order_comment, LockKind, LockSite,
+    };
+    use kobo_ir::KoboSpan;
 
     #[test]
     fn detect_read_and_write_locks() {

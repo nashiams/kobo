@@ -1,5 +1,10 @@
-use super::*;
-
+use super::{
+    expr_path_ident, local_suppression_reason, pat_ident, path_ends_with, path_ends_with_segments,
+    path_last_ident, path_to_string, BindingEnv, Expr, ExprCall, ExprMethodCall, ExprStruct,
+    HashMap, InferredLifecycleCreation, KoboSpan, Local, MethodShape, MethodShapeMap, Pat, PatType,
+    Path, ProtocolTemplateRegistry, ScenarioLifecycleTemplate, ScenarioLowerer, ScenarioOp,
+    ScenarioOpKind, UnsupportedContainerShape,
+};
 impl<'a> ScenarioLowerer<'a> {
     pub(super) fn execute_local(&mut self, local: &'a Local, env: &mut BindingEnv) {
         let Some(init) = &local.init else {

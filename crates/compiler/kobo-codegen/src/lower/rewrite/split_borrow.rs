@@ -227,7 +227,7 @@ fn extract_self_field_name(field: &syn::ExprField) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::generate_split_borrow;
     use kobo_analysis::split_borrow::detect_split_borrow_sites;
 
     fn apply_split_borrow(code: &str) -> String {

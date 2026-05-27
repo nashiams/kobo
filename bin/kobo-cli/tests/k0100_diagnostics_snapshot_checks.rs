@@ -1,15 +1,15 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput,
     TestProject,
 };
 use serde_json::{json, Value};
 
-const V13_TIMEOUT: Duration = Duration::from_secs(60);
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -20,7 +20,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
-    run_kobo_with_timeout(args, cwd, V13_TIMEOUT)
+    run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
 fn json_diagnostic(output: &CliOutput) -> Value {

@@ -1,8 +1,8 @@
-mod cli_common;
-mod proof_common;
+mod cli_test_support;
+mod proof_test_support;
 
 use kobo_proof::{certificate_material_hash, trace_material_hash, ProofCertificate};
-use proof_common::{
+use proof_test_support::{
     assert_failure, assert_success, emit_artifact, path_arg, queue_loop_source, read_json,
     run_kobo, s, write_json, TestProject,
 };

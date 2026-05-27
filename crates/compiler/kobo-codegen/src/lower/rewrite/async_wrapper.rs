@@ -70,7 +70,8 @@ pub(crate) fn async_write_access(kind: AsyncWrapperKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{async_read_access, async_wrapper_kind, async_write_access, AsyncWrapperKind};
+    use kobo_ir::OwnershipTier;
 
     #[test]
     fn arc_shared_in_async_is_read_only() {

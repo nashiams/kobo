@@ -1,16 +1,18 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cli_common::{assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject};
+use cli_test_support::{
+    assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject,
+};
 use serde_json::Value;
 
-const V14_TIMEOUT: Duration = Duration::from_secs(60);
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
-    run_kobo_with_timeout(args, cwd, V14_TIMEOUT)
+    run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
 fn proof_source(scenario_name: &str, action: &str) -> String {

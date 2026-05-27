@@ -44,15 +44,27 @@ pub use boundaries::{adapter_adjusted_replay_grade, adapter_evidence, RuntimeBou
 pub use candidates::candidate_admission_evidence;
 pub use emission::{emit_proof_certificate, ProofEmissionError, ProofEmissionInput};
 
-use async_model::*;
-use boundaries::*;
-use bounded::*;
-use candidates::*;
-use core_cfg::*;
-use loop_invariants::*;
-use obligations::*;
-use source_spans::*;
-use templates::*;
-use traces::*;
+use async_model::async_model_evidence;
+use boundaries::{boundary_evidence, runtime_boundary_adapter_evidence, sort_adapter_evidence};
+use bounded::{attr_name_value_fields, bounded_evidence};
+use candidates::syn_path_ends_with;
+use core_cfg::{
+    block_index, core_cfg_edges, core_cfg_nodes, core_loop_exit_facts, core_loop_facts,
+    loop_labels_by_id, parse_core_edge, LoopRegionIndex,
+};
+use loop_invariants::{loop_invariant_evidence, user_loop_invariant_directive};
+use obligations::{
+    coverage_loss, env_states, env_states_for_bindings, function_obligation_replay,
+    function_summaries, obligation_evidence,
+};
+use source_spans::{
+    line_snippet, one_based_line_for_offset, source_span_for_binding, source_span_from_kobo,
+    source_span_from_range,
+};
+use templates::{
+    invariant_confidence, invariant_template_source, lifecycle_template_version,
+    template_by_binding, template_evidence, template_hash, type_by_binding,
+};
+use traces::{core_trace_evidence, generated_trace_evidence, trace_hashes};
 
 pub use kobo_proof::{ArtifactKind, ReplayGrade};

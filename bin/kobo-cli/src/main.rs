@@ -51,7 +51,7 @@ pub(crate) enum KoboCommand {
         color: ColorArg,
         #[arg(
             long,
-            help = "Recover from parser errors and continue trustworthy phases"
+            help = "Recover from parser errors and continue trustworthy compiler stages"
         )]
         recover_parse: bool,
         #[arg(long, help = "Treat external boundaries as future replay-critical")]
@@ -249,7 +249,7 @@ pub(crate) enum KoboCommand {
     },
     /// Seed Kobo ecosystem metadata from Cargo dependencies.
     MigrateCargoDeps,
-    /// Run the pipeline through the KIR phase only and print KIR nodes.
+    /// Run the pipeline through KIR construction only and print KIR nodes.
     Dump {
         #[arg(value_name = "FILE")]
         file: PathBuf,

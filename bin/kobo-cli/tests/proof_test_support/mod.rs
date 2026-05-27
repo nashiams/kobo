@@ -6,15 +6,15 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::cli_common::run_kobo_with_timeout;
-pub use crate::cli_common::{
+use crate::cli_test_support::run_kobo_with_timeout;
+pub use crate::cli_test_support::{
     assert_failure, assert_success, first_json, path_arg, s, CliOutput, TestProject,
 };
 
-const V15_TIMEOUT: Duration = Duration::from_secs(60);
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
-    run_kobo_with_timeout(args, cwd, V15_TIMEOUT)
+    run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
 pub fn queue_loop_source(

@@ -1,6 +1,6 @@
-mod cli_common;
+mod cli_test_support;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_not_contains, assert_success, json_lines, path_arg, run_kobo, s,
     TestProject,
 };

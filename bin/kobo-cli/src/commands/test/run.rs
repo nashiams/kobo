@@ -1,4 +1,12 @@
-use super::*;
+use super::json_schema::scheduler_json;
+use super::model_compare::apply_model_vs_implementation;
+use super::{
+    apply_trace_checks, backend_debt, emit_failure, formal_core, parse_engine, print_events,
+    reserved_backend_fit_json, run_fuzz_portfolio, run_seed_portfolio, serde_json, sim_model,
+    validate_run_boundary_declarations, write_run_witness, BackendExpertOptions, DebtControlSource,
+    EngineMode, ErrorFormat, FullDepthRun, FuzzPlan, GuaranteePolicy, GuaranteeProfile, Path,
+    PathBuf, ProfileRoles, ScenarioDocument, ScenarioProgram,
+};
 use crate::commands::session;
 
 struct TestCommandRequest<'a> {

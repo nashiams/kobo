@@ -1,4 +1,4 @@
-use super::*;
+use super::{KoboSpan, SourceSpan};
 
 pub(super) fn source_span_from_kobo(source_path: &str, source: &str, span: KoboSpan) -> SourceSpan {
     source_span_from_range(source_path, source, span.start as usize, span.end as usize)

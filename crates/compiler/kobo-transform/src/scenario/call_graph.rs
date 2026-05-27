@@ -1,5 +1,8 @@
-use super::*;
-
+use super::{
+    path_last_ident, visit, DirectCallVisitor, Expr, ExprCall, FunctionMap, FunctionScc, HashMap,
+    HashSet, ScenarioCallGraph, ScenarioCallGraphScc, TarjanState,
+};
+use syn::visit::Visit;
 impl ScenarioCallGraph {
     pub(super) fn build(functions: &FunctionMap<'_>) -> Self {
         let edges = collect_call_graph_edges(functions);

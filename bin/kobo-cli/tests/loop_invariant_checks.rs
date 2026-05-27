@@ -1,8 +1,8 @@
-mod cli_common;
-mod proof_common;
+mod cli_test_support;
+mod proof_test_support;
 
 use kobo_proof::{certificate_material_hash, ProofCertificate};
-use proof_common::{
+use proof_test_support::{
     assert_failure, assert_success, branch_leak_loop_source, emit_artifact, path_arg,
     queue_loop_source, read_json, run_kobo, s, TestProject,
 };
@@ -886,7 +886,7 @@ fn missing_binding_template_evidence_is_rejected_after_rehash() {
     certificate.certificate_material_hash.clear();
     certificate.certificate_material_hash =
         certificate_material_hash(&certificate).expect("certificate hash should compute");
-    proof_common::write_json(
+    proof_test_support::write_json(
         &artifact_path,
         &serde_json::to_value(&certificate).expect("certificate should serialize"),
     );
@@ -1064,7 +1064,7 @@ fn tampered_invariant_template_is_rejected() {
     );
     let mut artifact = read_json(&artifact_path);
     artifact["loop_invariants"][0]["template"]["version"] = "stale".into();
-    proof_common::write_json(&artifact_path, &artifact);
+    proof_test_support::write_json(&artifact_path, &artifact);
 
     let output = run_kobo(
         &[s("proof"), s("verify"), path_arg(&artifact_path)],
@@ -1157,7 +1157,7 @@ fn tampered_invariant_back_edge_states_are_replayed_from_core() {
     certificate.certificate_material_hash.clear();
     certificate.certificate_material_hash =
         certificate_material_hash(&certificate).expect("certificate hash should compute");
-    proof_common::write_json(
+    proof_test_support::write_json(
         &artifact_path,
         &serde_json::to_value(&certificate).expect("certificate should serialize"),
     );
@@ -1197,7 +1197,7 @@ fn tampered_user_invariant_entry_states_are_replayed_from_core() {
     certificate.certificate_material_hash.clear();
     certificate.certificate_material_hash =
         certificate_material_hash(&certificate).expect("certificate hash should compute");
-    proof_common::write_json(
+    proof_test_support::write_json(
         &artifact_path,
         &serde_json::to_value(&certificate).expect("certificate should serialize"),
     );
@@ -1236,7 +1236,7 @@ fn tampered_user_invariant_fact_is_rejected_after_rehash() {
     certificate.certificate_material_hash.clear();
     certificate.certificate_material_hash =
         certificate_material_hash(&certificate).expect("certificate hash should compute");
-    proof_common::write_json(
+    proof_test_support::write_json(
         &artifact_path,
         &serde_json::to_value(&certificate).expect("certificate should serialize"),
     );
@@ -1276,7 +1276,7 @@ fn stale_user_invariant_template_fact_is_rejected_after_rehash() {
     certificate.certificate_material_hash.clear();
     certificate.certificate_material_hash =
         certificate_material_hash(&certificate).expect("certificate hash should compute");
-    proof_common::write_json(
+    proof_test_support::write_json(
         &artifact_path,
         &serde_json::to_value(&certificate).expect("certificate should serialize"),
     );

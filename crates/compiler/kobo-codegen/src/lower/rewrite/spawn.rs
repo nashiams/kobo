@@ -71,7 +71,7 @@ pub(crate) fn lower_spawn_macro_with_strategy(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{is_spawn_block_macro, lower_spawn_macro};
     use quote::ToTokens;
 
     fn parse_macro(code: &str) -> syn::Macro {

@@ -1,4 +1,4 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::io::Read;
 use std::io::Write;
@@ -7,16 +7,16 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_failure, assert_not_contains, assert_success, path_arg,
     run_kobo_with_timeout, s, CliOutput, TestProject,
 };
 use serde_json::Value;
 
-const V13_TIMEOUT: Duration = Duration::from_secs(90);
+const TEST_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
-    run_kobo_with_timeout(args, cwd, V13_TIMEOUT)
+    run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
 fn clean_exit_source() -> &'static str {

@@ -1,4 +1,4 @@
-﻿use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use kobo_ir::{
     KoboSpan, MustCallObligation, ProtocolTemplateRegistry, ScenarioBoundary,
@@ -11,7 +11,7 @@ use kobo_parser::KoboFile;
 use quote::ToTokens;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::visit::{self, Visit};
+use syn::visit::{self};
 use syn::{
     Block, Expr, ExprAsync, ExprCall, ExprIf, ExprLit, ExprMatch, ExprMethodCall, ExprPath,
     ExprStruct, ExprTry, File, Item, ItemFn, ItemUse, Lit, Local, Macro, Meta, MetaNameValue, Pat,
@@ -35,12 +35,21 @@ mod tests;
 
 pub use lowerer::build_scenario_programs;
 
-use boundary_policy::*;
-use collect::*;
-use control_flow::*;
-use imports::*;
-use lifecycle::*;
-use syntax::*;
+use boundary_policy::collect_boundary_policies;
+use collect::{collect_functions, collect_method_shapes, must_call_type_map};
+use control_flow::loop_label;
+use imports::{collect_use_crate_aliases, collect_use_tree_aliases};
+use lifecycle::{
+    drop_discharge_action, handler_reply_actions, is_tokio_spawn, peel_paren_expr,
+    terminal_action_name,
+};
+use syntax::{
+    boundaries_from_operations, expr_path_ident, fn_arg_ident, function_returns_bool_literal,
+    is_handler_obligation_argument, local_suppression_reason, matches_bool_pat, modeled_boundary,
+    must_call_actions, pat_ident, path_ends_with, path_ends_with_segments, path_first_ident,
+    path_last_ident, path_starts_with, path_to_string, receiver_has_ward_member, receiver_ident,
+    select_branch_count,
+};
 
 type BindingMap = HashMap<String, String>;
 type BoolMap = HashMap<String, bool>;

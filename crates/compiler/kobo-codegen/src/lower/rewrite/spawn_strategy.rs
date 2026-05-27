@@ -92,7 +92,8 @@ pub(crate) fn needs_local_set(spawn_blocks: &[SpawnCaptures]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{needs_local_set, select_spawn_strategy, spawn_call_prefix, SpawnStrategy};
+    use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 
     #[test]
     fn send_tiers_use_tokio_spawn() {

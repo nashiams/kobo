@@ -1,8 +1,8 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::path::{Path, PathBuf};
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_failure, assert_not_contains, path_arg, run_kobo, s, TestProject,
 };
 

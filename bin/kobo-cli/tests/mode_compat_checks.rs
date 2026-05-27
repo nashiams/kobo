@@ -1,8 +1,8 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::process::Command;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_not_contains, assert_success, path_arg, run_kobo, s, TestProject,
 };
 

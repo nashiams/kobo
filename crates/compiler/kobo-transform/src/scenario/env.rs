@@ -1,5 +1,6 @@
-use super::*;
-
+use super::{
+    collect_use_tree_aliases, BindingEnv, ExternalBoundaryValue, HashSet, ImportMap, ItemUse,
+};
 impl BindingEnv {
     pub(super) fn with_imports(imports: ImportMap) -> Self {
         Self {

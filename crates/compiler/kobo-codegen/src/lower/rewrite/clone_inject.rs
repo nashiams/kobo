@@ -74,7 +74,8 @@ pub(crate) fn is_arc_tier(tier: OwnershipTier) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{capture_action, clone_var_name, is_arc_tier, CaptureAction, CapturedBinding};
+    use kobo_ir::OwnershipTier;
 
     fn binding(
         name: &str,

@@ -1,14 +1,14 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::path::Path;
 use std::time::Duration;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_failure, assert_success, run_kobo_with_timeout, s, CliOutput,
     TestProject,
 };
 
-const V11_TIMEOUT: Duration = Duration::from_secs(60);
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 const ACME_DECLARATION: &str = "schema_version = 0\n\n[crate]\nname = \"acme_http\"\nversion = \"0.4.1\"\nsource = \"registry-package\"\n\n[[type]]\npath = \"acme_http::LiveClient\"\nkind = \"struct\"\n\n[[function]]\npath = \"acme_http::live_get\"\nreturns = \"acme_http::LiveClient\"\nsimulation = \"typed\"\ndeterminism = \"deterministic\"\n";
 const ACME_DECLARATION_HASH: &str = "8f6a0910ae72032c";
 const ACME_TYPES_PACKAGE: &str = "schema_version = 1\npackage = \"kobo-types-acme-http\"\nversion = \"0.4.1\"\nkind = \"types\"\ncompatible_crate = \">=0.4.0,<0.5.0\"\nsigned_by = \"kobo-local\"\ndeclaration_path = \"../declarations/acme_http.kobo.d.toml\"\ndeclaration_hash = \"8f6a0910ae72032c\"\n";
@@ -18,7 +18,7 @@ const ACME_ADAPTER_SHA256: &str =
     "43784daf84c26910bfb738e415276ff22e9b334f4311852f37479bc6958b7eb0";
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
-    run_kobo_with_timeout(args, cwd, V11_TIMEOUT)
+    run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
 #[test]

@@ -1,10 +1,10 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::path::{Path, PathBuf};
 
 use kobo_errors::{resolve_color_mode_from_parts, ColorMode};
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_failure, assert_not_contains, assert_success, path_arg, run_kobo,
     run_kobo_with_env, s, TestProject,
 };

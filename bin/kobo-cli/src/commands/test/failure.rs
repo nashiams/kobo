@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    diagnostic_to_json_value, serde_json, ColorMode, DiagDecision, DiagLabel,
+    DiagnosticOutputFormat, DiagnosticRenderer, ErrorFormat, FileSetBuilder, KDiagnostic,
+    KErrorCode, KoboSpan, Path, ScenarioFailure, Severity,
+};
 use crate::commands::session;
 
 pub(super) fn emit_failure(

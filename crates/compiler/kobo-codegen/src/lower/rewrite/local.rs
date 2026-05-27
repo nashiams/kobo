@@ -298,7 +298,9 @@ fn numeric_rank(name: &str) -> Option<(&'static str, u8)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::effective_local_tier;
+    use kobo_ir::OwnershipTier;
+    use syn::parse_quote;
 
     fn parse_local(stmt: syn::Stmt) -> syn::Local {
         match stmt {

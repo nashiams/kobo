@@ -1,5 +1,7 @@
-use super::*;
-
+use super::{
+    must_call_actions, path_ends_with, path_last_ident, File, HashMap, Item, ItemFn, MethodShape,
+    MethodShapeMap, MustCallObligation, Punctuated,
+};
 pub(super) fn collect_functions(file: &File) -> HashMap<String, &ItemFn> {
     file.items
         .iter()

@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    lifecycle_template_version, line_snippet, one_based_line_for_offset, source_span_from_kobo,
+    template_by_binding, trace_material_hash, BTreeMap, BTreeSet, CoreTraceEvent,
+    GeneratedTraceEvent, HashEvidence, KoboSourceMap, KoboSpan, LoweringTraceEvent,
+    ObligationEvent, ObligationEventKind, ScenarioOpKind, ScenarioProgram, SourceMapAnchorEvidence,
+    SourceMapAnchorStatus, SourceSpan, TraceEventKind,
+};
 
 pub(super) fn core_trace_evidence(
     program: &ScenarioProgram,

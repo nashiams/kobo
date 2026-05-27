@@ -1,5 +1,4 @@
-use super::*;
-
+use super::{File, HashMap, ImportMap, Item, UseTree};
 pub(super) fn collect_use_crate_aliases(file: &File) -> ImportMap {
     let mut imports = HashMap::new();
     for item in &file.items {

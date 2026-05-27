@@ -1,8 +1,8 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::fs;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_failure, assert_json_has_path, assert_not_contains, assert_success,
     first_json, one_based_line_of, path_arg, run_kobo, s, unique_symbol, TestProject,
 };

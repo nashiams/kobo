@@ -1,5 +1,9 @@
-use super::*;
-
+use super::{
+    expr_path_ident, path_ends_with, path_first_ident, receiver_ident, BindingEnv,
+    BoundaryPolicyFact, Expr, ExprCall, ExprMethodCall, ExprPath, ExternalBoundaryValue, Path,
+    Punctuated, ScenarioBoundaryCallArgument, ScenarioBoundaryPolicy, ScenarioCoreTerminatorKind,
+    ScenarioExternalCallShape, ScenarioLowerer, ScenarioOp, ScenarioOpKind, Spanned, ToTokens,
+};
 impl<'a> ScenarioLowerer<'a> {
     pub(super) fn record_external_boundary_expr(
         &mut self,

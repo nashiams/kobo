@@ -1,9 +1,9 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::fs;
 use std::time::Duration;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_failure, assert_success, path_arg, run_kobo, run_kobo_with_timeout, s,
     TestProject,
 };

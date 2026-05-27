@@ -18,7 +18,10 @@ use super::replay_scope::{
     shrink_json,
 };
 use super::trace_checks::trace_checks_json;
-use super::*;
+use super::{
+    formal_core, serde_json, sim_model, witness_evidence, BackendExpertOptions, Context,
+    FullDepthRun, Path, PathBuf, ScenarioDocument, ScenarioProgram,
+};
 
 pub(super) fn print_events(
     file: &Path,

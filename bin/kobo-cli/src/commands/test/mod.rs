@@ -16,6 +16,7 @@ use proptest::strategy::ValueTree;
 use proptest::test_runner::{
     Config as ProptestConfig, RngAlgorithm, TestRng, TestRunner as ProptestRunner,
 };
+use serde_json;
 
 use crate::ErrorFormat;
 
@@ -44,8 +45,6 @@ pub(super) use backend::BackendExpertOptions;
 use backend::{parse_engine, reserved_backend_fit_json, ProfileRoles};
 use failure::emit_failure;
 use fuzz::{run_fuzz_portfolio, FuzzPlan};
-use json_schema::scheduler_json;
-use model_compare::apply_model_vs_implementation;
 use replay_scope::validate_run_boundary_declarations;
 pub(super) use run::cmd_test;
 use runtime_boundary::runtime_boundary_evidence;

@@ -1,22 +1,22 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cli_common::{
+use cli_test_support::{
     assert_failure, assert_success, first_json, path_arg, run_kobo_with_timeout, s, CliOutput,
     TestProject,
 };
 use serde_json::Value;
 
-const V14_TIMEOUT: Duration = Duration::from_secs(60);
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 const ADAPTER_FIXTURE: &str = "schema_version = 1\npackage = \"kobo-adapter-fixture\"\nversion = \"1.0.0\"\nkind = \"adapter\"\ncompatible_crate = \">=0.0.0,<999.0.0\"\nsigned_by = \"kobo-test\"\nadapter_runtime = \"kobo_adapter::Adapter\"\ncapture = \"boundary-io\"\n";
 const ADAPTER_FIXTURE_SHA256: &str =
     "8f2cd8da1c4909d26f5324c75ae00eaea2e5e691a5f99b0b38f0850417dfdf04";
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
-    run_kobo_with_timeout(args, cwd, V14_TIMEOUT)
+    run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
 #[derive(Clone, Copy)]

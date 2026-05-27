@@ -1,8 +1,8 @@
-mod cli_common;
-mod proof_common;
+mod cli_test_support;
+mod proof_test_support;
 
 use kobo_proof::{certificate_material_hash, ProofCertificate, TranslationValidationStatus};
-use proof_common::{
+use proof_test_support::{
     assert_success, bounded_source, emit_artifact, first_json, path_arg, queue_loop_source,
     read_json, run_kobo, s, TestProject,
 };

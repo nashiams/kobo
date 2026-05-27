@@ -1,5 +1,4 @@
-use super::*;
-
+use super::FullDepthRun;
 pub(super) fn runtime_boundary_evidence(
     run: &FullDepthRun,
 ) -> Vec<kobo_driver::proof::RuntimeBoundaryEvidence> {

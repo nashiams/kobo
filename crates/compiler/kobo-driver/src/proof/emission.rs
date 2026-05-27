@@ -1,5 +1,19 @@
-use super::*;
-
+use super::{
+    adapter_adjusted_replay_grade, adapter_evidence, async_model_evidence, boundary_evidence,
+    bounded_evidence, candidate_admission_evidence, certificate_material_hash, core_cfg_edges,
+    core_cfg_nodes, core_loop_exit_facts, core_loop_facts, core_material_hash, core_trace_evidence,
+    coverage_loss, derive_translation_validation, function_summaries, generated_trace_evidence,
+    loop_invariant_evidence, loop_labels_by_id, lower_core_program, obligation_evidence,
+    runtime_boundary_adapter_evidence, sort_adapter_evidence, stable_hash, template_evidence,
+    trace_hashes, user_loop_invariant_directive, AdapterEvidence, ArtifactKind, AsyncModelEvidence,
+    BoundaryAssumption, BoundedProofEvidence, CandidateAdmissionEvidence, CoreCfgEdge, CoreCfgNode,
+    CoreEvidence, CoreLoopBackEdgeFact, CoreLoopExitFact, CoreTraceEvent, CoverageLoss,
+    EcosystemAdapterPolicy, FunctionSummary, GeneratedTraceEvent, HashEvidence, KoboSourceMap,
+    LoopInvariantEvidence, LoopRegionIndex, ObligationEvent, ObligationState, OpaqueLedgerEntry,
+    Path, ProofCertificate, ReplayGrade, RuntimeBoundaryEvidence, ScenarioProgram, SourceEvidence,
+    TemplateSchemaEvidence, TranslationValidationInput, PROOF_CERTIFICATE_SCHEMA_VERSION,
+    PROOF_CLAIM_SCOPE, PROOF_SEMANTIC_SCHEMA, PROOF_TARGET_VERSION,
+};
 pub struct ProofEmissionInput<'a> {
     pub source_path: &'a Path,
     pub source: &'a str,
@@ -214,15 +228,14 @@ fn build_loop_invariants(
     obligation_events: &[ObligationEvent],
     template_hashes: &[HashEvidence],
 ) -> Vec<LoopInvariantEvidence> {
-    let user_loop_invariant =
-        user_loop_invariant_directive(source_path, input.source, input.program);
+    let user_invariant = user_loop_invariant_directive(source_path, input.source, input.program);
     loop_invariant_evidence(
         input.program,
         &core.core_program.functions,
         &core.loop_facts,
         obligation_events,
         template_hashes,
-        user_loop_invariant.as_ref(),
+        user_invariant.as_ref(),
     )
 }
 

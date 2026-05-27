@@ -491,9 +491,14 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "proof boundary and adapter evidence",
         ),
         (
-            "crates/compiler/kobo-driver/src/proof/candidates.rs",
-            650,
-            "proof candidate admission scan",
+            "crates/compiler/kobo-driver/src/proof/candidates/mod.rs",
+            325,
+            "proof candidate admission orchestration",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/candidates/inspection.rs",
+            375,
+            "proof candidate source inspection",
         ),
         (
             "crates/compiler/kobo-driver/src/proof/obligations.rs",
@@ -501,9 +506,14 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
             "proof obligation replay evidence",
         ),
         (
-            "crates/compiler/kobo-driver/src/proof/async_model.rs",
-            675,
+            "crates/compiler/kobo-driver/src/proof/async_model/mod.rs",
+            225,
             "proof async model evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/async_model/live_locals.rs",
+            500,
+            "proof async live-local extraction",
         ),
         (
             "crates/compiler/kobo-driver/src/proof/source_spans.rs",
@@ -897,8 +907,6 @@ fn all_production_rust_files_have_readability_budgets() {
         ("crates/compiler/kobo-driver/src/config.rs", 1388),
         ("crates/compiler/kobo-driver/src/multi_file.rs", 843),
         ("crates/compiler/kobo-driver/src/pipeline/analysis.rs", 1043),
-        ("crates/compiler/kobo-driver/src/proof/async_model.rs", 672),
-        ("crates/compiler/kobo-driver/src/proof/candidates.rs", 636),
         ("crates/compiler/kobo-driver/src/rustc/remap.rs", 521),
         ("crates/compiler/kobo-errors/src/explain.rs", 749),
         ("crates/compiler/kobo-ir/src/core.rs", 715),
@@ -957,7 +965,16 @@ fn all_production_rust_files_have_readability_budgets() {
 #[test]
 fn no_new_vague_module_names_are_added() {
     let allowed = ["crates/compiler/kobo-transform/src/builder/helpers.rs"];
-    let vague_names = ["util.rs", "helpers.rs", "misc.rs", "common.rs"];
+    let vague_names = [
+        "util",
+        "util.rs",
+        "helpers",
+        "helpers.rs",
+        "misc",
+        "misc.rs",
+        "common",
+        "common.rs",
+    ];
     let mut unexpected = Vec::new();
     for source_root in ["bin", "crates", "editors", "proof", "tests"] {
         collect_vague_module_paths(
@@ -998,6 +1015,16 @@ fn collect_vague_module_paths(
             {
                 continue;
             }
+            if vague_names.contains(&file_name) {
+                let relative = path
+                    .strip_prefix(repo_root())
+                    .expect("scanned path should be below repo root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !allowed.contains(&relative.as_str()) {
+                    unexpected.push(relative);
+                }
+            }
             collect_vague_module_paths(&path, vague_names, allowed, unexpected);
             continue;
         }
@@ -1015,6 +1042,61 @@ fn collect_vague_module_paths(
             unexpected.push(relative);
         }
     }
+}
+
+#[test]
+fn readable_split_surfaces_do_not_use_wildcard_imports() {
+    let roots = [
+        "bin/kobo-cli/src/commands/test",
+        "crates/compiler/kobo-codegen/src/lower/rewrite",
+        "crates/compiler/kobo-codegen/src/sourcemap",
+        "crates/compiler/kobo-driver/src/proof",
+        "crates/compiler/kobo-sim-core/src/harness",
+        "crates/compiler/kobo-transform/src/scenario",
+    ];
+    let mut violations = Vec::new();
+    for root in roots {
+        collect_wildcard_imports(&repo_path(root), &mut violations);
+    }
+    violations.sort();
+
+    assert!(
+        violations.is_empty(),
+        "readable split surfaces must name their dependencies explicitly: {violations:?}"
+    );
+}
+
+fn collect_wildcard_imports(root: &Path, violations: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_wildcard_imports(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = read_required(&path);
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed == "use super::*;" || wildcard_import_line(trimmed) {
+                violations.push(format!("{}:{}: {}", relative, index + 1, trimmed));
+            }
+        }
+    }
+}
+
+fn wildcard_import_line(line: &str) -> bool {
+    line.starts_with("use ") && line.ends_with("::*;") && !line.starts_with("use syn::visit::")
 }
 
 #[test]

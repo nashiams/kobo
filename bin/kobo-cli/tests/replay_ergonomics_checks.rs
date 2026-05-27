@@ -1,8 +1,8 @@
-mod cli_common;
+mod cli_test_support;
 
 use std::fs;
 
-use cli_common::{
+use cli_test_support::{
     assert_contains, assert_success, path_arg, run_kobo, s, unique_symbol, TestProject,
 };
 use serde_json::Value;

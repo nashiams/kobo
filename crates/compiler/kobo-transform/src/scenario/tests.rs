@@ -1,4 +1,8 @@
+use kobo_ir::{FileId, NodeIdGen, ScenarioOpKind};
 use kobo_parser::parse_file;
+
+use super::lifecycle::{queue_delivery_actions, spawned_task_actions, transaction_actions};
+use super::{build_scenario_programs, handler_reply_actions};
 
 #[test]
 fn infers_normal_lifecycle_templates_from_scenario_ast() {

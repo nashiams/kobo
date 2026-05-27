@@ -17,22 +17,15 @@ pub(crate) mod split_borrow;
 mod statements;
 pub(super) mod syntax_support;
 pub(crate) mod tick;
-pub(super) use syntax_support as util;
 
 #[cfg(test)]
 mod tests;
 
 use kobo_parser::KoboFile;
-use quote::ToTokens;
-use syn::parse_quote;
-use syn::spanned::Spanned;
 
-use super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
-use super::borrow_scope::{has_later_alias_use, rewritable_method_call, simple_borrow_alias};
-use super::handler;
 use super::parallel;
 use super::plan::{AnnotationNote, LoweringPlan};
-use super::scope::{type_name_from_syn, ScopeStack};
+use super::scope::ScopeStack;
 use super::strict::StrictGuardCounter;
 use super::{LoweringAnchor, LoweringAnchorKind};
 use crate::error_policy::ErrorPolicyMarker;

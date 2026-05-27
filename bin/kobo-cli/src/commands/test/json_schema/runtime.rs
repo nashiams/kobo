@@ -1,4 +1,4 @@
-use super::*;
+use kobo_sim_core::FullDepthRun;
 
 pub(crate) fn service_runtime_json(
     evidence: &kobo_codegen::RuntimeEvidence,

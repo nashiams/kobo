@@ -1,7 +1,14 @@
+use syn::parse_quote;
+
+use super::super::binding::binding_for_pat;
+use super::super::borrow_scope::{
+    has_later_alias_use, rewritable_method_call, simple_borrow_alias,
+};
 use super::parallel_gate::ParallelSafetyGate;
 use super::receivers::{block_mutates_binding, iterator_source_ident};
 use super::spawn_captures::collect_spawn_captures;
-use super::*;
+use super::{clone_inject, parallel, spawn, syntax_support, AnnotationNote, Lowerer, ScopeStack};
+use crate::TaskLocalEvidence;
 
 impl<'a> Lowerer<'a> {
     pub(super) fn lower_block_statements(
@@ -282,7 +289,7 @@ impl<'a> Lowerer<'a> {
             Box::new(parse_quote!(#source_ident.borrow()))
         };
 
-        let replacement = util::build_borrow_scope_block_stmt(method_call, had_semi);
+        let replacement = syntax_support::build_borrow_scope_block_stmt(method_call, had_semi);
         block.stmts[index] = replacement;
         block.stmts.remove(index + 1);
         true

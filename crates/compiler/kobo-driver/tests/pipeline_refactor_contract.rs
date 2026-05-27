@@ -224,6 +224,49 @@ fn assert_file_line_ratchet(path: &Path, limit: usize, domain: &str) {
     );
 }
 
+fn relative_repo_path(path: &Path) -> String {
+    path.strip_prefix(repo_root())
+        .expect("scanned path should be below repo root")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn collect_production_rust_files(root: &Path, files: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if path.is_dir() {
+            if file_name.starts_with('.')
+                || file_name == "target"
+                || file_name.starts_with("target-")
+            {
+                continue;
+            }
+            collect_production_rust_files(&path, files);
+            continue;
+        }
+
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        if file_name == "tests.rs" || file_name.ends_with("_tests.rs") {
+            continue;
+        }
+
+        let relative = relative_repo_path(&path);
+        if relative.starts_with("bin/kobo-cli/src/") || relative.contains("/src/") {
+            files.push(relative);
+        }
+    }
+}
+
 fn collect_pipeline_sources() -> BTreeMap<String, String> {
     let mut sources = BTreeMap::new();
     let legacy = src_path("pipeline.rs");
@@ -820,6 +863,95 @@ fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
     ] {
         assert_file_line_ratchet(&repo_path(relative), limit, domain);
     }
+}
+
+#[test]
+fn all_production_rust_files_have_readability_budgets() {
+    const DEFAULT_LIMIT: usize = 500;
+    let legacy_large_files: BTreeMap<&str, usize> = [
+        ("bin/kobo-cli/src/bin/kobo-lsp.rs", 594),
+        ("bin/kobo-cli/src/commands/bindgen.rs", 1735),
+        ("bin/kobo-cli/src/commands/boundary_projection.rs", 628),
+        ("bin/kobo-cli/src/commands/check.rs", 1999),
+        ("bin/kobo-cli/src/commands/debt.rs", 2132),
+        ("bin/kobo-cli/src/commands/declarations.rs", 1173),
+        ("bin/kobo-cli/src/commands/doctor.rs", 720),
+        ("bin/kobo-cli/src/commands/ecosystem.rs", 2393),
+        ("bin/kobo-cli/src/commands/formal_core.rs", 912),
+        ("bin/kobo-cli/src/commands/lsp_diagnostics.rs", 947),
+        ("bin/kobo-cli/src/commands/migrate.rs", 1081),
+        ("bin/kobo-cli/src/commands/replay.rs", 1880),
+        ("bin/kobo-cli/src/commands/run.rs", 1168),
+        ("bin/kobo-cli/src/commands/sim.rs", 1321),
+        ("bin/kobo-cli/src/commands/sim_model.rs", 1809),
+        ("bin/kobo-cli/src/commands/witness_evidence.rs", 671),
+        ("bin/kobo-cli/src/main.rs", 667),
+        ("crates/compiler/kobo-analysis/src/handler_leak.rs", 512),
+        ("crates/compiler/kobo-analysis/src/parallel.rs", 565),
+        ("crates/compiler/kobo-analysis/src/split_borrow.rs", 542),
+        ("crates/compiler/kobo-analysis/src/task_local.rs", 533),
+        ("crates/compiler/kobo-codegen/src/cargo_gen.rs", 551),
+        ("crates/compiler/kobo-codegen/src/clean.rs", 535),
+        ("crates/compiler/kobo-codegen/src/lower/handler.rs", 595),
+        ("crates/compiler/kobo-codegen/src/lower/service.rs", 623),
+        ("crates/compiler/kobo-driver/src/config.rs", 1388),
+        ("crates/compiler/kobo-driver/src/multi_file.rs", 843),
+        ("crates/compiler/kobo-driver/src/pipeline/analysis.rs", 1043),
+        ("crates/compiler/kobo-driver/src/proof/async_model.rs", 672),
+        ("crates/compiler/kobo-driver/src/proof/candidates.rs", 636),
+        ("crates/compiler/kobo-driver/src/rustc/remap.rs", 521),
+        ("crates/compiler/kobo-errors/src/explain.rs", 749),
+        ("crates/compiler/kobo-ir/src/core.rs", 715),
+        ("crates/compiler/kobo-migrate/src/greedy.rs", 505),
+        ("crates/compiler/kobo-migrate/src/modular_pipeline.rs", 665),
+        ("crates/compiler/kobo-migrate/src/solver.rs", 913),
+        ("crates/compiler/kobo-parser/src/preprocess/select.rs", 539),
+        ("crates/compiler/kobo-parser/src/preprocess/spawn.rs", 833),
+        ("crates/compiler/kobo-parser/src/preprocess/ward.rs", 828),
+        ("crates/compiler/kobo-proof/src/async_model.rs", 1143),
+        ("crates/compiler/kobo-proof/src/certificate.rs", 764),
+        ("crates/compiler/kobo-proof/src/rule_sync.rs", 834),
+        ("crates/compiler/kobo-proof/src/translation.rs", 579),
+        ("crates/compiler/kobo-proof/src/verify.rs", 502),
+        ("crates/compiler/kobo-sim-core/src/core.rs", 1142),
+        ("crates/compiler/kobo-transform/src/builder/walk.rs", 610),
+        ("crates/compiler/kobo-transform/src/cfg.rs", 652),
+        ("crates/compiler/kobo-transform/src/lifetime_erase.rs", 769),
+        ("crates/compiler/kobo-transform/src/tiered.rs", 1199),
+        ("crates/compiler/kobo-transform/src/warn_early.rs", 744),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut files = Vec::new();
+    collect_production_rust_files(&repo_path("bin/kobo-cli/src"), &mut files);
+    collect_production_rust_files(&repo_path("crates/compiler"), &mut files);
+    files.sort();
+    files.dedup();
+
+    let mut stale_allowlist = legacy_large_files.clone();
+    let mut violations = Vec::new();
+    for relative in files {
+        let source = read_required(&repo_path(&relative));
+        let line_count = source.lines().count();
+        let limit = legacy_large_files
+            .get(relative.as_str())
+            .copied()
+            .unwrap_or(DEFAULT_LIMIT);
+        stale_allowlist.remove(relative.as_str());
+        if line_count > limit {
+            violations.push(format!("{relative}: {line_count} lines > budget {limit}"));
+        }
+    }
+
+    assert!(
+        stale_allowlist.is_empty(),
+        "production LOC allowlist has stale entries after a split: {stale_allowlist:?}"
+    );
+    assert!(
+        violations.is_empty(),
+        "production Rust files must stay under {DEFAULT_LIMIT} lines unless explicitly capped at their current legacy size; split or lower these files before growing them: {violations:?}"
+    );
 }
 
 #[test]

@@ -1,5 +1,11 @@
+use syn::parse_quote;
+
+use super::super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
+use super::super::handler;
+use super::super::scope::{type_name_from_syn, ScopeStack};
+use super::super::strict::StrictGuardCounter;
 use super::field_capability::ident_from_kobo;
-use super::*;
+use super::{syntax_support, tick, Lowerer, LoweringAnchorKind};
 
 impl<'a> Lowerer<'a> {
     pub(super) fn lower_function(&mut self, function: &mut syn::ItemFn) {
@@ -93,7 +99,7 @@ impl<'a> Lowerer<'a> {
                 function.block.stmts.extend(wrapped);
             }
         }
-        util::strip_kobo_attrs(&mut function.attrs);
+        syntax_support::strip_kobo_attrs(&mut function.attrs);
         // Reset guard counter per function.
         self.strict_counter = StrictGuardCounter::new();
         let prior_async_context = self.in_async_context;
@@ -166,7 +172,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             };
             // Strip #[kobo::...] attributes from parameters.
-            util::strip_kobo_attrs(&mut argument.attrs);
+            syntax_support::strip_kobo_attrs(&mut argument.attrs);
             let Some(binding) = binding_for_pat(self.ast, &argument.pat) else {
                 continue;
             };

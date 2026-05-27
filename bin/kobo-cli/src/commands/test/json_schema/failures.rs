@@ -1,4 +1,8 @@
-use super::*;
+use kobo_errors::KErrorCode;
+use kobo_sim_core::{FullDepthRun, ScenarioFailure};
+
+use super::super::failure::scenario_failure_has_event;
+use super::events::{line_snippet, one_based_line_for_offset};
 
 pub(crate) fn failure_json(
     source_path: &str,

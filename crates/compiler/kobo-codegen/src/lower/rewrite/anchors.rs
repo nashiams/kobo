@@ -1,4 +1,6 @@
-use super::*;
+use syn::spanned::Spanned;
+
+use super::{Lowerer, LoweringAnchor, LoweringAnchorKind};
 
 impl<'a> Lowerer<'a> {
     pub(super) fn record_binding_anchor(

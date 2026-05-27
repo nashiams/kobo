@@ -1,4 +1,6 @@
-use super::*;
+use kobo_sim_core::{FullDepthRun, ScenarioEvent};
+
+use super::failures::{span_json, unresolved_failure_mode};
 
 pub(crate) fn obligations_json(
     source_path: &str,

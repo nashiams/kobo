@@ -3,7 +3,7 @@ use syn::parse_quote;
 
 use super::super::binding::{apply_tier_to_local, binding_for_pat, binding_tier_from_expr};
 use super::super::scope::{type_name_from_expr, type_name_from_syn};
-use super::{util, LoweringAnchorKind, ScopeStack};
+use super::{syntax_support, LoweringAnchorKind, ScopeStack};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConcurrentLocalSugar {
@@ -21,7 +21,7 @@ struct NumericWideningCast {
 impl super::Lowerer<'_> {
     pub(super) fn lower_local(&mut self, local: &mut syn::Local, scopes: &mut ScopeStack) {
         let concurrent_sugar = concurrent_local_sugar(local);
-        util::strip_kobo_attrs(&mut local.attrs);
+        syntax_support::strip_kobo_attrs(&mut local.attrs);
         if let Some(sugar) = concurrent_sugar {
             self.lower_concurrent_sugar_local(local, sugar, scopes);
             return;
@@ -198,11 +198,11 @@ fn local_init_is_closure(local: &syn::Local) -> bool {
 }
 
 fn concurrent_local_sugar(local: &syn::Local) -> Option<ConcurrentLocalSugar> {
-    if util::has_kobo_attr(&local.attrs, "counter") {
+    if syntax_support::has_kobo_attr(&local.attrs, "counter") {
         Some(ConcurrentLocalSugar::Counter)
-    } else if util::has_kobo_attr(&local.attrs, "live") {
+    } else if syntax_support::has_kobo_attr(&local.attrs, "live") {
         Some(ConcurrentLocalSugar::Live)
-    } else if util::has_kobo_attr(&local.attrs, "view_distance") {
+    } else if syntax_support::has_kobo_attr(&local.attrs, "view_distance") {
         Some(ConcurrentLocalSugar::ViewDistance)
     } else {
         None

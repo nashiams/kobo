@@ -1,6 +1,10 @@
+use super::super::binding::{apply_tier_to_fn_arg_type, binding_for_pat, fn_arg_lowering_tier};
+use super::super::scope::{type_name_from_syn, ScopeStack};
+use super::super::strict::StrictGuardCounter;
 use super::attrs::{executor_main_attr, is_executor_main_attr};
-use super::*;
+use super::{split_borrow, syntax_support, Lowerer, LoweringAnchorKind};
 use crate::lower::strict;
+use syn::parse_quote;
 
 impl<'a> Lowerer<'a> {
     pub(crate) fn lower_items(&mut self, items: &mut [syn::Item]) {
@@ -63,29 +67,29 @@ impl<'a> Lowerer<'a> {
             }
             syn::Item::Impl(item_impl) => self.lower_impl_block(item_impl),
             syn::Item::Type(item_type) => {
-                util::strip_kobo_attrs(&mut item_type.attrs);
+                syntax_support::strip_kobo_attrs(&mut item_type.attrs);
             }
             syn::Item::Enum(item_enum) => {
-                util::strip_kobo_attrs(&mut item_enum.attrs);
+                syntax_support::strip_kobo_attrs(&mut item_enum.attrs);
             }
             _ => {}
         }
     }
 
     fn lower_struct_item(&mut self, item_struct: &mut syn::ItemStruct) {
-        util::strip_kobo_attrs(&mut item_struct.attrs);
+        syntax_support::strip_kobo_attrs(&mut item_struct.attrs);
         for field in &mut item_struct.fields {
-            if util::has_kobo_attr(&field.attrs, "counter") {
+            if syntax_support::has_kobo_attr(&field.attrs, "counter") {
                 field.ty = parse_quote!(std::sync::atomic::AtomicU64);
-            } else if util::has_kobo_attr(&field.attrs, "live") {
+            } else if syntax_support::has_kobo_attr(&field.attrs, "live") {
                 self.concurrent_support.live_cell = true;
                 let original_ty = field.ty.clone();
                 field.ty = parse_quote!(KoboArcSwap<#original_ty>);
-            } else if util::has_kobo_attr(&field.attrs, "view_distance") {
+            } else if syntax_support::has_kobo_attr(&field.attrs, "view_distance") {
                 self.concurrent_support.view_distance = true;
                 field.ty = parse_quote!(KoboViewDistance);
             }
-            util::strip_kobo_attrs(&mut field.attrs);
+            syntax_support::strip_kobo_attrs(&mut field.attrs);
         }
     }
 
@@ -101,7 +105,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_impl_block(&mut self, item_impl: &mut syn::ItemImpl) {
-        util::strip_kobo_attrs(&mut item_impl.attrs);
+        syntax_support::strip_kobo_attrs(&mut item_impl.attrs);
 
         // Detect split-borrow sites and apply destructuring.
         let items_snapshot: Vec<syn::Item> = vec![syn::Item::Impl(item_impl.clone())];
@@ -122,7 +126,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_impl_method(&mut self, method: &mut syn::ImplItemFn) {
-        util::strip_kobo_attrs(&mut method.attrs);
+        syntax_support::strip_kobo_attrs(&mut method.attrs);
         self.strict_counter = StrictGuardCounter::new();
         let prior_async_context = self.in_async_context;
         self.in_async_context = method.sig.asyncness.is_some();
@@ -145,7 +149,7 @@ impl<'a> Lowerer<'a> {
                     // &self / &mut self — pass through unchanged.
                 }
                 syn::FnArg::Typed(argument) => {
-                    util::strip_kobo_attrs(&mut argument.attrs);
+                    syntax_support::strip_kobo_attrs(&mut argument.attrs);
                     let Some(binding) = binding_for_pat(self.ast, &argument.pat) else {
                         continue;
                     };

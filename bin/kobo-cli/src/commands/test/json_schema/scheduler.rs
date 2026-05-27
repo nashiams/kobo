@@ -1,4 +1,4 @@
-use super::*;
+use kobo_sim_core::FullDepthRun;
 
 pub(crate) fn scheduler_json(
     sim_profile: &str,

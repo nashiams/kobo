@@ -1,4 +1,6 @@
-use super::*;
+use kobo_errors::KErrorCode;
+use kobo_ir::{ScenarioOpKind, ScenarioProgram};
+use kobo_sim_core::{FullDepthRun, ReplayGuarantee};
 
 pub(crate) fn flagship_demo_json(
     program: &ScenarioProgram,

@@ -1,4 +1,4 @@
-use super::*;
+use super::{ModelComparisonSpec, WardModelRun, WardModelStep, WardModelStepKind};
 
 pub(crate) fn execute_ward_model(spec: &ModelComparisonSpec, seed: u64) -> WardModelRun {
     let mut interpreter = WardModelInterpreter::new(seed);

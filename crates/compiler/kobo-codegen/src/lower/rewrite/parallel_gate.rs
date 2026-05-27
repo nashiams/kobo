@@ -6,11 +6,14 @@ pub(super) struct ParallelSafetyGate {
     pub(super) blockers: Vec<String>,
 }
 
+use quote::ToTokens;
+
 use super::receivers::{
     block_mentions_ward_boundary, block_mutates_binding_name, iterator_source_ident,
 };
 use super::spawn_captures::collect_block_captures;
-use super::*;
+use super::{Lowerer, ScopeStack};
+use crate::ParallelLoopEvidence;
 
 impl<'a> Lowerer<'a> {
     pub(super) fn parallel_loop_evidence(

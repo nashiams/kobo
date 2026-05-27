@@ -1,4 +1,6 @@
-use super::*;
+use kobo_sim_core::{FullDepthRun, ScenarioEvent};
+
+use super::boundaries::boundary_io_payload_json;
 
 pub(crate) fn boundary_decisions_json(run: &FullDepthRun) -> Vec<serde_json::Value> {
     run.boundary_decisions

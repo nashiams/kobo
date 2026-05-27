@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn checked_profile_kobo_diag_0_still_enabled() {
-        // KOBO_DIAG=0 must NOT override checked mode [Contract R03 / Trap 1].
+        // KOBO_DIAG=0 must NOT override checked mode [Invariant R03 / Trap 1].
         std::env::set_var("KOBO_DIAG", "0");
         let config = KoboConfig {
             guarantee_policy: GuaranteePolicy::for_profile(GuaranteeProfile::Checked),

@@ -1,7 +1,7 @@
 // Source map precision: LINE_LEVEL
 // Column fields in RsSpan are line-boundary approximations (0..line_len).
 // Reason: prettyplease::unparse returns a String with no token positions.
-// Token-level precision requires post-format scanning; not implemented in v0.2.
+// Token-level precision requires post-format scanning; currently source maps stay span-based.
 // Upgrade path: replace line-level binding lookup with token scanning when it lands.
 
 use std::{collections::BTreeMap, path::Path};

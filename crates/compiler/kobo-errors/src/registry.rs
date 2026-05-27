@@ -247,9 +247,9 @@ fn registry_entries() -> Vec<DiagnosticRegistryEntry> {
     entries.extend(async_entries());
     entries.extend(solver_entries());
     entries.extend(migration_entries());
-    entries.extend(v085_entries());
+    entries.extend(liveness_replay_entries());
     entries.extend(parser_recovery_entries());
-    entries.extend(v011_entries());
+    entries.extend(ecosystem_boundary_entries());
     append_reserved_entries(&mut entries);
     entries
 }
@@ -828,7 +828,7 @@ fn migration_entries() -> Vec<DiagnosticRegistryEntry> {
     ]
 }
 
-fn v085_entries() -> Vec<DiagnosticRegistryEntry> {
+fn liveness_replay_entries() -> Vec<DiagnosticRegistryEntry> {
     use DiagnosticCategory::{BoundaryPolicy, Liveness, Nondeterminism, Replay, Simulation};
     use MachineEditPolicy::{NotApplicable, RefuseByDefault};
     use ModeBehavior::{NoModeDependency, ReplayBoundaryPrompt, ScriptDebtStrictError};
@@ -1099,7 +1099,7 @@ fn parser_recovery_entries() -> Vec<DiagnosticRegistryEntry> {
     ]
 }
 
-fn v011_entries() -> Vec<DiagnosticRegistryEntry> {
+fn ecosystem_boundary_entries() -> Vec<DiagnosticRegistryEntry> {
     use DiagnosticCategory::BoundaryPolicy;
     use MachineEditPolicy::RefuseByDefault;
     use ModeBehavior::ReplayBoundaryPrompt;

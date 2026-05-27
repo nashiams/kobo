@@ -1,6 +1,6 @@
 /// Capture-set analysis for @strict blocks.
 ///
-/// Reference: P3 Task 3.1. Contract C01: exactly ONE definition of
+/// Reference: P3 Task 3.1. Invariant C01: exactly ONE definition of
 /// `analyze_strict_capture_set` in the entire codebase.
 use kobo_ir::{CaptureAccessKind, CaptureSet, CapturedBinding, Kir, KoboSpan, TransformFacts};
 use kobo_parser::KoboBlock;
@@ -11,7 +11,7 @@ use super::span_convert::SpanConvert;
 
 /// THE single source of truth for capture set computation.
 ///
-/// Contract C01: exactly one definition of this function in the entire codebase.
+/// Invariant C01: exactly one definition of this function in the entire codebase.
 pub fn analyze_strict_capture_set(
     block: &KoboBlock,
     transform_facts: &TransformFacts,

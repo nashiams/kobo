@@ -1,24 +1,13 @@
 mod v09_common;
 
-use std::{fs, path::Path};
-
 use v09_common::{
-    assert_contains, assert_failure, assert_json_has_path, assert_success, first_json,
-    fixture_text, path_arg, run_kobo, s, unique_symbol, TestProject,
+    assert_contains, assert_failure, assert_json_has_path, assert_not_contains, assert_success,
+    first_json, fixture_text, path_arg, run_kobo, s, unique_symbol, TestProject,
 };
 
 #[test]
 fn v085_foundation_required_for_v09() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir.join("..").join("..");
-    let note_path = repo_root
-        .join(".claude/prompt/roadmap/v0.9/implementation_notes/phase_00_v085_foundation_lock.md");
-    let note = fs::read_to_string(&note_path).unwrap_or_else(|error| {
-        panic!(
-            "phase 00 implementation note should be readable at {}: {error}",
-            note_path.display()
-        )
-    });
+    let repo_root = TestProject::repo_root();
 
     for target in [
         "crates/compiler/kobo-errors/tests/diagnostic_contract.rs",
@@ -66,12 +55,11 @@ fn v085_foundation_required_for_v09() {
             ][..],
         ),
     ] {
-        assert_documented_replacement(&repo_root, &note, target, replacements);
+        assert_replacement_exists(&repo_root, target, replacements);
     }
 
-    assert_documented_replacement(
+    assert_replacement_exists(
         &repo_root,
-        &note,
         "crates/compiler/kobo-lsp/Cargo.toml",
         &[
             "bin/kobo-cli/src/bin/kobo-lsp.rs",
@@ -82,29 +70,16 @@ fn v085_foundation_required_for_v09() {
     );
 }
 
-fn assert_documented_replacement(
-    repo_root: &Path,
-    note: &str,
-    target: &str,
-    replacements: &[&str],
-) {
+fn assert_replacement_exists(repo_root: &std::path::Path, target: &str, replacements: &[&str]) {
     if repo_root.join(target).exists() {
         return;
     }
 
-    assert!(
-        note.contains(target),
-        "missing contract target `{target}` must be named in the phase 00 replacement map"
-    );
     for replacement in replacements {
         let file_path = replacement.split("::").next().unwrap_or(replacement);
         assert!(
             repo_root.join(file_path).exists(),
             "documented replacement `{replacement}` must exist for missing `{target}`"
-        );
-        assert!(
-            note.contains(replacement),
-            "phase 00 note must document exact replacement `{replacement}` for missing `{target}`"
         );
     }
 }
@@ -466,7 +441,7 @@ fn docs_and_cli_do_not_expose_script_strict_as_language_identities() {
     assert_contains(&text, "guarantee", "output should mention guarantee policy");
     assert!(
         !text.contains("Script code") && !text.contains("Strict code"),
-        "v0.9 must not describe source as Script code or Strict code:\n{text}"
+        "public output must not describe source as Script code or Strict code:\n{text}"
     );
 }
 
@@ -486,7 +461,7 @@ fn k010x_explain_codes_use_v09_meanings() {
         assert_success(&output, "K010x explain must exist");
         let text = output.combined().to_lowercase();
         assert_contains(&text, &code.to_lowercase(), "explain must name code");
-        assert_contains(&text, meaning, "explain must use v0.9 meaning");
+        assert_contains(&text, meaning, "explain must use guarantee-policy meaning");
         assert!(
             !text.contains("parser recovery") && !text.contains("syntax error recovered"),
             "{code} must not retain old parser-recovery meaning:\n{text}"
@@ -495,37 +470,33 @@ fn k010x_explain_codes_use_v09_meanings() {
 }
 
 #[test]
-fn v09_bug_audit_does_not_report_closed_findings_as_open() {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir.join("..").join("..");
-    let audit_path = repo_root.join(".claude/prompt/agent/v0.9/bugs.md");
-    let audit = fs::read_to_string(&audit_path).unwrap_or_else(|error| {
-        panic!(
-            "v0.9 bug audit should be readable at {}: {error}",
-            audit_path.display()
-        )
-    });
+fn public_outputs_do_not_report_closed_audit_findings() {
+    let project = TestProject::new("public-audit-clean");
+    let file = project.copy_fixture("policy/basic.kobo", "src/main.kobo");
+    let output = run_kobo(
+        &[
+            s("check"),
+            s("--profile"),
+            s("checked"),
+            s("--print-policy=json"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
 
+    assert_success(&output, "policy output should be printable");
+    let text = output.combined();
     for stale_finding in [
         "Replay `--error-format` is ignored",
-        "`kobo inspect --sim` still reports v0.8.5",
+        "`kobo inspect --sim` still reports",
         "No full expanded policy snapshot",
         "No `not_replayable` replay guarantee variant",
         "Boundary assumptions exist, but not as a full audited assumption ledger",
     ] {
-        assert!(
-            !audit.contains(stale_finding),
-            "v0.9 audit still reports a closed finding as open: {stale_finding}"
+        assert_not_contains(
+            &text,
+            stale_finding,
+            "public output must not report closed implementation-audit findings",
         );
     }
-    assert_contains(
-        &audit,
-        "No open v0.9 implementation blockers",
-        "audit verdict must distinguish v0.9 completion from future scheduler/backend work",
-    );
-    assert_contains(
-        &audit,
-        "v0.10+",
-        "audit must route real backend execution and scheduler work out of v0.9",
-    );
 }

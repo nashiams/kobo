@@ -7,36 +7,36 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static CASE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const ROBUST_FIXTURES: &[&str] = &[
-    "v081_robust/robust_01_move_after_read.kobo",
-    "v081_robust/robust_02_mutate_through_helper.kobo",
-    "v081_robust/robust_03_shadowed_names.kobo",
-    "v081_robust/robust_04_option_take_replace.kobo",
-    "v081_robust/robust_05_result_match.kobo",
-    "v081_robust/robust_06_enum_state_machine.kobo",
-    "v081_robust/robust_07_tuple_structs.kobo",
-    "v081_robust/robust_08_nested_vecs.kobo",
-    "v081_robust/robust_09_generic_clone_boundary.kobo",
-    "v081_robust/robust_10_generic_mutation.kobo",
-    "v081_robust/robust_11_tuple_destructure.kobo",
-    "v081_robust/robust_12_array_slice_read.kobo",
-    "v081_robust/robust_13_hash_map_insert.kobo",
-    "v081_robust/robust_14_btree_map_move.kobo",
-    "v081_robust/robust_15_string_builder.kobo",
-    "v081_robust/robust_16_nested_blocks_borrows.kobo",
-    "v081_robust/robust_17_loop_accumulator.kobo",
-    "v081_robust/robust_18_while_mutation.kobo",
-    "v081_robust/robust_19_match_guard.kobo",
-    "v081_robust/robust_20_struct_update.kobo",
-    "v081_robust/robust_21_method_chain_read_mut.kobo",
-    "v081_robust/robust_22_lifetime_return.kobo",
-    "v081_robust/robust_23_async_borrow_only.kobo",
-    "v081_robust/robust_24_async_mut_sequence.kobo",
-    "v081_robust/robust_25_kobo_tick_attr.kobo",
-    "v081_robust/robust_26_closure_capture_read.kobo",
-    "v081_robust/robust_27_closure_mutate.kobo",
-    "v081_robust/robust_28_recursive_function.kobo",
-    "v081_robust/robust_29_binding_chain.kobo",
-    "v081_robust/robust_30_many_records_stress.kobo",
+    "robustness/robust_01_move_after_read.kobo",
+    "robustness/robust_02_mutate_through_helper.kobo",
+    "robustness/robust_03_shadowed_names.kobo",
+    "robustness/robust_04_option_take_replace.kobo",
+    "robustness/robust_05_result_match.kobo",
+    "robustness/robust_06_enum_state_machine.kobo",
+    "robustness/robust_07_tuple_structs.kobo",
+    "robustness/robust_08_nested_vecs.kobo",
+    "robustness/robust_09_generic_clone_boundary.kobo",
+    "robustness/robust_10_generic_mutation.kobo",
+    "robustness/robust_11_tuple_destructure.kobo",
+    "robustness/robust_12_array_slice_read.kobo",
+    "robustness/robust_13_hash_map_insert.kobo",
+    "robustness/robust_14_btree_map_move.kobo",
+    "robustness/robust_15_string_builder.kobo",
+    "robustness/robust_16_nested_blocks_borrows.kobo",
+    "robustness/robust_17_loop_accumulator.kobo",
+    "robustness/robust_18_while_mutation.kobo",
+    "robustness/robust_19_match_guard.kobo",
+    "robustness/robust_20_struct_update.kobo",
+    "robustness/robust_21_method_chain_read_mut.kobo",
+    "robustness/robust_22_lifetime_return.kobo",
+    "robustness/robust_23_async_borrow_only.kobo",
+    "robustness/robust_24_async_mut_sequence.kobo",
+    "robustness/robust_25_kobo_tick_attr.kobo",
+    "robustness/robust_26_closure_capture_read.kobo",
+    "robustness/robust_27_closure_mutate.kobo",
+    "robustness/robust_28_recursive_function.kobo",
+    "robustness/robust_29_binding_chain.kobo",
+    "robustness/robust_30_many_records_stress.kobo",
 ];
 
 struct FixtureCase {
@@ -50,7 +50,7 @@ impl FixtureCase {
         let unique_id = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let root = workspace_root
             .join("target-test-fixtures")
-            .join(format!("v081-robust-{}-{unique_id}", std::process::id()));
+            .join(format!("robust-fixture-{}-{unique_id}", std::process::id()));
 
         if root.exists() {
             let _ = fs::remove_dir_all(&root);
@@ -91,7 +91,7 @@ struct CmdOutput {
 }
 
 #[test]
-fn v081_robust_fixtures_migrate_inspect_and_compile() {
+fn robustness_fixtures_migrate_inspect_and_compile() {
     assert!(
         ROBUST_FIXTURES.len() >= 30,
         "robust fixture suite must keep at least 30 real .kobo cases"

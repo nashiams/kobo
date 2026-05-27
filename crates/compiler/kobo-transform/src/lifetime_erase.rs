@@ -12,7 +12,7 @@
 /// 4. &T → T (for all other types)
 /// 5. &mut T → T (owned, mutable)
 /// 6. Lifetime parameters on structs → removed
-/// 7. Insert .clone() at non-last usage points (last usage can move)
+/// 7. Insert `.clone()` at non-last usage points (last usage can move)
 /// 8. Return types borrowing from erased params → also erased
 ///
 /// Does NOT apply to:
@@ -191,7 +191,7 @@ pub fn erase_lifetimes(
     }
 
     // Count clone sites: for each erased param, count usages in the body.
-    // Last usage can move; all others need .clone().
+    // Last usage can move; all others need.clone().
     let mut clone_sites = Vec::new();
     let dummy_span = KoboSpan::new(0, 0, FileId(0));
 
@@ -605,7 +605,7 @@ fn first(items: &[u8]) -> &u8 {
         );
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// &'static str is NEVER erased (Trap 5).
     #[test]

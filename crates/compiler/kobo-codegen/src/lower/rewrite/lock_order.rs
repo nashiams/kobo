@@ -44,7 +44,7 @@ pub(crate) fn detect_lock_sites(source: &str) -> Vec<LockSite> {
         };
 
         if let Some(kind) = lock_kind {
-            // Extract the binding name from "let <name> = ...".
+            // Extract the binding name from "let <name> =...".
             let binding_name = extract_lock_binding_name(trimmed);
             if let Some(name) = binding_name {
                 sites.push(LockSite {

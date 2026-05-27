@@ -11,7 +11,7 @@ use kobo_ir::{FileId, KoboSpan};
 use kobo_migrate::{solve_modular_with_evidence, SolverBudget, SolverEvidence};
 use kobo_parser::{
     preprocess_bridge_blocks_mapped, preprocess_kobo_keywords_mapped,
-    preprocess_spawn_blocks_mapped, v05_keyword_configs, KoboFile, PreprocessSourceMap,
+    preprocess_spawn_blocks_mapped, strict_keyword_configs, KoboFile, PreprocessSourceMap,
     RecoveryMode,
 };
 
@@ -40,7 +40,7 @@ struct QueryCache {
     codegen: HashMap<CodegenKey, Arc<CodegenOutput>>,
 }
 
-/// Execution counters for query cache contract tests and diagnostics.
+/// Execution counters for query cache Invariant tests and diagnostics.
 #[derive(Default)]
 pub struct QueryMetrics {
     pub parse_executions: usize,
@@ -345,7 +345,7 @@ impl QuerySession {
 }
 
 fn preprocessed_source_hash(source: &str, file_id: FileId) -> u64 {
-    let configs = v05_keyword_configs();
+    let configs = strict_keyword_configs();
     let strict_mapped = preprocess_kobo_keywords_mapped(source, file_id, &configs);
     let spawn_mapped = preprocess_spawn_blocks_mapped(&strict_mapped.rewritten, file_id);
     let bridge_mapped = preprocess_bridge_blocks_mapped(&spawn_mapped.rewritten, file_id);

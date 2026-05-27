@@ -12,7 +12,7 @@ use crate::span::KoboSpan;
 ///
 /// The type lives in `kobo-ir` so it can be read by both the driver and
 /// `kobo-debt` without introducing a dependency between those crates.
-/// Contract C04: this must remain in `kobo-ir` only.
+/// Invariant C04: this must remain in `kobo-ir` only.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WarnEarlyFact {
     pub node_id: KirNodeId,
@@ -26,10 +26,10 @@ pub struct WarnEarlyFact {
     pub struct_name: String,
 }
 
-/// The four structural ownership patterns Kobo detects in v0.4.
+/// The four structural ownership patterns Kobo detects for debt reporting.
 ///
 /// K0080-P codes are always `note` severity — never `warning` or `error`.
-/// They are advisory only. Contract C08.
+/// They are advisory only. Invariant C08.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WarnEarlyPattern {
     /// K0080-P1: bidirectional `Rc<RefCell<T>>` links — Rc cycle will leak.
@@ -67,7 +67,7 @@ pub enum WarnEarlyPattern {
     },
     /// K0080-P4: self-referential struct without Rc/Box indirection.
     ///
-    /// `struct Chain { next: Chain }` — infinite size without Box/Rc wrapping.
+    /// `struct Chain { next: Chain }` is infinite size without Box/Rc wrapping.
     SelfReferentialStruct { struct_name: String },
 }
 
@@ -75,9 +75,8 @@ pub enum WarnEarlyPattern {
 
 /// Migration complexity estimate for a single `RcMutShared` site.
 ///
-/// These are estimates based on structural heuristics. The v0.8 solver will
-/// produce exact classifications. Field name uses "estimate" suffix to signal
-/// non-finality (see scope.md v0.8 readiness note).
+/// These are estimates based on structural heuristics. Solver-backed decisions
+/// produce exact classifications. The "estimate" suffix marks non-finality.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DebtComplexityTier {
     /// Tier 1: mechanical fix, expected to be auto-fixable by `kobo migrate --apply`.
@@ -95,7 +94,7 @@ pub struct DebtSiteRecord {
     #[serde(rename = "source_span")]
     pub span: KoboSpan,
     pub tier: OwnershipTier,
-    /// Structural complexity estimate. Not a solver result. (v0.8 will add exact field.)
+    /// Structural complexity estimate. Not a solver result.
     pub complexity_estimate: DebtComplexityTier,
     /// All K0080-P pattern variants associated with this site.
     #[serde(rename = "patterns")]
@@ -103,7 +102,7 @@ pub struct DebtSiteRecord {
     /// `true` when `#[kobo::known_debt]` suppresses all K0080-P notes for this site.
     pub suppressed: bool,
     pub binding_name: String,
-    /// v0.5: annotation when binding is covered by @strict block.
+    /// Annotation when binding is covered by an @strict block.
     pub strict_annotation: Option<String>,
 }
 
@@ -112,7 +111,7 @@ pub struct DebtSiteRecord {
 /// Counts of KIR nodes per ownership tier in a compiled source.
 ///
 /// Populated by walking `OwnershipTier` nodes in the frozen KIR.
-/// Never derived from text search over generated `.rs` files. (Contract C05)
+/// Never derived from text search over generated `.rs` files. (Invariant C05)
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct WrapperInventory {
     pub plain_owned: usize,
@@ -274,10 +273,7 @@ mod tests {
     #[test]
     fn debt_report_schema_version_is_one() {
         let report = DebtReport::new();
-        assert_eq!(
-            report.schema_version, 1,
-            "JSON schema version must be 1 in v0.4"
-        );
+        assert_eq!(report.schema_version, 1, "JSON schema version must be 1");
     }
 
     #[test]

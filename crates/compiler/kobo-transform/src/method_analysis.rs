@@ -27,7 +27,7 @@ impl fmt::Display for QualifiedPath {
 
 /// Extract the type name from an `impl` block's self type.
 ///
-/// Returns `Some("Foo")` for `impl Foo { ... }` or `impl<T> Foo<T> { ... }`.
+/// Returns `Some("Foo")` for `impl Foo {... }` or `impl<T> Foo<T> {... }`.
 /// Returns `None` for trait impls with complex paths.
 pub fn extract_type_name(item_impl: &syn::ItemImpl) -> Option<String> {
     // Trait impls (e.g. `impl Trait for Type`) — extract from self_ty

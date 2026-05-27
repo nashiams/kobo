@@ -1999,7 +1999,7 @@ fn shrink_json(
         "shrink_passes": shrink_passes,
         "replay_checked": run.replay_guarantee == ReplayGuarantee::Exact,
         "reason_if_not_shrunk": if event_stream.removed_event_ids.is_empty() {
-            Some("original witness is already minimal for the current replay contract")
+            Some("original witness is already minimal for the current replay invariant")
         } else {
             None
         },

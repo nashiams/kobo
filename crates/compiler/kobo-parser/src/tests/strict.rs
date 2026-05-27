@@ -4,14 +4,14 @@
 /// to make these pass.
 #[cfg(test)]
 mod tests {
-    use crate::preprocess::{preprocess_kobo_keywords, v05_keyword_configs};
+    use crate::preprocess::{preprocess_kobo_keywords, strict_keyword_configs};
 
     // Test 1: @strict { body } → preprocessed source contains #[__kobo_strict]
     // and parse_file succeeds; is_strict flag is tracked by preprocessor.
     #[test]
     fn test_strict_block_preprocessed() {
         let source = "fn f() { @strict { let x = 1; } }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(!markers.is_empty(), "should find @strict marker");
         assert!(
@@ -29,7 +29,7 @@ mod tests {
     #[test]
     fn test_strict_fn_preprocessed() {
         let source = "@strict fn compute() -> u64 { 42 }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(!markers.is_empty(), "should find @strict marker on fn");
         assert!(
@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn test_strict_async_fn_preprocessed() {
         let source = "@strict async fn handler() {}";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(
             !markers.is_empty(),
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn test_no_strict_no_markers() {
         let source = "fn normal() { let x = 1; }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(
             markers.is_empty(),
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn test_plain_block_no_markers() {
         let source = "fn f() { { let x = 1; } }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (_rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(markers.is_empty(), "no markers expected for plain block");
     }
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn test_strict_keyword_span_recorded() {
         let source = "fn f() { @strict { 1 + 1 } }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(!markers.is_empty());
         let marker = &markers[0];
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn test_strict_inside_closure_rejected() {
         let source = "fn f() { let x = || { @strict { 1 } }; }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let result = crate::preprocess::preprocess_strict_reject_invalid(source, &configs);
         assert!(
             result.is_err(),
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn test_strict_as_subexpression_rejected() {
         let source = "fn f() { let x = @strict { 1 }; }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let result = crate::preprocess::preprocess_strict_reject_invalid(source, &configs);
         assert!(
             result.is_err(),
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn test_strict_inside_macro_rules_skipped() {
         let source = r#"macro_rules! m { () => { @strict { 1 } } }"#;
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         // The preprocessor should NOT rewrite @strict inside macro_rules! body.
         // The source should remain unchanged (no markers produced).
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn test_multiple_strict_blocks_detected() {
         let source = "fn f() { @strict { 1 } @strict { 2 } }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert_eq!(markers.len(), 2, "both @strict blocks should be detected");
         assert_eq!(
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_strict_fn_with_params_preserved() {
         let source = "@strict fn compute(x: i32, y: &[u8]) -> u64 { 0 }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         assert!(!markers.is_empty(), "marker expected on strict fn");
         // Parameters must be preserved verbatim
@@ -172,12 +172,12 @@ mod tests {
     }
 
     // Test 12: #[__kobo_strict] does NOT appear in parse output AST identity
-    // (the attribute is stripped by postprocess; Contract C06)
+    // (the attribute is stripped by postprocess; Invariant C06)
     #[test]
     fn test_marker_attribute_stripped_after_parse() {
         use crate::preprocess::postprocess_strict_markers;
         let source = "fn f() { @strict { let x = 1; } }";
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         let mut file = syn::parse_file(&rewritten).expect("must parse");
         postprocess_strict_markers(&mut file, &markers).expect("postprocess must succeed");

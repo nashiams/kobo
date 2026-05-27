@@ -1,6 +1,6 @@
 // DiagThreshold — reads KOBO_DIAG_THRESHOLD once per process via OnceLock.
 //
-// Contract C02: no kobo-* imports permitted.
+// Invariant C02: no kobo-* imports permitted.
 // Trap 22: parse errors fall back to default with eprintln, never panic.
 
 use std::sync::OnceLock;

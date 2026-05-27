@@ -142,7 +142,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
     ]
 }
 
-pub fn v085_metadata_capabilities() -> &'static [MetadataBackendCapability] {
+pub fn reserved_metadata_capabilities() -> &'static [MetadataBackendCapability] {
     &[
         MetadataBackendCapability {
             name: "loom",

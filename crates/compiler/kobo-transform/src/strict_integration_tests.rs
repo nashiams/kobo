@@ -23,9 +23,9 @@ mod tests {
     /// Used to write FAILING tests first (TDD step 1).
     fn parse_preprocess_only(source: &str) -> (KoboFile, kobo_ir::NodeIdGen) {
         use kobo_parser::{
-            postprocess_strict_markers, preprocess_kobo_keywords, v05_keyword_configs,
+            postprocess_strict_markers, preprocess_kobo_keywords, strict_keyword_configs,
         };
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         let file_id = FileId(0);
         let mut id_gen = kobo_ir::NodeIdGen::new();
@@ -41,9 +41,9 @@ mod tests {
     fn parse_kobo_strict(source: &str) -> (KoboFile, kobo_ir::NodeIdGen) {
         use kobo_parser::{
             collect_strict_items_from_syn, postprocess_strict_markers, preprocess_kobo_keywords,
-            v05_keyword_configs,
+            strict_keyword_configs,
         };
-        let configs = v05_keyword_configs();
+        let configs = strict_keyword_configs();
         let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
         let file_id = FileId(0);
         let mut id_gen = kobo_ir::NodeIdGen::new();

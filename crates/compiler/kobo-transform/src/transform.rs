@@ -18,7 +18,7 @@ use kobo_parser::KoboFile;
 
 /// Transforms a parsed Kobo file into the frozen KIR.
 ///
-/// Keep this file as orchestration-only for the v0.7/v0.8 solver move:
+/// Keep this file as orchestration-only for the solver handoff:
 /// 1. `build_transform_builder(...)` owns the AST walk and raw event recording.
 /// 2. `finalize_transform(...)` seals the transform facts and borrow aliases.
 /// 3. `choose_tiers(...)` is the only place that writes ownership into KIR.
@@ -61,10 +61,10 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     kir.set_migrate_sites(built.migrate_sites);
     kir.set_must_call_obligations(built.must_call_obligations);
     kir.set_must_call_attr_errors(built.must_call_attr_errors);
-    // Phase 4: store method mutability map for codegen borrow/borrow_mut selection.
+    // Stage: store method mutability map for codegen borrow/borrow_mut selection.
     kir.set_method_mutability(built.method_mutability);
 
-    // v0.5: @strict analysis, AFTER finalized TierDecisions (R-02).
+    // Run @strict analysis after finalized TierDecisions.
     // Pipeline sequence:
     // 3a. For each @strict block: analyze_strict_capture_set()
     // 3b. Nested @strict blocks within the same fn: flatten_nested_strict()
@@ -79,7 +79,7 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
         let (mut capture_sets, mut boundary_facts) = (Vec::new(), Vec::new());
         let sc = SpanConvert::from_kobo_file(ast);
 
-        // @strict async fns: K0063 — skip analysis, deferred to v0.7.
+        // @strict async fns: K0063 — skip analysis, deferred to.
         // (The warning is emitted by the analysis phase, not here.)
 
         for kblock in ast.strict_blocks() {

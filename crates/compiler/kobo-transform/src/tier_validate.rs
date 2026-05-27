@@ -52,8 +52,8 @@ fn push_escape_violation(
 ) {
     // Known Limitation 6: ReturnedFromFunction cannot produce Box<T> without rewriting
     // the function's return type and all call sites. Escalate to RcShared instead.
-    // The annotation text "return escape: Box<T> requires signature rewrite (v0.4)"
-    // makes the gap visible. The correct fix is v0.4 call-graph rewriting.
+    // The annotation text makes the return-escape rewrite gap visible. The
+    // correct fix is call-graph-aware signature rewriting.
     if binding.shared_facts.escape_floor == Some(EscapeKind::ReturnedFromFunction)
         && decision.tier == OwnershipTier::PlainOwned
     {

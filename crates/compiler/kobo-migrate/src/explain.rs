@@ -1,4 +1,4 @@
-//! Phase 11: Human-readable explanations for solver decisions.
+//! Stage: Human-readable explanations for solver decisions.
 //!
 //! Generates natural-language explanations that can be shown in CLI
 //! output or injected as source comments.

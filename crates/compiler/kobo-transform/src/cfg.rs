@@ -24,7 +24,7 @@ pub struct CfgBlock {
 ///
 /// Conservative: cycles are inferred when a scope block contains uses of
 /// bindings declared before it AND the scope is a repeated sibling (suggesting
-/// a loop body). In v0.7, all repeated-sibling scopes are conservatively
+/// a loop body). All repeated-sibling scopes are conservatively
 /// treated as potential loops.
 pub struct CfgGraph {
     blocks: Vec<CfgBlock>,
@@ -292,7 +292,7 @@ impl CfgGraph {
 ///
 /// Tracks which declarations (by KirNodeId) are "live" — i.e. might still be
 /// used in the future — at the entry and exit of each basic block. This feeds
-/// Phase 6 (Rc elision) to determine whether a binding escapes its scope.
+/// Stage: (Rc elision) to determine whether a binding escapes its scope.
 ///
 /// Standard backward dataflow:
 ///   GEN[b]  = decl_ids of bindings USED or MOVED in block b
@@ -427,7 +427,7 @@ pub fn stamp_cfg_and_liveness(kir: &mut Kir) -> (CfgGraph, BindingLiveness) {
 ///
 /// Any binding inside an async function conservatively needs `Send`,
 /// because it may be alive across an `.await` point. Without explicit
-/// await-point tracking in KIR (deferred to v0.8+), we mark ALL bindings
+/// await-point tracking in KIR, we mark ALL bindings
 /// inside async functions as needing Send.
 pub struct SendRequirements {
     pub(crate) needs_send: HashSet<KirNodeId>,
@@ -449,7 +449,7 @@ impl SendRequirements {
 
 /// Compute which bindings need `Send` for async contexts.
 ///
-/// Conservative v0.7 approach: any binding whose `is_async` flag is set
+/// Conservative async approach: any binding whose `is_async` flag is set
 /// in transform facts is marked as needing Send. This over-approximates
 /// (marks ALL bindings in async fns, not just those crossing await points).
 pub fn compute_send_requirements(kir: &Kir) -> SendRequirements {

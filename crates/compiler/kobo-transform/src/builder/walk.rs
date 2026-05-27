@@ -212,7 +212,7 @@ impl TransformFactsBuilder<'_> {
 
         self.collect_migrate_attrs(&local.attrs, MigrateTarget::LetBinding);
 
-        // BUG 7 / v0.10: detect explicit shared-state opt-ins on let bindings.
+        // Detect explicit shared-state opt-ins on let bindings.
         for attr in &local.attrs {
             if let AsyncSharedAttrResult::Valid | AsyncSharedAttrResult::HasArguments =
                 parse_async_shared_attr(attr)

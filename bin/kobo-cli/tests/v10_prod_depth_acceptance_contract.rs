@@ -15,7 +15,7 @@ fn fixture_root() -> PathBuf {
         .join("..")
         .join("tests")
         .join("fixtures")
-        .join("v10")
+        .join("service_runtime")
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -48,7 +48,7 @@ fn write_first_witness(project: &TestProject, value: &Value) -> PathBuf {
 
 #[test]
 fn public_v10_fixture_acceptance_flows_are_real_files() {
-    let project = TestProject::new("v10-public-fixtures");
+    let project = TestProject::new("service-runtime-public-fixtures");
     for name in [
         "durable_queue.kobo",
         "async_gateway.kobo",
@@ -59,7 +59,7 @@ fn public_v10_fixture_acceptance_flows_are_real_files() {
         let path = fixture(name);
         assert!(
             path.exists(),
-            "v0.10 fixture `{}` must exist",
+            "service runtime fixture `{}` must exist",
             path.display()
         );
     }

@@ -48,7 +48,7 @@ pub fn compile_and_remap(
     let binary_path = binary_path_for(rs_path);
     let output = run_rustc(rs_path, &binary_path, source_map, kobo_file_id, session)?;
     if output.status.success() {
-        // v0.6 G4 [R6-02]: Capture warnings on success path in checked mode.
+        // Capture warnings on the success path in checked mode.
         // Script mode skips warning parsing (conservative — no noise to filter).
         let rustc_warnings = if session.guarantee_policy().is_checked() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -78,7 +78,7 @@ pub fn compile_and_remap(
 }
 
 /// Filter rustc warnings that are artifacts of Kobo's generated wrapper code.
-/// Conservative: when in doubt, KEEP the warning [Contract R09].
+/// Conservative: when in doubt, KEEP the warning [Invariant R09].
 ///
 /// `kobo_regions` is a list of (start_line, end_line) pairs derived from
 /// `// kobo:` comment annotations in the generated .rs source.
@@ -154,7 +154,7 @@ fn primary_label_contains(diag: &RustcJsonError, needle: &str) -> bool {
     })
 }
 
-/// Re-map surviving rustc warnings to .kobo spans and push to session diagnostics.
+/// Re-map surviving rustc warnings to.kobo spans and push to session diagnostics.
 /// Warnings that cannot be remapped get a fallback "(generated code)" note.
 pub fn remap_warnings_to_diagnostics(
     warnings: Vec<RustcJsonError>,

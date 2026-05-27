@@ -29,7 +29,11 @@ fn accepted_profiles_preserve_ordinary_runtime_output() {
 
     assert_eq!(
         outputs,
-        vec!["v09\n".to_owned(), "v09\n".to_owned(), "v09\n".to_owned()],
+        vec![
+            "policy\n".to_owned(),
+            "policy\n".to_owned(),
+            "policy\n".to_owned(),
+        ],
         "dev, checked, and release presets must preserve ordinary runtime behavior",
     );
 }

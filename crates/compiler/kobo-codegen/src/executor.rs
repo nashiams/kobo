@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 /// Which async executor to use for the generated code.
 ///
-/// Selection priority [Contract k006x_async_executor]:
+/// Selection priority [Invariant k006x_async_executor]:
 /// 1. If `[dependencies]` contains "tokio" → Tokio
 /// 2. If `[dependencies]` contains "async-std" → AsyncStd
 /// 3. If no executor dependency → None (emit K0062 warning)
@@ -20,9 +20,9 @@ pub enum ExecutorChoice {
 /// If any captured binding is !Send → LocalSet + spawn_local.
 /// If undecidable → FallbackLocal + K0060 warning.
 ///
-/// NOTE (v0.7): This enum is declared but not yet dispatched. `select_executor()`
+/// This enum is declared but not yet dispatched. `select_executor()`
 /// handles executor *detection*; `SpawnStrategy` handles per-block *dispatch*
-/// which requires Send analysis per spawn site. Reserved for v0.8.
+/// which requires Send analysis per spawn site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum SpawnStrategy {
@@ -36,8 +36,8 @@ pub enum SpawnStrategy {
 
 /// Select the async executor from the project's direct dependencies.
 ///
-/// Only checks DIRECT dependencies (v0.7 limitation).
-/// Transitive dependency detection is deferred to v0.8.
+/// Only checks direct dependencies.
+/// Transitive dependency detection is a future enhancement.
 pub fn select_executor(dependencies: &HashMap<String, toml::Value>) -> ExecutorChoice {
     if dependencies.contains_key("tokio") {
         ExecutorChoice::Tokio
@@ -67,28 +67,28 @@ pub fn executor_attribute(choice: ExecutorChoice, is_main: bool) -> Option<&'sta
 mod tests {
     use super::*;
 
-    /// Contract: tokio in dependencies → Tokio selected.
+    /// Invariant: tokio in dependencies → Tokio selected.
     #[test]
     fn tokio_detected() {
         let deps = HashMap::from([("tokio".to_string(), toml::Value::String("1".into()))]);
         assert_eq!(select_executor(&deps), ExecutorChoice::Tokio);
     }
 
-    /// Contract: async-std in dependencies → AsyncStd selected.
+    /// Invariant: async-std in dependencies → AsyncStd selected.
     #[test]
     fn async_std_detected() {
         let deps = HashMap::from([("async-std".to_string(), toml::Value::String("1".into()))]);
         assert_eq!(select_executor(&deps), ExecutorChoice::AsyncStd);
     }
 
-    /// Contract: no executor dependency → None.
+    /// Invariant: no executor dependency → None.
     #[test]
     fn no_executor() {
         let deps = HashMap::new();
         assert_eq!(select_executor(&deps), ExecutorChoice::None);
     }
 
-    /// Contract: both tokio and async-std → tokio wins (priority 1).
+    /// Invariant: both tokio and async-std → tokio wins (priority 1).
     #[test]
     fn tokio_wins_over_async_std() {
         let deps = HashMap::from([
@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(select_executor(&deps), ExecutorChoice::Tokio);
     }
 
-    /// Contract: tokio with table value (features) is still detected.
+    /// Invariant: tokio with table value (features) is still detected.
     #[test]
     fn tokio_with_features() {
         let mut table = toml::map::Map::new();
@@ -111,13 +111,13 @@ mod tests {
         assert_eq!(select_executor(&deps), ExecutorChoice::Tokio);
     }
 
-    /// Contract: non-main async fn → no executor attribute.
+    /// Invariant: non-main async fn → no executor attribute.
     #[test]
     fn non_main_no_attribute() {
         assert_eq!(executor_attribute(ExecutorChoice::Tokio, false), None);
     }
 
-    /// Contract: main + tokio → #[tokio::main] attribute.
+    /// Invariant: main + tokio → #[tokio::main] attribute.
     #[test]
     fn main_tokio_attribute() {
         assert_eq!(
@@ -126,7 +126,7 @@ mod tests {
         );
     }
 
-    /// Contract: main + async-std → #[async_std::main] attribute.
+    /// Invariant: main + async-std → #[async_std::main] attribute.
     #[test]
     fn main_async_std_attribute() {
         assert_eq!(
@@ -135,13 +135,13 @@ mod tests {
         );
     }
 
-    /// Contract: main + no executor → None.
+    /// Invariant: main + no executor → None.
     #[test]
     fn main_no_executor_attribute() {
         assert_eq!(executor_attribute(ExecutorChoice::None, true), None);
     }
 
-    /// Contract: unrelated dependencies don't match.
+    /// Invariant: unrelated dependencies don't match.
     #[test]
     fn unrelated_deps_no_executor() {
         let deps = HashMap::from([

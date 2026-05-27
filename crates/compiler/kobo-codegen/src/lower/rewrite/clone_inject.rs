@@ -1,4 +1,4 @@
-/// Insert .clone() calls for shared bindings crossing spawn boundaries.
+/// Insert `.clone()` calls for shared bindings crossing spawn boundaries.
 ///
 /// Rules (R-02 resolution):
 /// - Binding is Copy type → skip clone, just capture

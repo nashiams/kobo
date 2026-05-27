@@ -358,7 +358,7 @@ impl<'a> Lowerer<'a> {
             }
         }
         util::strip_kobo_attrs(&mut function.attrs);
-        // Reset guard counter per function (Contract C08 / Trap 16).
+        // Reset guard counter per function (Invariant C08 / Trap 16).
         self.strict_counter = StrictGuardCounter::new();
         let prior_async_context = self.in_async_context;
         let prior_needs_local_set = self.needs_local_set;

@@ -1208,7 +1208,7 @@ output_dir = "generated"
         assert_eq!(config.output_dir, Some(crate_dir.join("generated")));
     }
 
-    // ── Phase 1 / Step 1.1: parse_kobo_config tests ──────────────────
+    // ── parse_kobo_config tests ──────────────────────────────────────
 
     use super::parse_kobo_config;
 

@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(result.profile(), GuaranteeProfile::Dev);
     }
 
-    /// S-8: spawn {} generates tokio::spawn(async move { ... }).
+    /// S-8: spawn {} generates tokio::spawn(async move {... }).
     #[test]
     fn spawn_generates_tokio_spawn() {
         let input = r#"

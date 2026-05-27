@@ -472,8 +472,8 @@ fn inspect_shadowed_binding_fixture_keeps_shadowed_x_sites_distinct() {
 #[test]
 fn inspect_return_escape_fixture_defers_box_to_rc_with_annotation() {
     // Known Limitation 6: ReturnedFromFunction escape escalates to RcShared (not BoxOwned)
-    // because Box<T> requires rewriting the function return type (v0.4 work).
-    // The annotation "return escape: Box<T> requires signature rewrite (v0.4)" makes
+    // because Box<T> requires rewriting the function return type.
+    // The annotation "return escape: Box<T> requires signature rewrite" makes
     // the deferral visible in kobo inspect output.
     let case = FixtureCase::new("inspect-return-escape", "return_escape.kobo");
     let output = run_kobo(["inspect"], &case.fixture_path);
@@ -482,13 +482,13 @@ fn inspect_return_escape_fixture_defers_box_to_rc_with_annotation() {
     assert!(
         output
             .stdout
-            .contains("return escape: Box<T> requires signature rewrite (v0.4)"),
+            .contains("return escape: Box<T> requires signature rewrite"),
         "expected return-escape annotation; got:\n{}",
         output.stdout
     );
     assert!(
         !output.stdout.contains("Box::new"),
-        "return escape must not produce Box::new in v0.3; got:\n{}",
+        "return escape must not produce Box::new; got:\n{}",
         output.stdout
     );
 
@@ -855,7 +855,7 @@ fn watch_build_reruns_codegen_after_file_change() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.4 — kobo debt / kobo perf integration tests (BUG-10)
+// kobo debt / kobo perf integration tests (BUG-10)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -936,7 +936,7 @@ fn workspace_root() -> PathBuf {
         .expect("workspace root should exist")
 }
 
-// ── Phase 1 / Step 1.2: kobo init ──────────────────────────────────────
+// ── kobo init ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_init_creates_project_skeleton() {
@@ -985,7 +985,7 @@ fn test_init_creates_project_skeleton() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// ── Phase 1 / Step 1.3: kobo build ─────────────────────────────────────
+// ── kobo build ────────────────────────────────────────────────────────
 
 fn setup_multi_file_fixture(name: &str) -> PathBuf {
     let root = workspace_root()
@@ -1043,7 +1043,7 @@ fn main() {
         "kobo build failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    // Verify all .rs files generated
+    // Verify all .rs files generated.
     assert!(
         dir.join("target/kobo-gen/src/main.rs").exists(),
         "main.rs should be generated"
@@ -1211,7 +1211,7 @@ fn test_cli_mode_run_checked_accepted() {
 
 #[test]
 fn test_cli_mode_run_strict_accepted() {
-    // kobo run --strict <file> — v0.9 treats this as release/strict execution.
+    // kobo run --strict <file> — treats this as release/strict execution.
     let case = FixtureCase::new("cli-mode-run-strict", "hello.kobo");
     let output = run_kobo(["run", "--strict"], &case.fixture_path);
     assert!(
@@ -1356,7 +1356,7 @@ fn inspect_method_mut_detection_fixture_emits_borrow_mut_for_mutating_methods() 
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Phase 7 — kobo debt --borrows
+// Stage: kobo debt --borrows
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1391,7 +1391,7 @@ fn debt_borrows_json_outputs_machine_readable_report() {
 }
 
 // ===========================================================================
-// v0.7 Test Enforcement — P0-1 #7: pub mod + pub use passthrough
+// Test coverage: P0-1 #7: pub mod + pub use passthrough
 // ===========================================================================
 
 #[test]
@@ -1606,7 +1606,7 @@ mode = "script"
 }
 
 // ===========================================================================
-// v0.7 Test Enforcement — S-1 #5: Binding across functions → escaped
+// Test coverage: S-1 #5: Binding across functions → escaped
 // ===========================================================================
 
 #[test]
@@ -1628,7 +1628,7 @@ fn test_inspect_binding_across_functions_escape() {
 }
 
 // ===========================================================================
-// v0.7 Test Enforcement — Hard Rules
+// Test coverage: Hard Rules
 // ===========================================================================
 
 /// HR-1: No Arc<Mutex<T>> in generated output — we use Arc<RwLock<T>> instead.
@@ -1804,7 +1804,7 @@ fn hr4_output_deterministic() {
 }
 
 // ===========================================================================
-// v0.7 Test Enforcement — Negative Tests
+// Test coverage: Negative Tests
 // ===========================================================================
 
 /// N-6: kobo build without Kobo.toml — builds with defaults (generates default config).
@@ -1860,7 +1860,7 @@ mode = "script"
 "#,
     )
     .unwrap();
-    // Empty src/ — no .kobo files
+    // Empty src/ - no .kobo files.
 
     let output = Command::new(env!("CARGO_BIN_EXE_kobo"))
         .args(["build"])
@@ -1881,7 +1881,7 @@ mode = "script"
     let _ = fs::remove_dir_all(&root);
 }
 
-/// N-17: Syntax error in .kobo → clear error message.
+/// N-17: Syntax error in .kobo -> clear error message.
 #[test]
 fn n17_syntax_error_in_kobo_file_clear_error() {
     let case = FixtureCase::new("n17-syntax-err", "hello.kobo");
@@ -1945,7 +1945,7 @@ fn n19_per_module_mode_single_file_works() {
 }
 
 // ===========================================================================
-// v0.7 Test Enforcement — Gate Criteria (UC-1 through UC-4)
+// Test coverage: Gate Criteria (UC-1 through UC-4)
 // ===========================================================================
 
 /// UC-1: CLI Tool (struct + impl + basic I/O).
@@ -2132,7 +2132,7 @@ async fn main() {
     )
     .unwrap();
 
-    // Phase 1: check passes without errors.
+    // Stage: check passes without errors.
     let check_output = run_kobo(["check"], &file);
     assert!(
         check_output.status.success(),
@@ -2140,7 +2140,7 @@ async fn main() {
         check_output.stderr,
     );
 
-    // Phase 2: inspect produces valid Rust with executor attribute.
+    // Stage: inspect produces valid Rust with executor attribute.
     let inspect_output = run_kobo(["inspect"], &file);
     assert!(
         inspect_output.status.success(),
@@ -2163,7 +2163,7 @@ async fn main() {
 }
 
 // ===========================================================================
-// v0.7 Test Enforcement — Negative Tests (remaining)
+// Test coverage: Negative Tests (remaining)
 // ===========================================================================
 
 /// N-1: @strict on non-async fn — behavior test.
@@ -2540,7 +2540,8 @@ fn n16_nonexistent_crate_cargo_error() {
 /// This test verifies that checked mode handles the attribute correctly.
 #[test]
 fn n20_kobo_async_shared_in_strict_mode() {
-    // Strict mode is not yet supported by kobo inspect (target: v0.9).
+    // Strict mode is not yet supported by kobo inspect; checked mode covers
+    // the attribute path here.
     // Verify that checked mode correctly handles the attribute instead.
     let root = workspace_root()
         .join("target-test-fixtures")
@@ -2597,7 +2598,7 @@ fn n20_kobo_async_shared_in_strict_mode() {
 }
 
 // ===========================================================================
-// v0.7 Test Enforcement — Hard Rules (remaining)
+// Test coverage: Hard Rules (remaining)
 // ===========================================================================
 
 /// HR-1 #3: Explicit annotation still produces no Mutex.

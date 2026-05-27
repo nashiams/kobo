@@ -1,13 +1,13 @@
 use kobo_ir::{FileId, KoboSpan};
 use kobo_parser::{
     preprocess_bridge_blocks_mapped, preprocess_kobo_keywords_mapped,
-    preprocess_spawn_blocks_mapped, v05_keyword_configs,
+    preprocess_spawn_blocks_mapped, strict_keyword_configs,
 };
 
 #[test]
 fn strict_rewrite_maps_generated_marker_back_to_original_keyword() {
     let source = "@strict fn main() { let x = 1; }\n";
-    let configs = v05_keyword_configs();
+    let configs = strict_keyword_configs();
     let mapped = preprocess_kobo_keywords_mapped(source, FileId(0), &configs);
 
     let generated_offset = mapped

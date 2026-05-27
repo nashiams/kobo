@@ -1,11 +1,12 @@
-# v0.9 Oracle Fixtures
+# Guarantee Policy Oracle Fixtures
 
-These fixtures are the source corpus for the `bin/kobo-cli/tests/v09_*`
-integration tests. The Rust harnesses copy these files into isolated temporary
-projects before running the public `kobo` CLI.
+These fixtures are the source corpus for guarantee-policy, replay, simulation,
+boundary, and LSP integration tests. The Rust harnesses copy these files into
+isolated temporary projects before running the public `kobo` CLI.
 
 The fixtures intentionally live outside the harness crate so a zero-context
-implementor can inspect the v0.9 contract without reading Rust test code first.
+implementor can inspect the expected behavior without reading Rust test code
+first.
 
 ## Anti-Gaming Rules
 

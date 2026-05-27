@@ -12,7 +12,7 @@ pub enum ModeParseError {
     },
 }
 
-/// Legacy `//! kobo:mode = ...` directive retained as a compatibility alias.
+/// Legacy `//! kobo:mode =...` directive retained as a compatibility alias.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegacyModeDirective {
     pub line: usize,
@@ -62,7 +62,7 @@ pub fn parse_file_mode(source: &str) -> Result<Option<GuaranteeProfile>, ModePar
     Ok(parse_legacy_mode_directive(source)?.map(|directive| directive.profile))
 }
 
-/// Scans the first 10 lines for a legacy `//! kobo:mode = ...` directive.
+/// Scans the first 10 lines for a legacy `//! kobo:mode =...` directive.
 ///
 /// The directive is no longer the public source-level model. Callers that apply
 /// it should also emit a migration diagnostic naming the equivalent profile.

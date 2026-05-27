@@ -1,4 +1,4 @@
 fn main() {
-    let value = String::from("v09");
+    let value = String::from("policy");
     println!("{}", value);
 }

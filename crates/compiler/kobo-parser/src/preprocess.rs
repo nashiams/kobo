@@ -11,8 +11,8 @@ pub(crate) mod channel;
 /// post-processes the AST to consume the marker attributes and set the
 /// appropriate flags on AST nodes.
 ///
-/// Design: table-driven so v0.6 can add new keywords without forking the
-/// scanner. Per F-03 in the v0.5 design.
+/// Design: table-driven so new keywords can be added without forking the
+/// scanner.
 mod collect;
 mod concurrent_sugar;
 mod engine;
@@ -55,9 +55,9 @@ pub use ward::{
 /// Allowed positions for a Kobo keyword.
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeywordContext {
-    /// `@strict { ... }` — block at statement position.
+    /// `@strict {... }` — block at statement position.
     Statement,
-    /// `@strict fn ...` or `@strict async fn ...` — function declaration.
+    /// `@strict fn...` or `@strict async fn...` — function declaration.
     FnDecl,
 }
 
@@ -91,8 +91,8 @@ pub enum PreprocessError {
     StrictSubExpression { offset: usize },
 }
 
-/// v0.5 keyword configuration table — single entry for `@strict`.
-pub fn v05_keyword_configs() -> Vec<KoboKeywordConfig> {
+/// Keyword configuration table for strict markers.
+pub fn strict_keyword_configs() -> Vec<KoboKeywordConfig> {
     vec![KoboKeywordConfig {
         source_keyword: "@strict",
         marker_attribute: "__kobo_strict",

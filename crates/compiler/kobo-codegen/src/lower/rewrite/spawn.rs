@@ -1,13 +1,13 @@
 /// Lower `__kobo_spawn_block!({ body })` to `tokio::spawn(async move { body })`.
 ///
-/// The preprocessor rewrites `spawn { ... }` → `__kobo_spawn_block!({ ... })`.
+/// The preprocessor rewrites `spawn {... }` → `__kobo_spawn_block!({... })`.
 /// After syn parsing, this module recognizes the macro and replaces it with
-/// the actual `tokio::spawn(async move { ... })` call.
+/// the actual `tokio::spawn(async move {... })` call.
 ///
 /// S-53: When `use_spawn_local` is true, emits `tokio::task::spawn_local`
 /// instead of `tokio::spawn` for non-Send captured bindings.
 ///
-/// Clone injection (Phase 3) will insert `.clone()` calls for shared bindings
+/// Clone injection inserts `.clone()` calls for shared bindings
 /// before the `tokio::spawn` call. This phase only generates the spawn structure.
 use syn::parse_quote;
 
@@ -54,7 +54,7 @@ pub(crate) fn lower_spawn_macro_with_strategy(
         return None;
     }
 
-    // Parse the macro body as a Block (the preprocessor wraps in { ... }).
+    // Parse the macro body as a Block (the preprocessor wraps in {... }).
     let block: syn::Block = syn::parse2(mac.tokens.clone()).ok()?;
 
     let stmts = &block.stmts;

@@ -1494,7 +1494,7 @@ fn validate_exact_scope_contract(witness: &Value, error_format: ErrorFormat) -> 
             "harness_manifest": witness["harness_manifest"].clone(),
         });
         emit_replay_issue(&payload, error_format)?;
-        anyhow::bail!("K0117 exact witness lacks replay scope contract");
+        anyhow::bail!("K0117 exact witness lacks replay scope evidence");
     }
     Ok(())
 }

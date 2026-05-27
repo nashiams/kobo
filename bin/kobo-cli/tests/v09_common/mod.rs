@@ -17,10 +17,20 @@ pub struct TestProject {
 }
 
 impl TestProject {
+    pub fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .canonicalize()
+            .expect("repository root should exist")
+    }
+
     pub fn new(label: &str) -> Self {
         let counter = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root =
-            std::env::temp_dir().join(format!("kobo-v09-{label}-{}-{counter}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "kobo-cli-test-{label}-{}-{counter}",
+            std::process::id()
+        ));
         if root.exists() {
             let _ = fs::remove_dir_all(&root);
         }
@@ -199,12 +209,10 @@ pub fn path_arg(path: &Path) -> String {
 }
 
 pub fn fixture_path(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
+    TestProject::repo_root()
         .join("tests")
         .join("fixtures")
-        .join("v0.9")
+        .join("guarantee_policy")
         .join(relative)
 }
 

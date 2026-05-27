@@ -1,4 +1,4 @@
-/// Phase 11.5: Hard rules enforcement for async code generation.
+/// Stage: Hard rules enforcement for async code generation.
 ///
 /// These invariants are enforced at the codegen boundary to guarantee
 /// that forbidden patterns NEVER appear in generated Rust code:
@@ -69,7 +69,7 @@ mod tests {
 
     // --- HR-1: No Arc<Mutex<T>> ---
 
-    /// Contract: ArcMutShared maps to tokio::sync::RwLock, not std::sync::Mutex.
+    /// Invariant: ArcMutShared maps to tokio::sync::RwLock, not std::sync::Mutex.
     #[test]
     fn arc_mut_shared_is_tokio_rwlock() {
         let result = arc_mut_shared_uses_tokio_rwlock();
@@ -79,13 +79,13 @@ mod tests {
 
     // --- HR-4: Strict mode forbids wrappers ---
 
-    /// Contract: PlainOwned is always allowed in strict mode.
+    /// Invariant: PlainOwned is always allowed in strict mode.
     #[test]
     fn strict_allows_plain_owned() {
         assert!(validate_tier("x", OwnershipTier::PlainOwned, true).is_ok());
     }
 
-    /// Contract: BoxOwned is forbidden in strict mode.
+    /// Invariant: BoxOwned is forbidden in strict mode.
     #[test]
     fn strict_forbids_box_owned() {
         let result = validate_tier("x", OwnershipTier::BoxOwned, true);
@@ -95,7 +95,7 @@ mod tests {
         ));
     }
 
-    /// Contract: RcShared is forbidden in strict mode.
+    /// Invariant: RcShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_rc_shared() {
         let result = validate_tier("x", OwnershipTier::RcShared, true);
@@ -105,7 +105,7 @@ mod tests {
         ));
     }
 
-    /// Contract: ArcShared is forbidden in strict mode.
+    /// Invariant: ArcShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_arc_shared() {
         let result = validate_tier("x", OwnershipTier::ArcShared, true);
@@ -115,7 +115,7 @@ mod tests {
         ));
     }
 
-    /// Contract: RcMutShared is forbidden in strict mode.
+    /// Invariant: RcMutShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_rc_mut_shared() {
         let result = validate_tier("x", OwnershipTier::RcMutShared, true);
@@ -125,7 +125,7 @@ mod tests {
         ));
     }
 
-    /// Contract: ArcMutShared is forbidden in strict mode.
+    /// Invariant: ArcMutShared is forbidden in strict mode.
     #[test]
     fn strict_forbids_arc_mut_shared() {
         let result = validate_tier("x", OwnershipTier::ArcMutShared, true);
@@ -135,7 +135,7 @@ mod tests {
         ));
     }
 
-    /// Contract: Scoped is forbidden in strict mode.
+    /// Invariant: Scoped is forbidden in strict mode.
     #[test]
     fn strict_forbids_scoped() {
         let result = validate_tier("x", OwnershipTier::Scoped, true);
@@ -147,7 +147,7 @@ mod tests {
 
     // --- Non-strict mode allows everything ---
 
-    /// Contract: Non-strict mode allows all tiers.
+    /// Invariant: Non-strict mode allows all tiers.
     #[test]
     fn non_strict_allows_all_tiers() {
         assert!(validate_tier("x", OwnershipTier::PlainOwned, false).is_ok());
@@ -159,7 +159,7 @@ mod tests {
         assert!(validate_tier("x", OwnershipTier::Scoped, false).is_ok());
     }
 
-    /// Contract: Violation message includes binding name and tier.
+    /// Invariant: Violation message includes binding name and tier.
     #[test]
     fn violation_includes_binding_info() {
         let result = validate_tier("my_var", OwnershipTier::ArcShared, true);

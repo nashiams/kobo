@@ -1,4 +1,4 @@
-//! Phase 07: Call-graph construction with Tarjan SCC detection.
+//! Stage: Call-graph construction with Tarjan SCC detection.
 //!
 //! Builds a directed call graph from KIR, then finds strongly connected
 //! components (SCCs) for topo-order iteration by the solver.

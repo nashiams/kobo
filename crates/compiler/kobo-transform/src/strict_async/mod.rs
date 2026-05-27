@@ -6,7 +6,7 @@ use crate::cfg::{build_cfg, compute_send_requirements, SendRequirements};
 
 /// Check async ownership constraints and return violation facts.
 ///
-/// Contract (k006x_async_executor.md):
+/// Invariant (k006x_async_executor.md):
 /// - In strict mode: non-Send bindings in async context → K0063
 /// - In all modes: non-Send bindings crossing spawn → K0060
 /// - Non-Sync mutable shared across tasks → K0061

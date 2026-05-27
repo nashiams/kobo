@@ -47,7 +47,7 @@ pub struct KirNode {
     pub ownership: OwnershipTier,
     /// Set for resource-kind bindings (files, locks, sockets). `None` otherwise.
     pub resource_kind: Option<ResourceKind>,
-    /// CFG block this node belongs to. `None` until the CFG pass runs (v0.7).
+    /// CFG block this node belongs to. `None` until the CFG pass runs.
     pub cfg_block: Option<CfgBlockId>,
     /// Source location in the `.kobo` file.
     pub span: KoboSpan,
@@ -105,9 +105,9 @@ pub struct FieldCapabilityView {
 /// The target element tagged by `#[kobo::migrate]` [G6 / R05].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MigrateTarget {
-    /// `#[kobo::migrate] fn f() { ... }`
+    /// `#[kobo::migrate] fn f() {... }`
     Function,
-    /// `#[kobo::migrate] let x = ...;`
+    /// `#[kobo::migrate] let x =...;`
     LetBinding,
     /// `#[kobo::migrate] param: T`
     Parameter,
@@ -115,7 +115,7 @@ pub enum MigrateTarget {
 
 /// Metadata-only site tagged for future migration [R05].
 /// Populated during transform walk, consumed by `kobo debt`.
-/// Has ZERO effect on codegen or runtime [Contract R05 / Trap 4].
+/// Has ZERO effect on codegen or runtime [Invariant R05 / Trap 4].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MigrateSite {
     pub span: KoboSpan,
@@ -137,9 +137,9 @@ pub struct Kir {
     struct_defs: Vec<KirStructDef>,
     /// K0080-P structural warnings detected by the warn_early pass.
     warn_early_facts: Vec<WarnEarlyFact>,
-    /// Capture sets for all @strict blocks in this file (Contract C09).
+    /// Capture sets for all @strict blocks in this file (Invariant C09).
     strict_capture_sets: Vec<CaptureSet>,
-    /// Boundary violation facts for all @strict blocks (Contract C09, C05).
+    /// Boundary violation facts for all @strict blocks (Invariant C09, C05).
     strict_boundary_facts: Vec<StrictBoundaryFact>,
     /// Mode for each @strict fn (Full or AsyncDeferred), keyed by fn span.
     strict_fn_modes: HashMap<KoboSpan, StrictFnMode>,

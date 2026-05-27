@@ -895,7 +895,7 @@ fn label_for_code(code: KErrorCode) -> &'static str {
         KErrorCode::K0127 => "bindgen declaration draft needs review",
         KErrorCode::K0128 => "Cargo compatibility metadata changed",
         KErrorCode::K0129 => "ecosystem replay evidence would overclaim coverage",
-        _ => "simulation contract failed",
+        _ => "simulation invariant failed",
     }
 }
 

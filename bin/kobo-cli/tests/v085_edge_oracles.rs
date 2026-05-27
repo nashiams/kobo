@@ -1,6 +1,6 @@
-//! Edge-case RED oracle tests for the v0.8.5 roadmap.
+//! Edge-case RED oracle tests for the roadmap.
 //!
-//! `v085_phase_oracles.rs` provides one broad public-surface test per phase.
+//! `phase_oracles.rs` provides one broad public-surface test per phase.
 //! This file adds adversarial and boundary variants so an implementation cannot
 //! pass by printing one fixed answer or by handling only the happy-path fixture.
 
@@ -640,12 +640,11 @@ use reqwest::Client;
 #[test]
 fn phase_10_edge_backend_registry_lists_backends_without_executing_them() {
     let output = run(&strings(&["sim", "backends", "--json"]));
-    assert_success(&output, "phase 10 backend registry listing");
+    assert_success(&output, "backend registry listing");
     let text = output.combined();
     let value: Value = serde_json::from_str(&output.stdout).expect("backend JSON should parse");
-    assert_eq!(value["v085_metadata_registry"]["version"], "v0.8.5");
-    assert_eq!(value["v085_metadata_registry"]["executed"], false);
-    assert_eq!(value["v085_metadata_registry"]["metadata_only"], true);
+    assert_eq!(value["reserved_metadata_registry"]["executed"], false);
+    assert_eq!(value["reserved_metadata_registry"]["metadata_only"], true);
     for backend in [
         "Loom",
         "Shuttle",
@@ -657,7 +656,7 @@ fn phase_10_edge_backend_registry_lists_backends_without_executing_them() {
         assert_has(
             &text,
             backend,
-            "phase 10 backend registry must list every v0.8.5 metadata backend",
+            "backend registry must list every reserved metadata backend",
         );
     }
     assert_lacks(

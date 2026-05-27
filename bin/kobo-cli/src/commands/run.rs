@@ -49,7 +49,7 @@ pub(super) fn cmd_run(
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
-    // v0.6 §3.3b: Render K-code warnings on success path [BUG-01 / R02].
+    // §3.3b: Render K-code warnings on success path [BUG-01 / R02].
     render_diagnostics(&session);
     if let Some(policy) = guarantee_policy.as_ref() {
         policy::emit_policy_summary(policy);
@@ -158,7 +158,7 @@ pub(super) fn cmd_inspect(
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
-    // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
+    // §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
 
     // S-21: Apply lifetime erasure when requested for compatibility-profile output.
@@ -282,7 +282,7 @@ fn simulation_transparency_output(
     };
     let mut output = String::new();
     output.push_str(&format!(
-        "// kobo: {command} simulation contract transparency path for scoped guarantee policy and inspectable harness boundaries\n"
+        "// kobo: {command} simulation transparency path for scoped guarantee policy and inspectable harness boundaries\n"
     ));
     output.push_str(
         "// kobo: posture: Kobo is Rust-shaped and Cargo-native; normal Kobo source stays framework-shaped\n",

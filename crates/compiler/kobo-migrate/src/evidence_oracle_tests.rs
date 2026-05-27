@@ -13,7 +13,7 @@ const ORACLE_TIERS: [OwnershipTier; 5] = [
     OwnershipTier::ArcMutShared,
 ];
 
-const CONTRACT_LATTICE_TIERS: [OwnershipTier; 7] = [
+const SOLVED_LATTICE_TIERS: [OwnershipTier; 7] = [
     OwnershipTier::PlainOwned,
     OwnershipTier::BoxOwned,
     OwnershipTier::RcShared,
@@ -61,7 +61,7 @@ fn join_by_floor_strength(current: OwnershipTier, incoming: OwnershipTier) -> Ow
     }
 }
 
-fn contract_lattice_rank(tier: OwnershipTier) -> u8 {
+fn solved_lattice_rank(tier: OwnershipTier) -> u8 {
     match tier {
         OwnershipTier::PlainOwned => 0,
         OwnershipTier::BoxOwned => 1,
@@ -70,12 +70,12 @@ fn contract_lattice_rank(tier: OwnershipTier) -> u8 {
         OwnershipTier::RcMutShared => 4,
         OwnershipTier::ArcMutShared => 5,
         OwnershipTier::Scoped => 6,
-        OwnershipTier::Undecided => panic!("Undecided is not part of the solved contract lattice"),
+        OwnershipTier::Undecided => panic!("Undecided is not part of the solved ownership lattice"),
     }
 }
 
-fn contract_lub(left: OwnershipTier, right: OwnershipTier) -> OwnershipTier {
-    if contract_lattice_rank(left) >= contract_lattice_rank(right) {
+fn solved_lub(left: OwnershipTier, right: OwnershipTier) -> OwnershipTier {
+    if solved_lattice_rank(left) >= solved_lattice_rank(right) {
         left
     } else {
         right
@@ -226,15 +226,15 @@ fn graph(nodes: &[u32], edges: Vec<ConstraintEdge>) -> ConstraintGraph {
 }
 
 #[test]
-fn oracle_seven_tier_lub_matrix_must_match_solver_lattice_contract() {
-    for left in CONTRACT_LATTICE_TIERS {
-        for right in CONTRACT_LATTICE_TIERS {
-            let expected = contract_lub(left, right);
+fn oracle_seven_tier_lub_matrix_must_match_solver_lattice() {
+    for left in SOLVED_LATTICE_TIERS {
+        for right in SOLVED_LATTICE_TIERS {
+            let expected = solved_lub(left, right);
             let actual = crate::lattice_solve::lattice_lub(left, right);
 
             assert_eq!(
                 actual, expected,
-                "7-tier contract LUB mismatch for {left:?} and {right:?}"
+                "7-tier ownership LUB mismatch for {left:?} and {right:?}"
             );
             assert_eq!(
                 actual,
@@ -242,8 +242,8 @@ fn oracle_seven_tier_lub_matrix_must_match_solver_lattice_contract() {
                 "LUB must be commutative for {left:?} and {right:?}"
             );
             assert!(
-                contract_lattice_rank(actual) >= contract_lattice_rank(left)
-                    && contract_lattice_rank(actual) >= contract_lattice_rank(right),
+                solved_lattice_rank(actual) >= solved_lattice_rank(left)
+                    && solved_lattice_rank(actual) >= solved_lattice_rank(right),
                 "LUB({left:?}, {right:?}) returned {actual:?}, which is not an upper bound"
             );
         }
@@ -257,7 +257,7 @@ fn oracle_seven_tier_lub_matrix_must_match_solver_lattice_contract() {
 }
 
 #[test]
-fn oracle_candidate_tier_ladder_must_cover_contract_lattice() {
+fn oracle_candidate_tier_ladder_must_cover_solver_lattice() {
     let solver_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/solver.rs");
     let source = fs::read_to_string(&solver_path).expect("solver source should be readable");
     let executable = strip_line_comments(&source);
@@ -267,11 +267,11 @@ fn oracle_candidate_tier_ladder_must_cover_contract_lattice() {
         .and_then(|tail| tail.split_once("];").map(|(block, _)| block))
         .expect("solver must define CANDIDATE_TIERS for oracle checking");
 
-    for tier in CONTRACT_LATTICE_TIERS {
+    for tier in SOLVED_LATTICE_TIERS {
         let needle = format!("OwnershipTier::{tier:?}");
         assert!(
             candidate_block.contains(&needle),
-            "candidate tier ladder omitted contract tier {tier:?}"
+            "candidate tier ladder omitted solver tier {tier:?}"
         );
     }
 }
@@ -435,7 +435,7 @@ fn source_oracle_solver_must_not_be_stub_or_dead_parameter_theater() {
     assert!(
         !source.contains("minimal stub")
             && !source.contains("Stub:")
-            && !source.contains("Full HM-style inference will be implemented post-v0.8"),
+            && !source.contains("Full HM-style inference will be implemented later"),
         "solver source still advertises itself as future/stub work"
     );
     assert!(

@@ -15,7 +15,7 @@ use crate::CodegenOptions;
 /// Lower a single @strict block to safe Rust.
 ///
 /// Reads CaptureSet from KIR. Emits guard extraction, body rewriting via
-/// raw-reference rebinding, and guard drops on all exit paths (Contract C02).
+/// raw-reference rebinding, and guard drops on all exit paths (Invariant C02).
 pub fn lower_strict_block(
     stmts: &[syn::Stmt],
     capture_set: &CaptureSet,
@@ -84,7 +84,7 @@ fn build_rebind_stmts(guard_indices: &[usize], capture_set: &CaptureSet) -> Vec<
         .collect()
 }
 
-/// Drop stmts in LIFO order (Contract C02 normal exit path).
+/// Drop stmts in LIFO order (Invariant C02 normal exit path).
 fn build_drop_stmts(guard_indices: &[usize]) -> Vec<TokenStream> {
     guard_indices
         .iter()
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(
             ts1.to_string(),
             ts2.to_string(),
-            "same input must produce same output (Contract C08)"
+            "same input must produce same output (Invariant C08)"
         );
     }
 

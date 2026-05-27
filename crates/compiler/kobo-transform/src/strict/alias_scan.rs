@@ -5,8 +5,8 @@
 /// 2. `let alias = binding;` → alias via move/copy
 /// 3. Function calls passing binding by value → alias escapes
 ///
-/// Contract C03: produces StrictBoundaryViolation::ActiveAliases (never Warning).
-/// Contract C05: produces facts, NOT KDiagnostic.
+/// Invariant C03: produces StrictBoundaryViolation::ActiveAliases (never Warning).
+/// Invariant C05: produces facts, NOT KDiagnostic.
 use kobo_ir::{CaptureSet, Kir, KirNodeId, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;

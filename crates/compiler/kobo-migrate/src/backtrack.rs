@@ -1,4 +1,4 @@
-//! Phase 08: Backtracking search with checkpoint/rollback.
+//! Stage: Backtracking search with checkpoint/rollback.
 //!
 //! Provides a checkpoint/rollback mechanism over SolutionMap so that
 //! the solver can speculatively assign tiers and undo on conflict.

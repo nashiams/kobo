@@ -387,12 +387,12 @@ pub fn render_k0021(stats: &DiagOwnerStats) -> KDiagnostic {
 }
 
 // ---------------------------------------------------------------------------
-// @strict boundary diagnostics (K0041 / K0042 / K0043 / K0063) — P4 v0.5
+// @strict boundary diagnostics (K0041 / K0042 / K0043 / K0063)
 // ---------------------------------------------------------------------------
 
 /// Render a K0041 diagnostic: active Rc aliases at @strict block entry.
 ///
-/// Contract C03: Severity::Error.
+/// Invariant C03: Severity::Error.
 pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
     use crate::codes::{KErrorCode, Severity};
 
@@ -428,7 +428,7 @@ pub fn render_k0041(fact: &StrictBoundaryFact) -> KDiagnostic {
 
 /// Render a K0042 diagnostic: closure captures Rc<RefCell<T>> across @strict boundary.
 ///
-/// Contract C03: Severity::Error.
+/// Invariant C03: Severity::Error.
 pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
     use crate::codes::{KErrorCode, Severity};
 
@@ -462,7 +462,7 @@ pub fn render_k0042(fact: &StrictBoundaryFact) -> KDiagnostic {
 
 /// Render a K0043 diagnostic: value moved inside @strict block.
 ///
-/// Contract C03: Severity::Error.
+/// Invariant C03: Severity::Error.
 pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
     use crate::codes::{KErrorCode, Severity};
 
@@ -491,7 +491,7 @@ pub fn render_k0043(fact: &StrictBoundaryFact) -> KDiagnostic {
 
 /// Render a K0063 diagnostic: @strict block inside async fn.
 ///
-/// Contract C03: Severity::Error.
+/// Invariant C03: Severity::Error.
 pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
     use crate::codes::{KErrorCode, Severity};
 
@@ -525,7 +525,7 @@ pub fn render_k0063(fact: &StrictBoundaryFact) -> KDiagnostic {
 /// Render a labeled break/continue crossing @strict boundary diagnostic.
 ///
 /// Render K0044 for labeled break/continue across an @strict boundary.
-/// Contract C03: Severity::Error.
+/// Invariant C03: Severity::Error.
 pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
     use crate::codes::{KErrorCode, Severity};
 
@@ -551,7 +551,7 @@ pub fn render_labeled_cross_boundary(fact: &StrictBoundaryFact) -> KDiagnostic {
 
     let explanation = format!(
         "break or continue to label `{label}` would exit the @strict block without \
-         dropping borrow guards in the correct order; this is not allowed in v0.5"
+         dropping borrow guards in the correct order; this is not allowed in strict code"
     );
 
     let mut diag = KDiagnostic::new(
@@ -781,7 +781,7 @@ mod strict_renderer_tests {
 
     // ── K0041 ──────────────────────────────────────────────────────────────
 
-    /// Test 1: render_k0041 produces K0041 with Severity::Error (Contract C03).
+    /// Test 1: render_k0041 produces K0041 with Severity::Error (Invariant C03).
     #[test]
     fn test_render_k0041_code_and_severity() {
         let fact = StrictBoundaryFact {
@@ -826,7 +826,7 @@ mod strict_renderer_tests {
 
     // ── K0042 ──────────────────────────────────────────────────────────────
 
-    /// Test 3: render_k0042 produces K0042 with Severity::Error (Contract C03).
+    /// Test 3: render_k0042 produces K0042 with Severity::Error (Invariant C03).
     #[test]
     fn test_render_k0042_code_and_severity() {
         let fact = StrictBoundaryFact {
@@ -874,7 +874,7 @@ mod strict_renderer_tests {
 
     // ── K0043 ──────────────────────────────────────────────────────────────
 
-    /// Test 5: render_k0043 produces K0043 with Severity::Error (Contract C03).
+    /// Test 5: render_k0043 produces K0043 with Severity::Error (Invariant C03).
     #[test]
     fn test_render_k0043_code_and_severity() {
         let fact = StrictBoundaryFact {
@@ -913,7 +913,7 @@ mod strict_renderer_tests {
 
     // ── K0063 ──────────────────────────────────────────────────────────────
 
-    /// Test 7: render_k0063 produces K0063 with Severity::Error (Contract C03).
+    /// Test 7: render_k0063 produces K0063 with Severity::Error (Invariant C03).
     #[test]
     fn test_render_k0063_code_and_severity() {
         let fact = StrictBoundaryFact {

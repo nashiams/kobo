@@ -1,6 +1,6 @@
 /// Control-flow enum helpers for @strict blocks with break/continue.
 ///
-/// F-02: encapsulated so v0.6 can swap strategy.
+/// Encapsulated so the lowering strategy can evolve without changing callers.
 use proc_macro2::TokenStream;
 use quote::quote;
 

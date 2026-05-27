@@ -1,4 +1,4 @@
-//! Phase 01: Constraint extraction from KIR and greedy residuals.
+//! Stage: Constraint extraction from KIR and greedy residuals.
 //!
 //! Assigns fresh constraint nodes to residual (unresolved) bindings and walks
 //! KIR to collect inequality constraints with mandatory provenance.

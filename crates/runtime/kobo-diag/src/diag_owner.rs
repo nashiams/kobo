@@ -7,14 +7,14 @@
 // The runtime gate (`KOBO_DIAG=1`) controls whether Drop emits output.
 // The feature gate controls whether counters exist at all.
 //
-// Contract C01: counter fields must be INSIDE an Rc alongside the RefCell value
+// Invariant C01: counter fields must be INSIDE an Rc alongside the RefCell value
 // so that all clones share a single counter set. A field on the outer struct is
 // NOT shared across Rc::clone. This implementation uses a separate Rc<DiagCounters>
 // for the counter allocation, keeping it alive as long as any DiagOwner or any
 // live DiagRef/DiagRefMut guard exists.
 //
-// Contract C02: this file may not import any kobo-* compiler crate.
-// Contract C06: every counter increment uses saturating_add, never +=.
+// Invariant C02: this file may not import any kobo-* compiler crate.
+// Invariant C06: every counter increment uses saturating_add, never +=.
 
 #[cfg(feature = "diag")]
 use std::cell::Cell;
@@ -60,7 +60,7 @@ impl DiagCounters {
     }
 
     /// Increment a u64 counter using saturating arithmetic. Sets `saturated`
-    /// when the counter reaches u64::MAX. Contract C06.
+    /// when the counter reaches u64::MAX. Invariant C06.
     fn saturating_increment(counter: &Cell<u64>, saturated: &Cell<bool>) {
         let prev = counter.get();
         let next = prev.saturating_add(1);
@@ -151,7 +151,7 @@ impl<'a, V> DerefMut for DiagRefMut<'a, V> {
 ///
 /// Counters are shared across all clones via `Rc<DiagCounters>`.
 /// `source_location` is a `&'static str` baked at codegen time — never heap-allocated.
-/// Contract C01, C09.
+/// Invariant C01, C09.
 #[cfg(feature = "diag")]
 pub struct DiagOwner<T> {
     inner: T,
@@ -279,8 +279,8 @@ impl<T> Drop for DiagOwner<T> {
             return;
         }
 
-        // Structured [kobo-diag] output block. Format is a STABLE CONTRACT
-        // frozen from v0.4.0 — do not change field names or order. (Trap 23)
+        // Structured [kobo-diag] output block. Format is a STABLE Invariant
+        // Frozen public diagnostic layout: do not change field names or order.
         eprintln!(
             "\n[kobo-diag] {loc} — (Rc<RefCell<T>>)",
             loc = self.source_location,

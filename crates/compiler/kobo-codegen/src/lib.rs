@@ -19,7 +19,7 @@ pub use sourcemap::{
 
 /// Annotate lock acquisition order in generated Rust source for inspect output.
 ///
-/// Returns the source with a leading `// kobo: lock order: ...` comment if
+/// Returns the source with a leading `// kobo: lock order:...` comment if
 /// two or more lock sites are detected, otherwise returns the source unchanged.
 pub fn annotate_lock_order(source: &str) -> String {
     let sites = lower::rewrite::lock_order::detect_lock_sites(source);

@@ -1,6 +1,6 @@
 //! Guard counter for deterministic `__kobo_guard_{N}` name generation.
 //!
-//! Contract C08: one instance per function, shared across ALL @strict blocks.
+//! Invariant C08: one instance per function, shared across ALL @strict blocks.
 
 /// Monotonically-incrementing counter for guard name generation.
 ///

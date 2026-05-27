@@ -1,20 +1,20 @@
-/// Preprocess `spawn { ... }` blocks into `__kobo_spawn_block!({ ... })`.
+/// Preprocess `spawn {... }` blocks into `__kobo_spawn_block!({... })`.
 ///
 /// `spawn` is a Kobo expression (not a keyword). At the text level:
 /// 1. Scan for `spawn` followed by whitespace and `{`
 /// 2. Find matching closing brace (handle nesting)
-/// 3. Replace with `__kobo_spawn_block!({ ... })`
+/// 3. Replace with `__kobo_spawn_block!({... })`
 ///
 /// After syn parsing, the macro invocation is recognized in codegen
-/// and lowered to `tokio::spawn(async move { ... })`.
+/// and lowered to `tokio::spawn(async move {... })`.
 use kobo_ir::{FileId, KoboSpan};
 
 use super::source_map::{push_identity_segment, PreprocessSourceMap, PreprocessedSource};
 
-/// Information about one `spawn { ... }` block found during preprocessing.
+/// Information about one `spawn {... }` block found during preprocessing.
 #[derive(Clone, Debug)]
 pub struct SpawnBlockInfo {
-    /// Span of the entire `spawn { ... }` expression in the ORIGINAL source.
+    /// Span of the entire `spawn {... }` expression in the ORIGINAL source.
     pub span: KoboSpan,
     /// Span of the body (between braces) in the ORIGINAL source.
     pub body_span: KoboSpan,
@@ -24,7 +24,7 @@ pub struct SpawnBlockInfo {
     pub generated_body_span: KoboSpan,
     /// Span of the generated macro close in the REWRITTEN source.
     pub generated_close_span: KoboSpan,
-    /// Whether the original source used `spawn local { ... }`.
+    /// Whether the original source used `spawn local {... }`.
     pub is_local: bool,
 }
 
@@ -223,7 +223,7 @@ fn find_spawn_offsets(source: &str) -> Vec<usize> {
     offsets
 }
 
-/// Rewrite `spawn { ... }` to `__kobo_spawn_block!({ ... })`.
+/// Rewrite `spawn {... }` to `__kobo_spawn_block!({... })`.
 ///
 /// Returns `(rewritten_source, spawn_infos)`.
 ///
@@ -708,7 +708,7 @@ fn work() {
         );
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// "respawn" must NOT be recognized as spawn.
     #[test]

@@ -22,7 +22,7 @@ pub(super) fn cmd_fmt(file: &Path) -> anyhow::Result<()> {
         render_diagnostics(&session);
         anyhow::anyhow!("compilation failed")
     })?;
-    // v0.6 §3.3b: Render K-code warnings on success path too [R6-06].
+    // §3.3b: Render K-code warnings on success path too [R6-06].
     render_diagnostics(&session);
     run_rustfmt_file(&artifacts.rs_path)?;
 
@@ -66,7 +66,7 @@ fn rewrite_lossless_kobo_source(
         return Ok(format_kobo_only_source(&original));
     }
 
-    // v0.2 only back-propagates formatting from the original `.kobo` text.
+    // Formatting back-propagates from the original `.kobo` text.
     // Compiler-owned wrapper lines exist only in generated Rust, so they never
     // flow back into the user file through `kobo fmt`.
     rustfmt_original_kobo_source(file)

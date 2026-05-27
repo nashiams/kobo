@@ -24,7 +24,7 @@ pub fn lower_strict_fn(
 ) -> TokenStream {
     let mut inner = func.inner.clone();
 
-    // Strip the @strict marker attribute from the fn (Contract C06).
+    // Strip the @strict marker attribute from the fn (Invariant C06).
     inner.attrs.retain(|a| {
         !(a.path().is_ident("__kobo_strict")
             || a.path().segments.len() == 1 && a.path().segments[0].ident == "__kobo_strict")

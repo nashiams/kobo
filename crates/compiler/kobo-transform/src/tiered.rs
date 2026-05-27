@@ -138,9 +138,9 @@ fn choose_tier_for_binding(
         };
     }
 
-    // Phase 11: Async Send override — if binding needs Send (crosses spawn/await
+    // Stage: Async Send override — if binding needs Send (crosses spawn/await
     // boundary) AND needs sharing → use Arc instead of Rc.
-    // Contract: ownership_decision_table.md rows A5/A6.
+    // Invariant: ownership_decision_table.md rows A5/A6.
     // Priority: after CopyType, LocalOnly, MoveRebind; before generic ladder.
     if send_reqs.needs_send(binding.node) && binding.shared_facts.needs_sharing {
         let tier = if binding.shared_facts.mutation_required {
@@ -791,7 +791,7 @@ mod tests {
         assert_eq!(decision.reason, TierReason::AsyncBoxDeferred);
     }
 
-    // --- Phase 11: Async Send tier override tests ---
+    // --- Stage: Async Send tier override tests ---
 
     #[test]
     fn send_required_shared_read_only_chooses_arc_shared() {
@@ -1027,7 +1027,7 @@ mod tests {
         );
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// Trap 2: Arc<Mutex<T>> is banned — ArcMutShared maps to Arc<RwLock<T>>.
     #[test]

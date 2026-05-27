@@ -48,7 +48,7 @@ pub enum EscapeKind {
 /// Heap-stability reasons that justify `Box<T>` over stack ownership.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum BoxReason {
-    /// Reserved for future type-definition validation work. v0.3 transform does
+    /// Reserved for future type-definition validation work. Transform does
     /// not emit this from binding-level lowering.
     RecursiveType,
     TraitObject,
@@ -64,8 +64,8 @@ pub enum SatisfactionCheck {
     LiveBorrowAtMoveButTierAllowsMove,
     AsyncBoxProhibited,
     /// `ReturnedFromFunction` escape: producing `Box<T>` requires rewriting the
-    /// function's return type and all call sites - deferred to v0.4.
-    /// Escalated to `RcShared` in v0.3; the annotation makes the gap visible.
+    /// function's return type and all call sites.
+    /// Escalated to `RcShared`; the annotation makes the gap visible.
     ReturnEscapeBoxDeferred,
 }
 
@@ -259,9 +259,9 @@ impl SatisfactionCheck {
             SatisfactionCheck::LiveBorrowAtMoveButTierAllowsMove => {
                 "live borrow at move required sharing"
             }
-            SatisfactionCheck::AsyncBoxProhibited => "Box<T> is deferred inside async fn in v0.3",
+            SatisfactionCheck::AsyncBoxProhibited => "Box<T> is deferred inside async fn",
             SatisfactionCheck::ReturnEscapeBoxDeferred => {
-                "Box<T> requires return-type rewrite (v0.4); escalated to Rc<T>"
+                "Box<T> requires return-type rewrite; escalated to Rc<T>"
             }
         }
     }
@@ -301,11 +301,11 @@ impl TierReason {
             TierReason::SendRequiredShared => "Send-required shared".to_owned(),
             TierReason::MutableSharedLastResort => "mutable shared, last resort".to_owned(),
             TierReason::GenericWrapperFloor => "generic T: Copy unknown".to_owned(),
-            TierReason::AsyncBoxDeferred => "Box<T> deferred: async fn (v0.7)".to_owned(),
+            TierReason::AsyncBoxDeferred => "Box<T> deferred: async fn".to_owned(),
             TierReason::ResourceWrapper => "resource wrapper".to_owned(),
             TierReason::AsyncSharedAttribute => "explicit async-shared opt-in: Arc tier".to_owned(),
             TierReason::ValidationEscalation(SatisfactionCheck::ReturnEscapeBoxDeferred) => {
-                "return escape: Box<T> requires signature rewrite (v0.4)".to_owned()
+                "return escape: Box<T> requires signature rewrite".to_owned()
             }
             TierReason::ValidationEscalation(check) => {
                 format!("validation escalation: {}", check.description())

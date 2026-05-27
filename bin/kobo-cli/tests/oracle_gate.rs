@@ -132,7 +132,7 @@ fn parse_migrate_header(output: &KoboOutput) -> MigrateEvidence {
         .expect("migrate output must contain solver outcome");
 
     let parse_outcome = |line: &str| -> String {
-        // "// solver outcome: Unique | fingerprint: ..."
+        // "// solver outcome: Unique | fingerprint:..."
         line.split("solver outcome:")
             .nth(1)
             .unwrap()

@@ -1119,7 +1119,7 @@ fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
 }
 
 fn reserved_metadata_registry_json() -> Value {
-    let backends = backend::v085_metadata_capabilities()
+    let backends = backend::reserved_metadata_capabilities()
         .iter()
         .map(|capability| {
             json!({

@@ -229,7 +229,7 @@ pub(super) enum AsyncSharedAttrResult {
     NotAsyncShared,
     /// Valid bare `#[kobo::async_shared]`.
     Valid,
-    /// Malformed `#[kobo::async_shared = ...]` or `#[kobo::async_shared(...)]` — takes no args.
+    /// Malformed `#[kobo::async_shared =...]` or `#[kobo::async_shared(...)]` — takes no args.
     HasArguments,
 }
 

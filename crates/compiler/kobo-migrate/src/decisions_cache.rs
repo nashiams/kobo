@@ -1,4 +1,4 @@
-//! Phase 11: Persistent decisions cache (.kobo/decisions.toml).
+//! Stage: Persistent decisions cache (.kobo/decisions.toml).
 //!
 //! Stores user-reviewed decisions for persistence across builds.
 //! Decisions can be locked (user-approved) or provisional (auto-resolved).

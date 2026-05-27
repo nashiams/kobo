@@ -1,4 +1,4 @@
-//! Phase 09: MigrateCtxt — shared context for the migration pipeline.
+//! Stage: MigrateCtxt — shared context for the migration pipeline.
 //!
 //! Holds the KIR, configuration, summaries, and caches in one place
 //! so that every phase can query the same state.

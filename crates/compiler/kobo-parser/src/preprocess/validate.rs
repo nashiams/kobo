@@ -6,8 +6,8 @@ use super::{KoboKeywordConfig, PreprocessError};
 /// Validate that `@strict` does not appear in forbidden positions.
 ///
 /// Returns `Err` if `@strict` is found:
-/// - inside a closure body (`|| { @strict ... }`), or
-/// - as a sub-expression (`let x = @strict { ... }`).
+/// - inside a closure body (`|| { @strict... }`), or
+/// - as a sub-expression (`let x = @strict {... }`).
 pub fn preprocess_strict_reject_invalid(
     source: &str,
     configs: &[KoboKeywordConfig],

@@ -9,8 +9,21 @@ fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn repo_root() -> PathBuf {
+    crate_root()
+        .join("..")
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("repository root should exist")
+}
+
 fn src_path(relative: &str) -> PathBuf {
     crate_root().join("src").join(relative)
+}
+
+fn repo_path(relative: &str) -> PathBuf {
+    repo_root().join(relative)
 }
 
 fn read_required(path: &Path) -> String {
@@ -151,10 +164,9 @@ fn function_line_count(source: &str, function_name: &str) -> Option<usize> {
     let lines = source.lines().collect::<Vec<_>>();
     for (start_index, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        if !trimmed.starts_with("fn ")
-            && !trimmed.starts_with("pub fn ")
-            && !trimmed.starts_with("pub(crate) fn ")
-        {
+        let is_function_header =
+            trimmed.starts_with("fn ") || (trimmed.starts_with("pub") && trimmed.contains(" fn "));
+        if !is_function_header {
             continue;
         }
         if !trimmed.contains(&format!("fn {function_name}")) {
@@ -189,6 +201,29 @@ fn count_nonblank_noncomment_lines(source: &str) -> usize {
         .count()
 }
 
+fn assert_function_line_limit(path: &Path, function_name: &str, limit: usize, reason: &str) {
+    let source = read_required(path);
+    let line_count = function_line_count(&source, function_name)
+        .unwrap_or_else(|| panic!("{} must define `{function_name}`", path.display()));
+
+    assert!(
+        line_count <= limit,
+        "`{function_name}` in {} should stay within {limit} lines; found {line_count}. {reason}",
+        path.display()
+    );
+}
+
+fn assert_file_line_ratchet(path: &Path, limit: usize, domain: &str) {
+    let source = read_required(path);
+    let line_count = source.lines().count();
+
+    assert!(
+        line_count <= limit,
+        "{} owns `{domain}` and must not grow past the current ratchet of {limit} lines without a domain-pure split; found {line_count}",
+        path.display()
+    );
+}
+
 fn collect_pipeline_sources() -> BTreeMap<String, String> {
     let mut sources = BTreeMap::new();
     let legacy = src_path("pipeline.rs");
@@ -218,14 +253,132 @@ fn collect_pipeline_sources() -> BTreeMap<String, String> {
 
 #[test]
 fn analysis_phase_entrypoint_is_not_a_god_function() {
-    let source = read_required(&src_path("pipeline/analysis.rs"));
-    let line_count = function_line_count(&source, "run_analysis_phase")
-        .expect("pipeline/analysis.rs must define run_analysis_phase");
+    assert_function_line_limit(
+        &src_path("pipeline/analysis.rs"),
+        "run_analysis_phase",
+        120,
+        "Keep this as a named-step orchestrator, not a diagnostic block owner.",
+    );
+}
+
+#[test]
+fn public_entrypoints_keep_table_of_contents_shape() {
+    for (path, function_name, limit, reason) in [
+        (
+            src_path("pipeline/parse.rs"),
+            "run_kir_phase",
+            138,
+            "Split parse/preprocess/KIR construction before adding new behavior.",
+        ),
+        (
+            src_path("pipeline/codegen.rs"),
+            "run_codegen_pipeline",
+            120,
+            "Keep codegen orchestration separate from artifact construction.",
+        ),
+        (
+            repo_path("bin/kobo-cli/src/commands/test_cmd.rs"),
+            "cmd_test",
+            247,
+            "Move witness, replay, fuzzing, and trace duties into named modules before adding new command flow.",
+        ),
+        (
+            src_path("proof.rs"),
+            "emit_proof_certificate",
+            143,
+            "Move proof evidence families into named modules before growing the driver adapter.",
+        ),
+    ] {
+        assert_function_line_limit(&path, function_name, limit, reason);
+    }
+}
+
+#[test]
+fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
+    for (relative, limit, domain) in [
+        (
+            "bin/kobo-cli/src/commands/test_cmd.rs",
+            4622,
+            "test command orchestration",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof.rs",
+            3369,
+            "proof emission adapter",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario.rs",
+            2846,
+            "scenario lowering",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness.rs",
+            2129,
+            "simulation harness agreement",
+        ),
+    ] {
+        assert_file_line_ratchet(&repo_path(relative), limit, domain);
+    }
+}
+
+#[test]
+fn no_new_vague_module_names_are_added() {
+    let allowed = [
+        "crates/compiler/kobo-codegen/src/lower/rewrite/util.rs",
+        "crates/compiler/kobo-driver/src/pipeline/util.rs",
+        "crates/compiler/kobo-transform/src/builder/helpers.rs",
+    ];
+    let vague_names = ["util.rs", "helpers.rs", "misc.rs", "common.rs"];
+    let mut unexpected = Vec::new();
+    collect_vague_module_paths(&repo_root(), &vague_names, &allowed, &mut unexpected);
+    unexpected.sort();
 
     assert!(
-        line_count <= 120,
-        "run_analysis_phase should orchestrate named projection steps, not own every diagnostic block; found {line_count} lines"
+        unexpected.is_empty(),
+        "new vague module names need a named concept boundary instead: {unexpected:?}"
     );
+}
+
+fn collect_vague_module_paths(
+    root: &Path,
+    vague_names: &[&str],
+    allowed: &[&str],
+    unexpected: &mut Vec<String>,
+) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if path.is_dir() {
+            if file_name.starts_with('.')
+                || matches!(file_name, "claude-spec" | "target")
+                || file_name.starts_with("target-")
+            {
+                continue;
+            }
+            collect_vague_module_paths(&path, vague_names, allowed, unexpected);
+            continue;
+        }
+
+        if !vague_names.contains(&file_name) {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !allowed.contains(&relative.as_str()) {
+            unexpected.push(relative);
+        }
+    }
 }
 
 #[test]
@@ -300,7 +453,7 @@ fn pipeline_phase_modules_own_expected_functions_once() {
         (
             "pipeline/util.rs",
             &[
-                "effective_mode",
+                "effective_guarantee_policy",
                 "apply_lifetime_erasure",
                 "lifetime_erasure_debt_report",
                 "extract_before_borrow_rewrite",

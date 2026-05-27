@@ -1,4 +1,4 @@
-//! Phase 10: Cluster decomposition with bridge variables.
+//! Stage: Cluster decomposition with bridge variables.
 //!
 //! Decomposes oversized clusters into sub-clusters by identifying
 //! bridge variables (articulation points) that connect sub-graphs.

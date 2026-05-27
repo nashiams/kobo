@@ -1,6 +1,6 @@
 //! S-20: Generate split-borrow destructuring for impl methods.
 //!
-//! Inserts `let Self { field_a, field_b, .. } = self;` and replaces
+//! Inserts `let Self { field_a, field_b,.. } = self;` and replaces
 //! all `self.field` references with bare field identifiers.
 
 use kobo_analysis::split_borrow::{FieldAccessKind, SplitBorrowSite};
@@ -32,7 +32,7 @@ pub(crate) fn generate_split_borrow(method: &mut syn::ImplItemFn, site: &SplitBo
         return false;
     }
 
-    // Build destructure pattern: `let Self { field_a, ref mut field_b, .. } = self;`
+    // Build destructure pattern: `let Self { field_a, ref mut field_b,.. } = self;`
     let destructure = build_destructure_stmt(&field_kinds);
 
     // Replace all `self.field` with bare `field` in the method body.
@@ -64,7 +64,7 @@ fn has_mut_self_receiver(method: &syn::ImplItemFn) -> bool {
         .unwrap_or(false)
 }
 
-/// Build `let Self { field_a, field_b, .. } = self;`
+/// Build `let Self { field_a, field_b,.. } = self;`
 fn build_destructure_stmt(field_kinds: &HashMap<String, FieldAccessKind>) -> syn::Stmt {
     use quote::quote;
     use syn::parse_quote;
@@ -107,7 +107,7 @@ impl VisitMut for SelfFieldReplacer {
     }
 
     fn visit_expr_assign_mut(&mut self, assign: &mut syn::ExprAssign) {
-        // Handle LHS: `self.field = ...` → `*field = ...`
+        // Handle LHS: `self.field =...` → `*field =...`
         if let syn::Expr::Field(field_expr) = assign.left.as_ref() {
             if let Some(name) = extract_self_field_name(field_expr) {
                 if self.field_kinds.contains_key(&name) {
@@ -120,7 +120,7 @@ impl VisitMut for SelfFieldReplacer {
     }
 
     fn visit_expr_binary_mut(&mut self, binary: &mut syn::ExprBinary) {
-        // Handle compound assignment: `self.field += ...` → `*field += ...`
+        // Handle compound assignment: `self.field +=...` → `*field +=...`
         if is_compound_assign(&binary.op) {
             if let syn::Expr::Field(field_expr) = binary.left.as_ref() {
                 if let Some(name) = extract_self_field_name(field_expr) {

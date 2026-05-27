@@ -10,7 +10,7 @@ use kobo_ir::{CaptureAccessKind, CaptureSet, CapturedBinding, NestedStrictBlock}
 /// Any mutable path in any nested block escalates the outer capture to Write.
 ///
 /// Records nested block info in CaptureSet.nested_blocks BEFORE merging (F-07)
-/// so v0.6 can recover per-block granularity.
+/// so can recover per-block granularity.
 pub fn flatten_nested_strict(outer: &mut CaptureSet, inner_blocks: Vec<CaptureSet>) {
     for inner in inner_blocks {
         // Record nested block info before merging (F-07)

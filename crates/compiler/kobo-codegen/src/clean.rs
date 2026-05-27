@@ -416,7 +416,7 @@ mod tests {
         );
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// Trap 10: ALL kobo_ crate imports must be stripped.
     #[test]

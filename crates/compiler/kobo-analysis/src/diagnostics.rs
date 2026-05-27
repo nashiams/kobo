@@ -48,8 +48,8 @@ pub fn facts_to_diagnostics(
         }
     }
 
-    // v0.5: Convert strict boundary facts → diagnostics (BUG-02 fix).
-    // @strict violations are always Error — mode-independent [Contract R10].
+    // Convert strict boundary facts → diagnostics (BUG-02 fix).
+    // @strict violations are always Error — mode-independent [Invariant R10].
     if !kir.strict_boundary_facts().is_empty() {
         for fact in kir.strict_boundary_facts() {
             let diag = match &fact.violation {

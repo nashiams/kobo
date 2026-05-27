@@ -18,7 +18,7 @@ pub use preprocess::{
     preprocess_concurrent_sugar, preprocess_concurrent_sugar_mapped, preprocess_kobo_keywords,
     preprocess_kobo_keywords_mapped, preprocess_select_blocks, preprocess_spawn_blocks,
     preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid,
-    preprocess_ward_syntax_mapped, v05_keyword_configs, validate_handler_attributes,
+    preprocess_ward_syntax_mapped, strict_keyword_configs, validate_handler_attributes,
     BridgeBlockInfo, BridgeKind, BridgedKeyword, ConcurrentSugarKind, ConcurrentSugarOccurrence,
     EngineInfo, KeywordMarker, KoboKeywordConfig, PreprocessBridge, PreprocessError,
     PreprocessMapSegment, PreprocessSourceMap, PreprocessedSource, SpawnBlockInfo, WardBlock,

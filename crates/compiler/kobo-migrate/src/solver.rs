@@ -777,7 +777,7 @@ mod tests {
         assert_eq!(budget.budget_seconds, 5.0);
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// Exhaustive match proves SolveOutcome has exactly 6 variants.
     #[test]

@@ -1,8 +1,8 @@
-//! RED oracle tests for the v0.8.5 roadmap.
+//! RED oracle tests for the roadmap.
 //!
 //! These tests intentionally exercise public CLI behavior before the feature
 //! work exists. They should fail until each phase is implemented through the
-//! spec in `.claude/prompt/roadmap/v0.8.5/acceptance/oracle_gates.md`.
+//! tracked public-surface oracle matrix.
 //!
 //! Keep these tests independent from helper internals: a later implementation
 //! agent should have to satisfy real command behavior, source sensitivity, and

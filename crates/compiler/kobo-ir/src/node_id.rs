@@ -12,7 +12,7 @@ pub struct KoboAstNodeId(pub u32);
 )]
 pub struct KirNodeId(pub u32);
 
-/// Stable identifier for a CFG basic block (used by the async pass in v0.7).
+/// Stable identifier for a CFG basic block used by the async pass.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Ord, PartialOrd)]
 pub struct CfgBlockId(pub u32);
 

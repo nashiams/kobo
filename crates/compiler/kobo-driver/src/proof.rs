@@ -1040,7 +1040,7 @@ fn generated_trace_evidence(
                     id: lowering_event.source_map_entry_id.clone(),
                     status: SourceMapAnchorStatus::Mapped,
                     generated_span: generated_source_span(source_map, lowering_event),
-                    kobo_span: source_span_from_kobo_span(
+                    kobo_span: source_map_anchor_span_from_kobo_span(
                         source_path,
                         source,
                         &lowering_event.kobo_span,
@@ -1238,8 +1238,22 @@ fn generated_source_span(
     }
 }
 
-fn source_span_from_kobo_span(source_path: &str, source: &str, span: &KoboSpan) -> SourceSpan {
-    source_span_from_kobo(source_path, source, *span)
+fn source_map_anchor_span_from_kobo_span(
+    source_path: &str,
+    source: &str,
+    span: &KoboSpan,
+) -> SourceSpan {
+    let start = span.start as usize;
+    let end = span.end.max(span.start + 1) as usize;
+    let bounded_start = start.min(source.len());
+    SourceSpan {
+        path: source_path.to_owned(),
+        line: one_based_line_for_offset(source, bounded_start),
+        start,
+        end,
+        mapped: end > start,
+        snippet: line_snippet(source, bounded_start),
+    }
 }
 
 fn core_cfg_nodes(source_path: &str, source: &str, functions: &[CoreFunction]) -> Vec<CoreCfgNode> {

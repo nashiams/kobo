@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static CASE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 // ---------------------------------------------------------------------------
-// Test harness (mirrors evidence_contract.rs FixtureCase)
+// Test harness (mirrors evidence_checks.rs FixtureCase)
 // ---------------------------------------------------------------------------
 
 struct OracleCase {
@@ -132,7 +132,7 @@ fn parse_migrate_header(output: &KoboOutput) -> MigrateEvidence {
         .expect("migrate output must contain solver outcome");
 
     let parse_outcome = |line: &str| -> String {
-        // "// solver outcome: Unique | fingerprint: ..."
+        // "// solver outcome: Unique | fingerprint:..."
         line.split("solver outcome:")
             .nth(1)
             .unwrap()
@@ -752,7 +752,7 @@ fn oracle_diamond_config_must_have_consistent_tier() {
 /// The LSM fixture has functions that form a call cycle:
 ///   batch_insert → store.put → store.freeze_active
 ///   insert_and_compact → batch_insert + store.run_compaction
-///   multi_phase_load → insert_and_compact (×2) + batch_insert + run_compaction
+///   multi_slice_load → insert_and_compact (×2) + batch_insert + run_compaction
 /// The solver must handle this SCC without hanging or producing
 /// ClusterTooLarge/BudgetExceeded.
 #[test]

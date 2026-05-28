@@ -1,6 +1,6 @@
-//! Modular solver pipeline (v0.8.1).
+//! Modular solver pipeline.
 //!
-//! Chains all phase modules into a single entry point:
+//! Chains all stage modules into a single entry point:
 //!   greedy(Ph00) → constraint_extract(Ph01) → cluster(Ph02) →
 //!   lattice_solve(Ph03) → chooser(Ph04) → backtrack(Ph08) →
 //!   decompose+parallel(Ph10) → decision_class+profile+explain(Ph11)
@@ -49,19 +49,19 @@ const DECOMPOSE_TARGET_SIZE: usize = 64;
 /// Solve ownership constraints using the full modular pipeline.
 ///
 /// This replaces the monolithic `solve()` for the compiler pipeline, chaining:
-/// - Phase 00 (greedy): resolve obvious bindings locally
-/// - Phase 01 (constraint_extract): build provenance-rich graph for residuals
-/// - Phase 02 (cluster): partition into connected components with prechecks
-/// - Phase 10 (decompose): split oversized clusters at articulation points
-/// - Phase 03 (lattice_solve): per-cluster LUB-worklist propagation
-/// - Phase 08 (backtrack): fallback for lattice conflicts
-/// - Phase 04 (chooser): rank multi-solution candidates
-/// - Phase 10 (parallel): sequential execution of solve units (parallelisable)
-/// - Phase 11 (decision_class + profile): classify and score the results
+/// - Stage: (greedy): resolve obvious bindings locally
+/// - Stage: (constraint_extract): build provenance-rich graph for residuals
+/// - Stage: (cluster): partition into connected components with prechecks
+/// - Stage: (decompose): split oversized clusters at articulation points
+/// - Stage: (lattice_solve): per-cluster LUB-worklist propagation
+/// - Stage: (backtrack): fallback for lattice conflicts
+/// - Stage: (chooser): rank multi-solution candidates
+/// - Stage: (parallel): sequential execution of solve units (parallelisable)
+/// - Stage: (decision_class + profile): classify and score the results
 pub fn solve_modular(kir: &Kir, budget: &SolverBudget) -> SolveOutcome {
     let start = Instant::now();
 
-    // ── Phase 00: Greedy pass ──
+    // ── Stage: Greedy pass ──
     let config = GreedyConfig {
         solver_cluster_limit: budget.max_cluster_size,
         solver_budget_seconds: budget.budget_seconds,
@@ -90,10 +90,10 @@ pub fn solve_modular(kir: &Kir, budget: &SolverBudget) -> SolveOutcome {
         });
     }
 
-    // ── Phase 01: Extract constraints for residual (unresolved) bindings ──
+    // ── Stage: Extract constraints for residual (unresolved) bindings ──
     let extraction = extract_constraints(kir, &greedy_result);
 
-    // ── Phase 02: Cluster into connected components ──
+    // ── Stage: Cluster into connected components ──
     let clusters = extract_clusters(&extraction);
 
     if clusters.is_empty() {
@@ -113,14 +113,14 @@ pub fn solve_modular(kir: &Kir, budget: &SolverBudget) -> SolveOutcome {
             });
         }
 
-        // Phase 02: Containment precheck (boundary → K0090, oversize → K0081).
+        // Stage: Containment precheck (boundary → K0090, oversize → K0081).
         match containment_precheck(cluster, budget.max_cluster_size) {
             ContainmentResult::Proceed(c) => {
-                // Phase 10: Decompose oversized clusters at articulation points.
+                // Stage: Decompose oversized clusters at articulation points.
                 if c.size > DECOMPOSE_TARGET_SIZE {
                     let decomposed = decompose(&c, DECOMPOSE_TARGET_SIZE);
                     if decomposed.sub_clusters.len() > 1 {
-                        // Phase 10: Execute sub-clusters via parallel harness.
+                        // Stage: Execute sub-clusters via parallel harness.
                         let results = execute_all(&decomposed.sub_clusters);
                         let merged = merge_results(&results);
                         for (id, tier) in merged.iter() {
@@ -181,20 +181,20 @@ pub fn solve_modular(kir: &Kir, budget: &SolverBudget) -> SolveOutcome {
     }
 }
 
-/// Solve a single cluster using lattice (Phase 03), chooser (Phase 04),
-/// and backtracking (Phase 08) as fallback.
+/// Solve a single cluster using lattice propagation, chooser ranking,
+/// and backtracking as fallback.
 fn solve_single_cluster(
     cluster: &Cluster,
     solution: &mut SolutionMap,
     conflicts: &mut Vec<KirNodeId>,
     ambiguous_clusters: &mut Vec<Vec<SolutionCandidate>>,
 ) {
-    // Phase 03: Lattice solve.
+    // Stage: Lattice solve.
     let lattice_outcome = lattice_solve(cluster);
 
     match &lattice_outcome {
         LatticeOutcome::Solved(map) => {
-            // Phase 04: Rank the solution (even unique ones get risk-scored).
+            // Stage: Rank the solution (even unique ones get risk-scored).
             let ranked = choose_best(cluster, &lattice_outcome, &[]);
             if let Some(best) = ranked.first() {
                 for (id, tier) in best.solution.iter() {
@@ -230,7 +230,7 @@ fn solve_single_cluster(
             floor,
             ceiling,
         } => {
-            // Phase 08: Generate disjunctions from the conflict and run backtracking search.
+            // Stage: Generate disjunctions from the conflict and run backtracking search.
             let disjunctions = generate_disjunctions_from_conflict(*node, *floor, *ceiling);
             let mut bt = BacktrackSolver::new(cluster);
             match bt.solve(cluster, &disjunctions) {
@@ -388,7 +388,7 @@ fn dedupe_candidates(candidates: Vec<SolutionCandidate>) -> Vec<SolutionCandidat
 pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularEvidence {
     let start = Instant::now();
 
-    // ── Phase 00: Greedy pass (single execution) ──
+    // ── Stage: Greedy pass (single execution) ──
     let config = GreedyConfig {
         solver_cluster_limit: budget.max_cluster_size,
         solver_budget_seconds: budget.budget_seconds,
@@ -404,7 +404,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
         solution.insert(decision.node, decision.tier);
     }
 
-    // ── Phase 01: Extract constraints ──
+    // ── Stage: Extract constraints ──
     let extraction = extract_constraints(kir, &greedy_result);
 
     // Build constraint graph for fingerprint.
@@ -413,7 +413,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
     let node_count = graph.nodes.len();
     let edge_count = graph.edges.len();
 
-    // ── Phase 02: Cluster ──
+    // ── Stage: Cluster ──
     let clusters = extract_clusters(&extraction);
     let cluster_count = clusters.len();
 
@@ -545,7 +545,7 @@ pub fn solve_modular_with_evidence(kir: &Kir, budget: &SolverBudget) -> ModularE
         }
     };
 
-    // Phase 11: Classify decisions for evidence.
+    // Stage: Classify decisions for evidence.
     let greedy_classified: Vec<(KirNodeId, OwnershipTier, String)> = greedy_result
         .resolved
         .iter()

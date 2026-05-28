@@ -15,9 +15,9 @@ pub struct KoboFile {
     bindings: Vec<KoboBinding>,
     binding_index_by_id: HashMap<KoboAstNodeId, usize>,
     binding_index_by_span: HashMap<KoboSpan, usize>,
-    /// @strict blocks collected before marker-stripping (P3 / v0.5).
+    /// @strict blocks collected before marker-stripping.
     strict_blocks: Vec<KoboBlock>,
-    /// @strict fn items collected before marker-stripping (P3 / v0.5).
+    /// @strict fn items collected before marker-stripping.
     strict_fns: Vec<KoboItemFn>,
 }
 
@@ -42,7 +42,7 @@ pub enum RecoveryMode {
 
 /// A Kobo block that may carry `@strict` annotation.
 ///
-/// Used by kobo-transform's strict analysis. Contract C09: `is_strict` is
+/// Used by kobo-transform's strict analysis. Invariant C09: `is_strict` is
 /// set during parsing (P1); the field is the sole source of truth.
 #[derive(Clone)]
 pub struct KoboBlock {

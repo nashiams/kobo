@@ -1,12 +1,12 @@
 /// Post-process: strip `#[__kobo_strict]` marker attributes from the AST.
 ///
-/// Contract C06: the marker never survives into the final AST.
+/// Invariant C06: the marker never survives into the final AST.
 use syn::visit_mut::VisitMut;
 
 use super::{is_kobo_strict_attr, KeywordMarker, PreprocessError};
 
 /// Walk the AST after `syn::parse_file()`, remove `#[__kobo_strict]` attributes,
-/// and record which nodes were marked. Contract C06: the marker never survives
+/// and record which nodes were marked. Invariant C06: the marker never survives
 /// into the final AST.
 pub fn postprocess_strict_markers(
     file: &mut syn::File,

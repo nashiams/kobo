@@ -1,12 +1,11 @@
 /// K0041: active alias detection for RcMutShared bindings.
 ///
 /// Walks the enclosing function body before @strict block entry. Detects:
-/// 1. `.clone()` calls on the binding → alias via Rc::clone
-/// 2. `let alias = binding;` → alias via move/copy
-/// 3. Function calls passing binding by value → alias escapes
+/// 1. `.clone()` calls on the binding create an Rc alias
+/// 2. `let alias = binding;` creates an alias via move/copy
+/// 3. Function calls passing binding by value let the alias escape
 ///
-/// Contract C03: produces StrictBoundaryViolation::ActiveAliases (never Warning).
-/// Contract C05: produces facts, NOT KDiagnostic.
+/// Produces StrictBoundaryFact values, not diagnostics.
 use kobo_ir::{CaptureSet, Kir, KirNodeId, KoboSpan, StrictBoundaryFact, StrictBoundaryViolation};
 use kobo_parser::KoboBlock;
 use syn::visit::Visit;

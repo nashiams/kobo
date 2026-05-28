@@ -4,7 +4,7 @@ use kobo_ir::{BorrowKind, CloneElisionCandidate, KirNodeId, KoboSpan, TransformF
 
 use crate::clone_elision::decide_clone_elision;
 
-/// A site where `spawn { ... }` captures bindings from the enclosing scope.
+/// A site where `spawn {... }` captures bindings from the enclosing scope.
 #[derive(Clone, Debug)]
 pub struct SpawnSite {
     pub span: KoboSpan,
@@ -13,7 +13,7 @@ pub struct SpawnSite {
 
 /// Mark bindings captured by spawn sites as needing `Send`.
 ///
-/// When a binding is captured by a `spawn { ... }` block, it must be `Send`
+/// When a binding is captured by a `spawn {... }` block, it must be `Send`
 /// because `tokio::spawn` requires `Future: Send`. This propagates that
 /// requirement into `SharedBindingFacts::needs_send`.
 pub(crate) fn propagate_spawn_send(facts: &mut TransformFacts, spawn_sites: &[SpawnSite]) {

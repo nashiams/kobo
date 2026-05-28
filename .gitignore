@@ -7,9 +7,6 @@
 /tests/fixtures/*.exe
 /tests/fixtures/*.pdb
 /tests/fixtures/*.rs
-/tests/fixtures/v10/*.kwit
-/tests/fixtures/v10/*.map
-/tests/fixtures/v10/*.rs
 **/.kobo/
 
 # Windows and editor noise
@@ -17,10 +14,8 @@ Thumbs.db
 .DS_Store
 *.tmp
 
-.claude
-claude-spec
 audit-report.txt
-audit-report-v0.5.txt
+audit-report-*.txt
 nul
 .github
 .gitlab
@@ -33,5 +28,3 @@ nul
 *.swn
 docs
 .skill-staging
-.claude/prompt/roadmap/v0.12/implementation_notes/
-.claude/prompt/roadmap/v0.12/reviews/

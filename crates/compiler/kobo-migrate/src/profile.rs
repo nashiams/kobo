@@ -1,4 +1,4 @@
-//! Phase 11: Decision profile — aggregate statistics over decisions.
+//! Stage: Decision profile — aggregate statistics over decisions.
 //!
 //! Summarizes solver decisions into a profile that helps users
 //! gauge migration readiness.

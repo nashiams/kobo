@@ -94,7 +94,9 @@ pub(crate) fn strip_tick_attributes(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        generate_tick_loop_source, is_tick_attribute, parse_tick_rate, strip_tick_attributes,
+    };
 
     #[test]
     fn tick_loop_20hz() {

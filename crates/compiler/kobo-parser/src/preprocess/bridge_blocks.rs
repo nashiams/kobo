@@ -39,7 +39,7 @@ pub enum BridgeKind {
     AsyncInSync,
 }
 
-/// Rewrite `sync { ... }` and context-aware `async { ... }` bridge blocks.
+/// Rewrite `sync {... }` and context-aware `async {... }` bridge blocks.
 ///
 /// Returns `(rewritten_source, bridge_infos)`.
 ///

@@ -1,4 +1,4 @@
-//! Phase 04: Candidate ranking and selection.
+//! Stage: Candidate ranking and selection.
 //!
 //! When the solver has multiple valid solutions, rank them by risk score
 //! and heuristics.  Caps enumeration at 8 candidates to keep output manageable.

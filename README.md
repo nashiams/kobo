@@ -48,7 +48,7 @@ trace and source-map anchors for proof-relevant events. It is not a whole-progra
 Rust correctness claim.
 
 Proof assistant mechanization is a release credibility layer over the same narrow
-obligation core. v0.16 begins mechanized soundness for Kobo's obligation core and
+obligation core. The current mechanized model covers Kobo's obligation core and
 proof verifier. The sample accepted .kproof trace has a matching mechanized trace
 model, and that bridge remains sample-scoped.
 

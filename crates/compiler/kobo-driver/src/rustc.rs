@@ -48,7 +48,7 @@ pub fn compile_and_remap(
     let binary_path = binary_path_for(rs_path);
     let output = run_rustc(rs_path, &binary_path, source_map, kobo_file_id, session)?;
     if output.status.success() {
-        // v0.6 G4 [R6-02]: Capture warnings on success path in checked mode.
+        // Capture warnings on the success path in checked mode.
         // Script mode skips warning parsing (conservative — no noise to filter).
         let rustc_warnings = if session.guarantee_policy().is_checked() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -78,7 +78,7 @@ pub fn compile_and_remap(
 }
 
 /// Filter rustc warnings that are artifacts of Kobo's generated wrapper code.
-/// Conservative: when in doubt, KEEP the warning [Contract R09].
+/// Conservative: when in doubt, keep the warning.
 ///
 /// `kobo_regions` is a list of (start_line, end_line) pairs derived from
 /// `// kobo:` comment annotations in the generated .rs source.
@@ -154,7 +154,7 @@ fn primary_label_contains(diag: &RustcJsonError, needle: &str) -> bool {
     })
 }
 
-/// Re-map surviving rustc warnings to .kobo spans and push to session diagnostics.
+/// Re-map surviving rustc warnings to.kobo spans and push to session diagnostics.
 /// Warnings that cannot be remapped get a fallback "(generated code)" note.
 pub fn remap_warnings_to_diagnostics(
     warnings: Vec<RustcJsonError>,
@@ -196,7 +196,6 @@ pub fn extract_kobo_regions(rs_source: &str) -> Vec<(u32, u32)> {
 /// Locate the kobo-diag rlib in the same `deps/` directory as the current
 /// executable. Returns None if it cannot be found or the path is ambiguous.
 ///
-/// This is the build-layer strategy for G1 Task 1.4 [R6-04]:
 /// Generated `.rs` files emit `use kobo_diag::DiagOwner;` when diag is active.
 /// Bare `rustc` cannot resolve external crates without `--extern`. We find the
 /// rlib from our own Cargo target directory and pass `--extern kobo_diag=<path>`.
@@ -259,10 +258,8 @@ fn run_rustc(
         .arg("-o")
         .arg(binary_path);
 
-    // Build layer [G1 §1.4 / R6-04]: when diag instrumentation is active,
-    // the generated .rs file contains `use kobo_diag::DiagOwner;`. The bare
-    // `rustc` invocation must resolve this extern crate, or linking fails.
-    // We pass --extern kobo_diag=<rlib> and -L <deps_dir> so rustc finds it.
+    // Bare rustc must be told where to find Kobo's diagnostic runtime when
+    // instrumentation inserts `use kobo_diag::DiagOwner;` into generated code.
     if session.diag_enabled {
         add_extern_rlib(&mut cmd, "kobo_diag");
     }

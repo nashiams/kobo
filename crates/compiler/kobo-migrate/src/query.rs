@@ -1,4 +1,4 @@
-//! Phase 09: Query layer over MigrateCtxt.
+//! Stage: Query layer over MigrateCtxt.
 //!
 //! Provides semantic queries that phases can call instead of raw field access.
 //! Queries go through the cache when appropriate.

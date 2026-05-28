@@ -210,7 +210,7 @@ fn normalize_manifest_path(path: PathBuf) -> String {
         .join("/")
 }
 
-/// Runs the build pipeline: discovers .kobo files, compiles each to .rs,
+/// Runs the build pipeline: discovers.kobo files, compiles each to.rs,
 /// generates Cargo.toml, shells out to `cargo build`, and writes everything
 /// under `<project_dir>/target/kobo-gen/`.
 pub fn run_build_pipeline(

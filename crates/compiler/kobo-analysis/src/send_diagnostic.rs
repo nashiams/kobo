@@ -10,7 +10,7 @@ use kobo_errors::Severity;
 /// This requires:
 /// 1. Knowing which bindings are captured by the spawn block
 /// 2. Knowing which bindings are !Send (Rc, RefCell, non-Send user types)
-/// 3. Finding the .await points that cause the capture to span across suspend
+/// 3. Finding the.await points that cause the capture to span across suspend
 use kobo_ir::{Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, TransformFacts};
 
 /// Represents a spawn site in the source.
@@ -34,7 +34,7 @@ pub struct SendDiagnostic {
     pub spawn_span: KoboSpan,
     /// Where the binding is declared.
     pub binding_span: KoboSpan,
-    /// The .await that causes the binding to be held across a suspend point.
+    /// The.await that causes the binding to be held across a suspend point.
     pub await_span: Option<KoboSpan>,
     /// Suggestion for fixing the issue.
     pub suggestion: String,
@@ -109,7 +109,7 @@ pub fn analyze_send_violations(
             let wrapper_type = wrapper_type_label(node.ownership).to_owned();
             let suggestion = suggest_fix(node.ownership);
 
-            // Pick the first .await point as the primary cause.
+            // Pick the first.await point as the primary cause.
             let await_span = site.await_points.first().copied();
 
             diagnostics.push(SendDiagnostic {
@@ -322,7 +322,7 @@ mod tests {
         );
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// K0061 always Error for RcMutShared too.
     #[test]

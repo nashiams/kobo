@@ -13,9 +13,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -q -p kobo-proof
-      - run: cargo test -q -p kobo-cli --test v16_obligation_rule_sync_contract
-      - run: cargo test -q -p kobo-cli --test v16_mechanized_trace_contract
-      - run: cargo test -q -p kobo-cli --test v16_proof_assistant_wording_contract
+      - run: cargo test -q -p kobo-cli --test obligation_rule_sync_checks
+      - run: cargo test -q -p kobo-cli --test mechanized_trace_checks
+      - run: cargo test -q -p kobo-cli --test proof_assistant_wording_checks
 
   lean-mechanization:
     runs-on: ubuntu-latest

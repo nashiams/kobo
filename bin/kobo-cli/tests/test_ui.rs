@@ -15,7 +15,7 @@ fn check_k0001_fixture_matches_snapshot() {
         .join("K0001_use_after_move.kobo");
     let output = run_kobo_check(&fixture);
 
-    // v0.6 [R6-11]: K0001 is SILENT in script mode — check should succeed.
+    // [R6-11]: K0001 is SILENT in script mode — check should succeed.
     assert!(
         output.status.success(),
         "K0001 is silent in script mode — check should succeed"
@@ -40,7 +40,7 @@ fn check_k0002_fixture_matches_snapshot() {
         .join("K0002_mutable_borrow_conflict.kobo");
     let output = run_kobo_check(&fixture);
 
-    // v0.6 [R6-11]: K0002 is SILENT in script mode — check should succeed.
+    // [R6-11]: K0002 is SILENT in script mode — check should succeed.
     assert!(
         output.status.success(),
         "K0002 is silent in script mode — check should succeed"
@@ -65,7 +65,7 @@ fn check_k0025_fixture_matches_snapshot() {
         .join("K0025_hint_ignored.kobo");
     let output = run_kobo_check(&fixture);
 
-    // v0.6 [R6-03]: K0025 is always Error (constraint conflict, not perf advisory).
+    // [R6-03]: K0025 is always Error (constraint conflict, not perf advisory).
     assert!(
         !output.status.success(),
         "K0025 is always error — check should fail"
@@ -84,7 +84,7 @@ fn check_k0025_fixture_matches_snapshot() {
 
 #[test]
 fn run_k0001_fixture_silent_in_script_mode() {
-    // v0.6 [R6-11]: K0001 is silent in script mode. The pipeline continues to
+    // [R6-11]: K0001 is silent in script mode. The pipeline continues to
     // codegen + rustc. In this fixture the helper functions are undefined, so
     // rustc still fails (K0099) — but K0001 itself is never emitted.
     let fixture = workspace_root()
@@ -105,7 +105,7 @@ fn run_k0001_fixture_silent_in_script_mode() {
 
 #[test]
 fn run_k0002_fixture_silent_in_script_mode() {
-    // v0.6 [R6-11]: K0002 is silent in script mode. The pipeline wraps the
+    // [R6-11]: K0002 is silent in script mode. The pipeline wraps the
     // borrow conflict with Rc<RefCell>, which compiles — but may panic at runtime.
     // The key assertion: K0002 diagnostic is NOT emitted.
     let fixture = workspace_root()
@@ -154,7 +154,7 @@ fn workspace_root() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// v0.4 — K0080-P structural warning tests
+// K0080-P structural warning tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -175,7 +175,7 @@ fn check_k0080_p1_emits_note() {
         "stderr must contain note[K0080-P1], got:\n{}",
         output.stderr
     );
-    // Severity contract: must NOT be warning or error.
+    // Severity Invariant: must NOT be warning or error.
     assert!(
         !output.stderr.contains("warning[K0080-P1]"),
         "K0080-P1 must not be a warning"
@@ -250,7 +250,7 @@ fn check_k0080_p4_self_ref_emits_note() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.4 — kobo debt command tests
+// kobo debt command tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -324,7 +324,7 @@ fn run_kobo_command_with_args(
 }
 
 // ---------------------------------------------------------------------------
-// v0.5 — @strict boundary violation snapshot tests (BUG-06)
+// @strict boundary violation snapshot tests (BUG-06)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -392,7 +392,7 @@ fn check_strict_k0063_async_context() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.6 — Checked mode warning tests [BUG-05]
+// Checked mode warning tests [BUG-05]
 // ---------------------------------------------------------------------------
 
 fn run_kobo_raw_args(args: &[&str]) -> KoboOutput {
@@ -412,7 +412,7 @@ fn run_kobo_raw_args(args: &[&str]) -> KoboOutput {
 
 #[test]
 fn check_checked_mode_k0001_produces_warning() {
-    // v0.6 AC-1: `kobo check --checked` emits warning[K0001], exits 0.
+    // AC-1: `kobo check --checked` emits warning[K0001], exits 0.
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
@@ -442,7 +442,7 @@ fn check_checked_mode_k0001_produces_warning() {
 
 #[test]
 fn check_checked_mode_k0002_produces_warning() {
-    // v0.6 AC-4: `kobo check --checked` emits warning[K0002], exits 0.
+    // AC-4: `kobo check --checked` emits warning[K0002], exits 0.
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
@@ -468,7 +468,7 @@ fn check_checked_mode_k0002_produces_warning() {
 
 #[test]
 fn check_checked_mode_relax_suppresses_warning() {
-    // v0.6 AC-9: #[kobo::relax] suppresses K0001 inside relaxed fn.
+    // AC-9: #[kobo::relax] suppresses K0001 inside relaxed fn.
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
@@ -494,7 +494,7 @@ fn check_checked_mode_relax_suppresses_warning() {
 
 #[test]
 fn check_script_mode_relax_emits_k0026() {
-    // v0.6 AC-10: #[kobo::relax] in script mode emits K0026 advisory.
+    // AC-10: #[kobo::relax] in script mode emits K0026 advisory.
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
@@ -519,7 +519,7 @@ fn check_script_mode_relax_emits_k0026() {
 
 #[test]
 fn check_checked_mode_hello_world_clean() {
-    // v0.6 AC-15: Clean program in checked mode — zero diagnostics.
+    // AC-15: Clean program in checked mode — zero diagnostics.
     let fixture = workspace_root()
         .join("tests")
         .join("fixtures")

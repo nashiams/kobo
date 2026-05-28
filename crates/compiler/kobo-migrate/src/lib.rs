@@ -10,7 +10,7 @@ pub mod decision_class;
 pub mod decisions_cache;
 pub mod decompose;
 #[cfg(test)]
-mod evidence_contract_tests;
+mod evidence_oracle_tests;
 pub mod explain;
 mod greedy;
 pub mod lattice_solve;
@@ -33,11 +33,10 @@ pub use solver::{
     SolveOutcome, SolverBudget, SolverEvidence,
 };
 
-// Legacy exports for backward compatibility
+// Legacy exports for backward compatibility.
 pub use solver::SolveResult;
 
-// ─── Modular pipeline (v0.8.1) ───
-// Wires Phases 01-11 into a single `solve_modular` entry point
-// that replaces the monolithic `solve()` for the compiler pipeline.
+// Modular ownership pipeline entry point.
+// Wires the named solver stages into the compiler pipeline.
 
 pub use modular_pipeline::{solve_modular, solve_modular_with_evidence, ModularEvidence};

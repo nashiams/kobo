@@ -410,7 +410,7 @@ fn kobo_bind_initializer(init: Option<&syn::Expr>) -> bool {
 }
 
 /// Known methods that return references rather than owned values.
-/// Reads via these methods are NOT eligible for extract-before-borrow (BUG-12).
+/// Reads via these methods are not eligible for extract-before-borrow.
 const KNOWN_REF_RETURNING_METHODS: &[&str] = &[
     "iter",
     "iter_mut",

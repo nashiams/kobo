@@ -1,6 +1,6 @@
 //! Select the correct Rust wrapper type for async bindings.
 //!
-//! Mapping table (v0.8):
+//! Mapping table:
 //!   OwnershipTier::ArcShared (read-only) → Arc<T>
 //!   OwnershipTier::ArcMutShared (mutable) → Arc<tokio::sync::RwLock<T>>
 //!   OwnershipTier::ArcMutShared (counter-like) → Arc<AtomicU64>  // reserved for future specialized lowering
@@ -8,13 +8,13 @@
 //! HARD RULES:
 //!   - NEVER generate Arc<std::sync::Mutex<T>>
 //!   - NEVER generate std::sync::Mutex in async context
-//!   - ALWAYS tokio::sync::RwLock when .await may be held
+//!   - ALWAYS tokio::sync::RwLock when.await may be held
 //!
 //! In codegen, ArcMutShared in async context emits:
 //!   Arc::new(tokio::sync::RwLock::new(value))
 //! And access patterns emit:
-//!   .read().await  (for reads)
-//!   .write().await (for writes)
+//! `.read().await`  (for reads)
+//! `.write().await` (for writes)
 
 #![cfg_attr(not(test), allow(dead_code))]
 use kobo_ir::OwnershipTier;
@@ -70,7 +70,8 @@ pub(crate) fn async_write_access(kind: AsyncWrapperKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{async_read_access, async_wrapper_kind, async_write_access, AsyncWrapperKind};
+    use kobo_ir::OwnershipTier;
 
     #[test]
     fn arc_shared_in_async_is_read_only() {

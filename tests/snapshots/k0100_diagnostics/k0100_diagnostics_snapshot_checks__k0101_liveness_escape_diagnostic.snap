@@ -1,0 +1,6 @@
+---
+source: bin/kobo-cli/tests/k0100_diagnostics_snapshot_checks.rs
+assertion_line: 48
+expression: normalize_text(text)
+---
+warning[K0101]: Transaction `tx` in `handler`: obligation escapes local analysis through an external call (commit | rollback); applicability: source=local-declaration types=[Transaction] functions=[handler]

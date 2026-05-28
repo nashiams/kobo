@@ -39,7 +39,7 @@ pub fn run_codegen_pipeline(
     run_analysis_phase(session, &kir)?;
     let (evidence, outcome) = resolve_solution(&kir);
 
-    // Phase 00/05: Project non-Unique solver outcomes to K-code diagnostics.
+    // Stage: Project non-Unique solver outcomes to K-code diagnostics.
     project_solver_diagnostics(session, &kir, &outcome);
 
     let mut solution = match &outcome {

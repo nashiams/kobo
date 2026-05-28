@@ -6,7 +6,7 @@ use syn::spanned::Spanned;
 
 use super::super::binding::{binding_tier_from_expr, wrapper_binding_from_expr};
 use super::super::strict::lower_strict_block;
-use super::{util, ScopeStack};
+use super::{syntax_support, ScopeStack};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConcurrentFieldSugar {
@@ -30,8 +30,8 @@ impl super::Lowerer<'_> {
                 self.lower_binary_operand(binary.right.as_mut(), scopes);
             }
             syn::Expr::Block(block) => {
-                if util::has_kobo_attr(&block.attrs, "critical_section") {
-                    util::strip_kobo_attrs(&mut block.attrs);
+                if syntax_support::has_kobo_attr(&block.attrs, "critical_section") {
+                    syntax_support::strip_kobo_attrs(&mut block.attrs);
                     let marker: syn::Stmt = parse_quote! {
                         let __kobo_critical_section = ();
                     };
@@ -42,7 +42,7 @@ impl super::Lowerer<'_> {
 
                 // P5: detect @strict blocks by span-matching against ast.strict_blocks().
                 // The span uses the INNER block's span (node.block.span()), which is stable
-                // across postprocess_strict_markers (Contract C06, Trap 17).
+                // across postprocess_strict_markers.
                 let bspan = self.ast.span_from_syn(block.block.span());
                 let strict_kblock = self
                     .ast
@@ -234,9 +234,9 @@ impl super::Lowerer<'_> {
                 }
 
                 self.lower_expr(argument, scopes);
-                if util::should_wrap_argument(expected_tier) {
+                if syntax_support::should_wrap_argument(expected_tier) {
                     let lowered = (*argument).clone();
-                    *argument = util::wrap_argument_expr(lowered, expected_tier);
+                    *argument = syntax_support::wrap_argument_expr(lowered, expected_tier);
                 }
                 continue;
             }
@@ -293,7 +293,7 @@ impl super::Lowerer<'_> {
         let receiver_type = scopes.lookup_type_name(&ident);
         match tier {
             OwnershipTier::RcMutShared => {
-                *method_call.receiver = util::lowered_receiver_expr(
+                *method_call.receiver = syntax_support::lowered_receiver_expr(
                     ident,
                     &method_call.method,
                     self.kir.method_mutability(),
@@ -302,7 +302,7 @@ impl super::Lowerer<'_> {
                 return;
             }
             OwnershipTier::ArcMutShared => {
-                *method_call.receiver = util::lowered_async_receiver_expr(
+                *method_call.receiver = syntax_support::lowered_async_receiver_expr(
                     ident,
                     &method_call.method,
                     self.kir.method_mutability(),
@@ -410,11 +410,11 @@ impl super::Lowerer<'_> {
 }
 
 fn concurrent_field_sugar_from_attrs(attrs: &[syn::Attribute]) -> Option<ConcurrentFieldSugar> {
-    if util::has_kobo_attr(attrs, "counter") {
+    if syntax_support::has_kobo_attr(attrs, "counter") {
         Some(ConcurrentFieldSugar::Counter)
-    } else if util::has_kobo_attr(attrs, "live") {
+    } else if syntax_support::has_kobo_attr(attrs, "live") {
         Some(ConcurrentFieldSugar::Live)
-    } else if util::has_kobo_attr(attrs, "view_distance") {
+    } else if syntax_support::has_kobo_attr(attrs, "view_distance") {
         Some(ConcurrentFieldSugar::ViewDistance)
     } else {
         None

@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn short_descriptions_match_v02_contract_for_move_and_borrow() {
+    fn short_descriptions_match_move_and_borrow_diagnostics() {
         assert_eq!(
             KErrorCode::K0001.short_description(),
             "value used after move"

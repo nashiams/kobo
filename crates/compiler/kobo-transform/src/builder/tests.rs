@@ -1292,7 +1292,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4: Mutable method detection via MethodRegistry
+// Stage: Mutable method detection via MethodRegistry
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1451,7 +1451,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — P0-2: impl block rewriting
+// Test coverage: P0-2: impl block rewriting
 // ---------------------------------------------------------------------------
 
 /// P0-2 #11: Multiple impl blocks for the same type are both rewritten.
@@ -1518,7 +1518,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — P0-4: Copy type scanning
+// Test coverage: P0-4: Copy type scanning
 // ---------------------------------------------------------------------------
 
 /// P0-4 #17: Nested Copy — struct of Copy structs.
@@ -1577,7 +1577,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — P0-5: Mutating method detection
+// Test coverage: P0-5: Mutating method detection
 // ---------------------------------------------------------------------------
 
 /// P0-5 #23: Override overrides conservative default.
@@ -1629,7 +1629,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — S-1: Scope-aware Rc elision
+// Test coverage: S-1: Scope-aware Rc elision
 // ---------------------------------------------------------------------------
 
 /// S-1 #4: Binding used only in single branch → elision.
@@ -1671,7 +1671,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — S-17: Extract-before-borrow
+// Test coverage: S-17: Extract-before-borrow
 // ---------------------------------------------------------------------------
 
 /// S-17 #12: Copy field extraction (i32).
@@ -1714,7 +1714,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — S-26: Per-module mode (CLI override)
+// Test coverage: S-26: Per-module mode (CLI override)
 // ---------------------------------------------------------------------------
 
 /// Legacy mode directives are compatibility input for guarantee profiles.
@@ -1741,7 +1741,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — Decision Table: Sync Context
+// Test coverage: Decision Table: Sync Context
 // ---------------------------------------------------------------------------
 
 /// DT S5: Strict mode behavior — checked mode applies wrappers, strict mode would not.
@@ -1767,7 +1767,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — Decision Table: Priority
+// Test coverage: Decision Table: Priority
 // ---------------------------------------------------------------------------
 
 /// DT P1: Copy overrides everything — even with sharing signals, Copy type stays PlainOwned.
@@ -1794,7 +1794,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — Decision Table: Guards
+// Test coverage: Decision Table: Guards
 // ---------------------------------------------------------------------------
 
 /// DG: Completeness — every non-Undecided tier is reachable.
@@ -1822,7 +1822,7 @@ fn test_completeness_every_tier_reachable() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — MIR Dataflow: Borrow Liveness
+// Test coverage: MIR Dataflow: Borrow Liveness
 // ---------------------------------------------------------------------------
 
 /// MIR #20: Borrow liveness prevents false positive.
@@ -1851,7 +1851,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — P0-4: Copy Type Scanning (remaining)
+// Test coverage: P0-4: Copy Type Scanning (remaining)
 // ---------------------------------------------------------------------------
 
 /// P0-4 #15: Transitive Copy Inference — struct of Copy fields.
@@ -1928,7 +1928,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — P0-5: Mutating Methods (remaining)
+// Test coverage: P0-5: Mutating Methods (remaining)
 // ---------------------------------------------------------------------------
 
 /// P0-5 #22: [mutating_methods] Kobo.toml override.
@@ -1966,7 +1966,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — MIR Dataflow (remaining)
+// Test coverage: MIR Dataflow (remaining)
 // ---------------------------------------------------------------------------
 
 /// MIR #21: Loop borrow liveness — conservative analysis.
@@ -2001,7 +2001,7 @@ fn test_send_propagation_nested_spawn() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — Decision Table: Priority Rules (remaining)
+// Test coverage: Decision Table: Priority Rules (remaining)
 // ---------------------------------------------------------------------------
 
 /// P2: async_shared overrides Send → ArcShared (not regular Arc).
@@ -2093,7 +2093,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — Decision Table: Async Context (remaining)
+// Test coverage: Decision Table: Async Context (remaining)
 // ---------------------------------------------------------------------------
 
 /// A5: Send required, mutable → ArcMutShared.

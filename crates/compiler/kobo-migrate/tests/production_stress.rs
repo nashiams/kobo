@@ -133,7 +133,7 @@ fn unique_outcome_cache_does_not_store_non_unique_results() {
 }
 
 #[test]
-fn solver_budget_default_matches_v081_production_cap() {
+fn solver_budget_default_matches_production_cap() {
     assert_eq!(SolverBudget::default().max_cluster_size, 2048);
     assert_eq!(GreedyConfig::default().solver_cluster_limit, 2048);
 }

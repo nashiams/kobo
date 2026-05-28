@@ -1,6 +1,6 @@
 //! Adversarial tests for the Kobo ownership solver.
 //!
-//! These tests target known robustness gaps (from the v0.8.1 audit) and
+//! These tests target known robustness gaps (from the audit) and
 //! patterns observed in production-quality migration solvers (C2Rust, Swift,
 //! Nickel, OpenRewrite, Coccinelle). They are designed to **break** if the
 //! implementation is not production-ready:
@@ -112,7 +112,7 @@ fn tier_rank_is_strict_total_order() {
 
 #[test]
 fn tier_rank_is_monotonically_increasing() {
-    // The documented order must hold: PlainOwned < BoxOwned < RcShared < ...
+    // The documented order must hold: PlainOwned < BoxOwned < RcShared <...
     let expected_order = [
         OwnershipTier::PlainOwned,
         OwnershipTier::BoxOwned,
@@ -261,7 +261,7 @@ fn lub_is_monotone_in_rank() {
 // "converged" from "gave up".
 // ═════════════════════════════════════════════════════════════════════════
 
-/// Build a long chain: v0 → v1 → v2 → ... → v(n-1) where v0 has a high
+/// Build a long chain: v0 → v1 → v2 →... → v(n-1) where v0 has a high
 /// floor. This forces N propagation steps. If N exceeds the iteration cap,
 /// the solver must NOT silently return Solved with stale assignments.
 #[test]

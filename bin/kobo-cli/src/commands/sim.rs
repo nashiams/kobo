@@ -1114,12 +1114,12 @@ fn backend_capability_json(capability: &backend::BackendCapability) -> Value {
         "ecosystem_scope": capability.ecosystem_scope,
         "full_ecosystem_exploration": capability.full_ecosystem_exploration,
         "registered_boundary_exploration": capability.registered_boundary_exploration,
-        "coverage_contract": capability.coverage_contract,
+        "coverage_scope": capability.coverage_scope,
     })
 }
 
 fn reserved_metadata_registry_json() -> Value {
-    let backends = backend::v085_metadata_capabilities()
+    let backends = backend::reserved_metadata_capabilities()
         .iter()
         .map(|capability| {
             json!({
@@ -1166,7 +1166,7 @@ fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
     let scout = scout_source(source, file);
 
     json!({
-        "kobo_contract": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
+        "kobo_posture": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
         "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
         "profile_recommendation_scope": "stable profile recommendation; generated harness execution is visible through inspect surfaces.",
         "backend_choice": "Kobo executes compiler-owned generated user Rust harnesses through linked scheduler, filesystem, network, and Loom adapter surfaces.",

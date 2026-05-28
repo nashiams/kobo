@@ -1,4 +1,0 @@
-fn main() {
-    let value = String::from("v09");
-    println!("{}", value);
-}

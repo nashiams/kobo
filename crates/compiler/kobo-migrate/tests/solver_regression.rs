@@ -57,7 +57,7 @@ fn test_iteration_cap_does_not_return_solved() {
     // from `Solved`. We verify this by constructing a large conflicting chain
     // and checking the outcome is NOT `Solved` with a valid map.
     //
-    // A chain: v0(ArcMutShared) → v1 → ... → v99(ceil=RcShared).
+    // A chain: v0(ArcMutShared) → v1 →... → v99(ceil=RcShared).
     // The propagation of ArcMutShared will hit v99's ceiling, producing a
     // Conflict (not Solved). The key regression: before T01, the solver
     // would return Solved with a partial map on budget exhaustion.

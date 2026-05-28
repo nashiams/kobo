@@ -24,11 +24,11 @@ pub struct PreprocessBridge {
 pub enum BridgedKeyword {
     /// `@strict` → `#[__kobo_strict]`
     Strict,
-    /// `spawn { ... }` → `__kobo_spawn_block!({ ... })`
+    /// `spawn {... }` → `__kobo_spawn_block!({... })`
     Spawn,
     /// `chan<T>` → `__kobo_chan_type!(T)`
     Chan,
-    /// `select { ... }` → `__kobo_select_block!({ ... })`
+    /// `select {... }` → `__kobo_select_block!({... })`
     Select,
 }
 

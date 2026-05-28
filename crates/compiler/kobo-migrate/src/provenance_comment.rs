@@ -1,4 +1,4 @@
-//! Phase 11: Provenance comments for generated Rust code.
+//! Stage: Provenance comments for generated Rust code.
 //!
 //! Generates `// kobo:` comments that can be injected into codegen output
 //! to trace each ownership decision back to its source.

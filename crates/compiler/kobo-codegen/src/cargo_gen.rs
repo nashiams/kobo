@@ -6,7 +6,7 @@
 ///   ├── src/
 ///   │   ├── main.rs         # from src/main.kobo (clean-stripped)
 ///   │   └── <module>.rs     # from src/<module>.kobo (clean-stripped)
-///   └── .gitignore          # standard Rust gitignore
+///   └──.gitignore          # standard Rust gitignore
 ///
 /// Cargo.toml generation:
 /// - [package] from Kobo.toml [package]
@@ -162,7 +162,7 @@ pub fn generate_cargo_project(
     let cargo_toml = generate_cargo_toml(&config);
     fs::write(output_dir.join("Cargo.toml"), cargo_toml)?;
 
-    // Generate .gitignore.
+    // Generate.gitignore.
     fs::write(output_dir.join(".gitignore"), "/target\n")?;
 
     // Write source files.

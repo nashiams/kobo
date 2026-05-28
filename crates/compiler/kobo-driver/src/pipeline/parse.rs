@@ -11,7 +11,7 @@ use kobo_parser::{
     parse_file_recovering, postprocess_strict_markers, preprocess_bridge_blocks_mapped,
     preprocess_concurrent_sugar_mapped, preprocess_kobo_keywords_mapped,
     preprocess_spawn_blocks_mapped, preprocess_strict_reject_invalid,
-    preprocess_ward_syntax_mapped, v05_keyword_configs, KoboFile, PreprocessSourceMap,
+    preprocess_ward_syntax_mapped, strict_keyword_configs, KoboFile, PreprocessSourceMap,
     RecoveryMode,
 };
 use kobo_transform::{build_kir, TransformOptions};
@@ -45,8 +45,8 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         }
     }
 
-    // v0.5 preprocessing: rewrite @strict → marker attributes before syn parse.
-    // v0.10 preprocessing: rewrite concurrent-state sugar to Kobo attributes.
+    // preprocessing: rewrite @strict → marker attributes before syn parse.
+
     let ward_mapped = preprocess_ward_syntax_mapped(&source, file_id);
     let mut rewritten = ward_mapped.rewritten;
     let mut preprocess_source_map = ward_mapped.source_map;
@@ -57,7 +57,7 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         .source_map
         .compose_with(&preprocess_source_map);
 
-    let configs = v05_keyword_configs();
+    let configs = strict_keyword_configs();
     if let Err(e) = preprocess_strict_reject_invalid(&rewritten, &configs) {
         eprintln!("kobo: preprocess error: {e}");
         return Err(());
@@ -69,7 +69,7 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
         .source_map
         .compose_with(&preprocess_source_map);
 
-    // v0.8: rewrite spawn { ... } → __kobo_spawn_block!({ ... }) before syn parse.
+    // rewrite spawn {... } → __kobo_spawn_block!({... }) before syn parse.
     let spawn_mapped = preprocess_spawn_blocks_mapped(&rewritten, file_id);
     rewritten = spawn_mapped.rewritten;
     preprocess_source_map = spawn_mapped.source_map.compose_with(&preprocess_source_map);
@@ -140,7 +140,7 @@ pub fn run_kir_phase(session: &mut CompileSession, input: &Path) -> Result<(Kobo
     );
     kir.set_field_capability_views(field_capability_views);
 
-    // G5: copy relaxed fn ranges into session so the rendering path can filter warnings.
+    // Copy relaxed fn ranges into session so the rendering path can filter warnings.
     session.relaxed_fn_ranges = kir.relaxed_fn_ranges().to_vec();
 
     // S-3: Mark KIR nodes whose binding type matches an engine struct.

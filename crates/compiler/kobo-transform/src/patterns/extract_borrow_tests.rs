@@ -55,7 +55,7 @@ fn make_facts(bindings: Vec<TransformBindingFacts>) -> TransformFacts {
     }
 }
 
-/// S-17 Contract Test: Auto-Extraction
+/// S-17 Invariant Test: Auto-Extraction
 /// Input: data has ReadOnly at span(10,15) then Mutated at span(20,30)
 /// → extraction site detected with temp name __kobo_extract_0
 #[test]
@@ -79,7 +79,7 @@ fn extract_detected_for_read_then_mutate() {
     assert_eq!(sites[0].temp_name, "__kobo_extract_0");
 }
 
-/// S-17 Contract Test: No Extraction When No Conflict
+/// S-17 Invariant Test: No Extraction When No Conflict
 /// Input: data has ReadOnly at span(10,15), no mutation after
 /// → no extraction sites
 #[test]
@@ -99,7 +99,7 @@ fn no_extraction_when_no_conflict() {
     );
 }
 
-/// S-17 Contract Test: No extraction when mutation comes BEFORE read
+/// S-17 Invariant Test: No extraction when mutation comes BEFORE read
 /// (no conflict: the mutation is already done by the time the read happens)
 #[test]
 fn no_extraction_when_mutation_before_read() {
@@ -121,7 +121,7 @@ fn no_extraction_when_mutation_before_read() {
     );
 }
 
-/// S-17 Contract Test: Multiple extractions get unique temp names
+/// S-17 Invariant Test: Multiple extractions get unique temp names
 #[test]
 fn multiple_extractions_get_unique_names() {
     let facts = make_facts(vec![make_binding(
@@ -142,7 +142,7 @@ fn multiple_extractions_get_unique_names() {
     assert_eq!(sites[1].temp_name, "__kobo_extract_1");
 }
 
-/// S-17 Contract Test: Only reads that return owned values are eligible
+/// S-17 Invariant Test: Only reads that return owned values are eligible
 /// Sequential read-only (no mutation) → no extraction needed
 #[test]
 fn no_extraction_for_sequential_reads_only() {
@@ -225,7 +225,7 @@ fn main() {
     );
 }
 
-/// BUG-12 Contract Test: Reference-returning read before mutation does NOT trigger extraction.
+/// BUG-12 Invariant Test: Reference-returning read before mutation does NOT trigger extraction.
 /// `.iter()` returns a reference, so extracting it would move a borrow — unsound.
 #[test]
 fn ref_returning_read_does_not_trigger_extraction() {
@@ -239,7 +239,7 @@ fn ref_returning_read_does_not_trigger_extraction() {
             UseEvent::Mutated { span: span(20, 30) },
         ],
     );
-    // Mark the read as a ref-returning method call (e.g., .iter())
+    // Mark the read as a ref-returning method call, such as `.iter()`.
     binding.ref_returning_read_spans.push(read_span);
 
     let facts = make_facts(vec![binding]);
@@ -251,7 +251,7 @@ fn ref_returning_read_does_not_trigger_extraction() {
     );
 }
 
-/// BUG-12 Contract Test: Owned-value read before mutation DOES trigger extraction.
+/// BUG-12 Invariant Test: Owned-value read before mutation DOES trigger extraction.
 /// `.clone()` returns an owned value, so extracting it is safe.
 #[test]
 fn owned_value_read_does_trigger_extraction() {
@@ -277,7 +277,7 @@ fn owned_value_read_does_trigger_extraction() {
     );
 }
 
-/// BUG-12 Contract Test: Mixed reads — only non-ref reads are eligible
+/// BUG-12 Invariant Test: Mixed reads — only non-ref reads are eligible
 #[test]
 fn mixed_ref_and_owned_reads_only_owned_triggers() {
     let ref_read = span(10, 15);

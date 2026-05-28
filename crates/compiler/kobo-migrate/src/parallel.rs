@@ -1,4 +1,4 @@
-//! Phase 10: Parallel solving infrastructure.
+//! Stage: Parallel solving infrastructure.
 //!
 //! Provides a unit-of-computation harness for solving clusters.
 //! Each cluster solve is a self-contained unit that can run independently.

@@ -192,7 +192,7 @@ mod tests {
         assert_eq!(violations[0].binding_name, "");
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// std, core, alloc crates NEVER flagged.
     #[test]

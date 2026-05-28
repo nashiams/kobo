@@ -44,7 +44,7 @@ fn policy(profile: GuaranteeProfile) -> GuaranteePolicy {
 
 // --- K0060: Non-Send binding in async context ---
 
-/// Contract Test 11.1: Non-async code produces zero async violations.
+/// Invariant Test 11.1: Non-async code produces zero async violations.
 #[test]
 fn sync_code_no_violations() {
     let kir = build_test_kir(
@@ -63,7 +63,7 @@ fn main() {
     );
 }
 
-/// Contract Test 11.1: Async function with local-only binding → no violations.
+/// Invariant Test 11.1: Async function with local-only binding → no violations.
 /// A2 row: PlainOwned, not shared, not escaped → no K0060.
 #[test]
 fn async_local_only_no_violations() {
@@ -84,7 +84,7 @@ async fn process() {
     );
 }
 
-/// Contract Test 11.2: Strict mode with async binding that needs sharing → K0063.
+/// Invariant Test 11.2: Strict mode with async binding that needs sharing → K0063.
 #[test]
 fn strict_mode_async_shared_emits_k0063() {
     let kir = build_test_kir(
@@ -108,7 +108,7 @@ async fn process() {
     );
 }
 
-/// Contract: Script mode does NOT emit K0063 for same code.
+/// Invariant: Script mode does NOT emit K0063 for same code.
 #[test]
 fn script_mode_no_k0063() {
     let kir = build_test_kir(
@@ -132,11 +132,11 @@ async fn process() {
     );
 }
 
-/// Contract: Non-Send shared binding in async → K0060.
+/// Invariant: Non-Send shared binding in async → K0060.
 #[test]
 fn async_shared_binding_emits_k0060() {
     // Use the EXACT pattern that triggers needs_sharing in sync tests:
-    // `let x = ...; let y = x; x.len(); let _ = y;` — use-after-move alias
+    // `let x =...; let y = x; x.len(); let _ = y;` — use-after-move alias
     let kir = build_test_kir(
         r#"
 async fn process() {
@@ -158,7 +158,7 @@ async fn process() {
     );
 }
 
-/// Contract: Copy types in async → no violations (A1 row).
+/// Invariant: Copy types in async → no violations (A1 row).
 #[test]
 fn async_copy_type_no_violations() {
     let kir = build_test_kir(
@@ -178,7 +178,7 @@ async fn process() {
     );
 }
 
-/// Contract: Checked mode produces same violations as script for K0060.
+/// Invariant: Checked mode produces same violations as script for K0060.
 #[test]
 fn checked_mode_k0060_same_as_script() {
     let kir = build_test_kir(
@@ -210,7 +210,7 @@ async fn process() {
 
 // --- Hard Rules Enforcement Tests ---
 
-/// Contract: Strict mode + async + shared binding → K0063 (no wrappers allowed).
+/// Invariant: Strict mode + async + shared binding → K0063 (no wrappers allowed).
 /// This verifies the hard rule: strict = no wrappers, period.
 #[test]
 fn strict_mode_async_never_allows_sharing() {
@@ -236,7 +236,7 @@ async fn process() {
     );
 }
 
-/// Contract: Sync function in strict mode → no async violations.
+/// Invariant: Sync function in strict mode → no async violations.
 #[test]
 fn strict_mode_sync_fn_no_violations() {
     let kir = build_test_kir(
@@ -258,7 +258,7 @@ fn process() {
 
 // --- K0061: Non-Sync mutable shared binding in async context ---
 
-/// Contract: Mutable shared binding in async → K0061 (RefCell is not Sync).
+/// Invariant: Mutable shared binding in async → K0061 (RefCell is not Sync).
 #[test]
 fn async_mutable_shared_binding_can_emit_k0061() {
     // Pattern: use-after-move alias WITH both read and mutation
@@ -287,7 +287,7 @@ async fn process() {
 
 // --- K0062: Missing executor ---
 
-/// Contract: Async code without executor → K0062.
+/// Invariant: Async code without executor → K0062.
 #[test]
 fn async_entrypoint_without_executor_can_emit_k0062() {
     let kir = build_test_kir(
@@ -310,7 +310,7 @@ async fn process() {
     );
 }
 
-/// Contract: Async code WITH executor → no K0062.
+/// Invariant: Async code WITH executor → no K0062.
 #[test]
 fn async_with_executor_no_k0062() {
     let kir = build_test_kir(
@@ -334,7 +334,7 @@ async fn process() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — Async: Decision Table (A3-A10)
+// Test coverage: Async: Decision Table (A3-A10)
 // ---------------------------------------------------------------------------
 
 /// A3: !Send, mutable, shared → Rc<RefCell> tier (RcMutShared).
@@ -455,7 +455,7 @@ async fn process() {
 }
 
 // ---------------------------------------------------------------------------
-// v0.7 Test Enforcement — Async: Unimplemented Features (ignored)
+// Test coverage: Async: Unimplemented Features (ignored)
 // ---------------------------------------------------------------------------
 
 /// Executor selection #5: Tokio detected → #[tokio::main].

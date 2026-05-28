@@ -65,7 +65,7 @@ fn remap_error(
 
 /// Re-map a surviving rustc warning to a .kobo-span diagnostic.
 /// Uses K0019 (uncategorized ownership) with Warning severity so that
-/// `has_errors()` remains false and exit code stays 0 [R5-02 Option B].
+/// `has_errors()` remains false and exit code stays 0.
 pub(crate) fn remap_warning_diagnostic(
     warning: RustcJsonError,
     source_map: &KoboSourceMap,
@@ -488,7 +488,7 @@ mod tests {
         assert!(!diagnostics[0].primary.text.contains(".rs"));
     }
 
-    // ── BUG-12: unmappable diagnostics should preserve generated-code location ──
+    // Unmappable diagnostics should preserve generated-code location.
 
     #[test]
     fn remapper_fallback_includes_generated_line_info() {

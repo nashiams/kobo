@@ -10,7 +10,7 @@
 //! in `Kobo.toml`).
 //!
 //! Sender cloning into spawn blocks is handled by the auto-clone injector
-//! (Phase 3). This module only rewrites the `chan<T>()` type/constructor.
+//! This module only rewrites the `chan<T>()` type/constructor.
 
 /// Information about one `chan<T>()` occurrence found during preprocessing.
 #[derive(Clone, Debug, PartialEq)]
@@ -264,7 +264,7 @@ let (tx2, rx2) = chan<u64>();"#;
         assert!(msg.contains("3"), "msg: {msg}");
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// chan<Vec<i32>>() with nested generics → properly rewritten.
     #[test]

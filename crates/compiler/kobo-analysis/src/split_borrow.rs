@@ -29,7 +29,7 @@ pub struct FieldAccess {
 pub enum FieldAccessKind {
     /// `self.field` (no mutation)
     Read,
-    /// `self.field = ...`
+    /// `self.field =...`
     Write,
     /// `self.field.method()` where method takes `&mut self`
     BorrowMut,
@@ -396,7 +396,7 @@ struct Foo { x: i32 }
         assert_eq!(slice, "do_work", "method_span should point at the ident");
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// Single field write → no split borrow needed.
     #[test]

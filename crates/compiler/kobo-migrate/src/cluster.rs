@@ -1,4 +1,4 @@
-//! Phase 02: Cluster detection via union-find partitioning.
+//! Stage: Cluster detection via union-find partitioning.
 //!
 //! Partitions the constraint graph into deterministic connected components.
 //! Runs containment prechecks before solving: boundary → K0090, oversized → K0081.

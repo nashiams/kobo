@@ -10,7 +10,7 @@ use crate::complexity::classify_site;
 ///
 /// This function is read-only — it does not modify the KIR or write to the
 /// filesystem. All inventory counts come from KIR `OwnershipTier` nodes;
-/// no text search over generated `.rs` files is performed (Contract C05).
+/// no text search over generated `.rs` files is performed (Invariant C05).
 ///
 /// `file_count` and `line_count` are metadata supplied by the caller (driver
 /// or CLI) from the compile session context.

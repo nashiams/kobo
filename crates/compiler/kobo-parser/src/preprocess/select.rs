@@ -19,7 +19,7 @@
 //!
 //! Invariants:
 //! - Empty `select {}` → hard error
-//! - Single-arm `select { ... }` → warning (likely a mistake)
+//! - Single-arm `select {... }` → warning (likely a mistake)
 
 /// Errors from select preprocessing.
 #[derive(Clone, Debug, PartialEq)]
@@ -45,7 +45,7 @@ pub enum SelectWarning {
     SingleArm { offset: usize },
 }
 
-/// Information about one `select { ... }` block found during preprocessing.
+/// Information about one `select {... }` block found during preprocessing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SelectInfo {
     /// Number of arms in the select block.
@@ -65,10 +65,10 @@ struct SelectArm {
     body: String,
 }
 
-/// Rewrite all `select { ... }` blocks to `tokio::select! { ... }`.
+/// Rewrite all `select {... }` blocks to `tokio::select! {... }`.
 ///
 /// Returns `(rewritten_source, select_infos, warnings)`.
-/// Returns `Err` if an empty `select {}` is found (hard error per contract).
+/// Returns `Err` if an empty `select {}` is found (hard error per Invariant).
 pub fn preprocess_select_blocks(
     source: &str,
 ) -> Result<(String, Vec<SelectInfo>, Vec<SelectWarning>), SelectError> {
@@ -432,7 +432,7 @@ let y = 2;"#;
         assert_eq!(strip_braces("no braces"), "no braces");
     }
 
-    // ─── v0.8 edge-case tests ───
+    // edge-case tests
 
     /// Trap 7: Whitespace-only select body → hard error (same as empty).
     #[test]

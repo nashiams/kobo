@@ -60,7 +60,7 @@ fn make_facts(bindings: Vec<TransformBindingFacts>) -> TransformFacts {
     }
 }
 
-/// S-2 Contract Test: Move-Then-Rebind → eligible for freeze-and-rotate
+/// S-2 Invariant Test: Move-Then-Rebind → eligible for freeze-and-rotate
 /// Binding has Mutated then Moved, with NO uses after the move
 #[test]
 fn move_then_dead_is_eligible() {
@@ -86,7 +86,7 @@ fn move_then_dead_is_eligible() {
     );
 }
 
-/// S-2 Contract Test: Used-After-Move → NOT eligible
+/// S-2 Invariant Test: Used-After-Move → NOT eligible
 /// Binding has Mutated, Moved, then ReadOnly → NOT eligible
 #[test]
 fn used_after_move_not_eligible() {
@@ -112,7 +112,7 @@ fn used_after_move_not_eligible() {
     );
 }
 
-/// S-2 Contract Test: Binding with no moves at all → NOT eligible
+/// S-2 Invariant Test: Binding with no moves at all → NOT eligible
 #[test]
 fn no_move_not_eligible() {
     let facts = make_facts(vec![make_binding(
@@ -133,7 +133,7 @@ fn no_move_not_eligible() {
     );
 }
 
-/// S-2 Contract Test: Multiple bindings, only the moved-and-dead one is eligible
+/// S-2 Invariant Test: Multiple bindings, only the moved-and-dead one is eligible
 #[test]
 fn only_dead_moved_binding_eligible() {
     let facts = make_facts(vec![
@@ -170,7 +170,7 @@ fn only_dead_moved_binding_eligible() {
     assert!(!eligible.contains(&KirNodeId(2)));
 }
 
-/// S-2 Contract Test: Moved then borrowed after → NOT eligible
+/// S-2 Invariant Test: Moved then borrowed after → NOT eligible
 #[test]
 fn borrowed_after_move_not_eligible() {
     let facts = make_facts(vec![make_binding(
@@ -238,7 +238,7 @@ fn main() {
     );
 }
 
-/// S-2 Contract Acceptance Test: MoveRebind reason when S-1 doesn't apply.
+/// S-2 Invariant Acceptance Test: MoveRebind reason when S-1 doesn't apply.
 /// A binding with needs_sharing=true but moved-and-dead → PlainOwned(MoveRebind)
 #[test]
 fn move_rebind_reason_when_sharing_needed() {
@@ -299,7 +299,7 @@ fn move_rebind_reason_when_sharing_needed() {
     assert_eq!(decisions[0].reason, TierReason::MoveRebind);
 }
 
-/// S-2 Contract Acceptance Test: Used-after-move binding does NOT get MoveRebind
+/// S-2 Invariant Acceptance Test: Used-after-move binding does NOT get MoveRebind
 #[test]
 fn no_move_rebind_when_used_after_move() {
     use crate::tiered::choose_tiers;
@@ -357,7 +357,7 @@ fn no_move_rebind_when_used_after_move() {
     assert_ne!(decisions[0].reason, TierReason::MoveRebind);
 }
 
-/// BUG-13 Contract Test: Move in deeper scope (conditional) is NOT eligible.
+/// BUG-13 Invariant Test: Move in deeper scope (conditional) is NOT eligible.
 /// A move inside an if-branch (scope_depth > decl_scope_depth) means the binding
 /// may still be live in the else branch.
 #[test]
@@ -384,7 +384,7 @@ fn move_in_deeper_scope_not_eligible() {
     );
 }
 
-/// BUG-14 Contract Test: Move inside a loop is NOT eligible.
+/// BUG-14 Invariant Test: Move inside a loop is NOT eligible.
 /// Even if the move appears terminal in the loop body, the loop may iterate again.
 #[test]
 fn move_in_loop_scope_not_eligible() {
@@ -410,7 +410,7 @@ fn move_in_loop_scope_not_eligible() {
     );
 }
 
-/// BUG-14 Contract Test: Move at same scope as declaration IS eligible.
+/// BUG-14 Invariant Test: Move at same scope as declaration IS eligible.
 /// This is the normal case — a move at the same level as the declaration
 /// is unconditional.
 #[test]

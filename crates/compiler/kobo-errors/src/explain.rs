@@ -674,7 +674,7 @@ fn ecosystem_explain_prose(code: crate::KErrorCode) -> Option<ExplainProse> {
         crate::KErrorCode::K0125 => ExplainProse {
             fix: "Option 1: Add retry and idempotency metadata to the activity declaration.\n\
                   Option 2: Mark the result and compensation behavior so replay review can reason about retries.\n\
-                  Option 3: Use record, opaque, or debt until the activity contract is complete.",
+                  Option 3: Use record, opaque, or debt until the activity policy is complete.",
             example: "Problem:\nAn activity boundary sends an email but does not say whether retrying is idempotent.\n\n\
                       Fix:\nDeclare retry, idempotency, result, and compensation metadata before claiming activity evidence.",
         },

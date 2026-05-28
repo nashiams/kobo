@@ -44,7 +44,7 @@ pub(crate) fn detect_lock_sites(source: &str) -> Vec<LockSite> {
         };
 
         if let Some(kind) = lock_kind {
-            // Extract the binding name from "let <name> = ...".
+            // Extract the binding name from "let <name> =...".
             let binding_name = extract_lock_binding_name(trimmed);
             if let Some(name) = binding_name {
                 sites.push(LockSite {
@@ -110,7 +110,10 @@ fn extract_lock_binding_name(line: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        detect_lock_sites, extract_lock_binding_name, lock_order_comment, LockKind, LockSite,
+    };
+    use kobo_ir::KoboSpan;
 
     #[test]
     fn detect_read_and_write_locks() {

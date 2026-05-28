@@ -1,0 +1,1535 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use kobo_driver::{run_pipeline, CompileSession, KoboConfig};
+
+fn crate_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn repo_root() -> PathBuf {
+    crate_root()
+        .join("..")
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("repository root should exist")
+}
+
+fn src_path(relative: &str) -> PathBuf {
+    crate_root().join("src").join(relative)
+}
+
+fn repo_path(relative: &str) -> PathBuf {
+    repo_root().join(relative)
+}
+
+fn read_required(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read required source file {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn strip_comments_and_strings(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            if i < bytes.len() {
+                out.push('\n');
+                i += 1;
+            }
+            continue;
+        }
+
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                if bytes[i] == b'\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+
+        if let Some(end) = raw_string_end(bytes, i) {
+            out.push_str("r\"\"");
+            for &b in &bytes[i..end] {
+                if b == b'\n' {
+                    out.push('\n');
+                }
+            }
+            i = end;
+            continue;
+        }
+
+        if bytes[i] == b'"' {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i = (i + 2).min(bytes.len());
+                    continue;
+                }
+                if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                if bytes[i] == b'\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            out.push_str("\"\"");
+            continue;
+        }
+
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    out
+}
+
+fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'r') {
+        return None;
+    }
+
+    let mut cursor = start + 1;
+    let mut hashes = 0;
+    while bytes.get(cursor) == Some(&b'#') {
+        hashes += 1;
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'"') {
+        return None;
+    }
+    cursor += 1;
+
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'"' {
+            let mut matched = true;
+            for offset in 0..hashes {
+                if bytes.get(cursor + 1 + offset) != Some(&b'#') {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return Some(cursor + 1 + hashes);
+            }
+        }
+        cursor += 1;
+    }
+
+    Some(bytes.len())
+}
+
+fn function_names(source: &str) -> Vec<String> {
+    let stripped = strip_comments_and_strings(source);
+    let normalized: String = stripped
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    let mut names = Vec::new();
+    for window in tokens.windows(2) {
+        if window[0] == "fn" {
+            names.push(window[1].to_owned());
+        }
+    }
+    names
+}
+
+fn function_line_count(source: &str, function_name: &str) -> Option<usize> {
+    let stripped = strip_comments_and_strings(source);
+    let lines = stripped.lines().collect::<Vec<_>>();
+    for (start_index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let is_function_header = trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("pub(crate) fn ")
+            || trimmed.starts_with("pub(super) fn ");
+        if !is_function_header {
+            continue;
+        }
+        if !trimmed.contains(&format!("fn {function_name}")) {
+            continue;
+        }
+
+        let mut brace_depth = 0isize;
+        let mut has_body = false;
+        for (end_index, body_line) in lines.iter().enumerate().skip(start_index) {
+            for ch in body_line.chars() {
+                match ch {
+                    '{' => {
+                        brace_depth += 1;
+                        has_body = true;
+                    }
+                    '}' => brace_depth -= 1,
+                    _ => {}
+                }
+            }
+            if has_body && brace_depth <= 0 {
+                return Some(end_index - start_index + 1);
+            }
+        }
+    }
+    None
+}
+
+fn count_nonblank_noncomment_lines(source: &str) -> usize {
+    strip_comments_and_strings(source)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+}
+
+fn assert_function_line_limit(path: &Path, function_name: &str, limit: usize, reason: &str) {
+    let source = read_required(path);
+    let line_count = function_line_count(&source, function_name)
+        .unwrap_or_else(|| panic!("{} must define `{function_name}`", path.display()));
+
+    assert!(
+        line_count <= limit,
+        "`{function_name}` in {} should stay within {limit} lines; found {line_count}. {reason}",
+        path.display()
+    );
+}
+
+fn assert_file_line_ratchet(path: &Path, limit: usize, domain: &str) {
+    let source = read_required(path);
+    let line_count = source.lines().count();
+
+    assert!(
+        line_count <= limit,
+        "{} owns `{domain}` and must not grow past the current ratchet of {limit} lines without a domain-pure split; found {line_count}",
+        path.display()
+    );
+}
+
+fn relative_repo_path(path: &Path) -> String {
+    path.strip_prefix(repo_root())
+        .expect("scanned path should be below repo root")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn collect_production_rust_files(root: &Path, files: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if path.is_dir() {
+            if file_name.starts_with('.')
+                || file_name == "target"
+                || file_name.starts_with("target-")
+            {
+                continue;
+            }
+            collect_production_rust_files(&path, files);
+            continue;
+        }
+
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        if file_name == "tests.rs" || file_name.ends_with("_tests.rs") {
+            continue;
+        }
+
+        let relative = relative_repo_path(&path);
+        if relative.starts_with("bin/kobo-cli/src/") || relative.contains("/src/") {
+            files.push(relative);
+        }
+    }
+}
+
+fn collect_pipeline_sources() -> BTreeMap<String, String> {
+    let mut sources = BTreeMap::new();
+    let legacy = src_path("pipeline.rs");
+    if legacy.exists() {
+        sources.insert("pipeline.rs".to_owned(), read_required(&legacy));
+    }
+
+    let module_dir = src_path("pipeline");
+    if module_dir.exists() {
+        for entry in fs::read_dir(&module_dir).expect("pipeline directory should be readable") {
+            let entry = entry.expect("pipeline directory entry should be readable");
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                let name = format!(
+                    "pipeline/{}",
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .expect("pipeline filename should be UTF-8")
+                );
+                sources.insert(name, read_required(&path));
+            }
+        }
+    }
+
+    sources
+}
+
+#[test]
+fn analysis_stage_entrypoint_is_not_a_god_function() {
+    assert_function_line_limit(
+        &src_path("pipeline/analysis.rs"),
+        "run_analysis_phase",
+        120,
+        "Keep this as a named-step orchestrator, not a diagnostic block owner.",
+    );
+}
+
+#[test]
+fn public_entrypoints_keep_table_of_contents_shape() {
+    for (path, function_name, limit, reason) in [
+        (
+            src_path("pipeline/parse.rs"),
+            "run_kir_phase",
+            138,
+            "Split parse/preprocess/KIR construction before adding new behavior.",
+        ),
+        (
+            src_path("pipeline/codegen.rs"),
+            "run_codegen_pipeline",
+            120,
+            "Keep codegen orchestration separate from artifact construction.",
+        ),
+        (
+            repo_path("bin/kobo-cli/src/commands/test/run.rs"),
+            "cmd_test",
+            120,
+            "Keep the CLI command entrypoint as a named-step orchestrator.",
+        ),
+        (
+            src_path("proof/emission.rs"),
+            "emit_proof_certificate",
+            120,
+            "Keep proof emission as a named-step adapter over evidence-family builders.",
+        ),
+        (
+            repo_path("crates/compiler/kobo-transform/src/scenario/lowerer.rs"),
+            "build_scenario_programs",
+            120,
+            "Keep scenario extraction as collection plus named lowering stages.",
+        ),
+    ] {
+        assert_function_line_limit(&path, function_name, limit, reason);
+    }
+}
+
+#[test]
+fn proof_live_local_expression_traversal_uses_named_helpers() {
+    assert_function_line_limit(
+        &repo_path(
+            "crates/compiler/kobo-driver/src/proof/async_model/live_locals/expr_traversal.rs",
+        ),
+        "await_live_locals_in_expr",
+        80,
+        "Keep await live-local traversal split by expression family.",
+    );
+}
+
+#[test]
+fn cli_witness_writer_keeps_table_of_contents_shape() {
+    assert_function_line_limit(
+        &repo_path("bin/kobo-cli/src/commands/test/witness.rs"),
+        "write_run_witness",
+        120,
+        "Keep witness output as path preparation, typed JSON assembly, and artifact writing.",
+    );
+    assert_function_line_limit(
+        &repo_path("bin/kobo-cli/src/commands/test/witness.rs"),
+        "build_witness_json",
+        120,
+        "Keep witness JSON assembly split into named schema sections.",
+    );
+}
+
+#[test]
+fn harness_support_keeps_table_of_contents_shape() {
+    assert!(
+        !repo_path("crates/compiler/kobo-sim-core/src/harness.rs").exists(),
+        "harness support should use src/harness/mod.rs instead of a #[path] shim"
+    );
+    assert_function_line_limit(
+        &repo_path("crates/compiler/kobo-sim-core/src/harness/facade.rs"),
+        "external_boundary_support_source",
+        80,
+        "Keep facade support split into collection and rendering steps.",
+    );
+    assert_function_line_limit(
+        &repo_path("crates/compiler/kobo-sim-core/src/harness/failures.rs"),
+        "terminal_failure_events",
+        90,
+        "Keep harness failure selection split by failure domain and precedence.",
+    );
+}
+
+#[test]
+fn rewrite_statement_lowering_uses_named_handlers() {
+    assert_function_line_limit(
+        &repo_path("crates/compiler/kobo-codegen/src/lower/rewrite/statements.rs"),
+        "lower_stmt",
+        90,
+        "Keep statement lowering split by statement family and policy handling.",
+    );
+}
+
+#[test]
+fn mixed_domain_hotspots_do_not_grow_before_named_splits() {
+    for (relative, limit, domain) in [
+        (
+            "bin/kobo-cli/src/commands/test/run.rs",
+            500,
+            "test command execution flow",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/backend.rs",
+            250,
+            "test backend selection",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/fuzz.rs",
+            500,
+            "test fuzz portfolio",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/witness.rs",
+            450,
+            "test witness writing",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/proof.rs",
+            100,
+            "test proof artifact writing",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/replay_scope.rs",
+            350,
+            "test replay scope metadata",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/trace_checks.rs",
+            500,
+            "test trace check evaluation",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/failure.rs",
+            250,
+            "test failure rendering",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/mod.rs",
+            50,
+            "test witness JSON schema facade",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/runtime.rs",
+            225,
+            "test witness runtime JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/execution.rs",
+            175,
+            "test witness execution JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/scheduler.rs",
+            100,
+            "test witness scheduler JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/boundaries.rs",
+            350,
+            "test witness boundary JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/obligations.rs",
+            90,
+            "test witness obligation JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/demos.rs",
+            275,
+            "test witness demo JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/failures.rs",
+            175,
+            "test witness failure JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/json_schema/events.rs",
+            100,
+            "test witness event JSON schema",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/mod.rs",
+            30,
+            "test model comparison facade",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/types.rs",
+            180,
+            "test model comparison data",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/compare.rs",
+            400,
+            "test model comparison evaluation",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/parse.rs",
+            225,
+            "test model comparison parsing",
+        ),
+        (
+            "bin/kobo-cli/src/commands/test/model_compare/execute.rs",
+            175,
+            "test model comparison execution",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/emission.rs",
+            325,
+            "proof emission adapter",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/core_cfg.rs",
+            400,
+            "proof Core CFG evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/loop_invariants.rs",
+            350,
+            "proof loop invariant evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/bounded.rs",
+            400,
+            "proof bounded exploration evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/traces.rs",
+            250,
+            "proof translation trace evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/templates.rs",
+            150,
+            "proof template evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/boundaries.rs",
+            250,
+            "proof boundary and adapter evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/candidates/mod.rs",
+            325,
+            "proof candidate admission orchestration",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/candidates/inspection.rs",
+            375,
+            "proof candidate source inspection",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/obligations.rs",
+            350,
+            "proof obligation replay evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/async_model/mod.rs",
+            225,
+            "proof async model evidence",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/async_model/live_locals.rs",
+            500,
+            "proof async live-local extraction",
+        ),
+        (
+            "crates/compiler/kobo-driver/src/proof/source_spans.rs",
+            100,
+            "proof source span mapping",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/mod.rs",
+            175,
+            "scenario module facade and shared state",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/lowerer.rs",
+            200,
+            "scenario lowering orchestration",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/collect.rs",
+            120,
+            "scenario AST collection",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/imports.rs",
+            75,
+            "scenario import alias collection",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/boundary_policy.rs",
+            100,
+            "scenario boundary policy collection",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/call_graph.rs",
+            175,
+            "scenario call graph analysis",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/env.rs",
+            100,
+            "scenario binding environment",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/control_flow.rs",
+            350,
+            "scenario control-flow lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/lifecycle.rs",
+            500,
+            "scenario lifecycle inference",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/expr_lower.rs",
+            450,
+            "scenario expression lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/calls.rs",
+            300,
+            "scenario call lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/external_boundary.rs",
+            400,
+            "scenario external boundary lowering",
+        ),
+        (
+            "crates/compiler/kobo-transform/src/scenario/syntax.rs",
+            300,
+            "scenario syntax fact extraction",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/mod.rs",
+            50,
+            "simulation harness facade",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/agreement.rs",
+            225,
+            "simulation harness agreement",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/runner.rs",
+            275,
+            "simulation harness process runner",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/source.rs",
+            350,
+            "simulation harness source generation",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/facade.rs",
+            500,
+            "simulation external boundary facade generation",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/facade/render.rs",
+            350,
+            "simulation external boundary facade rendering",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/facade_manifest.rs",
+            75,
+            "simulation harness facade manifest",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/record_boundary.rs",
+            250,
+            "simulation record boundary capture",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/tokio_support.rs",
+            250,
+            "simulation Tokio support source",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/storage_support.rs",
+            110,
+            "simulation storage support source",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/network_support.rs",
+            90,
+            "simulation network support source",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/events.rs",
+            60,
+            "simulation harness event parsing",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/failures.rs",
+            250,
+            "simulation terminal failure events",
+        ),
+        (
+            "crates/compiler/kobo-sim-core/src/harness/failures/boundaries.rs",
+            75,
+            "simulation modeled-boundary failure mapping",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/mod.rs",
+            50,
+            "source map module facade",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/entries.rs",
+            125,
+            "source map entry construction",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/proof_anchors.rs",
+            250,
+            "source map proof event anchor matching",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/syntax_anchors.rs",
+            375,
+            "generated Rust proof event scanning",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/lowering_trace.rs",
+            225,
+            "source map lowering trace events",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/lookup.rs",
+            75,
+            "source map span lookup",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/json.rs",
+            50,
+            "source map JSON wrapper construction",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/sourcemap/spans.rs",
+            50,
+            "source map Rust span helpers",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/mod.rs",
+            150,
+            "rewrite module facade and lowerer state",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/items.rs",
+            200,
+            "rewrite item lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/functions.rs",
+            225,
+            "rewrite function body lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/statements.rs",
+            350,
+            "rewrite statement lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/statements/for_loops.rs",
+            150,
+            "rewrite statement for-loop lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/anchors.rs",
+            50,
+            "rewrite lowering anchors",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/attrs.rs",
+            50,
+            "rewrite executor attributes",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/parallel_gate.rs",
+            175,
+            "rewrite parallel safety gate",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/receivers.rs",
+            125,
+            "rewrite receiver mutation analysis",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/spawn_captures.rs",
+            150,
+            "rewrite spawn capture analysis",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/field_capability.rs",
+            50,
+            "rewrite field capability identifiers",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/syntax_support.rs",
+            225,
+            "rewrite syntax support lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/expr.rs",
+            500,
+            "rewrite expression lowering",
+        ),
+        (
+            "crates/compiler/kobo-codegen/src/lower/rewrite/local.rs",
+            350,
+            "rewrite local binding lowering",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/lib.rs",
+            50,
+            "LSP facade exports",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/protocol.rs",
+            250,
+            "LSP protocol payload assembly",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/analysis.rs",
+            100,
+            "LSP document analysis orchestration",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/diagnostics.rs",
+            175,
+            "LSP compiler diagnostics",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/navigation.rs",
+            125,
+            "LSP generated Rust navigation",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/document_links.rs",
+            50,
+            "LSP document links",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/ranges.rs",
+            50,
+            "LSP range conversion",
+        ),
+        (
+            "crates/compiler/kobo-lsp/src/actions.rs",
+            275,
+            "LSP code actions",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/mod.rs",
+            350,
+            "diagnostic registry facade and lookup",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/ownership.rs",
+            75,
+            "ownership diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/performance.rs",
+            100,
+            "performance diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/strict_boundary.rs",
+            125,
+            "strict-boundary diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/async_model.rs",
+            125,
+            "async diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/solver.rs",
+            175,
+            "solver diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/migration.rs",
+            100,
+            "migration diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/replay.rs",
+            250,
+            "liveness and replay diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/parser.rs",
+            100,
+            "parser recovery diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/registry/ecosystem.rs",
+            175,
+            "ecosystem boundary diagnostic registry",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/mod.rs",
+            75,
+            "diagnostic formatter facade",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/source.rs",
+            175,
+            "diagnostic source label rendering",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/sections.rs",
+            50,
+            "diagnostic guidance sections",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/wrapping.rs",
+            50,
+            "diagnostic text wrapping",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/owner.rs",
+            200,
+            "diagnostic owner performance rendering",
+        ),
+        (
+            "crates/compiler/kobo-errors/src/format/strict.rs",
+            350,
+            "strict-boundary diagnostic rendering",
+        ),
+    ] {
+        assert_file_line_ratchet(&repo_path(relative), limit, domain);
+    }
+}
+
+#[test]
+fn all_production_rust_files_have_readability_budgets() {
+    const DEFAULT_LIMIT: usize = 500;
+    let legacy_large_files: BTreeMap<&str, usize> = [
+        ("bin/kobo-cli/src/bin/kobo-lsp.rs", 594),
+        ("bin/kobo-cli/src/commands/bindgen.rs", 1735),
+        ("bin/kobo-cli/src/commands/boundary_projection.rs", 628),
+        ("bin/kobo-cli/src/commands/check.rs", 1999),
+        ("bin/kobo-cli/src/commands/debt.rs", 2132),
+        ("bin/kobo-cli/src/commands/declarations.rs", 1173),
+        ("bin/kobo-cli/src/commands/doctor.rs", 720),
+        ("bin/kobo-cli/src/commands/ecosystem.rs", 2393),
+        ("bin/kobo-cli/src/commands/formal_core.rs", 912),
+        ("bin/kobo-cli/src/commands/lsp_diagnostics.rs", 947),
+        ("bin/kobo-cli/src/commands/migrate.rs", 1081),
+        ("bin/kobo-cli/src/commands/replay.rs", 1880),
+        ("bin/kobo-cli/src/commands/run.rs", 1168),
+        ("bin/kobo-cli/src/commands/sim.rs", 1321),
+        ("bin/kobo-cli/src/commands/sim_model.rs", 1809),
+        ("bin/kobo-cli/src/commands/witness_evidence.rs", 671),
+        ("bin/kobo-cli/src/main.rs", 667),
+        ("crates/compiler/kobo-analysis/src/handler_leak.rs", 512),
+        ("crates/compiler/kobo-analysis/src/parallel.rs", 565),
+        ("crates/compiler/kobo-analysis/src/split_borrow.rs", 542),
+        ("crates/compiler/kobo-analysis/src/task_local.rs", 533),
+        ("crates/compiler/kobo-codegen/src/cargo_gen.rs", 551),
+        ("crates/compiler/kobo-codegen/src/clean.rs", 535),
+        ("crates/compiler/kobo-codegen/src/lower/handler.rs", 595),
+        ("crates/compiler/kobo-codegen/src/lower/service.rs", 623),
+        ("crates/compiler/kobo-driver/src/config.rs", 1388),
+        ("crates/compiler/kobo-driver/src/multi_file.rs", 843),
+        ("crates/compiler/kobo-driver/src/pipeline/analysis.rs", 1043),
+        ("crates/compiler/kobo-driver/src/rustc/remap.rs", 521),
+        ("crates/compiler/kobo-errors/src/explain.rs", 749),
+        ("crates/compiler/kobo-ir/src/core.rs", 715),
+        ("crates/compiler/kobo-migrate/src/greedy.rs", 505),
+        ("crates/compiler/kobo-migrate/src/modular_pipeline.rs", 665),
+        ("crates/compiler/kobo-migrate/src/solver.rs", 913),
+        ("crates/compiler/kobo-parser/src/preprocess/select.rs", 539),
+        ("crates/compiler/kobo-parser/src/preprocess/spawn.rs", 833),
+        ("crates/compiler/kobo-parser/src/preprocess/ward.rs", 828),
+        ("crates/compiler/kobo-proof/src/async_model.rs", 1143),
+        ("crates/compiler/kobo-proof/src/certificate.rs", 764),
+        ("crates/compiler/kobo-proof/src/rule_sync.rs", 834),
+        ("crates/compiler/kobo-proof/src/translation.rs", 579),
+        ("crates/compiler/kobo-proof/src/verify.rs", 502),
+        ("crates/compiler/kobo-sim-core/src/core.rs", 1142),
+        ("crates/compiler/kobo-transform/src/builder/walk.rs", 610),
+        ("crates/compiler/kobo-transform/src/cfg.rs", 652),
+        ("crates/compiler/kobo-transform/src/lifetime_erase.rs", 769),
+        ("crates/compiler/kobo-transform/src/tiered.rs", 1199),
+        ("crates/compiler/kobo-transform/src/warn_early.rs", 744),
+    ]
+    .into_iter()
+    .collect();
+
+    let mut files = Vec::new();
+    collect_production_rust_files(&repo_path("bin/kobo-cli/src"), &mut files);
+    collect_production_rust_files(&repo_path("crates/compiler"), &mut files);
+    files.sort();
+    files.dedup();
+
+    let mut stale_allowlist = legacy_large_files.clone();
+    let mut violations = Vec::new();
+    for relative in files {
+        let source = read_required(&repo_path(&relative));
+        let line_count = source.lines().count();
+        let limit = legacy_large_files
+            .get(relative.as_str())
+            .copied()
+            .unwrap_or(DEFAULT_LIMIT);
+        stale_allowlist.remove(relative.as_str());
+        if line_count > limit {
+            violations.push(format!("{relative}: {line_count} lines > budget {limit}"));
+        }
+    }
+
+    assert!(
+        stale_allowlist.is_empty(),
+        "production LOC allowlist has stale entries after a split: {stale_allowlist:?}"
+    );
+    assert!(
+        violations.is_empty(),
+        "production Rust files must stay under {DEFAULT_LIMIT} lines unless explicitly capped at their current legacy size; split or lower these files before growing them: {violations:?}"
+    );
+}
+
+#[test]
+fn no_new_vague_module_names_are_added() {
+    let allowed = [
+        "crates/compiler/kobo-driver/src/test_utils.rs",
+        "crates/compiler/kobo-transform/src/builder/helpers.rs",
+        "tests/test_utils.rs",
+    ];
+    let mut unexpected = Vec::new();
+    for source_root in ["bin", "crates", "editors", "proof", "tests"] {
+        collect_vague_module_paths(&repo_path(source_root), &allowed, &mut unexpected);
+    }
+    unexpected.sort();
+
+    assert!(
+        unexpected.is_empty(),
+        "new vague module names need a named concept boundary instead: {unexpected:?}"
+    );
+}
+
+fn collect_vague_module_paths(root: &Path, allowed: &[&str], unexpected: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+
+        if path.is_dir() {
+            if file_name.starts_with('.')
+                || file_name == "target"
+                || file_name.starts_with("target-")
+            {
+                continue;
+            }
+            if is_vague_module_name(file_name) {
+                let relative = path
+                    .strip_prefix(repo_root())
+                    .expect("scanned path should be below repo root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if !allowed.contains(&relative.as_str()) {
+                    unexpected.push(relative);
+                }
+            }
+            collect_vague_module_paths(&path, allowed, unexpected);
+            continue;
+        }
+
+        if !is_vague_module_name(file_name) {
+            continue;
+        }
+
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !allowed.contains(&relative.as_str()) {
+            unexpected.push(relative);
+        }
+    }
+}
+
+fn is_vague_module_name(file_name: &str) -> bool {
+    let stem = file_name.strip_suffix(".rs").unwrap_or(file_name);
+    stem.split('_').any(|part| {
+        matches!(
+            part,
+            "util" | "utils" | "helper" | "helpers" | "misc" | "common"
+        )
+    })
+}
+
+#[test]
+fn vague_module_name_detection_rejects_tokenized_shared_buckets() {
+    for name in [
+        "common_cli.rs",
+        "util_proof.rs",
+        "helpers_proof",
+        "proof_utils.rs",
+    ] {
+        assert!(
+            is_vague_module_name(name),
+            "vague shared module name should be rejected: {name}"
+        );
+    }
+}
+
+#[test]
+fn readable_split_surfaces_do_not_use_wildcard_imports() {
+    let mut violations = Vec::new();
+    for root in readable_split_roots() {
+        collect_wildcard_imports(&repo_path(root), &mut violations);
+    }
+    violations.sort();
+
+    assert!(
+        violations.is_empty(),
+        "readable split surfaces must name their dependencies explicitly: {violations:?}"
+    );
+}
+
+fn collect_wildcard_imports(root: &Path, violations: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_wildcard_imports(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        collect_wildcard_imports_from_source(&relative, &read_required(&path), violations);
+    }
+}
+
+fn collect_wildcard_imports_from_source(
+    relative: &str,
+    source: &str,
+    violations: &mut Vec<String>,
+) {
+    let mut use_item = String::new();
+    let mut use_item_start = None;
+
+    for (index, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if use_item_start.is_none() && starts_use_item(trimmed) {
+            use_item_start = Some(index + 1);
+        }
+        if use_item_start.is_none() {
+            continue;
+        }
+
+        use_item.push_str(line);
+        use_item.push('\n');
+        if trimmed.ends_with(';') {
+            if wildcard_import_item(&use_item) {
+                let start = use_item_start.expect("use item start is set while collecting");
+                violations.push(format!("{}:{}: {}", relative, start, use_item.trim()));
+            }
+            use_item.clear();
+            use_item_start = None;
+        }
+    }
+}
+
+fn starts_use_item(line: &str) -> bool {
+    line.starts_with("use ")
+        || line.starts_with("pub use ")
+        || line.starts_with("pub(crate) use ")
+        || line.starts_with("pub(super) use ")
+}
+
+fn wildcard_import_item(item: &str) -> bool {
+    syn::parse_str::<syn::ItemUse>(item)
+        .map(|use_item| use_tree_contains_glob(&use_item.tree))
+        .unwrap_or_else(|_| item.contains("::*"))
+}
+
+fn use_tree_contains_glob(tree: &syn::UseTree) -> bool {
+    match tree {
+        syn::UseTree::Glob(_) => true,
+        syn::UseTree::Group(group) => group.items.iter().any(use_tree_contains_glob),
+        syn::UseTree::Path(path) => use_tree_contains_glob(path.tree.as_ref()),
+        syn::UseTree::Name(_) | syn::UseTree::Rename(_) => false,
+    }
+}
+
+#[test]
+fn wildcard_import_detection_rejects_multiline_group_members() {
+    assert!(wildcard_import_item("use crate::{\n    proof::*,\n};"));
+}
+
+#[test]
+fn readable_split_surfaces_keep_types_before_functions() {
+    let mut violations = Vec::new();
+    for root in readable_split_roots() {
+        collect_late_type_declarations(&repo_path(root), &mut violations);
+    }
+    violations.sort();
+
+    assert!(
+        violations.is_empty(),
+        "readable split surfaces must declare structs/enums/type aliases before behavior: {violations:?}"
+    );
+}
+
+#[test]
+fn cli_test_command_sources_do_not_use_expect() {
+    let mut violations = Vec::new();
+    collect_expect_calls(
+        &repo_path("bin/kobo-cli/src/commands/test"),
+        &mut violations,
+    );
+    violations.sort();
+
+    assert!(
+        violations.is_empty(),
+        "shipped CLI test command code must not use `.expect()`: {violations:?}"
+    );
+}
+
+fn collect_expect_calls(root: &Path, violations: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_expect_calls(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = strip_comments_and_strings(&read_required(&path));
+        for (index, line) in source.lines().enumerate() {
+            if line.contains(".expect(") {
+                violations.push(format!("{}:{}", relative, index + 1));
+            }
+        }
+    }
+}
+
+fn readable_split_roots() -> [&'static str; 6] {
+    [
+        "bin/kobo-cli/src/commands/test",
+        "crates/compiler/kobo-codegen/src/lower/rewrite",
+        "crates/compiler/kobo-codegen/src/sourcemap",
+        "crates/compiler/kobo-driver/src/proof",
+        "crates/compiler/kobo-sim-core/src/harness",
+        "crates/compiler/kobo-transform/src/scenario",
+    ]
+}
+
+fn collect_late_type_declarations(root: &Path, violations: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_late_type_declarations(&path, violations);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(repo_root())
+            .expect("scanned path should be below repo root")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = strip_comments_and_strings(&read_required(&path));
+        let mut first_function_line = None;
+        for (index, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("mod tests") {
+                break;
+            }
+            if first_function_line.is_none() && is_function_declaration(trimmed) {
+                first_function_line = Some(index + 1);
+                continue;
+            }
+            if let Some(function_line) = first_function_line {
+                if is_type_declaration(trimmed) {
+                    violations.push(format!(
+                        "{}:{}: type declaration appears after first function on line {}",
+                        relative,
+                        index + 1,
+                        function_line
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn is_function_declaration(line: &str) -> bool {
+    line.starts_with("fn ")
+        || line.starts_with("pub fn ")
+        || line.starts_with("pub(crate) fn ")
+        || line.starts_with("pub(super) fn ")
+        || line.starts_with("const fn ")
+        || line.starts_with("pub const fn ")
+        || line.starts_with("async fn ")
+        || line.starts_with("pub async fn ")
+        || line.starts_with("pub(crate) async fn ")
+        || line.starts_with("pub(super) async fn ")
+}
+
+fn is_type_declaration(line: &str) -> bool {
+    line.starts_with("struct ")
+        || line.starts_with("pub struct ")
+        || line.starts_with("pub(crate) struct ")
+        || line.starts_with("pub(super) struct ")
+        || line.starts_with("enum ")
+        || line.starts_with("pub enum ")
+        || line.starts_with("pub(crate) enum ")
+        || line.starts_with("pub(super) enum ")
+        || line.starts_with("type ")
+        || line.starts_with("pub type ")
+        || line.starts_with("pub(crate) type ")
+        || line.starts_with("pub(super) type ")
+}
+
+#[test]
+fn pipeline_entrypoint_is_facade_not_phase_dump() {
+    let legacy = src_path("pipeline.rs");
+    if legacy.exists() {
+        let source = read_required(&legacy);
+        let line_count = count_nonblank_noncomment_lines(&source);
+        assert!(
+            line_count <= 80,
+            "src/pipeline.rs must be removed or reduced to a tiny facade; found {line_count} nonblank code lines"
+        );
+
+        let names = function_names(&source);
+        let forbidden = [
+            "run_kir_phase",
+            "run_analysis_phase",
+            "run_codegen_pipeline",
+            "compile_codegen_artifacts",
+            "project_solver_diagnostics",
+            "inject_solver_evidence",
+            "apply_engine_ceiling",
+        ];
+        let present: Vec<&str> = forbidden
+            .into_iter()
+            .filter(|name| names.iter().any(|found| found == name))
+            .collect();
+        assert!(
+            present.is_empty(),
+            "src/pipeline.rs facade must not define stage implementation functions: {present:?}"
+        );
+    }
+
+    assert!(
+        src_path("pipeline/mod.rs").exists(),
+        "pipeline facade must live at src/pipeline/mod.rs after the split"
+    );
+}
+
+#[test]
+fn pipeline_stage_modules_own_expected_functions_once() {
+    let expected: [(&str, &[&str]); 6] = [
+        ("pipeline/parse.rs", &["run_kir_phase"]),
+        (
+            "pipeline/analysis.rs",
+            &[
+                "run_check_pipeline",
+                "run_pipeline_ordering_check",
+                "run_analysis_phase",
+                "project_live_borrow_liveness_diagnostics",
+            ],
+        ),
+        (
+            "pipeline/solver.rs",
+            &[
+                "resolve_solution",
+                "project_solver_diagnostics",
+                "apply_engine_ceiling",
+                "project_engine_ceiling_diagnostics",
+                "inject_solver_evidence",
+            ],
+        ),
+        ("pipeline/codegen.rs", &["run_codegen_pipeline"]),
+        (
+            "pipeline/compile.rs",
+            &[
+                "run_and_compile",
+                "run_and_compile_with_lifetime_erasure",
+                "compile_codegen_artifacts",
+            ],
+        ),
+        (
+            "pipeline/support.rs",
+            &[
+                "effective_guarantee_policy",
+                "apply_lifetime_erasure",
+                "lifetime_erasure_debt_report",
+                "extract_before_borrow_rewrite",
+            ],
+        ),
+    ];
+
+    let sources = collect_pipeline_sources();
+
+    for (file, functions) in expected {
+        let source = sources
+            .get(file)
+            .unwrap_or_else(|| panic!("expected pipeline stage file {file} to exist"));
+        let names = function_names(source);
+        for function in functions {
+            assert!(
+                names.iter().any(|name| name == function),
+                "{file} must define function `{function}` as real Rust code, not only in a comment or string"
+            );
+        }
+    }
+
+    for (expected_file, functions) in expected {
+        for function in functions {
+            let owners: Vec<&str> = sources
+                .iter()
+                .filter_map(|(file, source)| {
+                    if function_names(source).iter().any(|name| name == function) {
+                        Some(file.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                owners,
+                vec![expected_file],
+                "function `{function}` must be defined exactly once, in {expected_file}"
+            );
+        }
+    }
+}
+
+#[test]
+fn public_run_pipeline_api_survives_module_split() {
+    let root = unique_temp_dir("kobo-driver-pipeline-check");
+    let source_path = root.join("pipeline_smoke.kobo");
+    let output_dir = root.join("generated");
+    fs::create_dir_all(&root).expect("test temp root should be creatable");
+    fs::write(
+        &source_path,
+        r#"
+fn main() {
+    let name = String::from("Ada");
+    println!("{}", name);
+}
+"#,
+    )
+    .expect("test source should be writable");
+
+    let config = KoboConfig {
+        output_dir: Some(output_dir.clone()),
+        ..KoboConfig::default()
+    };
+    let mut session = CompileSession::new(config);
+
+    let rs_source = run_pipeline(&mut session, &source_path)
+        .expect("public run_pipeline should generate Rust for a simple Kobo source");
+
+    assert!(
+        rs_source.contains("fn main"),
+        "generated Rust should still contain the source main function:\n{rs_source}"
+    );
+    assert!(
+        output_dir.join("pipeline_smoke.rs").exists(),
+        "run_pipeline should still write the generated Rust file"
+    );
+    assert!(
+        output_dir.join("pipeline_smoke.kobo.map").exists(),
+        "run_pipeline should still write the source map file"
+    );
+    assert!(
+        !session.has_errors(),
+        "simple pipeline smoke source should not accumulate error diagnostics: {:?}",
+        session.diagnostics
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after UNIX_EPOCH")
+        .as_nanos();
+    std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+}

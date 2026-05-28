@@ -1,7 +1,6 @@
 /// @strict boundary violation detection.
 ///
-/// Reference: P3 Task 3.3. Contract C05: emit FACTS (StrictBoundaryFact),
-/// never KDiagnostic.
+/// Emits StrictBoundaryFact values, never KDiagnostic.
 use kobo_ir::{CaptureSet, Kir, StrictBoundaryFact, StrictBoundaryViolation, TransformFacts};
 use kobo_parser::KoboBlock;
 
@@ -12,7 +11,7 @@ use super::move_scan::check_k0043_moved_inside;
 use super::span_convert::SpanConvert;
 
 /// Validate @strict boundary safety. Produce StrictBoundaryFact for each
-/// violation found. Contract C05: emit FACTS, not diagnostics.
+/// violation found.
 ///
 /// `enclosing_stmts` contains the statements of the enclosing function body,
 /// used by K0041 to scan for aliases before the @strict block entry.
@@ -38,7 +37,7 @@ pub fn validate_strict_boundary(
 /// K0063: @strict block inside async context.
 ///
 /// Checks the `is_inside_async` flag set during AST collection.
-/// Contract C05: emits StrictBoundaryFact, never KDiagnostic.
+/// Emits StrictBoundaryFact, never KDiagnostic.
 fn check_k0063_async_context(
     block: &KoboBlock,
     _capture_set: &CaptureSet,

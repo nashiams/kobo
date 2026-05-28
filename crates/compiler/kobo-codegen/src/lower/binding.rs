@@ -46,7 +46,7 @@ pub(crate) fn apply_tier_to_local(
             *init.expr = parse_quote!(Arc::new(#expr));
         }
         OwnershipTier::ArcMutShared if !already_wrapped => {
-            // Phase 11: Arc<tokio::sync::RwLock<T>> for async mutable sharing.
+            // Stage: Arc<tokio::sync::RwLock<T>> for async mutable sharing.
             // HARD RULE: never Arc<std::sync::Mutex<T>> — use tokio::sync::RwLock.
             let expr = (*init.expr).clone();
             *init.expr = parse_quote!(Arc::new(tokio::sync::RwLock::new(#expr)));

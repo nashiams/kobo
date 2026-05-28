@@ -1,0 +1,1457 @@
+mod cli_test_support;
+
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
+
+use cli_test_support::{
+    assert_contains, assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput,
+    TestProject,
+};
+use serde_json::Value;
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
+    run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
+}
+
+fn write_sqlx_project(project: &TestProject) {
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "decl_consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sqlx = "0.8"
+"#,
+    );
+}
+
+fn typed_sqlx_file(project: &TestProject) -> std::path::PathBuf {
+    project.main_file(
+        r#"
+#[kobo::boundary(crate = "sqlx", policy = "typed", reason = "typed declaration supplied")]
+use sqlx::Pool;
+
+fn main() {
+    let _pool = Pool::connect_lazy();
+}
+"#,
+    )
+}
+
+fn valid_declaration(project: &TestProject, version: &str) {
+    project.write(
+        "sqlx.kobo.d.toml",
+        &format!(
+            r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "{version}"
+source = "bindgen"
+
+[[type]]
+path = "sqlx::Transaction"
+must_call = ["commit", "rollback"]
+resource = true
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#
+        ),
+    );
+}
+
+#[test]
+fn typed_policy_uses_declaration_version_and_hash() {
+    let project = TestProject::new("ecosystem-declaration-valid");
+    write_sqlx_project(&project);
+    valid_declaration(&project, "0.8");
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "valid typed declaration should satisfy replay-critical check",
+    );
+    assert_contains(
+        &output.stdout,
+        r#""declaration_version":"0.8""#,
+        "typed boundary evidence should include declaration version",
+    );
+    assert_contains(
+        &output.stdout,
+        r#""declaration_hash""#,
+        "typed boundary evidence should include declaration hash",
+    );
+    assert_contains(
+        &output.stdout,
+        "sqlx::Transaction",
+        "declaration must surface resource obligations",
+    );
+    assert_contains(
+        &output.stdout,
+        "must_call",
+        "declaration evidence should surface must_call obligations as structured metadata",
+    );
+    assert_contains(
+        &output.stdout,
+        "commit",
+        "declaration evidence should include concrete obligation alternatives",
+    );
+    assert_contains(
+        &output.stdout,
+        "sqlx::Pool::connect_lazy",
+        "declaration must surface covered function metadata",
+    );
+}
+
+#[test]
+fn typed_policy_consumes_configured_metadata_package_declaration() {
+    let project = TestProject::new("ecosystem-declaration-types-package");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+declaration_hash = "dfa7c134ea28cc61"
+"#,
+    );
+    project.write(
+        "metadata/sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[type]]
+path = "sqlx::Transaction"
+must_call = ["commit", "rollback"]
+resource = true
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-ecosystem"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+checksum = "sha256:c1a4d5ed004cead9b16c187b281f53269bd1a4324b6f8e23eae1b2617f67261d"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = true
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[s("check"), path_arg(&file), s("--error-format=json")],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "typed metadata package declarations should satisfy default boundary checks",
+    );
+    for expected in [
+        "boundary-policy-evidence",
+        "kobo-types-sqlx",
+        "metadata/kobo-types-sqlx.toml",
+        "sqlx::Pool::connect_lazy",
+        "sqlx::Transaction",
+    ] {
+        assert_contains(
+            &output.stdout,
+            expected,
+            "configured metadata packages must be consumed as typed declaration evidence",
+        );
+    }
+}
+
+#[test]
+fn builtin_types_package_makes_typed_registry_boundary_understood() {
+    let project = TestProject::new("ecosystem-builtin-types-package");
+    write_sqlx_project(&project);
+
+    let add_types = run_kobo(&[s("add-types"), s("sqlx")], &project.root);
+    assert_success(
+        &add_types,
+        "built-in registry types package should be recordable",
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[s("check"), path_arg(&file), s("--error-format=json")],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "built-in sqlx types metadata should satisfy typed boundary validation",
+    );
+    assert_contains(
+        &output.stdout,
+        "boundary-policy-evidence",
+        "check output should expose typed registry declaration evidence",
+    );
+    assert_contains(
+        &output.stdout,
+        "kobo-types-sqlx",
+        "built-in metadata package should be attached to declaration facts",
+    );
+    let kobo_toml = project.read("Kobo.toml");
+    for expected in [
+        r#"source = "registry""#,
+        r#"registry = "builtin-ecosystem""#,
+        r#"trust_policy = "builtin-reviewed""#,
+        r#"signed_by = "kobo-core""#,
+        r#"validated = true"#,
+    ] {
+        assert_contains(
+            &kobo_toml,
+            expected,
+            "built-in types metadata should be trusted, validated registry evidence",
+        );
+    }
+}
+
+#[test]
+fn configured_metadata_package_trust_is_enforced_before_declaration_use() {
+    fn run_case(kobo_toml: &str, metadata_extra: &str, context: &str) {
+        let project = TestProject::new(context);
+        write_sqlx_project(&project);
+        project.write(
+            "metadata/kobo-types-sqlx.toml",
+            &format!(
+                r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+{metadata_extra}
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#
+            ),
+        );
+        project.write(
+            "metadata/sqlx.kobo.d.toml",
+            r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+        );
+        project.write("Kobo.toml", kobo_toml);
+        let file = typed_sqlx_file(&project);
+
+        let output = run_kobo(
+            &[s("check"), path_arg(&file), s("--error-format=json")],
+            &project.root,
+        );
+
+        assert_failure(
+            &output,
+            "configured metadata package trust failures must block typed declarations",
+        );
+        assert_contains(
+            &output.combined(),
+            "K0121",
+            "configured metadata package trust failures should be declaration validation errors",
+        );
+    }
+
+    let base = r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-ecosystem"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+"#;
+
+    run_case(
+        &(base.to_owned() + "validated = false\n"),
+        "signed_by = \"kobo-local\"",
+        "ecosystem-types-package-unvalidated",
+    );
+    run_case(
+        &(base.to_owned()
+            + "validated = true\nchecksum = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n"),
+        "signed_by = \"kobo-local\"",
+        "ecosystem-types-package-bad-checksum",
+    );
+    run_case(
+        &(base.replace(
+            "signed_by = \"kobo-local\"",
+            "signed_by = \"kobo-local\"\ncompatible_crate = \"0.7\"",
+        ) + "validated = true\n"),
+        "signed_by = \"kobo-local\"",
+        "ecosystem-types-package-incompatible-version",
+    );
+    run_case(
+        &(base.to_owned() + "validated = true\n"),
+        "signed_by = \"evil-signer\"",
+        "ecosystem-types-package-bad-signer",
+    );
+}
+
+#[test]
+fn test_sim_rejects_invalid_typed_metadata_before_writing_witness() {
+    let project = TestProject::new("ecosystem-test-sim-invalid-types-package");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#,
+    );
+    project.write(
+        "metadata/sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-ecosystem"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = false
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "sqlx", policy = "typed", reason = "typed declaration supplied")]
+use sqlx::Pool;
+
+#[kobo::scenario(profile = "async")]
+fn scenario() {
+    let _pool = Pool::connect_lazy();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "test --sim must reject invalid configured typed metadata before witness output",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0121",
+        "invalid typed metadata in test --sim should surface as declaration validation",
+    );
+    assert!(
+        project.find_files_with_ext("kwit").is_empty(),
+        "invalid typed metadata must not produce .kwit witnesses"
+    );
+}
+
+#[test]
+fn lsp_uses_configured_metadata_package_validation() {
+    let project = TestProject::new("ecosystem-lsp-invalid-types-package");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#,
+    );
+    project.write(
+        "metadata/sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "metadata-package"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "typed"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-ecosystem"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = false
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "LSP diagnostics should report configured metadata package validation errors",
+    );
+    assert_contains(
+        &output.stdout,
+        "K0121",
+        "LSP should use configured metadata package validation instead of treating it as missing",
+    );
+    assert_contains(
+        &output.stdout,
+        "validated",
+        "LSP diagnostic should name the failed configured metadata trust key",
+    );
+}
+
+#[test]
+fn lsp_validates_configured_metadata_package_without_source_boundary_annotation() {
+    let project = TestProject::new("ecosystem-lsp-invalid-types-package-unannotated");
+    write_sqlx_project(&project);
+    project.write(
+        "metadata/kobo-types-sqlx.toml",
+        r#"schema_version = 1
+package = "kobo-types-sqlx"
+version = "0.8.0"
+kind = "types"
+compatible_crate = "0.8"
+signed_by = "kobo-local"
+declaration_path = "../metadata/sqlx.kobo.d.toml"
+"#,
+    );
+    project.write(
+        "Kobo.toml",
+        r#"[ecosystem]
+default = "opaque"
+
+[[ecosystem.types]]
+crate = "sqlx"
+package = "kobo-types-sqlx"
+version = "0.8.0"
+source = "registry-index"
+registry = "local-ecosystem"
+metadata_path = "metadata/kobo-types-sqlx.toml"
+trust_policy = "workspace-pinned"
+signed_by = "kobo-local"
+validated = false
+"#,
+    );
+    let file = project.main_file(
+        r#"
+use sqlx::Pool;
+
+fn main() {
+    let _pool = Pool::connect_lazy();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "LSP diagnostics should validate configured metadata packages even without source boundary annotations",
+    );
+    assert_contains(
+        &output.stdout,
+        "K0121",
+        "invalid configured metadata should be visible in LSP diagnostics",
+    );
+    assert_contains(
+        &output.stdout,
+        "validated",
+        "LSP should name the failed configured metadata trust key",
+    );
+}
+
+#[test]
+fn documented_crate_declaration_path_is_discovered() {
+    let project = TestProject::new("ecosystem-declaration-crate-path");
+    write_sqlx_project(&project);
+    project.write(
+        "crate.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "bindgen"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "crate.kobo.d.toml should satisfy typed declaration lookup",
+    );
+    assert_contains(
+        &output.stdout,
+        "crate.kobo.d.toml",
+        "documented declaration path should be reported in evidence",
+    );
+}
+
+#[test]
+fn typed_declaration_must_cover_boundary_call() {
+    let project = TestProject::new("ecosystem-declaration-coverage");
+    write_sqlx_project(&project);
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "bindgen"
+
+[[function]]
+path = "sqlx::Pool::other_call"
+effects = ["database"]
+simulation = "record"
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "typed declaration must cover the boundary call");
+    assert_contains(
+        &output.combined(),
+        "does not cover boundary call",
+        "typed declarations should be validated against call coverage",
+    );
+}
+
+#[test]
+fn typed_declaration_rejects_replay_critical_effects_for_call() {
+    let project = TestProject::new("ecosystem-declaration-typed-effects");
+    write_sqlx_project(&project);
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "bindgen"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = ["database"]
+simulation = "record"
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "typed policy must not treat replay-critical effects as exact typed evidence",
+    );
+    assert_contains(
+        &output.combined(),
+        "still has replay-critical effects",
+        "typed declarations should reject effectful call metadata for replay-critical paths",
+    );
+}
+
+#[test]
+fn typed_declaration_rejects_adapter_only_call_coverage() {
+    let project = TestProject::new("ecosystem-declaration-adapter-only-typed");
+    write_sqlx_project(&project);
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "bindgen"
+
+[[adapter]]
+path = "sqlx::Pool::connect_lazy"
+package = "kobo-adapter-sqlx"
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "adapter metadata alone must not satisfy typed exact boundary coverage",
+    );
+    assert_contains(
+        &output.combined(),
+        "does not cover boundary call",
+        "typed coverage should require function-level declaration evidence",
+    );
+}
+
+#[test]
+fn declaration_with_wrong_declared_hash_emits_k0121() {
+    let project = TestProject::new("ecosystem-declaration-wrong-hash");
+    write_sqlx_project(&project);
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "bindgen"
+declaration_hash = "wrong-hash"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "right-version but wrong-hash declarations must not be trusted",
+    );
+    assert_contains(
+        &output.combined(),
+        "declaration_hash",
+        "declaration hash mismatch should name the hash field",
+    );
+}
+
+#[test]
+fn typed_declaration_validates_every_external_call() {
+    let project = TestProject::new("ecosystem-declaration-multiple-calls");
+    write_sqlx_project(&project);
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "manual"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "sqlx", policy = "typed", reason = "typed declaration supplied")]
+use sqlx::Pool;
+
+fn main() {
+    let _pool = Pool::connect_lazy();
+    let _other = Pool::acquire();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "typed policy must validate every external call, not only the first",
+    );
+    assert_contains(
+        &output.combined(),
+        "sqlx::Pool::acquire",
+        "missing coverage should name the later external call",
+    );
+
+    let lsp = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(&lsp, "LSP should render multi-call typed declaration gaps");
+    assert_contains(
+        &lsp.stdout,
+        "sqlx::Pool::acquire",
+        "LSP should validate the later external call too",
+    );
+}
+
+#[test]
+fn repeated_external_calls_keep_distinct_call_site_spans() {
+    let project = TestProject::new("ecosystem-declaration-repeated-call-spans");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "repeated_calls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = "0.12"
+"#,
+    );
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.12"
+source = "bindgen"
+
+[[function]]
+path = "reqwest::Client::new"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "typed", reason = "typed declaration supplied")]
+use reqwest::Client;
+
+fn main() {
+    // reqwest::Client::new in a comment must not become the source span.
+    let _first = Client::new();
+    let _second = Client::new();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "typed repeated call fixture should satisfy replay-critical check",
+    );
+    let evidences = output
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value["category"].as_str() == Some("boundary-policy-evidence"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        evidences.len(),
+        2,
+        "each repeated external call should produce independent boundary evidence:\n{}",
+        output.stdout
+    );
+    assert_ne!(
+        evidences[0]["span"]["byte_start"], evidences[1]["span"]["byte_start"],
+        "repeated calls must not collapse onto one global text-search span:\n{}",
+        output.stdout
+    );
+    let source = fs::read_to_string(&file).expect("source should read");
+    for evidence in evidences {
+        let start = evidence["span"]["byte_start"]
+            .as_u64()
+            .expect("span start should be numeric") as usize;
+        let line = source[..start].lines().count() + 1;
+        assert_ne!(
+            line, 6,
+            "boundary span should point at the real call site, not the earlier comment:\n{}",
+            output.stdout
+        );
+    }
+}
+
+#[test]
+fn lsp_repeated_external_call_diagnostics_keep_distinct_ranges() {
+    let project = TestProject::new("ecosystem-declaration-lsp-repeated-call-spans");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "repeated_lsp_calls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = "0.12"
+"#,
+    );
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.12"
+source = "bindgen"
+
+[[function]]
+path = "reqwest::Client::other"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "typed", reason = "typed declaration supplied")]
+use reqwest::Client;
+
+fn main() {
+    // reqwest::Client::new in a comment must not become the diagnostic range.
+    let _first = Client::new();
+    let _second = Client::new();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "LSP should render repeated call declaration diagnostics",
+    );
+    let diagnostics = output
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value["code"].as_str() == Some("K0121"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "LSP declaration diagnostics should cover both repeated calls:\n{}",
+        output.stdout
+    );
+    assert_ne!(
+        diagnostics[0]["range"]["start"], diagnostics[1]["range"]["start"],
+        "LSP ranges should be call-site specific for repeated calls:\n{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn stale_declaration_version_emits_k0121() {
+    let project = TestProject::new("ecosystem-declaration-stale");
+    write_sqlx_project(&project);
+    valid_declaration(&project, "0.7");
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(
+        &output,
+        "stale declaration must fail typed replay-critical check",
+    );
+    assert_contains(
+        &output.combined(),
+        "K0121",
+        "stale declaration should use declaration validation diagnostic",
+    );
+}
+
+#[test]
+fn activity_declaration_without_retry_emits_k0125() {
+    let project = TestProject::new("ecosystem-declaration-activity-retry");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "activity_decl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+payments = "0.1"
+"#,
+    );
+    project.write(
+        "payments.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "payments"
+version = "0.1"
+source = "bindgen"
+
+[[activity]]
+path = "payments::charge"
+result = "record"
+retry = "retry-safe"
+idempotency = "request-id"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "payments", policy = "activity", reason = "external payment activity")]
+use payments::charge;
+
+fn main() {
+    let _ = charge();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_success(
+        &output,
+        "activity retry metadata issue should be visible without blocking normal check",
+    );
+    assert_contains(
+        &output.stdout,
+        "K0125",
+        "activity declaration without retry metadata should emit K0125",
+    );
+}
+
+#[test]
+fn lsp_declaration_diagnostics_include_k012x_actions() {
+    let project = TestProject::new("ecosystem-declaration-lsp-k012x");
+    write_sqlx_project(&project);
+    let missing_file = typed_sqlx_file(&project);
+
+    let missing = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&missing_file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &missing,
+        "LSP diagnostics should render typed declaration gaps",
+    );
+    assert_contains(
+        &missing.stdout,
+        "K0122",
+        "missing typed declaration should surface through LSP diagnostics",
+    );
+    assert_contains(
+        &missing.stdout,
+        "Create declaration file",
+        "LSP diagnostics should offer declaration-specific code actions",
+    );
+
+    valid_declaration(&project, "0.7");
+    let stale = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&missing_file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(&stale, "LSP diagnostics should render stale declarations");
+    assert_contains(
+        &stale.stdout,
+        "K0121",
+        "stale typed declaration should surface through LSP diagnostics",
+    );
+    assert_contains(
+        &stale.stdout,
+        "Validate declaration file",
+        "stale declarations should have declaration validation actions",
+    );
+
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "bindgen"
+
+[[function]]
+path = "sqlx::Pool::other_call"
+effects = []
+simulation = "pure"
+determinism = "deterministic"
+"#,
+    );
+    let wrong_call = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&missing_file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &wrong_call,
+        "LSP diagnostics should render wrong-call typed declarations",
+    );
+    assert_contains(
+        &wrong_call.stdout,
+        "does not cover boundary call",
+        "LSP should mirror check's typed call coverage validation",
+    );
+
+    project.write(
+        "sqlx.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "sqlx"
+version = "0.8"
+source = "bindgen"
+
+[[function]]
+path = "sqlx::Pool::connect_lazy"
+effects = ["database"]
+simulation = "record"
+"#,
+    );
+    let effectful = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&missing_file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &effectful,
+        "LSP diagnostics should render effectful typed declarations",
+    );
+    assert_contains(
+        &effectful.stdout,
+        "still has replay-critical effects",
+        "LSP should mirror check's typed effect validation",
+    );
+}
+
+#[test]
+fn lsp_activity_diagnostics_are_call_specific_for_methods() {
+    let project = TestProject::new("ecosystem-declaration-lsp-method-activity");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "method_activity"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = "0.12"
+"#,
+    );
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.12"
+source = "bindgen"
+
+[[activity]]
+path = "reqwest::Client::send"
+result = "record"
+retry = "retry-safe"
+idempotency = "request-id"
+compensation = "cancel-request"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "activity", reason = "external request activity")]
+use reqwest::Client;
+
+fn main() {
+    let _ = Client::new().send();
+}
+"#,
+    );
+
+    let complete = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &complete,
+        "LSP should accept activity metadata for the exact external method call",
+    );
+    assert!(
+        !complete.stdout.contains("K0125"),
+        "complete metadata for reqwest::Client::send should not emit K0125:\n{}",
+        complete.stdout
+    );
+
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.12"
+source = "bindgen"
+
+[[activity]]
+path = "reqwest::Client::new"
+result = "record"
+retry = "retry-safe"
+idempotency = "request-id"
+compensation = "cancel-request"
+"#,
+    );
+    let wrong_call = run_kobo(
+        &[
+            s("lsp-diagnostics"),
+            path_arg(&file),
+            s("--include-actions"),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &wrong_call,
+        "LSP should render activity diagnostics for wrong-call metadata",
+    );
+    assert_contains(
+        &wrong_call.stdout,
+        "K0125",
+        "activity metadata must cover the exact method call, not only the crate",
+    );
+}
+
+#[test]
+fn declaration_parse_error_points_to_file_and_key() {
+    let project = TestProject::new("ecosystem-declaration-parse-error");
+    write_sqlx_project(&project);
+    project.write("sqlx.kobo.d.toml", "[crate]\nname = \n");
+    let file = typed_sqlx_file(&project);
+
+    let output = run_kobo(
+        &[
+            s("check"),
+            path_arg(&file),
+            s("--replay-critical"),
+            s("--error-format=json"),
+        ],
+        &project.root,
+    );
+
+    assert_failure(&output, "invalid declaration TOML must fail");
+    assert_contains(&output.combined(), "K0121", "parse error should use K0121");
+    assert_contains(
+        &output.combined(),
+        "sqlx.kobo.d.toml",
+        "diagnostic should name the declaration file",
+    );
+    assert_contains(
+        &output.combined(),
+        "crate.name",
+        "diagnostic should name the declaration key being validated",
+    );
+}
+
+#[test]
+fn declaration_hash_is_serialized_in_kwit() {
+    let project = TestProject::new("ecosystem-declaration-witness-hash");
+    project.write(
+        "Cargo.toml",
+        r#"[package]
+name = "decl_witness"
+version = "0.1.0"
+edition = "2021"
+"#,
+    );
+    project.write(
+        "reqwest.kobo.d.toml",
+        r#"schema_version = 0
+
+[crate]
+name = "reqwest"
+version = "0.12"
+source = "bindgen"
+
+[[function]]
+path = "reqwest::Client::new"
+effects = ["network"]
+simulation = "record"
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::boundary(crate = "reqwest", policy = "typed", reason = "typed declaration supplied")]
+use reqwest::Client;
+
+#[kobo::scenario(profile = "async")]
+fn typed_gateway() {
+    let _client = Client::new();
+    ward.task();
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--witness-dir"),
+            s(".kobo/witnesses"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "typed declaration scenario should produce a witness",
+    );
+    let witness_path = project
+        .find_files_with_ext("kwit")
+        .into_iter()
+        .next()
+        .expect("witness should exist");
+    let witness: Value =
+        serde_json::from_str(&fs::read_to_string(&witness_path).expect("witness should read"))
+            .expect("witness should parse");
+    assert_contains(
+        &witness.to_string(),
+        "declaration_hash",
+        "witness should serialize declaration hash/version evidence",
+    );
+    assert_contains(
+        &witness.to_string(),
+        r#""schema_version":0"#,
+        "witness should serialize schema-shaped declaration schema version",
+    );
+    assert_contains(
+        &witness.to_string(),
+        r#""hash""#,
+        "witness should serialize schema-shaped declaration hash",
+    );
+    assert_contains(
+        &witness["ecosystem_boundaries"].to_string(),
+        r#""declaration""#,
+        "boundary evidence should include declaration metadata",
+    );
+    assert_contains(
+        &witness.to_string(),
+        "reqwest.kobo.d.toml",
+        "witness should serialize declaration source path",
+    );
+}
+
+#[test]
+fn active_k012x_codes_have_explain_text() {
+    let project = TestProject::new("ecosystem-k012x-explain");
+    for code in [
+        "K0120", "K0121", "K0122", "K0123", "K0124", "K0125", "K0126", "K0127", "K0128", "K0129",
+    ] {
+        let output = run_kobo(&[s("explain"), s(code)], &project.root);
+        assert_success(&output, "active K012x code should be explainable");
+        assert_contains(
+            &output.stdout,
+            code,
+            "explain output should include the diagnostic code",
+        );
+        assert!(
+            !output.stdout.contains("reserved Kobo diagnostic slot"),
+            "{code} must be active, not a reserved placeholder:\n{}",
+            output.stdout
+        );
+    }
+}

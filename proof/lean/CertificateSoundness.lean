@@ -16,7 +16,7 @@ structure SampleCertificateBridge where
 
 def sampleCertificateBridge : SampleCertificateBridge :=
   {
-    rustFixturePath := "crates/compiler/kobo-proof/fixtures/v16_sample.kproof",
+    rustFixturePath := "crates/compiler/kobo-proof/fixtures/sample_trace.kproof",
     rustRuleIds := sampleTrace,
     leanTraceAccepted := sample_obligation_trace_accepted,
     returnExitAccepted := sample_return_exit_accepted,

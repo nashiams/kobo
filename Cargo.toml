@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-# v0.2 crate-boundary note:
+# Crate-boundary note:
 # - kobo-transform must not depend on kobo-errors
 # - kobo-transform must not depend on kobo-analysis
 # - kobo-analysis must not depend on kobo-transform

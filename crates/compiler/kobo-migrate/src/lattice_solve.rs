@@ -1,4 +1,4 @@
-//! Phase 03: Lattice-based ownership inference with floor/ceiling propagation.
+//! Stage: Lattice-based ownership inference with floor/ceiling propagation.
 //!
 //! Implements a worklist algorithm over TierVar lattice points with
 //! Least-Upper-Bound (LUB) merging.  Floors and ceilings tighten the

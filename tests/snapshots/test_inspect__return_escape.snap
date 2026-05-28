@@ -3,7 +3,7 @@ source: bin/kobo-cli/tests/test_run.rs
 expression: output.stdout
 ---
 fn build_name() -> String {
-// kobo: name @ line 2 -> rc (return escape: Box<T> requires signature rewrite (v0.4))
+// kobo: name @ line 2 -> rc (return escape: Box<T> requires signature rewrite)
     let name = String::from("kobo");
     return name;
 }

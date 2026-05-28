@@ -1,0 +1,35 @@
+---
+source: bin/kobo-cli/tests/k0100_diagnostics_snapshot_checks.rs
+assertion_line: 37
+expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagnostic should serialize\")"
+---
+{
+  "category": "nondeterminism",
+  "code": "K0102",
+  "decision": "Route time, randomness, file IO, and task scheduling through modeled facades before claiming replay evidence.",
+  "explanation": "Replay evidence only stays useful when the same inputs produce the same event stream. Raw nondeterminism can make a replay pass or fail for the wrong reason.",
+  "line": 6,
+  "message": "<temp-path>",
+  "notes": [],
+  "primary": {
+    "byte_end": 113,
+    "byte_start": 96,
+    "column_end": 32,
+    "column_start": 15,
+    "file_id": 0,
+    "file_path": "<source>",
+    "label": "<temp-path>",
+    "line_end": 5,
+    "line_start": 5
+  },
+  "related": [],
+  "schema_version": 1,
+  "secondary": [],
+  "severity": "error",
+  "slug": "raw-nondeterminism-on-replay-path",
+  "suggestions": [],
+  "suppressed_by": null,
+  "suppression": null,
+  "title": "raw nondeterminism appears on a replay path",
+  "upstream": null
+}

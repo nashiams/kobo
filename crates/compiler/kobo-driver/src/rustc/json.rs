@@ -29,7 +29,7 @@ pub(crate) struct RustcJsonError {
 
 pub(crate) struct ParsedRustcOutput {
     pub(crate) errors: Vec<RustcJsonError>,
-    pub(crate) warnings: Vec<RustcJsonError>, // v0.6 G4: captured for checked-mode filtering
+    pub(crate) warnings: Vec<RustcJsonError>,
     pub(crate) parsed_any: bool,
 }
 

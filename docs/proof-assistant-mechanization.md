@@ -1,6 +1,6 @@
 # Proof Assistant Mechanization
 
-Kobo uses Lean to mechanize the narrow obligation calculus that the independent proof verifier checks. v0.16 begins mechanized soundness for Kobo's obligation core and proof verifier.
+Kobo uses Lean to mechanize the narrow obligation calculus that the independent proof verifier checks. The mechanized model covers Kobo's obligation core and proof verifier.
 
 The rule synchronization source is `crates/compiler/kobo-proof/rules/obligation_rules.toml`. It lists the stable create, transfer, split, discharge, return, cancel, panic, and opaque rule IDs, their Rust verifier owners, and their Lean rule and theorem names.
 

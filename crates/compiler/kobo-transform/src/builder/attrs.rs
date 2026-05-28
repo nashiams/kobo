@@ -106,7 +106,7 @@ fn parse_must_call_actions(
 }
 
 // ---------------------------------------------------------------------------
-// #[kobo::relax] parsing [G5]
+// #[kobo::relax] parsing
 // ---------------------------------------------------------------------------
 
 /// Result of parsing a `#[kobo::relax]` attribute from an `syn::Attribute`.
@@ -134,7 +134,7 @@ pub(super) fn parse_relax_attr(attr: &syn::Attribute) -> RelaxAttrResult {
 }
 
 // ---------------------------------------------------------------------------
-// #[kobo::migrate] parsing [G6]
+// #[kobo::migrate] parsing
 // ---------------------------------------------------------------------------
 
 /// Result of parsing a `#[kobo::migrate]` attribute.
@@ -229,7 +229,7 @@ pub(super) enum AsyncSharedAttrResult {
     NotAsyncShared,
     /// Valid bare `#[kobo::async_shared]`.
     Valid,
-    /// Malformed `#[kobo::async_shared = ...]` or `#[kobo::async_shared(...)]` — takes no args.
+    /// Malformed `#[kobo::async_shared =...]` or `#[kobo::async_shared(...)]` — takes no args.
     HasArguments,
 }
 

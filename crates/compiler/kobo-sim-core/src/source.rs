@@ -5,7 +5,8 @@ use kobo_ir::{FileId, NodeIdGen, ScenarioProgram, SolutionMap};
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
     preprocess_bridge_blocks, preprocess_concurrent_sugar, preprocess_kobo_keywords,
-    preprocess_spawn_blocks, preprocess_strict_reject_invalid, v05_keyword_configs, KeywordMarker,
+    preprocess_spawn_blocks, preprocess_strict_reject_invalid, strict_keyword_configs,
+    KeywordMarker,
 };
 use kobo_transform::{build_kir, TransformOptions};
 
@@ -70,7 +71,7 @@ struct PreprocessedReplaySource {
 }
 
 fn preprocess_source(source: &str, file_id: FileId) -> Result<PreprocessedReplaySource> {
-    let configs = v05_keyword_configs();
+    let configs = strict_keyword_configs();
     let (rewritten, _) = preprocess_concurrent_sugar(source);
     preprocess_strict_reject_invalid(&rewritten, &configs).map_err(|source| {
         SimCoreError::source_compile("strict keyword validation", source.to_string())

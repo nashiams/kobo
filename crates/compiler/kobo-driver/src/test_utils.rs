@@ -1,4 +1,4 @@
-//! Shared test helpers for v0.8 phases.
+//! Shared test helpers for compiler pipeline fixtures.
 //!
 //! Provides in-memory source→KIR→codegen pipelines so tests do not
 //! touch the filesystem. Every phase's test suite imports these helpers.
@@ -14,7 +14,7 @@ use kobo_ir::{
 use kobo_parser::{
     collect_strict_items_from_syn, parse_file, postprocess_strict_markers,
     preprocess_kobo_keywords, preprocess_spawn_blocks, preprocess_strict_reject_invalid,
-    v05_keyword_configs, KoboFile,
+    strict_keyword_configs, KoboFile,
 };
 use kobo_transform::{build_kir, TransformOptions};
 
@@ -42,13 +42,13 @@ pub fn compile_to_kir(source: &str, config: &KoboConfig) -> Result<CompileResult
     let file_id = session.register_source_file("test.kobo".into(), source.to_owned());
 
     // Preprocess @strict keywords.
-    let configs = v05_keyword_configs();
+    let configs = strict_keyword_configs();
     if let Err(e) = preprocess_strict_reject_invalid(source, &configs) {
         return Err(format!("preprocess error: {e}"));
     }
     let (rewritten, markers) = preprocess_kobo_keywords(source, &configs);
 
-    // v0.8: rewrite spawn { ... } blocks.
+    // Rewrite spawn blocks before parsing so tests use the same path as the driver.
     let (rewritten, _spawn_infos) = preprocess_spawn_blocks(&rewritten, file_id);
 
     // Parse.

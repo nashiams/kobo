@@ -1,4 +1,4 @@
-//! Phase 09: Red-green solver cache.
+//! Stage: Red-green solver cache.
 //!
 //! Caches solver results keyed by graph fingerprint so that repeated
 //! queries with the same constraint graph skip re-computation.

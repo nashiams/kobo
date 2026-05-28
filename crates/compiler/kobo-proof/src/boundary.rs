@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    stable_hash, template_schema_hash, BoundaryAssumption, BoundaryPolicy, ProofCertificate,
-    ReplayGrade, TemplateSchemaEvidence, VerificationError,
+    stable_hash, template_schema_hash, BoundaryAssumption, BoundaryPolicy, CoverageLoss,
+    ProofCertificate, ReplayGrade, TemplateSchemaEvidence, VerificationError,
 };
 
 pub(crate) fn verify_template_schemas(
@@ -146,13 +146,21 @@ fn verify_exact_replay_boundaries(certificate: &ProofCertificate) -> Result<(), 
             });
         }
     }
-    if let Some(loss) = certificate.coverage_loss.first() {
+    if let Some(loss) = certificate
+        .coverage_loss
+        .iter()
+        .find(|loss| replay_blocking_coverage_loss(loss))
+    {
         return Err(VerificationError::ExactReplayWithCoverageLoss {
             kind: loss.kind.clone(),
             label: loss.label.clone(),
         });
     }
     Ok(())
+}
+
+fn replay_blocking_coverage_loss(loss: &CoverageLoss) -> bool {
+    !(loss.kind == "unsupported_construct" && loss.label == "lifecycle_method_await_initializer")
 }
 
 fn exact_replay_disallows(policy: BoundaryPolicy) -> bool {

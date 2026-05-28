@@ -37,17 +37,17 @@ pub(crate) struct BuilderOutput {
     pub(crate) move_aliases: Vec<MoveAlias>,
     pub(crate) clone_elision_candidates: Vec<CloneElisionCandidate>,
     pub(crate) struct_defs: Vec<KirStructDef>,
-    /// Byte-offset spans of functions annotated with `#[kobo::relax]` [G5].
+    /// Byte-offset spans of functions annotated with `#[kobo::relax]`.
     pub(crate) relaxed_fn_ranges: Vec<KoboSpan>,
-    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
+    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes.
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
-    /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
+    /// Sites tagged with `#[kobo::migrate]`; metadata-only.
     pub(crate) migrate_sites: Vec<MigrateSite>,
     pub(crate) must_call_obligations: Vec<MustCallObligation>,
     pub(crate) must_call_attr_errors: Vec<MustCallAttrError>,
     /// Method name → is_mut_self, from impl block scanning + config.
     pub(crate) method_mutability: std::collections::HashMap<String, bool>,
-    /// Spawn sites with captured binding info [S-8 / S-9].
+    /// Spawn sites with captured binding info.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) spawn_sites: Vec<crate::escape::SpawnSite>,
 }
@@ -72,19 +72,19 @@ pub(crate) struct TransformFactsBuilder<'a> {
     async_function_names: HashSet<String>,
     pending_elision_candidates: HashMap<kobo_ir::KoboAstNodeId, AstCloneElisionCandidate>,
     struct_defs: Vec<KirStructDef>,
-    /// Byte-offset spans of functions annotated with `#[kobo::relax]` [G5].
+    /// Byte-offset spans of functions annotated with `#[kobo::relax]`.
     pub(crate) relaxed_fn_ranges: Vec<KoboSpan>,
-    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes [G5].
+    /// Parse-time validation errors/warnings for `#[kobo::relax]` attributes.
     pub(crate) relax_attr_errors: Vec<RelaxAttrError>,
-    /// Sites tagged with `#[kobo::migrate]` — metadata-only [G6 / R05].
+    /// Sites tagged with `#[kobo::migrate]`; metadata-only.
     pub(crate) migrate_sites: Vec<MigrateSite>,
     pub(crate) must_call_obligations: Vec<MustCallObligation>,
     pub(crate) must_call_attr_errors: Vec<MustCallAttrError>,
     /// Current nesting depth for scope tracking (0 = function body).
     scope_depth: usize,
-    /// Pending `#[kobo::async_shared]` flag for the next binding [BUG 7].
+    /// Pending `#[kobo::async_shared]` flag for the next binding.
     pending_async_shared: bool,
-    /// Spawn sites collected during walk — used for Send propagation [S-8].
+    /// Spawn sites collected during walk and used for Send propagation.
     spawn_sites: Vec<crate::escape::SpawnSite>,
     /// When > 0, we are inside a spawn block walk and collecting captured bindings.
     spawn_depth: usize,

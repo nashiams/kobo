@@ -1,4 +1,4 @@
-//! Phase 11: Decision classification for human review.
+//! Stage: Decision classification for human review.
 //!
 //! Classifies solver decisions into categories that help users understand
 //! what the solver did and why.

@@ -1,10 +1,10 @@
-/// @strict block lowering for v0.5.
+/// @strict block lowering.
 ///
-/// Contracts enforced here:
-/// - C02: guard all exits (normal, ?, break, continue)
-/// - C04: no .borrow()/.borrow_mut() inside the rewritten block body
-/// - C06: @strict keyword / #[__kobo_strict] never appear in output
-/// - C08: guard names are `__kobo_guard_{N}` where N comes from StrictGuardCounter
+/// Invariants enforced here:
+/// - guard all exits (normal, ?, break, continue)
+/// - no `.borrow()` / `.borrow_mut()` inside the rewritten block body
+/// - @strict keyword / #[__kobo_strict] never appear in output
+/// - guard names are `__kobo_guard_{N}` where N comes from StrictGuardCounter
 mod block;
 mod cf;
 mod func;

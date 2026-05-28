@@ -14,7 +14,7 @@ pub(super) fn resolve_solution(kir: &Kir) -> (SolverEvidence, SolveOutcome) {
     (modular.solver_evidence, outcome)
 }
 
-/// Project non-Unique solver outcomes to K-code diagnostics (Phase 00/05).
+/// Project non-Unique solver outcomes to K-code diagnostics.
 pub(super) fn project_solver_diagnostics(
     session: &mut CompileSession,
     kir: &Kir,

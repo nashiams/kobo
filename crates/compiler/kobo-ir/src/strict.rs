@@ -1,13 +1,13 @@
 /// @strict IR types.
 ///
-/// All types related to @strict blocks live here (Contract C09).
+/// All types related to @strict blocks live here.
 /// No @strict types are defined in kobo-transform or kobo-codegen.
 use crate::node_id::KirNodeId;
 use crate::span::KoboSpan;
 
 /// How a binding is accessed inside the @strict block.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive] // F-06: v0.6 may add ReadMut, Conditional
+#[non_exhaustive]
 pub enum CaptureAccessKind {
     Read,  // .borrow() guard
     Write, // .borrow_mut() guard
@@ -19,11 +19,11 @@ pub struct CapturedBinding {
     pub binding_id: KirNodeId,
     pub name: String,
     pub access_kind: CaptureAccessKind,
-    pub access_count: usize, // F-06: for v0.6 suggestion quality scoring
-    pub access_spans: Vec<KoboSpan>, // F-06: for v0.6 access-site clustering
+    pub access_count: usize,
+    pub access_spans: Vec<KoboSpan>,
 }
 
-/// Nested @strict block info, recorded before flattening (F-07).
+/// Nested @strict block info, recorded before flattening.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NestedStrictBlock {
     pub span: KoboSpan,
@@ -42,20 +42,20 @@ pub struct CaptureSet {
     pub has_continue: bool,
     pub is_inside_loop: bool,
 
-    // Nested flattening info (F-07: preserved for v0.6 per-block granularity)
+    // Nested flattening info preserved for per-block granularity.
     pub nested_blocks: Vec<NestedStrictBlock>,
 }
 
-/// How a closure captures a binding (F-01: full capture metadata for v0.6).
+/// How a closure captures a binding.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive] // F-01
+#[non_exhaustive]
 pub enum ClosureCaptureMode {
     ByRef,
     ByRefMut,
     ByValue,
 }
 
-/// Detail about one captured binding inside a closure (F-01).
+/// Detail about one captured binding inside a closure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosureCaptureDetail {
     pub binding_id: KirNodeId,
@@ -78,8 +78,8 @@ pub enum StrictBoundaryViolation {
     ClosureCapture {
         closure_span: KoboSpan,
         captured_binding_id: KirNodeId,
-        is_move_closure: bool,               // F-01
-        captures: Vec<ClosureCaptureDetail>, // F-01
+        is_move_closure: bool,
+        captures: Vec<ClosureCaptureDetail>,
     },
 
     /// K0043: value moved inside @strict block.
@@ -91,7 +91,7 @@ pub enum StrictBoundaryViolation {
     /// K0063: @strict block inside async context without @strict async fn.
     AsyncContext { async_fn_span: KoboSpan },
 
-    /// Labeled break/continue crosses @strict boundary (R-13, Trap 22).
+    /// Labeled break/continue crosses @strict boundary.
     LabeledCrossBoundary {
         label: String,
         break_or_continue_span: KoboSpan,
@@ -100,23 +100,23 @@ pub enum StrictBoundaryViolation {
 }
 
 /// A boundary fact emitted by the transform for the driver to convert into
-/// a KDiagnostic. Contract C05: transform emits facts, not diagnostics.
+/// a KDiagnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StrictBoundaryFact {
     pub block_span: KoboSpan,
     pub violation: StrictBoundaryViolation,
 }
 
-/// Mode for @strict function lowering (F-04).
+/// Mode for @strict function lowering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StrictFnMode {
     /// Full @strict: parameters are not wrapped, body is an implicit @strict block.
     Full,
-    /// Async function: @strict marker stripped, lowering deferred to v0.7.
+    /// Async function: @strict marker stripped, lowering handled by async analysis.
     AsyncDeferred,
 }
 
-// --- Async violation facts (Phase 11) ---
+// --- Async violation facts ---
 
 /// Describes a specific async ownership violation detected during analysis.
 /// Transform emits these facts; the driver converts them to KDiagnostics.

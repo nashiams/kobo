@@ -1,6 +1,6 @@
 // warn_early.rs — K0080-P structural ownership pattern detector.
 //
-// All four v0.4 patterns are detected here from frozen KIR data:
+// All four structural debt patterns are detected here from frozen KIR data:
 //
 //   P1: BidirectionalRcLinks       — Rc cycle between two struct types
 //   P2: ParentChildBackPointer     — Vec<Rc<RefCell<Self>>> + Option<Rc<RefCell<Self>>>
@@ -10,10 +10,9 @@
 // Priority: P4 is emitted first, P2 supersedes P1 when both match the same struct.
 // P3 is binding-level, the others are struct-level.
 //
-// Trap 7: must NOT emit KDiagnostic here — only produce WarnEarlyFact values.
-// Trap 13: P3 site_count comes from SharedBindingFacts.mutable_sites (function
-//           boundaries), not raw mutation event counts.
-// Contract C04: types consumed here (KirStructDef, WarnEarlyFact) live in kobo-ir.
+// This pass must not emit KDiagnostic directly; it only produces WarnEarlyFact values.
+// P3 site_count comes from SharedBindingFacts.mutable_sites (function boundaries),
+// not raw mutation event counts. Types consumed here live in kobo-ir.
 
 use kobo_ir::{FieldTypeShape, Kir, KirNodeId, WarnEarlyFact, WarnEarlyPattern};
 
@@ -217,7 +216,7 @@ fn detect_p1_bidirectional(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
 /// boundaries (call sites).
 ///
 /// `mutable_sites` in `SharedBindingFacts` counts distinct caller function
-/// identities, not raw mutation events (Trap 13).
+/// identities, not raw mutation events.
 fn detect_p3_shared_mutable(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
     for binding in kir.transform_facts().bindings.iter() {
         if binding.shared_facts.mutable_sites < 3 {
@@ -231,7 +230,7 @@ fn detect_p3_shared_mutable(kir: &Kir, out: &mut Vec<WarnEarlyFact>) {
                 site_count: binding.shared_facts.mutable_sites,
             },
             // Binding-level suppression via #[kobo::known_debt] is planned for
-            // v0.5; for now, binding-level facts are never suppressed.
+            // Binding-level facts are never suppressed.
             suppressed: false,
             known_debt_reason: None,
             struct_name: binding.binding_name.clone(),
@@ -380,7 +379,7 @@ mod tests {
                 name: "next".to_owned(),
                 shape: FieldTypeShape::DirectNamed("Chain".to_owned()),
             }],
-            known_debt_reason: Some("intentional for v0.5 refactor".to_owned()),
+            known_debt_reason: Some("intentional for staged strict refactor".to_owned()),
             known_debt_span: Some(dummy_span()),
             known_debt_parse_error: None,
         }]);
@@ -389,7 +388,7 @@ mod tests {
         assert!(facts[0].suppressed);
         assert_eq!(
             facts[0].known_debt_reason.as_deref(),
-            Some("intentional for v0.5 refactor")
+            Some("intentional for staged strict refactor")
         );
     }
 

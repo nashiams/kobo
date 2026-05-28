@@ -1,6 +1,6 @@
 //! Completeness gate tests for the Kobo ownership solver.
 //!
-//! Each test maps 1:1 to a gap from the v0.8.1 solver-robustness-audit.md.
+//! Each test maps 1:1 to a gap from the solver-robustness-audit.md.
 //! Every test is designed to FAIL on the current codebase — proving the
 //! feature is genuinely missing. When a gap is fixed, its test will start
 //! passing. Zero tests passing = 0% complete on these gaps.

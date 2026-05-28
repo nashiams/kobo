@@ -1,4 +1,4 @@
-//! Phase 07: Function summaries for inter-procedural analysis.
+//! Stage: Function summaries for inter-procedural analysis.
 //!
 //! A `FunctionSummary` captures the ownership constraints that flow
 //! in/out of a single function — a compact representation that lets the

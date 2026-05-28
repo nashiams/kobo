@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::KoboConfig;
 
-/// File-system errors emitted by the v0.1 driver.
+/// File-system errors emitted by the driver.
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
     #[error("file not found: {path}")]

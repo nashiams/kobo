@@ -212,7 +212,7 @@ impl TransformFactsBuilder<'_> {
 
         self.collect_migrate_attrs(&local.attrs, MigrateTarget::LetBinding);
 
-        // BUG 7 / v0.10: detect explicit shared-state opt-ins on let bindings.
+        // Detect explicit shared-state opt-ins on let bindings.
         for attr in &local.attrs {
             if let AsyncSharedAttrResult::Valid | AsyncSharedAttrResult::HasArguments =
                 parse_async_shared_attr(attr)
@@ -431,7 +431,7 @@ impl TransformFactsBuilder<'_> {
     }
 
     // -----------------------------------------------------------------------
-    // Spawn-block handling [S-8 / S-9]
+    // Spawn-block handling
     // -----------------------------------------------------------------------
 
     /// Name of the marker macro emitted by the spawn preprocessor.
@@ -503,10 +503,10 @@ impl TransformFactsBuilder<'_> {
     }
 
     // -----------------------------------------------------------------------
-    // Attribute collection helpers (G5, G6, Trap 12)
+    // Attribute collection helpers
     // -----------------------------------------------------------------------
 
-    /// Collect `#[kobo::relax]` attributes on a function, pushing ranges and errors [G5].
+    /// Collect `#[kobo::relax]` attributes on a function, pushing ranges and errors.
     /// Returns the count of relax attributes found.
     fn collect_relax_attrs_on_fn(&mut self, attrs: &[syn::Attribute], fn_span: KoboSpan) -> usize {
         let mut count = 0usize;
@@ -539,7 +539,7 @@ impl TransformFactsBuilder<'_> {
         count
     }
 
-    /// Trap 12: if relax was found on an @strict function, discard relax and warn [BUG-07].
+    /// If relax was found on an @strict function, discard relax and warn.
     fn check_relax_strict_conflict(&mut self, relax_count: usize, fn_span: KoboSpan) {
         if relax_count == 0 {
             return;
@@ -555,7 +555,7 @@ impl TransformFactsBuilder<'_> {
         }
     }
 
-    /// Collect `#[kobo::migrate]` attributes on an item, pushing sites and errors [G6].
+    /// Collect `#[kobo::migrate]` attributes on an item, pushing sites and errors.
     fn collect_migrate_attrs(&mut self, attrs: &[syn::Attribute], target: MigrateTarget) {
         let mut count = 0usize;
         for attr in attrs {

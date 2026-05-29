@@ -15,10 +15,10 @@ pub(super) fn entries() -> Vec<DiagnosticRegistryEntry> {
     vec![
         entry(
             KErrorCode::K0120,
-            "ecosystem-policy-parse-error",
-            "ecosystem policy parse error",
-            "Kobo could not parse ecosystem policy metadata from Kobo.toml.",
-            "Fix the [ecosystem] table before relying on project-wide boundary policy decisions.",
+            "ecosystem-policy-unreadable",
+            "I could not read ecosystem policy metadata",
+            "Kobo.toml has a malformed ecosystem or boundary policy entry.",
+            "Fix the project policy table before relying on project-wide boundary decisions.",
             BoundaryPolicy,
             Error,
             Always(Error),

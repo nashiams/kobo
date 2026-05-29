@@ -256,9 +256,9 @@ fn process() {
     );
 }
 
-// --- K0061: Non-Sync mutable shared binding in async context ---
+// --- K0061: mutable shared binding in async context ---
 
-/// Invariant: Mutable shared binding in async → K0061 (RefCell is not Sync).
+/// Invariant: Mutable shared binding in async -> K0061.
 #[test]
 fn async_mutable_shared_binding_can_emit_k0061() {
     // Pattern: use-after-move alias WITH both read and mutation

@@ -1,6 +1,6 @@
 use kobo_ir::debt::{
     AcknowledgedDebtRecord, ComplexityBreakdown, DebtComplexityTier, DebtReport, DebtSiteRecord,
-    WrapperInventory,
+    OwnershipDebtRecord, WrapperInventory,
 };
 use kobo_ir::{Kir, OwnershipTier};
 
@@ -14,10 +14,16 @@ use crate::complexity::classify_site;
 ///
 /// `file_count` and `line_count` are metadata supplied by the caller (driver
 /// or CLI) from the compile session context.
-pub fn build_debt_report(kir: &Kir, file_count: usize, line_count: usize) -> DebtReport {
+pub fn build_debt_report(
+    kir: &Kir,
+    file_count: usize,
+    line_count: usize,
+    ownership_debt: Vec<OwnershipDebtRecord>,
+) -> DebtReport {
     let mut report = DebtReport::new();
     report.file_count = file_count;
     report.line_count = line_count;
+    report.ownership_debt = ownership_debt;
 
     // --- Wrapper inventory: walk all declaration nodes and count by tier ---
     let mut inventory = WrapperInventory::default();
@@ -157,7 +163,7 @@ mod tests {
             make_node(9, OwnershipTier::RcMutShared),
         ];
         let kir = Kir::from_nodes(nodes);
-        let report = build_debt_report(&kir, 1, 100);
+        let report = build_debt_report(&kir, 1, 100, Vec::new());
         assert_eq!(report.inventory.plain_owned, 3);
         assert_eq!(report.inventory.rc_shared, 2);
         assert_eq!(report.inventory.rc_mut_shared, 4);
@@ -171,7 +177,7 @@ mod tests {
             make_node(3, OwnershipTier::RcMutShared),
         ];
         let kir = Kir::from_nodes(nodes);
-        let report = build_debt_report(&kir, 1, 50);
+        let report = build_debt_report(&kir, 1, 50, Vec::new());
         let sum = report.complexity.tier1 + report.complexity.tier2 + report.complexity.tier3;
         assert_eq!(
             sum, report.inventory.rc_mut_shared,
@@ -193,7 +199,7 @@ mod tests {
             known_debt_reason: None,
             struct_name: "Chain".to_owned(),
         }]);
-        let report = build_debt_report(&kir, 1, 10);
+        let report = build_debt_report(&kir, 1, 10, Vec::new());
         assert_eq!(report.warn_early.len(), 1);
         assert_eq!(report.acknowledged.len(), 0);
     }
@@ -213,7 +219,7 @@ mod tests {
             known_debt_reason: Some("will use arena".to_owned()),
             struct_name: "Node".to_owned(),
         }]);
-        let report = build_debt_report(&kir, 1, 10);
+        let report = build_debt_report(&kir, 1, 10, Vec::new());
         assert_eq!(report.warn_early.len(), 0);
         assert_eq!(report.acknowledged.len(), 1);
         assert_eq!(report.acknowledged[0].reason, "will use arena");
@@ -222,7 +228,7 @@ mod tests {
     #[test]
     fn schema_version_is_one() {
         let kir = Kir::from_nodes(vec![]);
-        let report = build_debt_report(&kir, 0, 0);
+        let report = build_debt_report(&kir, 0, 0, Vec::new());
         assert_eq!(report.schema_version, 1);
     }
 }

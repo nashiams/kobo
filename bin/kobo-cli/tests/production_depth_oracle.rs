@@ -92,12 +92,12 @@ fn {scenario}() {{
 
     assert_success(
         &output,
-        "dead branch raw nondeterminism must not poison replay path",
+        "dead branch changing replay input must not poison replay path",
     );
     assert_not_contains(
         &output.combined(),
         "K0102",
-        "unreachable raw nondeterminism is not on the replay path",
+        "unreachable changing replay input is not on the replay path",
     );
 }
 
@@ -422,12 +422,12 @@ fn raw_clock() {
         ],
         &project.root,
     );
-    assert_failure(&raw, "raw nondeterminism should fail");
-    let raw_json = first_json(&raw, "raw nondeterminism diagnostic must be JSON");
+    assert_failure(&raw, "changing replay input should fail");
+    let raw_json = first_json(&raw, "changing replay input diagnostic must be JSON");
     assert_eq!(
         raw_json["line"].as_u64(),
         Some(raw_line as u64),
-        "K0102 primary line must point at the raw nondeterminism expression"
+        "K0102 primary line must point at the changing replay input expression"
     );
 
     let boundary_source = r#"

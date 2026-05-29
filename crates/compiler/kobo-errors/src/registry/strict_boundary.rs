@@ -42,9 +42,9 @@ pub(super) fn entries() -> Vec<DiagnosticRegistryEntry> {
         entry(
             KErrorCode::K0041,
             "aliased-strict-entry",
-            "cannot enter @strict block - value has active aliases",
-            "An @strict block would start while aliases are still active.",
-            "Strict regions promise a simple ownership shape at the boundary. Any live alias must end before entry so the generated guards can be introduced and removed in one clear scope.",
+            "I need aliases to end before this strict block",
+            "An @strict block starts while another alias is still live.",
+            "Strict regions promise a simple ownership shape at the boundary. Any live alias must end before entry so the guard can start and finish in one clear scope.",
             StrictBoundary,
             Error,
             Always(Error),

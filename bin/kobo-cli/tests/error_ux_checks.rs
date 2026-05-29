@@ -37,10 +37,9 @@ fn assert_no_default_human_jank(output: &str) {
 fn assert_guidance_lines_are_wrapped(output: &str) {
     for line in output.lines() {
         let trimmed = line.trim_start();
-        let is_guidance = trimmed.starts_with("What Kobo found:")
-            || trimmed.starts_with("Why this matters:")
+        let is_guidance = trimmed.starts_with("I found:")
+            || trimmed.starts_with("Why I care:")
             || trimmed.starts_with("Try this:")
-            || trimmed.starts_with("More:")
             || (line.starts_with("  ") && !trimmed.starts_with('|') && !trimmed.starts_with("-->"));
         if is_guidance {
             assert!(
@@ -54,13 +53,21 @@ fn assert_guidance_lines_are_wrapped(output: &str) {
 fn assert_section_has_body(output: &str, heading: &str) {
     let mut lines = output.lines();
     while let Some(line) = lines.next() {
-        if line.trim() == heading {
+        let trimmed = line.trim();
+        if trimmed == heading {
             let Some(next) = lines.next() else {
                 panic!("section `{heading}` has no body:\n{output}");
             };
             assert!(
                 !next.trim().is_empty(),
                 "section `{heading}` has an empty body:\n{output}"
+            );
+            return;
+        }
+        if let Some(body) = trimmed.strip_prefix(heading) {
+            assert!(
+                !body.trim().is_empty(),
+                "section `{heading}` has an empty inline body:\n{output}"
             );
             return;
         }
@@ -106,12 +113,12 @@ fn human_diagnostic_uses_teaching_sections_without_internal_trailer() {
     assert_contains(&combined, "error[K0025]", "expected K0025 diagnostic");
     assert_contains(
         &combined,
-        "What Kobo found:",
+        "I found:",
         "human diagnostic should name the local problem",
     );
     assert_contains(
         &combined,
-        "Why this matters:",
+        "Why I care:",
         "human diagnostic should explain why Kobo cares",
     );
     assert_contains(
@@ -121,7 +128,7 @@ fn human_diagnostic_uses_teaching_sections_without_internal_trailer() {
     );
     assert_contains(
         &combined,
-        "More:",
+        "Hint:",
         "human diagnostic should point to deeper explain output",
     );
     assert_no_default_human_jank(&combined);
@@ -152,11 +159,7 @@ fn human_output_is_colorized_by_default_when_color_is_forced() {
         "error[K0025]",
         "color must not hide code identity",
     );
-    assert_contains(
-        &combined,
-        "Why this matters:",
-        "color must preserve why section",
-    );
+    assert_contains(&combined, "Why I care:", "color must preserve why section");
     assert_contains(&combined, "Try this:", "color must preserve fix section");
 }
 
@@ -180,7 +183,7 @@ fn no_color_disables_ansi_but_keeps_human_sections() {
     assert_not_contains(&combined, "\u{1b}[", "NO_COLOR must strip ANSI");
     assert_contains(
         &combined,
-        "Why this matters:",
+        "Why I care:",
         "NO_COLOR must preserve why section",
     );
     assert_contains(&combined, "Try this:", "NO_COLOR must preserve fix section");
@@ -235,12 +238,12 @@ fn k0025_card_matches_plan_teaching_wording() {
     );
     assert_contains(
         &combined,
-        "What Kobo found:\n  The hint asks Kobo to move `buf`, but the code mutably uses `buf` more than once.",
+        "I found: The hint asks Kobo to move `buf`, but the code mutably uses `buf` more than once.",
         "K0025 should use the plan's finding sentence",
     );
     assert_contains(
         &combined,
-        "Why this matters:\n  A moved value has only one owner. This code needs a shape that can support repeated mutable use.",
+        "Why I care: A moved value has only one owner. This code needs a shape that can support repeated mutable use.",
         "K0025 should use the plan's why sentence",
     );
     assert_contains(
@@ -318,12 +321,12 @@ fn k0063_card_matches_plan_teaching_wording() {
     );
     assert_contains(
         &combined,
-        "What Kobo found:\n  This strict block runs inside an async function.",
+        "I found: This strict block runs inside an async function.",
         "K0063 should use the plan's finding sentence",
     );
     assert_contains(
         &combined,
-        "Why this matters:\n  Kobo needs strict borrows to end before the function can pause or be cancelled.",
+        "Why I care: Kobo needs strict borrows to end before the function can pause or be cancelled.",
         "K0063 should use the plan's why sentence",
     );
     assert_contains(
@@ -338,7 +341,7 @@ fn k0063_card_matches_plan_teaching_wording() {
     );
     assert_contains(
         &combined,
-        "More:\n  Run `kobo explain K0063`",
+        "Hint: Run `kobo explain K0063`.",
         "K0063 should point to the explain page in the plan style",
     );
 }
@@ -371,7 +374,7 @@ fn strict_async_diagnostic_does_not_show_mojibake_or_empty_fix() {
     assert_contains(&combined, "error[K0063]", "expected K0063 diagnostic");
     assert_no_default_human_jank(&combined);
     assert_section_has_body(&combined, "Try this:");
-    assert_section_has_body(&combined, "More:");
+    assert_section_has_body(&combined, "Hint:");
 }
 
 #[test]
@@ -382,11 +385,11 @@ fn explain_is_teaching_page_by_default_not_registry_dump() {
 
     assert_success(&output, "kobo explain should succeed");
     assert!(
-        combined.contains("What happened") || combined.contains("What Kobo found"),
+        combined.contains("I found:"),
         "default explain should teach the user:\n{combined}"
     );
     assert!(
-        combined.contains("How to fix") || combined.contains("What to do"),
+        combined.contains("Try this:"),
         "default explain should include remediation:\n{combined}"
     );
     assert_not_contains(
@@ -398,6 +401,142 @@ fn explain_is_teaching_page_by_default_not_registry_dump() {
         &combined,
         "status: active",
         "registry status should be verbose-only",
+    );
+}
+
+#[test]
+fn k0100_uses_obligation_language_not_liveness_token() {
+    let project = TestProject::new("error-ux-k0100-obligation");
+    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--profile"),
+            s("checked"),
+            s("--seed"),
+            s("7"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    let combined = output.combined();
+
+    assert_failure(&output, "open obligation should fail");
+    assert_contains(
+        &combined,
+        "I expected this obligation to finish",
+        "title should be first-person",
+    );
+    assert_contains(&combined, "I found:", "finding should be a compact section");
+    assert_contains(
+        &combined,
+        "Run `kobo explain K0100`.",
+        "hint should include explain escape hatch",
+    );
+    assert_not_contains(
+        &combined,
+        "liveness token",
+        "human output must hide internal wording",
+    );
+    assert_not_contains(
+        &combined,
+        "unresolved-delivery",
+        "human output must hide internal labels",
+    );
+}
+
+#[test]
+fn ownership_error_uses_first_person_and_conceptual_try_this() {
+    let project = TestProject::new("error-ux-k0001-concept");
+    let fixture = ui_fixture("K0001_use_after_move.kobo");
+    let output = run_kobo(
+        &[s("check"), s("--profile"), s("release"), path_arg(&fixture)],
+        &project.root,
+    );
+    let combined = output.combined();
+
+    assert_failure(&output, "release ownership check should fail");
+    assert_contains(
+        &combined,
+        "I found:",
+        "diagnostic finding should be explicit",
+    );
+    assert_contains(
+        &combined,
+        "Want to use this value again",
+        "Try this should teach the concept",
+    );
+    assert_not_contains(
+        &combined,
+        "mismatched types",
+        "human output must stay jargon-free",
+    );
+    assert_not_contains(
+        &combined,
+        "compiler-owned",
+        "human output must stay jargon-free",
+    );
+}
+
+#[test]
+fn strict_boundary_error_keeps_explain_in_hint_without_doctor() {
+    let project = TestProject::new("error-ux-k0041-hint");
+    let fixture = ui_fixture("strict_k0041_active_alias.kobo");
+    let output = run_kobo(
+        &[s("check"), s("--profile"), s("release"), path_arg(&fixture)],
+        &project.root,
+    );
+    let combined = output.combined();
+
+    assert_failure(&output, "strict boundary should fail");
+    assert_contains(
+        &combined,
+        "Hint:",
+        "every diagnostic card should keep a compact hint line",
+    );
+    assert_contains(
+        &combined,
+        "Run `kobo explain K0041`.",
+        "hint should keep the explain escape hatch",
+    );
+    assert_not_contains(
+        &combined,
+        "kobo doctor",
+        "local strict-boundary mistakes should not suggest doctor",
+    );
+}
+
+#[test]
+fn project_shaped_boundary_error_can_suggest_doctor() {
+    let project = TestProject::new("error-ux-doctor-route");
+    let file = project.main_file(
+        r#"
+use external_service::Client;
+
+#[kobo::scenario(name = "fetch_user")]
+fn fetch_user() {
+    let client = Client::new();
+    println!("{:?}", client);
+}
+"#,
+    );
+    let output = run_kobo(
+        &[s("check"), s("--replay-critical"), path_arg(&file)],
+        &project.root,
+    );
+    let combined = output.combined();
+
+    assert_contains(
+        &combined,
+        "Run `kobo explain",
+        "doctor must not replace explain",
+    );
+    assert_contains(
+        &combined,
+        "Run `kobo doctor --deps`",
+        "project-shaped boundary errors may suggest doctor in the hint",
     );
 }
 

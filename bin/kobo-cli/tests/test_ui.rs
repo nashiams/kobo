@@ -83,10 +83,7 @@ fn check_k0025_fixture_matches_snapshot() {
 }
 
 #[test]
-fn run_k0001_fixture_silent_in_script_mode() {
-    // [R6-11]: K0001 is silent in script mode. The pipeline continues to
-    // codegen + rustc. In this fixture the helper functions are undefined, so
-    // rustc still fails (K0099) — but K0001 itself is never emitted.
+fn run_k0001_fixture_stops_before_rustc_in_script_mode() {
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
@@ -95,19 +92,20 @@ fn run_k0001_fixture_silent_in_script_mode() {
 
     assert!(
         !output.status.success(),
-        "run should fail (rustc errors proceed)"
+        "run should fail before generated Rust compiles"
     );
     assert!(
-        !output.stderr.contains("error[K0001]"),
-        "K0001 must be silent in script mode"
+        output.stderr.contains("error[K0001]"),
+        "K0001 must be emitted before rustc"
+    );
+    assert!(
+        !output.stderr.contains("error[K0099]"),
+        "known ownership debt must not fall through to rustc"
     );
 }
 
 #[test]
-fn run_k0002_fixture_silent_in_script_mode() {
-    // [R6-11]: K0002 is silent in script mode. The pipeline wraps the
-    // borrow conflict with Rc<RefCell>, which compiles — but may panic at runtime.
-    // The key assertion: K0002 diagnostic is NOT emitted.
+fn run_k0002_fixture_stops_before_runtime_panic_in_script_mode() {
     let fixture = workspace_root()
         .join("tests")
         .join("ui")
@@ -115,8 +113,16 @@ fn run_k0002_fixture_silent_in_script_mode() {
     let output = run_kobo_command("run", &fixture);
 
     assert!(
-        !output.stderr.contains("error[K0002]"),
-        "K0002 must be silent in script mode"
+        !output.status.success(),
+        "run should fail before dynamic borrow code can run"
+    );
+    assert!(
+        output.stderr.contains("error[K0002]"),
+        "K0002 must be emitted before runtime"
+    );
+    assert!(
+        !output.stderr.contains("RefCell already borrowed"),
+        "known borrow conflict must not become a RefCell panic"
     );
 }
 

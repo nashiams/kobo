@@ -9,6 +9,10 @@ use crate::filesystem::{map_path_for, output_path_for, write_map_file, write_rs_
 use crate::session::CompileSession;
 
 use super::analysis::run_analysis_phase;
+use super::ownership_gate::{
+    has_blocking_ownership_diagnostic, has_known_borrow_conflict_diagnostic,
+    project_blocking_ownership_diagnostics,
+};
 use super::parse::run_kir_phase;
 use super::solver::{
     apply_engine_ceiling, inject_solver_evidence, project_engine_ceiling_diagnostics,
@@ -31,12 +35,41 @@ pub struct CodegenArtifacts {
     pub runtime_evidence: RuntimeEvidence,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum OwnershipGateMode {
+    Enforce,
+    DebtProbe,
+}
+
 pub fn run_codegen_pipeline(
     session: &mut CompileSession,
     input: &Path,
 ) -> Result<CodegenArtifacts, ()> {
+    run_codegen_pipeline_with_gate(session, input, OwnershipGateMode::Enforce)
+}
+
+pub fn run_codegen_pipeline_for_debt_probe(
+    session: &mut CompileSession,
+    input: &Path,
+) -> Result<CodegenArtifacts, ()> {
+    run_codegen_pipeline_with_gate(session, input, OwnershipGateMode::DebtProbe)
+}
+
+fn run_codegen_pipeline_with_gate(
+    session: &mut CompileSession,
+    input: &Path,
+    gate_mode: OwnershipGateMode,
+) -> Result<CodegenArtifacts, ()> {
     let (kobo_file, kir) = run_kir_phase(session, input)?;
     run_analysis_phase(session, &kir)?;
+    if gate_mode == OwnershipGateMode::Enforce {
+        project_blocking_ownership_diagnostics(session, &kir);
+        if has_blocking_ownership_diagnostic(session)
+            || has_known_borrow_conflict_diagnostic(session)
+        {
+            return Err(());
+        }
+    }
     let (evidence, outcome) = resolve_solution(&kir);
 
     // Stage: Project non-Unique solver outcomes to K-code diagnostics.

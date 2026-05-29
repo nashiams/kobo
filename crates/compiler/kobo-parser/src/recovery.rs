@@ -145,7 +145,7 @@ fn parser_decision(code: KErrorCode) -> &'static str {
 
 fn syntax_message_for_region(region_source: &str) -> String {
     syn::parse_file(region_source)
-        .map(|_| "syntax error recovered".to_owned())
+        .map(|_| "I could not read this syntax yet".to_owned())
         .unwrap_or_else(|error| error.to_string())
 }
 

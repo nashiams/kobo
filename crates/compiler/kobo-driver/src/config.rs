@@ -434,7 +434,7 @@ pub enum ConfigError {
     #[error("failed to parse TOML: {0}")]
     ParseError(String),
 
-    #[error("K0120 ecosystem policy parse error at {key}: unknown boundary policy `{value}`")]
+    #[error("K0120 could not read ecosystem policy metadata at {key}: unknown boundary policy `{value}`")]
     InvalidEcosystemPolicy { key: String, value: String },
 
     #[error("K0121 simulation config parse error at {key}: {message}")]

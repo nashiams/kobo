@@ -343,6 +343,7 @@ dependencies = [
  "anyhow",
  "clap",
  "insta",
+ "kobo-analysis",
  "kobo-codegen",
  "kobo-debt",
  "kobo-driver",

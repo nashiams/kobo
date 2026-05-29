@@ -76,8 +76,9 @@ pub fn detect_migration_patterns(kir: &Kir, decisions: &[TierDecision]) -> Vec<M
                         binding_name: binding_name.clone(),
                         current_tier: OwnershipTier::RcShared,
                         suggested_tier: OwnershipTier::ArcShared,
-                        explanation: "Your binding crossed a spawn boundary — Rc is not Send"
-                            .to_owned(),
+                        explanation:
+                            "Your binding crossed a spawn boundary and needs a thread-safe owner"
+                                .to_owned(),
                         risk: PatternRisk::Safe,
                         span: node.span,
                     });
@@ -95,7 +96,7 @@ pub fn detect_migration_patterns(kir: &Kir, decisions: &[TierDecision]) -> Vec<M
                         current_tier: OwnershipTier::RcMutShared,
                         suggested_tier: OwnershipTier::ArcMutShared,
                         explanation:
-                            "Your binding is mutably shared in async context — RefCell is not Send"
+                            "Your binding is mutably shared in async context and needs a task-safe owner"
                                 .to_owned(),
                         risk: PatternRisk::MayChangeBehavior,
                         span: node.span,

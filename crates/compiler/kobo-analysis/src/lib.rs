@@ -14,7 +14,7 @@ pub mod split_borrow;
 pub mod task_local;
 
 pub use cancel_safety::{scan_source_cancel_safety, CancelSafetyWarning};
-pub use diagnostics::facts_to_diagnostics;
+pub use diagnostics::{facts_to_diagnostics, facts_to_ownership_debt};
 pub use handler_leak::{scan_source_handler_leaks, HandlerLeakWarning};
 pub use ownership_facts::{BorrowFact, BorrowKind, MoveFact};
 pub use parallel::{scan_source_parallel_warnings, ParallelWarning, ParallelWarningKind};

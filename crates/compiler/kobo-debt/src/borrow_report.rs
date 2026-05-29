@@ -1,7 +1,7 @@
 use kobo_ir::{BindingUsage, BorrowKind, KoboSpan, SharedBindingFacts, UseEvent};
 use serde::{Deserialize, Serialize};
 
-/// How to fix a detected borrow overlap.
+/// Suggested next step for a detected borrow overlap.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum BorrowFixPattern {
     /// Copy the field before borrowing.

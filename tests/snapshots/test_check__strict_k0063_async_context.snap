@@ -11,26 +11,31 @@ error[K0063]: this strict borrow is inside code that can pause
 4 |         data.borrow_mut().push(4);
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^ this strict borrow starts here
   |
-What Kobo found:
-  This strict block runs inside an async function.
-Why this matters:
-  Kobo needs strict borrows to end before the function can pause or be cancelled.
+
+I found: This strict block runs inside an async function.
+
+Why I care: Kobo needs strict borrows to end before the function can pause or be cancelled.
+
 Try this:
   1. Use `@strict async fn` if the whole function should follow Kobo's async strict rules.
   2. Or move this strict work into a small non-async helper.
-More:
-  Run `kobo explain K0063` for examples and deeper context.
+
+Hint: Run `kobo explain K0063`.
+
+
 warning[K0062]: async executor dependency is missing
   --> tests\ui\strict_k0063_async_context.kobo:2:9
   |
 2 |     let data = kobo::bind(vec![1, 2, 3]);
   |         ^^^^ no async executor configured
   |
-What Kobo found:
-  no async executor configured
-Why this matters:
-  async code was detected but no executor dependency such as tokio or async-std was found
+
+I found: no async executor configured
+
+Why I care: async code was detected but no executor dependency such as tokio or async-std was found
+
 Try this:
-  add tokio or async-std to [dependencies] in Cargo.toml
-More:
-  Run `kobo explain K0062` for examples and deeper context.
+  add tokio or async-std to [dependencies] in Cargo.toml; if a guard is live across an await, drop
+  the guard before .await or restructure with a block scope
+
+Hint: Run `kobo explain K0062`.

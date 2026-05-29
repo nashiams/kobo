@@ -29,7 +29,7 @@ pub(super) fn entries() -> Vec<DiagnosticRegistryEntry> {
         entry(
             KErrorCode::K0002,
             "mutable-borrow-conflict",
-            "cannot borrow as mutable - already borrowed",
+            "mutable borrow overlaps another borrow",
             "A mutable borrow conflicts with an existing borrow.",
             "The mutable access overlaps another live borrow. Kobo reports the overlap so the source can shorten one borrow or make shared mutation explicit.",
             Ownership,

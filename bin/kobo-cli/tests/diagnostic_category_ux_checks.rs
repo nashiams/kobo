@@ -19,18 +19,18 @@ fn assert_elm_level_cli_card(output: &str, code: &str) {
     assert_contains(output, "-->", "category smoke must show source location");
     assert_contains(
         output,
-        "What Kobo found:",
+        "I found:",
         "category smoke must explain the local finding",
     );
     assert_contains(
         output,
-        "Why this matters:",
+        "Why I care:",
         "category smoke must explain why the user should care",
     );
     assert_contains(output, "Try this:", "category smoke must give an action");
     assert_contains(
         output,
-        "More:",
+        "Hint:",
         "category smoke must point to deeper explain text",
     );
     assert_contains(

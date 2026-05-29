@@ -293,6 +293,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             cargo,
             json,
             summary,
+            color,
             borrows,
             patterns,
             errors,
@@ -332,7 +333,7 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             if liveness {
                 return debt::cmd_debt_liveness(file.as_path(), json);
             }
-            debt::cmd_debt(file.as_path(), json, summary)
+            debt::cmd_debt(file.as_path(), json, summary, color.color_mode())
         }
         KoboCommand::Init { name, from_cargo } => init::cmd_init(name.as_deref(), from_cargo),
         KoboCommand::Build {

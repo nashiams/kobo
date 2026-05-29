@@ -3,7 +3,10 @@ use kobo_errors::{
     CliSuggestion, DiagDecision, DiagExplanation, DiagLabel, DiagLabelKind, KDiagnostic,
     KErrorCode, Severity,
 };
-use kobo_ir::{FileId, KoboSpan};
+use kobo_ir::{
+    FileId, KoboSpan, OwnershipDebtCode, OwnershipDebtKind, OwnershipDebtRecord,
+    OwnershipDebtSeverity,
+};
 
 use super::json::{parse_rustc_diagnostics, RustcJsonError, RustcSpan};
 
@@ -90,6 +93,7 @@ fn remap_diagnostic(
     code: KErrorCode,
 ) -> KDiagnostic {
     let remapped = remap_labels(&diag, source_map, kobo_file_id);
+    let ownership_escape = rustc_ownership_code(&diag);
     if remapped.mapped_label_count == 0 {
         // Unmappable: surface as tier-3 envelope but preserve severity/code.
         return tier_three_diagnostic_with_severity(
@@ -102,10 +106,14 @@ fn remap_diagnostic(
         );
     }
 
-    let decision_text = if severity == Severity::Error {
-        "rustc rejected generated output; Kobo remapped the spans back to .kobo source"
+    let decision_text = if let Some(rustc_code) = ownership_escape {
+        format!(
+            "ownership error escaped Kobo analysis ({rustc_code}); record this as ownership debt or teach Kobo this source shape"
+        )
+    } else if severity == Severity::Error {
+        "rustc rejected generated output; Kobo remapped the spans back to .kobo source".to_owned()
     } else {
-        "rustc warning in generated output; Kobo remapped the spans back to .kobo source"
+        "rustc warning in generated output; Kobo remapped the spans back to .kobo source".to_owned()
     };
 
     let mut diagnostic = KDiagnostic::new(
@@ -113,18 +121,62 @@ fn remap_diagnostic(
         severity,
         remapped.primary,
         remap_explanation(&diag, remapped.remapping_unavailable),
-        DiagDecision(decision_text.to_owned()),
+        DiagDecision(decision_text),
     );
+    let ownership_escape_debt = ownership_escape
+        .map(|rustc_code| rustc_escape_debt_record(rustc_code, &diag, diagnostic.primary.span));
 
     for label in remapped.secondary {
         diagnostic = diagnostic.with_secondary_label(label);
     }
 
-    if let Some(help_text) = remapped.help {
+    if let Some(record) = ownership_escape_debt {
+        let help_text = match remapped.help {
+            Some(help) => format!("{}; rustc help: {help}", record.hint),
+            None => record.hint.clone(),
+        };
+        diagnostic = diagnostic
+            .with_help(help_text)
+            .with_hint(record.hint.clone())
+            .with_ownership_debt(record);
+    } else if let Some(help_text) = remapped.help {
         diagnostic = diagnostic.with_help(help_text);
     }
 
     diagnostic.with_run(run_suggestion(source_map))
+}
+
+fn rustc_ownership_code(error: &RustcJsonError) -> Option<&str> {
+    let code = error.code.as_ref()?.code.as_str();
+    if matches!(
+        code,
+        "E0382" | "E0499" | "E0502" | "E0505" | "E0507" | "E0515"
+    ) {
+        Some(code)
+    } else {
+        None
+    }
+}
+
+fn rustc_escape_debt_record(
+    rustc_code: &str,
+    error: &RustcJsonError,
+    span: KoboSpan,
+) -> OwnershipDebtRecord {
+    OwnershipDebtRecord {
+        code: OwnershipDebtCode::K0099,
+        severity: OwnershipDebtSeverity::Error,
+        kind: OwnershipDebtKind::RustcEscape,
+        span,
+        binding_name: "generated Rust".to_owned(),
+        message: format!(
+            "ownership error escaped Kobo analysis ({rustc_code}): {}",
+            error.message
+        ),
+        hint: format!(
+            "ownership debt: fix the source ownership shape before generated Rust reaches Rust ({rustc_code})"
+        ),
+    }
 }
 
 struct RemappedLabels {
@@ -304,10 +356,17 @@ fn remap_explanation(error: &RustcJsonError, remapping_unavailable: bool) -> Dia
         .map(|code| format!(" ({})", code.code))
         .unwrap_or_default();
 
-    DiagExplanation(format!(
-        "{explanation_prefix}{}{}",
-        error.message, rustc_code
-    ))
+    if let Some(code) = rustc_ownership_code(error) {
+        DiagExplanation(format!(
+            "{explanation_prefix}ownership debt escaped Kobo analysis: {} ({code})",
+            error.message
+        ))
+    } else {
+        DiagExplanation(format!(
+            "{explanation_prefix}{}{}",
+            error.message, rustc_code
+        ))
+    }
 }
 
 fn tier_three_diagnostic_with_severity(
@@ -327,17 +386,34 @@ fn tier_three_diagnostic_with_severity(
         "compiler output could not be remapped".to_owned()
     };
 
+    let ownership_escape = rustc_ownership_code(error);
+    let decision = if let Some(rustc_code) = ownership_escape {
+        format!(
+            "ownership error escaped Kobo analysis ({rustc_code}); surfaced a Tier-3 ownership debt envelope"
+        )
+    } else {
+        "rustc output did not map back to Kobo spans; surfaced a Tier-3 envelope".to_owned()
+    };
+
     let mut diagnostic = KDiagnostic::new(
         code,
         severity,
         DiagLabel::primary(KoboSpan::new(0, 0, file_id), primary_text),
         remap_explanation(error, true),
-        DiagDecision(
-            "rustc output did not map back to Kobo spans; surfaced a Tier-3 envelope".to_owned(),
-        ),
+        DiagDecision(decision),
     );
 
-    if let Some(help_text) = help {
+    if let Some(rustc_code) = ownership_escape {
+        let record = rustc_escape_debt_record(rustc_code, error, KoboSpan::new(0, 0, file_id));
+        let help_text = match help {
+            Some(help) => format!("{}; rustc help: {help}", record.hint),
+            None => record.hint.clone(),
+        };
+        diagnostic = diagnostic
+            .with_help(help_text)
+            .with_hint(record.hint.clone())
+            .with_ownership_debt(record);
+    } else if let Some(help_text) = help {
         diagnostic = diagnostic.with_help(help_text.to_owned());
     }
 
@@ -349,173 +425,4 @@ fn run_suggestion(source_map: &KoboSourceMap) -> CliSuggestion {
 }
 
 #[cfg(test)]
-mod tests {
-    use kobo_codegen::{KoboSourceMap, RsSpan, SourceMapEntry};
-    use kobo_ir::{FileId, KoboSpan};
-
-    use super::remap_rustc_output;
-
-    fn sample_map() -> KoboSourceMap {
-        KoboSourceMap {
-            version: 3,
-            file: "src/main.rs".to_owned(),
-            sources: vec!["src/main.kobo".to_owned()],
-            x_kobo_mappings: vec![
-                SourceMapEntry {
-                    id: "map-1".to_owned(),
-                    core_event_id: None,
-                    binding_name: "left".to_owned(),
-                    rs_span: RsSpan {
-                        line: 2,
-                        column_start: 0,
-                        column_end: 20,
-                    },
-                    kobo_span: KoboSpan::new(10, 16, FileId(0)),
-                    ownership_tier: "rc_refcell".to_owned(),
-                    solver_outcome: None,
-                    decision_source: None,
-                    solver_node_id: None,
-                },
-                SourceMapEntry {
-                    id: "map-2".to_owned(),
-                    core_event_id: None,
-                    binding_name: "right".to_owned(),
-                    rs_span: RsSpan {
-                        line: 3,
-                        column_start: 0,
-                        column_end: 20,
-                    },
-                    kobo_span: KoboSpan::new(20, 26, FileId(0)),
-                    ownership_tier: "rc_refcell".to_owned(),
-                    solver_outcome: None,
-                    decision_source: None,
-                    solver_node_id: None,
-                },
-            ],
-            runtime_evidence: None,
-            solver_evidence: None,
-            lowering_trace: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn remapper_handles_multi_span_errors() {
-        let raw = r#"{"message":"cannot borrow","code":{"code":"E0502"},"level":"error","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":false,"label":"immutable borrow occurs here"},{"file_name":"src/main.rs","line_start":3,"column_start":1,"line_end":3,"column_end":5,"is_primary":true,"label":"mutable borrow occurs here"}],"children":[]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].secondary.len(), 1);
-        assert_eq!(
-            diagnostics[0].run.as_ref().map(|run| run.0.as_str()),
-            Some("kobo inspect src/main.kobo")
-        );
-    }
-
-    #[test]
-    fn remapper_handles_single_span_errors() {
-        let raw = r#"{"message":"type mismatch","code":{"code":"E0308"},"level":"error","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":true,"label":"expected type"}],"children":[]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].primary.text, "expected type");
-        assert!(diagnostics[0].secondary.is_empty());
-    }
-
-    #[test]
-    fn remapper_falls_back_when_no_spans_map() {
-        let raw = r#"{"message":"type mismatch","code":null,"level":"error","spans":[{"file_name":"src/main.rs","line_start":40,"column_start":1,"line_end":40,"column_end":5,"is_primary":true,"label":"expected type"}],"children":[]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        assert!(diagnostics[0]
-            .explanation
-            .0
-            .starts_with("[remapping unavailable]"));
-        assert_eq!(diagnostics[0].primary.span, KoboSpan::new(0, 0, FileId(0)));
-        assert!(
-            diagnostics[0]
-                .primary
-                .text
-                .contains("compiler output could not be remapped"),
-            "fallback label should mention remapping failure"
-        );
-        assert!(
-            diagnostics[0].primary.text.contains("line 40"),
-            "fallback label should include generated line info"
-        );
-    }
-
-    #[test]
-    fn remapper_preserves_help_children() {
-        let raw = r#"{"message":"type mismatch","code":null,"level":"error","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":true,"label":"expected type"}],"children":[{"message":"consider borrowing","code":null,"level":"help","spans":[],"children":[]}]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        assert_eq!(
-            diagnostics[0].help.as_ref().map(|help| help.0.as_str()),
-            Some("consider borrowing")
-        );
-    }
-
-    #[test]
-    fn remapper_preserves_note_child_spans() {
-        let raw = r#"{"message":"cannot borrow","code":{"code":"E0502"},"level":"error","spans":[{"file_name":"src/main.rs","line_start":3,"column_start":1,"line_end":3,"column_end":5,"is_primary":true,"label":"mutable borrow occurs here"}],"children":[{"message":"immutable borrow later used here","code":null,"level":"note","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":true,"label":"immutable borrow occurs here"}],"children":[]}]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        assert_eq!(diagnostics[0].secondary.len(), 1);
-        assert_eq!(
-            diagnostics[0].secondary[0].text,
-            "immutable borrow occurs here"
-        );
-    }
-
-    #[test]
-    fn remapper_handles_partial_remapping() {
-        let raw = r#"{"message":"cannot borrow","code":{"code":"E0502"},"level":"error","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":false,"label":"immutable borrow occurs here"},{"file_name":"src/main.rs","line_start":40,"column_start":1,"line_end":40,"column_end":5,"is_primary":true,"label":"mutable borrow occurs here"}],"children":[]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0]
-            .explanation
-            .0
-            .starts_with("[remapping unavailable]"));
-        assert_eq!(diagnostics[0].secondary.len(), 1);
-    }
-
-    #[test]
-    fn remapper_does_not_leak_rs_paths_in_fallback_labels() {
-        let raw = r#"{"message":"type mismatch","code":null,"level":"error","spans":[{"file_name":"src/generated.rs","line_start":40,"column_start":1,"line_end":40,"column_end":5,"is_primary":true,"label":null}],"children":[]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        assert!(!diagnostics[0].primary.text.contains(".rs"));
-    }
-
-    // Unmappable diagnostics should preserve generated-code location.
-
-    #[test]
-    fn remapper_fallback_includes_generated_line_info() {
-        // When all spans are unmappable, the tier-3 envelope should include
-        // the generated .rs line/column in the primary label for debugging.
-        let raw = r#"{"message":"type mismatch","code":null,"level":"error","spans":[{"file_name":"src/main.rs","line_start":40,"column_start":3,"line_end":40,"column_end":15,"is_primary":true,"label":"expected type"}],"children":[]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        // The primary label should mention the generated-code location.
-        assert!(
-            diagnostics[0].primary.text.contains("line 40"),
-            "fallback should mention generated line, got: {}",
-            diagnostics[0].primary.text
-        );
-    }
-
-    #[test]
-    fn remapper_individual_span_fallback_preserves_location() {
-        // Even individual span fallbacks should include the generated location.
-        let raw = r#"{"message":"cannot borrow","code":{"code":"E0502"},"level":"error","spans":[{"file_name":"src/main.rs","line_start":2,"column_start":1,"line_end":2,"column_end":5,"is_primary":false,"label":"immutable borrow occurs here"},{"file_name":"src/main.rs","line_start":50,"column_start":8,"line_end":50,"column_end":20,"is_primary":true,"label":"mutable borrow occurs here"}],"children":[]}"#;
-        let diagnostics = remap_rustc_output(raw, &sample_map(), FileId(0));
-
-        // The unmappable primary (line 50) should have location context.
-        assert!(
-            diagnostics[0].primary.text.contains("line 50"),
-            "unmappable span should include generated line in label, got: {}",
-            diagnostics[0].primary.text
-        );
-    }
-}
+mod remap_tests;

@@ -6,7 +6,11 @@ use kobo_errors::{
     KDiagnostic,
 };
 use kobo_errors::{KErrorCode, Severity};
-use kobo_ir::{FileSet, GuaranteePolicy, Kir, StrictBoundaryViolation, TransformFacts};
+use kobo_ir::{
+    FileSet, GuaranteePolicy, Kir, KoboSpan, OwnershipDebtCode, OwnershipDebtKind,
+    OwnershipDebtRecord, OwnershipDebtSeverity, StrictBoundaryViolation, TransformBindingFacts,
+    TransformFacts, UseEvent,
+};
 
 use crate::ownership_facts::{BorrowFact, BorrowKind, HintConflictFact, MoveFact};
 use crate::runner::AnalysisFacts;
@@ -68,18 +72,140 @@ pub fn facts_to_diagnostics(
     diagnostics
 }
 
+pub fn facts_to_ownership_debt(
+    facts: &AnalysisFacts,
+    transform_facts: &TransformFacts,
+    file_set: &FileSet,
+) -> Vec<OwnershipDebtRecord> {
+    let mut records = Vec::new();
+
+    for move_fact in &facts.moves {
+        let rewrite_required = move_fact.move_site == move_fact.later_use;
+        let span = if rewrite_required {
+            move_fact.move_site
+        } else {
+            move_fact.later_use
+        };
+        let binding_name = binding_name_at(file_set, span);
+        push_unique_ownership_debt_record(
+            &mut records,
+            OwnershipDebtRecord {
+                code: if rewrite_required {
+                    OwnershipDebtCode::K0032
+                } else {
+                    OwnershipDebtCode::K0001
+                },
+                severity: OwnershipDebtSeverity::Warning,
+                kind: if rewrite_required {
+                    OwnershipDebtKind::RewriteRequired
+                } else {
+                    OwnershipDebtKind::UseAfterMove
+                },
+                span,
+                binding_name,
+                message: if rewrite_required {
+                    "move needs a safe ownership rewrite".to_owned()
+                } else {
+                    "value used after move".to_owned()
+                },
+                hint: if rewrite_required {
+                    "ownership debt: keep the borrow shorter, clone before the move, or choose an explicit shared owner"
+                    .to_owned()
+                } else {
+                    "ownership debt: clone at the move site or pass a reference if both uses need the value"
+                    .to_owned()
+                },
+            },
+        );
+    }
+
+    for borrow_fact in &facts.borrows {
+        let binding_name = binding_name_at(file_set, borrow_fact.conflict_site);
+        push_unique_ownership_debt_record(&mut records, OwnershipDebtRecord {
+            code: OwnershipDebtCode::K0002,
+            severity: OwnershipDebtSeverity::Warning,
+            kind: OwnershipDebtKind::BorrowConflict,
+            span: borrow_fact.conflict_site,
+            binding_name,
+            message: "mutable borrow while another borrow is live".to_owned(),
+            hint: "ownership debt: end the earlier borrow before mutating, or split the data so each borrow touches a separate value"
+                .to_owned(),
+        });
+    }
+
+    for binding in transform_facts.iter_bindings() {
+        if let Some(record) = live_borrow_rewrite_debt_record(binding) {
+            push_unique_ownership_debt_record(&mut records, record);
+        }
+    }
+
+    records
+}
+
+fn live_borrow_rewrite_debt_record(binding: &TransformBindingFacts) -> Option<OwnershipDebtRecord> {
+    if !binding.shared_facts.live_borrow_at_move {
+        return None;
+    }
+
+    Some(OwnershipDebtRecord {
+        code: OwnershipDebtCode::K0032,
+        severity: OwnershipDebtSeverity::Warning,
+        kind: OwnershipDebtKind::RewriteRequired,
+        span: move_span_for_binding(binding),
+        binding_name: binding.binding_name.clone(),
+        message: "move while a borrow is live needs shared ownership".to_owned(),
+        hint: "ownership debt: shorten the borrow before the move, clone before moving, or keep an explicit shared owner"
+            .to_owned(),
+    })
+}
+
+fn move_span_for_binding(binding: &TransformBindingFacts) -> KoboSpan {
+    binding
+        .usage
+        .uses
+        .iter()
+        .find_map(|event| match event {
+            UseEvent::Moved { span, .. } => Some(*span),
+            _ => None,
+        })
+        .unwrap_or(binding.span)
+}
+
+fn push_unique_ownership_debt_record(
+    records: &mut Vec<OwnershipDebtRecord>,
+    record: OwnershipDebtRecord,
+) {
+    if records.iter().any(|existing| {
+        existing.code == record.code
+            && existing.span.file_id == record.span.file_id
+            && existing.span.start == record.span.start
+            && existing.span.end == record.span.end
+    }) {
+        return;
+    }
+
+    records.push(record);
+}
+
 fn move_fact_diagnostic(
     move_fact: &MoveFact,
     file_set: &FileSet,
     severity: Severity,
 ) -> KDiagnostic {
+    let binding_name = binding_name_at(file_set, move_fact.later_use);
     KDiagnostic::new(
         KErrorCode::K0001,
         severity,
         DiagLabel::primary(move_fact.later_use, "value used after move"),
         move_explanation(move_fact, file_set),
-        DiagDecision("flagged before lowering; no automatic rewrite applied".to_owned()),
+        DiagDecision(
+            "Want to use this value again after sending it somewhere?\n  - Borrow it if the other function only needs to read it.\n  - Clone only the small part you still need.\n  - Move the later use before the call that takes the value."
+                .to_owned(),
+        ),
     )
+    .with_finding(format!(
+        "`{binding_name}` is used after another call already took it."
+    ))
     .with_secondary_label(DiagLabel::secondary(
         move_fact.move_site,
         "value moved here",
@@ -88,6 +214,7 @@ fn move_fact_diagnostic(
         "if you want both calls to share the same value, clone explicitly at the move site"
             .to_owned(),
     ))
+    .with_hint("Use a borrow when the callee only needs to read, or clone only the part that must stay available")
     .with_run(CliSuggestion(run_target(file_set, move_fact.move_site)))
 }
 
@@ -107,13 +234,20 @@ fn borrow_fact_diagnostic(
     file_set: &FileSet,
     severity: Severity,
 ) -> KDiagnostic {
+    let binding_name = binding_name_at(file_set, borrow_fact.conflict_site);
     KDiagnostic::new(
         KErrorCode::K0002,
         severity,
         DiagLabel::primary(borrow_fact.conflict_site, "mutable borrow occurs here"),
         borrow_explanation(borrow_fact, file_set),
-        DiagDecision("flagged as conflict; simultaneous borrows would panic at runtime".to_owned()),
+        DiagDecision(
+            "Want to change this value while another borrow exists?\n  - Finish using the earlier borrow first.\n  - Move the mutation into a later block.\n  - Split the data so each borrow touches a separate value."
+                .to_owned(),
+        ),
     )
+    .with_finding(format!(
+        "`{binding_name}` is mutably borrowed while another borrow is still live."
+    ))
     .with_secondary_label(DiagLabel::secondary(
         borrow_fact.borrow_site,
         earlier_borrow_label(borrow_fact.borrow_kind),
@@ -121,6 +255,7 @@ fn borrow_fact_diagnostic(
     .with_help(DiagHelp(
         "restructure the code so the earlier borrow ends before mutation".to_owned(),
     ))
+    .with_hint("End the earlier borrow before mutating, or split the data into smaller values")
     .with_run(CliSuggestion(run_target(file_set, borrow_fact.borrow_site)))
 }
 

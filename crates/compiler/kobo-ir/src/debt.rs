@@ -3,6 +3,67 @@ use crate::node_id::KirNodeId;
 use crate::ownership::OwnershipTier;
 use crate::span::KoboSpan;
 
+/// Ownership debt class captured from analysis before generated Rust is built.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnershipDebtKind {
+    UseAfterMove,
+    BorrowConflict,
+    RewriteRequired,
+    RustcEscape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OwnershipDebtCode {
+    K0001,
+    K0002,
+    K0032,
+    K0099,
+}
+
+impl OwnershipDebtCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::K0001 => "K0001",
+            Self::K0002 => "K0002",
+            Self::K0032 => "K0032",
+            Self::K0099 => "K0099",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OwnershipDebtSeverity {
+    Warning,
+    Error,
+}
+
+impl OwnershipDebtSeverity {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// A user-visible ownership debt record.
+///
+/// These records represent source-level ownership problems or required rewrites
+/// that should be visible in `kobo debt` even when codegen can still continue.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OwnershipDebtRecord {
+    pub code: OwnershipDebtCode,
+    pub severity: OwnershipDebtSeverity,
+    pub kind: OwnershipDebtKind,
+    #[serde(rename = "source_span")]
+    pub span: KoboSpan,
+    pub binding_name: String,
+    pub message: String,
+    pub hint: String,
+}
+
 // --- Warning-early pattern types ---
 
 /// A detected structural ownership pattern that will require an architectural
@@ -164,6 +225,8 @@ pub struct DebtReport {
     pub warn_early: Vec<WarnEarlyFact>,
     /// Suppressed sites with their user-provided reason strings.
     pub acknowledged: Vec<AcknowledgedDebtRecord>,
+    /// Source-level ownership debt records.
+    pub ownership_debt: Vec<OwnershipDebtRecord>,
     /// Per-site records for each `RcMutShared` node.
     pub sites: Vec<DebtSiteRecord>,
     /// Sites tagged with `#[kobo::migrate]`; metadata-only.
@@ -180,6 +243,7 @@ impl DebtReport {
             complexity: ComplexityBreakdown::default(),
             warn_early: Vec::new(),
             acknowledged: Vec::new(),
+            ownership_debt: Vec::new(),
             sites: Vec::new(),
             migrate_tagged: Vec::new(),
         }

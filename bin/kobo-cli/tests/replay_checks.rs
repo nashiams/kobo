@@ -490,11 +490,11 @@ fn uncontrolled_effect() {
         &project.root,
     );
 
-    assert_failure(&output, "uncontrolled effect should emit a witness");
+    assert_failure(&output, "unreplayable action should emit a witness");
     let witnesses = project.find_files_with_ext("kwit");
     assert!(
         !witnesses.is_empty(),
-        "uncontrolled effect failure must emit a witness"
+        "unreplayable action failure must emit a witness"
     );
     let witness: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(&witnesses[0]).expect("witness should be readable"),
@@ -503,7 +503,7 @@ fn uncontrolled_effect() {
     assert_eq!(
         witness["replay_guarantee"].as_str(),
         Some("not_replayable"),
-        "uncontrolled effects must not be labeled exact replay"
+        "unreplayable actions must not be labeled exact replay"
     );
     assert_json_has_path(
         &witness,
@@ -521,7 +521,7 @@ fn uncontrolled_effect() {
     );
     assert_contains(
         &text,
-        "uncontrolled",
+        "I do not know how to replay",
         "replay should explain the blocking effect",
     );
 }

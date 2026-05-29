@@ -86,11 +86,11 @@ pub(crate) fn run_failure_mode(run: &FullDepthRun) -> &'static str {
     if run
         .obligations
         .iter()
-        .any(|obligation| unresolved_failure_mode(obligation) == "unresolved-reply")
+        .any(|obligation| unresolved_failure_mode(obligation) == "reply-open")
     {
-        return "unresolved-reply";
+        return "reply-open";
     }
-    "unresolved-delivery"
+    "delivery-open"
 }
 
 pub(crate) fn unresolved_failure_mode(
@@ -101,9 +101,9 @@ pub(crate) fn unresolved_failure_mode(
         .iter()
         .any(|action| action == "reply" || action == "reject" || action == "cancel")
     {
-        "unresolved-reply"
+        "reply-open"
     } else {
-        "unresolved-delivery"
+        "delivery-open"
     }
 }
 

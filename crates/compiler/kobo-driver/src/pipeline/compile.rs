@@ -6,11 +6,19 @@ use crate::rustc::{
 };
 use crate::session::CompileSession;
 
-use super::codegen::{run_codegen_pipeline, CodegenArtifacts};
+use super::codegen::{run_codegen_pipeline, run_codegen_pipeline_for_debt_probe, CodegenArtifacts};
 use super::support::apply_lifetime_erasure;
 
 pub fn run_and_compile(session: &mut CompileSession, input: &Path) -> Result<PathBuf, ()> {
     let artifacts = run_codegen_pipeline(session, input)?;
+    compile_codegen_artifacts(session, &artifacts)
+}
+
+pub fn run_and_compile_for_debt_probe(
+    session: &mut CompileSession,
+    input: &Path,
+) -> Result<PathBuf, ()> {
+    let artifacts = run_codegen_pipeline_for_debt_probe(session, input)?;
     compile_codegen_artifacts(session, &artifacts)
 }
 

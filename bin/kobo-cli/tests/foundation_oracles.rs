@@ -627,7 +627,7 @@ fn wrapped_sources(clock: Clock, rng: Rng, files: Files) {
     assert_eq!(
         count_code(&wrapped_codes, "K0102"),
         0,
-        "slice 06 wrapper variant must remove raw nondeterminism diagnostics:\n{}",
+        "slice 06 wrapper variant must remove changing replay input diagnostics:\n{}",
         wrapped_out.combined()
     );
 }

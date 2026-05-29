@@ -1429,13 +1429,13 @@ impl<'a> SimulationRuntime<'a> {
         Some(ScenarioFailure {
             code: KErrorCode::K0100,
             message: format!(
-                "checked scenario dropped `{}` without required action; discharge with {actions}",
+                "this path leaves `{}` open; finish with {actions} or pass it on as debt",
                 obligation.binding
             ),
             primary_start: span.0,
             primary_end: span.1,
             events: vec![SimEvent {
-                kind: "liveness-token-drop".to_owned(),
+                kind: "obligation-left-open".to_owned(),
                 label: Some(obligation.binding.clone()),
                 value: None,
             }],
@@ -1517,7 +1517,7 @@ impl<'a> SimulationRuntime<'a> {
         self.raw_failure = Some(ScenarioFailure {
             code: KErrorCode::K0102,
             message:
-                "raw nondeterminism appears on replay path; use a deterministic time/random facade"
+                "this replay path can change between runs; use a deterministic time/random facade"
                     .to_owned(),
             primary_start: span.0,
             primary_end: span.1,
@@ -1536,7 +1536,7 @@ impl<'a> SimulationRuntime<'a> {
         self.uncontrolled_failure = Some(ScenarioFailure {
             code: KErrorCode::K0103,
             message: format!(
-                "scenario cannot replay uncontrolled effect `{operation}`; model, record, or mark replay debt"
+                "I do not know how to replay `{operation}` yet; model, record, or mark replay debt"
             ),
             primary_start: span.0,
             primary_end: span.1,
@@ -1561,7 +1561,7 @@ impl<'a> SimulationRuntime<'a> {
         self.unsupported_container_failure = Some(ScenarioFailure {
             code: KErrorCode::K0100,
             message: format!(
-                "strict liveness: {container} containing {type_name} `{binding}` needs an obligation-aware wrapper or declaration"
+                "I found `{binding}` inside {container}<{type_name}> and cannot prove the obligation finishes"
             ),
             primary_start: span.0,
             primary_end: span.1,
@@ -1579,9 +1579,7 @@ impl<'a> SimulationRuntime<'a> {
         }
         self.unsupported_container_failure = Some(ScenarioFailure {
             code: KErrorCode::K0100,
-            message: format!(
-                "strict liveness: unresolved obligation `{binding}` reaches one branch exit"
-            ),
+            message: format!("one branch leaves `{binding}` open"),
             primary_start: span.0,
             primary_end: span.1,
             events: vec![SimEvent {

@@ -75,8 +75,8 @@ fn kwit_contains_runtime_required_fields_and_shrink_metadata() {
     assert_eq!(witness["sim_profile"], "quick");
     assert_contains(
         &witness_text,
-        "unresolved-reply",
-        "async gateway witness should name unresolved reply failure mode",
+        "reply-open",
+        "async gateway witness should name the open reply failure mode",
     );
 }
 
@@ -350,8 +350,8 @@ fn cancellation_hook_is_recorded_and_replayed_at_distinct_facade_points() {
         );
         assert_contains(
             &text,
-            "unresolved-reply",
-            "cancelled async gateway should expose unresolved reply obligation",
+            "reply-open",
+            "cancelled async gateway should expose the open reply obligation",
         );
         assert_json_has_path(
             witness,

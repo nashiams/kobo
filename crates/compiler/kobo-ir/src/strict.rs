@@ -122,8 +122,8 @@ pub enum StrictFnMode {
 /// Transform emits these facts; the driver converts them to KDiagnostics.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AsyncViolationKind {
-    /// K0060: A non-Send binding (e.g. Rc<T>) is captured by an async block
-    /// that may be spawned across threads.
+    /// K0060: A task-local binding (e.g. Rc<T>) is captured by an async block
+    /// that may move across threads.
     NonSendCapture {
         binding_name: String,
         binding_id: KirNodeId,

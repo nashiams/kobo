@@ -4,8 +4,8 @@
 /// After syn parsing, this module recognizes the macro and replaces it with
 /// the actual `tokio::spawn(async move {... })` call.
 ///
-/// S-53: When `use_spawn_local` is true, emits `tokio::task::spawn_local`
-/// instead of `tokio::spawn` for non-Send captured bindings.
+/// When `use_spawn_local` is true, emits `tokio::task::spawn_local`
+/// instead of `tokio::spawn` for task-local captured bindings.
 ///
 /// Clone injection inserts `.clone()` calls for shared bindings
 /// before the `tokio::spawn` call. This phase only generates the spawn structure.

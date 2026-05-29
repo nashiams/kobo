@@ -171,8 +171,12 @@ pub fn is_inside_relaxed_fn(span: KoboSpan, relaxed_fn_ranges: &[KoboSpan]) -> b
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
     use crate::config::KoboConfig;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn session_with_profile(profile: GuaranteeProfile) -> CompileSession {
         let config = KoboConfig {
@@ -186,6 +190,7 @@ mod tests {
 
     #[test]
     fn dev_profile_no_env_diag_disabled() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         std::env::remove_var("KOBO_DIAG");
         let session = session_with_profile(GuaranteeProfile::Dev);
         assert!(
@@ -196,6 +201,7 @@ mod tests {
 
     #[test]
     fn dev_profile_kobo_diag_1_enables_diag() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         std::env::set_var("KOBO_DIAG", "1");
         let config = KoboConfig {
             guarantee_policy: GuaranteePolicy::for_profile(GuaranteeProfile::Dev),
@@ -211,6 +217,7 @@ mod tests {
 
     #[test]
     fn checked_profile_no_env_diag_enabled() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         std::env::remove_var("KOBO_DIAG");
         let session = session_with_profile(GuaranteeProfile::Checked);
         assert!(

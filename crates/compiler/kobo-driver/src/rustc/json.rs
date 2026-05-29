@@ -55,11 +55,28 @@ pub(crate) fn parse_rustc_diagnostics(raw_output: &str) -> ParsedRustcOutput {
         }
     }
 
+    filter_rustc_followup_errors(&mut errors);
+
     ParsedRustcOutput {
         errors,
         warnings,
         parsed_any,
     }
+}
+
+fn filter_rustc_followup_errors(errors: &mut Vec<RustcJsonError>) {
+    if errors.len() <= 1 {
+        return;
+    }
+
+    errors.retain(|error| !is_rustc_followup_error(error));
+}
+
+fn is_rustc_followup_error(error: &RustcJsonError) -> bool {
+    error.code.is_none()
+        && error.spans.is_empty()
+        && error.message.starts_with("aborting due to")
+        && error.message.contains("previous error")
 }
 
 #[cfg(test)]
@@ -114,5 +131,21 @@ mod tests {
         assert!(out.errors.is_empty());
         assert!(out.warnings.is_empty());
         assert!(!out.parsed_any);
+    }
+
+    #[test]
+    fn parse_rustc_diagnostics_drops_followup_error_when_primary_exists() {
+        let followup = r#"{"message":"aborting due to 1 previous error","code":null,"level":"error","spans":[],"children":[]}"#;
+        let raw = format!(
+            "{}\n{followup}",
+            error_line("cannot move out of borrowed content", "E0507")
+        );
+        let out = parse_rustc_diagnostics(&raw);
+
+        assert_eq!(out.errors.len(), 1);
+        assert_eq!(
+            out.errors[0].code.as_ref().map(|code| code.code.as_str()),
+            Some("E0507")
+        );
     }
 }

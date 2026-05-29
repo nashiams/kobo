@@ -6,8 +6,8 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
 {
   "category": "liveness",
   "code": "K0100",
-  "decision": "Call ack, nack, requeue on every path, or record explicit debt if cleanup happens outside this scenario.",
-  "explanation": "Kobo tracks must_call values as obligations. Every return, cancellation, or replayed path must finish the obligation before the value leaves scope.",
+  "decision": "Want to finish the obligation here?\n  - Call one of these actions: ack, nack, requeue.\n  - Use debt(...) only when cleanup happens somewhere else and you want that visible.",
+  "explanation": "I need every path in this scenario to say what happened to the obligation.",
   "line": 8,
   "message": "<temp-path>",
   "notes": [],
@@ -26,10 +26,10 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
   "schema_version": 1,
   "secondary": [],
   "severity": "error",
-  "slug": "checked-runtime-liveness-token-dropped",
+  "slug": "obligation-not-finished",
   "suggestions": [],
   "suppressed_by": null,
   "suppression": null,
-  "title": "checked scenario dropped an unresolved liveness token",
+  "title": "I expected this obligation to finish",
   "upstream": null
 }

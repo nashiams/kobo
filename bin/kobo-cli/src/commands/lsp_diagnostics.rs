@@ -13,6 +13,9 @@ use super::{
     declarations::{self, DeclarationLookup},
     session::build_session,
 };
+
+mod copy;
+use copy::{decision_for_code, label_for_code};
 pub(super) fn cmd_lsp_diagnostics(
     file: &Path,
     format: ErrorFormat,
@@ -874,52 +877,6 @@ fn primary_span_from_witness(file_id: kobo_ir::FileId, source: &str, witness: &V
         return KoboSpan::new(start as u32, end.max(start + 1) as u32, file_id);
     }
     KoboSpan::new(0, source.len().min(1) as u32, file_id)
-}
-
-fn label_for_code(code: KErrorCode) -> &'static str {
-    match code {
-        KErrorCode::K0100 => "must_call liveness token can be dropped",
-        KErrorCode::K0102 => "raw nondeterminism appears on replay path",
-        KErrorCode::K0105 => "simulation event budget exceeded",
-        KErrorCode::K0107 => "external replay boundary requires policy",
-        KErrorCode::K0116 => "scenario coverage is incomplete",
-        KErrorCode::K0117 => "semantic and harness traces diverged",
-        KErrorCode::K0118 => "evidence artifact is stale",
-        KErrorCode::K0120 => "ecosystem policy metadata is invalid",
-        KErrorCode::K0121 => "declaration metadata is invalid or stale",
-        KErrorCode::K0122 => "typed external boundary has no declaration",
-        KErrorCode::K0123 => "adapter package is missing or incompatible",
-        KErrorCode::K0124 => "record boundary lacks recorded evidence",
-        KErrorCode::K0125 => "activity declaration lacks retry metadata",
-        KErrorCode::K0126 => ".kobo-summary hash or version mismatched",
-        KErrorCode::K0127 => "bindgen declaration draft needs review",
-        KErrorCode::K0128 => "Cargo compatibility metadata changed",
-        KErrorCode::K0129 => "ecosystem replay evidence would overclaim coverage",
-        _ => "simulation invariant failed",
-    }
-}
-
-fn decision_for_code(code: KErrorCode) -> &'static str {
-    match code {
-        KErrorCode::K0100 => "discharge the must_call action or replay the .kwit witness",
-        KErrorCode::K0102 => "route time/random through the deterministic scenario ward",
-        KErrorCode::K0105 => "raise the event budget or remove the unbounded scenario loop",
-        KErrorCode::K0107 => "select a boundary policy before exact replay",
-        KErrorCode::K0116 => "keep the witness partial until the scenario coverage is modeled",
-        KErrorCode::K0117 => "regenerate the witness and investigate the trace mismatch",
-        KErrorCode::K0118 => "regenerate artifacts for the current source hash",
-        KErrorCode::K0120 => "fix the [ecosystem] table before applying boundary policies",
-        KErrorCode::K0121 => "fix or regenerate the declaration file",
-        KErrorCode::K0122 => "add a declaration file or choose a non-typed boundary policy",
-        KErrorCode::K0123 => "install the adapter package or choose record/activity/opaque/debt",
-        KErrorCode::K0124 => "regenerate a recorded witness or choose another boundary policy",
-        KErrorCode::K0125 => "record retry, idempotency, and compensation metadata",
-        KErrorCode::K0126 => "rebuild the upstream package and update the summary hash",
-        KErrorCode::K0127 => "review and complete the generated declaration before trusting it",
-        KErrorCode::K0128 => "preserve Cargo metadata exactly or surface the Cargo error",
-        KErrorCode::K0129 => "keep replay partial or regenerate matching ecosystem evidence",
-        _ => "run kobo test --sim quick for the scenario failure",
-    }
 }
 
 fn parse_code(code: &str) -> Option<KErrorCode> {

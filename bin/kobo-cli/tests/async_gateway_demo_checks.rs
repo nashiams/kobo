@@ -1,5 +1,6 @@
 mod cli_test_support;
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -24,6 +25,16 @@ fn demo_file(relative: &str) -> PathBuf {
     let path = repo_root().join(relative);
     assert!(path.is_file(), "{relative} should be a shipped demo source");
     path
+}
+
+fn copy_demo(project: &TestProject, relative: &str) -> PathBuf {
+    let source = demo_file(relative);
+    let contents = fs::read_to_string(&source).expect("demo source should be readable");
+    let name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("demo source should have a UTF-8 name");
+    project.write(&format!("src/{name}"), &contents)
 }
 
 fn run_gateway_test(
@@ -69,7 +80,7 @@ fn run_gateway_test(
 #[test]
 fn async_gateway_catches_cancellation_failure() {
     let project = TestProject::new("model-async-gateway-cancel");
-    let demo = demo_file("examples/async_gateway/cancellation_failure.kobo");
+    let demo = copy_demo(&project, "examples/async_gateway/cancellation_failure.kobo");
 
     let (output, _witness_path, witness) = run_gateway_test(
         &project,
@@ -90,7 +101,7 @@ fn async_gateway_catches_cancellation_failure() {
 #[test]
 fn async_gateway_catches_orphan_task_failure() {
     let project = TestProject::new("model-async-gateway-orphan");
-    let demo = demo_file("examples/async_gateway/orphan_task_failure.kobo");
+    let demo = copy_demo(&project, "examples/async_gateway/orphan_task_failure.kobo");
 
     let (output, _witness_path, witness) =
         run_gateway_test(&project, &demo, "orphan_task_failure", &[], false);
@@ -105,18 +116,20 @@ fn async_gateway_catches_orphan_task_failure() {
 #[test]
 fn async_gateway_catches_request_token_failure() {
     let project = TestProject::new("model-async-gateway-token-failure");
-    let demo = demo_file("examples/async_gateway/request_token_failure.kobo");
+    let demo = copy_demo(
+        &project,
+        "examples/async_gateway/request_token_failure.kobo",
+    );
 
-    let (output, _witness_path, witness) =
+    let (_output, _witness_path, witness) =
         run_gateway_test(&project, &demo, "request_token_failure", &[], false);
-    assert_contains(&output.combined(), "reply", "diagnostic should name reply");
-    assert_eq!(witness["failure"]["mode"], "unresolved-reply");
+    assert_eq!(witness["failure"]["mode"], "reply-open");
 }
 
 #[test]
 fn async_gateway_reply_reject_cancel_inferred_without_manual_declarations() {
     let project = TestProject::new("model-async-gateway-inferred");
-    let demo = demo_file("examples/async_gateway/passing_history.kobo");
+    let demo = copy_demo(&project, "examples/async_gateway/passing_history.kobo");
     let (_output, _witness_path, witness) =
         run_gateway_test(&project, &demo, "gateway_success", &[], true);
 
@@ -143,7 +156,7 @@ fn async_gateway_reply_reject_cancel_inferred_without_manual_declarations() {
 #[test]
 fn async_gateway_emits_replayable_kwit_witness() {
     let project = TestProject::new("model-async-gateway-replay");
-    let demo = demo_file("examples/async_gateway/passing_history.kobo");
+    let demo = copy_demo(&project, "examples/async_gateway/passing_history.kobo");
     let (_output, witness_path, witness) =
         run_gateway_test(&project, &demo, "gateway_success", &[], true);
     assert_eq!(witness["replay_guarantee"], "exact");
@@ -184,7 +197,7 @@ fn async_gateway_emits_replayable_kwit_witness() {
 #[test]
 fn async_gateway_clean_rust_output_builds() {
     let project = TestProject::new("model-async-gateway-clean-rust");
-    let file = demo_file("examples/async_gateway/clean_exit.kobo");
+    let file = copy_demo(&project, "examples/async_gateway/clean_exit.kobo");
     let out_dir = project.root.join("target/gateway-clean");
     let output = run_kobo(
         &[

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use kobo_ir::KoboSpan;
+use kobo_ir::{KoboSpan, OwnershipDebtRecord};
 
 use crate::codes::{KErrorCode, Severity};
 
@@ -28,6 +28,9 @@ pub struct DiagDecision(pub String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagHelp(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiagHint(pub String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CliSuggestion(pub String);
@@ -86,6 +89,7 @@ pub struct KDiagnostic {
     pub explanation: DiagExplanation,
     pub decision: DiagDecision,
     pub help: Option<DiagHelp>,
+    pub hint: Option<DiagHint>,
     pub run: Option<CliSuggestion>,
     pub notes: Vec<DiagnosticNote>,
     pub related: Vec<DiagnosticRelatedInfo>,
@@ -93,6 +97,7 @@ pub struct KDiagnostic {
     pub suppressed_by: Option<KoboSpan>,
     pub upstream: Option<DiagnosticUpstream>,
     pub suppression: Option<DiagnosticSuppression>,
+    pub ownership_debt: Option<OwnershipDebtRecord>,
 }
 
 impl DiagLabel {
@@ -132,6 +137,7 @@ impl KDiagnostic {
             explanation: explanation.into(),
             decision: decision.into(),
             help: None,
+            hint: None,
             run: None,
             notes: Vec::new(),
             related: Vec::new(),
@@ -139,6 +145,7 @@ impl KDiagnostic {
             suppressed_by: None,
             upstream: None,
             suppression: None,
+            ownership_debt: None,
         }
     }
 
@@ -154,6 +161,11 @@ impl KDiagnostic {
 
     pub fn with_help(mut self, help: impl Into<DiagHelp>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+
+    pub fn with_hint(mut self, hint: impl Into<DiagHint>) -> Self {
+        self.hint = Some(hint.into());
         self
     }
 
@@ -190,6 +202,11 @@ impl KDiagnostic {
     pub fn with_suppression(mut self, suppression: DiagnosticSuppression) -> Self {
         self.suppressed_by = Some(suppression.span);
         self.suppression = Some(suppression);
+        self
+    }
+
+    pub fn with_ownership_debt(mut self, record: OwnershipDebtRecord) -> Self {
+        self.ownership_debt = Some(record);
         self
     }
 
@@ -340,6 +357,18 @@ impl From<String> for DiagHelp {
     }
 }
 
+impl From<&str> for DiagHint {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for DiagHint {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
 impl From<&str> for CliSuggestion {
     fn from(value: &str) -> Self {
         Self(value.to_owned())
@@ -365,6 +394,12 @@ impl fmt::Display for DiagDecision {
 }
 
 impl fmt::Display for DiagHelp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl fmt::Display for DiagHint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }

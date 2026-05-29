@@ -175,13 +175,13 @@ fn style_for_line(line: &str) -> Option<&'static str> {
         Some("\x1b[1;36m")
     } else if trimmed.starts_with("-->") {
         Some("\x1b[34m")
-    } else if trimmed.starts_with("What Kobo found:") {
+    } else if trimmed.starts_with("I found:") {
         Some("\x1b[1;36m")
-    } else if trimmed.starts_with("Why this matters:") {
+    } else if trimmed.starts_with("Why I care:") {
         Some("\x1b[1;36m")
     } else if trimmed.starts_with("Try this:") {
         Some("\x1b[1;32m")
-    } else if trimmed.starts_with("More:") {
+    } else if trimmed.starts_with("Hint:") {
         Some("\x1b[34m")
     } else if line.starts_with("why:") {
         Some("\x1b[1;36m")

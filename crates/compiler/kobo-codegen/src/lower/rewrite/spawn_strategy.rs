@@ -1,9 +1,9 @@
 //! Select spawn strategy for async tasks: `tokio::spawn` vs `tokio::task::spawn_local`.
 //!
-//! When the solver assigns a non-Send tier (RcShared, RcMutShared) to bindings
-//! captured by a spawn block, the task cannot use `tokio::spawn` (requires Send).
+//! When the solver assigns a task-local tier (RcShared, RcMutShared) to bindings
+//! captured by a spawn block, the task cannot use `tokio::spawn`.
 //! Instead, we emit `tokio::task::spawn_local` and wrap the surrounding context
-//! in a `LocalSet` so the runtime can schedule the non-Send future.
+//! in a `LocalSet` so the runtime can schedule the local future.
 //!
 //! K0067 is emitted when `spawn_local` is selected but no `LocalSet` context is
 //! detected in the enclosing code.
@@ -14,9 +14,9 @@ use kobo_ir::{KirNodeId, OwnershipTier, SolutionMap};
 /// Strategy chosen for a particular spawn block.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SpawnStrategy {
-    /// All captured bindings are Send — use `tokio::spawn`.
+    /// All captured bindings can move safely between tasks.
     TokioSpawn,
-    /// At least one captured binding is non-Send — use `tokio::task::spawn_local`.
+    /// At least one captured binding must stay on the local task.
     SpawnLocal,
 }
 
@@ -30,7 +30,7 @@ pub(crate) struct SpawnCaptures {
 
 /// Determine the spawn strategy for a set of captured bindings.
 ///
-/// If any binding is resolved to a non-Send tier (RcShared or RcMutShared),
+/// If any binding is resolved to a task-local tier (RcShared or RcMutShared),
 /// the spawn block must use `spawn_local` instead of `tokio::spawn`.
 pub(crate) fn select_spawn_strategy(
     captures: &[KirNodeId],

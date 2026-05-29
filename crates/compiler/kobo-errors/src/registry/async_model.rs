@@ -16,8 +16,8 @@ pub(super) fn entries() -> Vec<DiagnosticRegistryEntry> {
         entry(
             KErrorCode::K0060,
             "refcell-borrow-live-at-await",
-            "RefCell borrow is live at suspend point",
-            "A non-Send borrow would remain live across async suspension.",
+            "borrow remains live across await",
+            "A borrow would remain live while async code pauses.",
             "Kobo reports async ownership hazards before lowering code that would fail executor requirements.",
             Async,
             Warning,
@@ -29,9 +29,9 @@ pub(super) fn entries() -> Vec<DiagnosticRegistryEntry> {
         entry(
             KErrorCode::K0061,
             "future-send-boundary",
-            "future requires Send but value cannot safely cross thread boundary",
-            "An async future requires Send but a captured value cannot satisfy that boundary.",
-            "The future may run on another worker thread, but one captured value is only safe on the current thread.\n\
+            "this async task cannot safely carry one captured value",
+            "An async task may move to another worker, but one captured value must stay on the current task.",
+            "The task may run on another worker thread, but one captured value is only safe on the current thread.\n\
 Kobo does not hide that by inserting shared mutation for you.\n\
 Use LocalSet when the task is intentionally single-thread local.\n\
 Use #[kobo::async_shared] when shared async ownership is intentional.\n\
@@ -74,9 +74,9 @@ If this crosses an external runtime boundary, record the boundary tradeoff expli
         entry(
             KErrorCode::K0064,
             "strict-guard-live-across-yield",
-            "@strict inside async block - ownership cannot be tracked across yield",
+            "strict guard remains live across await",
             "A guard-like value is live across an await point.",
-            "Kobo reports guard liveness because it can produce deadlocks or non-Send futures.",
+            "Kobo reports guard liveness because another task can wait on the same guard and never make progress.",
             Async,
             Warning,
             AsyncModeDependent,

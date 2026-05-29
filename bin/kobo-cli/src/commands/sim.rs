@@ -195,7 +195,7 @@ pub(super) fn cmd_sim_scout(
             json!({
             "backend_fit": recommendations,
             "executed": true,
-            "execution_surface": "generated user Rust process adapters plus compiler-owned semantic agreement",
+            "execution_surface": "generated user Rust process adapters plus Kobo-managed semantic agreement",
             "note": "Kobo reports which adapters are executable now and which backend-native engines are reserved metadata until an adapter is linked.",
             }),
             json_output,
@@ -1094,7 +1094,7 @@ pub(super) fn cmd_sim_backends(json_output: bool) -> anyhow::Result<()> {
     print_value(
         json!({
             "executed": true,
-            "execution_surface": "generated-rust-process plus compiler-owned modeled facades",
+            "execution_surface": "generated-rust-process plus Kobo-managed modeled facades",
             "reserved_metadata_registry": reserved_metadata_registry_json(),
             "backends": backends,
         }),
@@ -1169,7 +1169,7 @@ fn scout_why_source(source: &str, file: &Path) -> serde_json::Value {
         "kobo_posture": "Kobo is Rust-shaped and Cargo-native; backend choices are possible engines, not user source imports.",
         "source_import_policy": "normal Kobo source stays framework-shaped; backend replacement types are not default diagnostics.",
         "profile_recommendation_scope": "stable profile recommendation; generated harness execution is visible through inspect surfaces.",
-        "backend_choice": "Kobo executes compiler-owned generated user Rust harnesses through linked scheduler, filesystem, network, and Loom adapter surfaces.",
+        "backend_choice": "Kobo executes generated user Rust harnesses through linked scheduler, filesystem, network, and Loom adapter surfaces.",
         "backend_fit": recommendations,
         "inspect_transparency": "use kobo inspect --sim for facade and generated-harness transparency.",
         "executed": true,
@@ -1195,7 +1195,7 @@ fn scout_reasons(source: &str) -> Vec<&'static str> {
         reasons.push("liveness obligation vocabulary");
     }
     if contains_raw_nondeterminism(source) {
-        reasons.push("raw nondeterminism");
+        reasons.push("value can change between runs");
     }
     reasons
 }

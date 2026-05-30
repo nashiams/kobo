@@ -35,7 +35,12 @@ pub(super) fn cmd_build(
 
     if print_policy.is_some() {
         let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
-        let loaded = policy::load_effective_policy(None, profile)?;
+        let selection = if guarantee_profile.is_some() {
+            policy::ProfileSelection::ExplicitCli
+        } else {
+            policy::ProfileSelection::ConfigDefault
+        };
+        let loaded = policy::load_effective_policy_with_selection(None, profile, selection)?;
         policy::print_policy_json(&loaded)?;
         return Ok(());
     }
@@ -104,7 +109,16 @@ fn cmd_build_file(
 ) -> anyhow::Result<()> {
     let guarantee_policy = if guarantee_profile.is_some() || print_policy.is_some() {
         let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
-        Some(policy::load_effective_policy(Some(file), profile)?)
+        let selection = if guarantee_profile.is_some() {
+            policy::ProfileSelection::ExplicitCli
+        } else {
+            policy::ProfileSelection::ConfigDefault
+        };
+        Some(policy::load_effective_policy_with_selection(
+            Some(file),
+            profile,
+            selection,
+        )?)
     } else {
         let base_policy = cli_policy.clone().unwrap_or_default();
         policy::load_configured_release_policy(Some(file), &base_policy)?
@@ -154,7 +168,7 @@ fn cmd_build_file(
     if has_error || strict_ownership_line.is_some() {
         if let Some(line) = strict_ownership_line {
             anyhow::bail!(
-                "release ownership guarantee failed with K0001 ownership debt at line {line}"
+                "release ownership guarantee failed with K0032 ownership debt at line {line}"
             );
         }
         return Err(super::diagnostics_emitted());

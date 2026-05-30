@@ -122,7 +122,7 @@ fn public_runtime_fixture_acceptance_flows_are_real_files() {
     );
     assert_contains(
         &async_output.combined(),
-        "unresolved-reply",
+        "reply-open",
         "async gateway failure mode should be user-visible",
     );
 
@@ -776,6 +776,6 @@ fn text_only_select_reference() {
     assert_contains(
         &parsed_witness["coverage"]["unsupported_constructs"].to_string(),
         "tokio::select!",
-        "parsed select coverage must remain compiler-owned and visible",
+        "parsed select coverage must remain Kobo-managed and visible",
     );
 }

@@ -1,16 +1,16 @@
 use kobo_errors::Severity;
-/// Pinpoint the exact binding and await point causing a non-Send future.
+/// Pinpoint the exact binding and await point causing a task-local future.
 ///
 /// When a binding with tier Rc*/RefCell crosses a spawn boundary,
-/// the generated tokio::spawn will fail with "future is not Send."
+/// the generated tokio::spawn will reject the task-local capture.
 ///
 /// Kobo's diagnostic replaces this with:
-///   error[K0061]: future requires Send but `state` cannot cross thread boundary
+///   error[K0061]: normal spawn cannot safely carry `state`
 ///
 /// This requires:
 /// 1. Knowing which bindings are captured by the spawn block
-/// 2. Knowing which bindings are !Send (Rc, RefCell, non-Send user types)
-/// 3. Finding the.await points that cause the capture to span across suspend
+/// 2. Knowing which bindings must stay task-local (Rc, RefCell, local user types)
+/// 3. Finding the .await points that cause the capture to span across suspend
 use kobo_ir::{Kir, KirNodeId, KoboSpan, NodeKind, OwnershipTier, TransformFacts};
 
 /// Represents a spawn site in the source.
@@ -21,7 +21,7 @@ pub struct SpawnSite {
     pub await_points: Vec<KoboSpan>,
 }
 
-/// A diagnostic for a non-Send binding crossing a spawn boundary.
+/// A diagnostic for a task-local binding crossing a spawn boundary.
 #[derive(Clone, Debug)]
 pub struct SendDiagnostic {
     /// Severity — K0061 is always an error (not a warning).
@@ -40,7 +40,7 @@ pub struct SendDiagnostic {
     pub suggestion: String,
 }
 
-/// Determine if an ownership tier is !Send.
+/// Determine if an ownership tier must stay on the local task.
 fn is_not_send(tier: OwnershipTier) -> bool {
     matches!(tier, OwnershipTier::RcShared | OwnershipTier::RcMutShared)
 }
@@ -59,7 +59,7 @@ fn wrapper_type_label(tier: OwnershipTier) -> &'static str {
     }
 }
 
-/// Suggestion for fixing a non-Send binding.
+/// Suggestion for fixing a task-local binding.
 fn suggest_fix(tier: OwnershipTier) -> String {
     match tier {
         OwnershipTier::RcShared => {
@@ -76,7 +76,7 @@ fn suggest_fix(tier: OwnershipTier) -> String {
 /// Analyze spawn sites for Send violations.
 ///
 /// For each spawn site, check each captured binding's ownership tier.
-/// If the tier is !Send, produce a diagnostic.
+/// If the tier must stay task-local, produce a diagnostic.
 pub fn analyze_send_violations(
     spawn_sites: &[SpawnSite],
     facts: &TransformFacts,

@@ -33,13 +33,13 @@ fn formatter_renders_k0001_with_secondary_label() {
     assert!(rendered.contains("error[K0001]: value used after move"));
     assert!(rendered.contains("--> src/main.kobo:2:5"));
     assert!(rendered.contains("------ value moved here"));
-    assert!(rendered.contains("What Kobo found:"));
-    assert!(rendered.contains("Why this matters:"));
+    assert!(rendered.contains("I found:"));
+    assert!(rendered.contains("Why I care:"));
     assert!(rendered.contains("Try this:"));
-    assert!(rendered.contains("More:"));
-    assert!(rendered.contains("clone explicitly at the call site"));
-    assert!(rendered.contains("Rerun:"));
-    assert!(rendered.contains("src/main.kobo:2"));
+    assert!(rendered.contains("Hint: clone explicitly at the call site."));
+    assert!(rendered.contains("Run `kobo explain K0001`."));
+    assert!(rendered.contains("Rerun with `kobo check src/main.kobo:2`."));
+    assert!(!rendered.contains("Rerun:"));
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn formatter_renders_k0002_and_omits_empty_help_run() {
 
     let rendered = format_diagnostic(&file_set, &diagnostic);
 
-    assert!(rendered.contains("error[K0002]: cannot borrow as mutable - already borrowed"));
+    assert!(rendered.contains("error[K0002]: mutable borrow overlaps another borrow"));
     assert!(rendered.contains("---- immutable borrow occurs here"));
     assert!(!rendered.contains("help:"));
     assert!(!rendered.contains("run:"));

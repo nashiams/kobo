@@ -19,8 +19,8 @@ pub use core::{
 };
 pub use debt::{
     AcknowledgedDebtRecord, ComplexityBreakdown, DebtComplexityTier, DebtReport, DebtSiteRecord,
-    FieldTypeShape, KirStructDef, KirStructFieldDef, WarnEarlyFact, WarnEarlyPattern,
-    WrapperInventory,
+    FieldTypeShape, KirStructDef, KirStructFieldDef, OwnershipDebtCode, OwnershipDebtKind,
+    OwnershipDebtRecord, OwnershipDebtSeverity, WarnEarlyFact, WarnEarlyPattern, WrapperInventory,
 };
 pub use guarantee_policy::{
     ErrorPolicy, GuaranteeDimension, GuaranteeDowngrade, GuaranteeLevel, GuaranteePolicy,

@@ -1,19 +1,8 @@
 use kobo_ir::{FileEntry, FileSet, KoboSpan};
 
 use crate::diagnostic::{DiagLabel, DiagLabelKind, KDiagnostic};
-pub fn render_span_compact(file_set: &FileSet, span: KoboSpan) -> String {
-    let Some(file) = file_set.get(span.file_id) else {
-        return format!("<unknown>:{}..{}", span.start, span.end);
-    };
 
-    if !can_render_span_start(file, span) {
-        return format!("{}:{}..{}", file.path.display(), span.start, span.end);
-    }
-
-    let (line, column) = file.line_col(span.start);
-    format!("{}:{line}:{column}", file.path.display())
-}
-
+use super::labels::public_label_text;
 pub(crate) fn render_label_group(file_set: &FileSet, diagnostic: &KDiagnostic) -> String {
     let Some(file) = file_set.get(diagnostic.primary.span.file_id) else {
         return render_individual_blocks(file_set, diagnostic);
@@ -68,9 +57,10 @@ fn render_grouped_block(file: &FileEntry, labels: &[&DiagLabel], primary: &DiagL
             "{:>gutter_width$} | {}{}",
             "", caret_padding, caret
         ));
-        if !label.text.is_empty() {
+        let label_text = public_label_text(&label.text);
+        if !label_text.is_empty() {
             rendered.push(' ');
-            rendered.push_str(&label.text);
+            rendered.push_str(&label_text);
         }
     }
 
@@ -121,18 +111,20 @@ fn render_label_block(file_set: &FileSet, label: &DiagLabel, include_label_text:
         "{:>gutter_width$} | {}{}",
         "", caret_padding, caret
     ));
-    if include_label_text && !label.text.is_empty() {
+    let label_text = public_label_text(&label.text);
+    if include_label_text && !label_text.is_empty() {
         rendered.push(' ');
-        rendered.push_str(&label.text);
+        rendered.push_str(&label_text);
     }
 
     rendered
 }
 
 fn render_fallback(label: &DiagLabel, path: &str) -> String {
+    let label_text = public_label_text(&label.text);
     format!(
         "  --> {path}\n   |\n   | [bytes {}..{}] {}",
-        label.span.start, label.span.end, label.text
+        label.span.start, label.span.end, label_text
     )
 }
 

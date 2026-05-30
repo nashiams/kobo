@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use kobo_ir::{
     ErrorPolicy, GuaranteeDimension, GuaranteeDowngrade, GuaranteeLevel, GuaranteePolicy,
-    GuaranteeProfile,
+    GuaranteeProfile, GuaranteeSet,
 };
 use toml::Value as TomlValue;
 
@@ -22,6 +22,46 @@ pub(super) struct EffectiveGuaranteePolicy {
     policy: GuaranteePolicy,
     release: ReleasePolicy,
     downgrade: Option<GuaranteeDowngrade>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProfileSelection {
+    ConfigDefault,
+    ExplicitCli,
+}
+
+pub(super) fn load_check_effective_policy(
+    file: &Path,
+    cli_policy: Option<&GuaranteePolicy>,
+    guarantee_profile: Option<GuaranteeProfileArg>,
+    should_print_policy: bool,
+) -> anyhow::Result<Option<EffectiveGuaranteePolicy>> {
+    if guarantee_profile.is_some() || should_print_policy {
+        let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
+        let selection = if guarantee_profile.is_some() {
+            ProfileSelection::ExplicitCli
+        } else {
+            ProfileSelection::ConfigDefault
+        };
+        return load_effective_policy_with_selection(Some(file), profile, selection).map(Some);
+    }
+
+    let base_policy = cli_policy.cloned().unwrap_or_default();
+    load_configured_release_policy(Some(file), &base_policy)
+}
+
+pub(super) fn load_explicit_profile_policy(
+    file: &Path,
+    profile: GuaranteeProfileArg,
+    error_format: ErrorFormat,
+) -> anyhow::Result<EffectiveGuaranteePolicy> {
+    let loaded =
+        load_effective_policy_with_selection(Some(file), profile, ProfileSelection::ExplicitCli)?;
+    if let Some(downgrade) = loaded.downgrade() {
+        emit_downgrade(downgrade, error_format)?;
+        anyhow::bail!("guarantee policy downgrade requires reason ledger entry");
+    }
+    Ok(loaded)
 }
 
 impl ReleasePolicy {
@@ -77,20 +117,26 @@ impl EffectiveGuaranteePolicy {
     }
 }
 
-pub(super) fn load_effective_policy(
+pub(super) fn load_effective_policy_with_selection(
     file: Option<&Path>,
     profile: GuaranteeProfileArg,
+    selection: ProfileSelection,
 ) -> anyhow::Result<EffectiveGuaranteePolicy> {
     let root = policy_root(file)?;
     let manifest = read_manifest(&root)?;
     let mut policy = GuaranteePolicy::for_profile(profile.compiler_profile());
     let mut release = ReleasePolicy::default();
 
-    if let Some(table) = table_at(&manifest, &["guarantees"]) {
-        apply_guarantees_table(&mut policy, table);
+    if matches!(selection, ProfileSelection::ConfigDefault) {
+        if let Some(table) = table_at(&manifest, &["guarantees"]) {
+            apply_guarantees_table(&mut policy, table);
+        }
     }
     if let Some(table) = table_at(&manifest, &["profiles", profile.as_str(), "guarantees"]) {
         apply_guarantees_table(&mut policy, table);
+    }
+    if matches!(selection, ProfileSelection::ExplicitCli) {
+        raise_policy_to_profile_floor(&mut policy, profile.compiler_profile());
     }
     if let Some(table) = table_at(&manifest, &["ci", "release"]) {
         release.apply_table(table);
@@ -140,7 +186,8 @@ pub(super) fn load_configured_release_policy(
     base_policy: &GuaranteePolicy,
 ) -> anyhow::Result<Option<EffectiveGuaranteePolicy>> {
     let profile = profile_arg_for(base_policy.profile());
-    let loaded = load_effective_policy(file, profile)?;
+    let loaded =
+        load_effective_policy_with_selection(file, profile, ProfileSelection::ConfigDefault)?;
     if loaded.has_configured_release_policy() {
         Ok(Some(loaded))
     } else {
@@ -158,33 +205,37 @@ const fn profile_arg_for(profile: GuaranteeProfile) -> GuaranteeProfileArg {
 
 fn raise_policy_to_release_floor(policy: &mut GuaranteePolicy) {
     let release = GuaranteePolicy::for_profile(GuaranteeProfile::Release);
-    let release_guarantees = release.guarantees();
-    if policy.guarantees().ownership() < release_guarantees.ownership() {
-        policy.guarantees_mut().set_level(
-            GuaranteeDimension::Ownership,
-            release_guarantees.ownership(),
-        );
-    }
-    if policy.guarantees().liveness() < release_guarantees.liveness() {
+    raise_policy_to_floor(policy, release.guarantees());
+}
+
+fn raise_policy_to_profile_floor(policy: &mut GuaranteePolicy, profile: GuaranteeProfile) {
+    let floor = GuaranteePolicy::for_profile(profile);
+    raise_policy_to_floor(policy, floor.guarantees());
+}
+
+fn raise_policy_to_floor(policy: &mut GuaranteePolicy, floor: &GuaranteeSet) {
+    if policy.guarantees().ownership() < floor.ownership() {
         policy
             .guarantees_mut()
-            .set_level(GuaranteeDimension::Liveness, release_guarantees.liveness());
+            .set_level(GuaranteeDimension::Ownership, floor.ownership());
     }
-    if policy.guarantees().replay() < release_guarantees.replay() {
+    if policy.guarantees().liveness() < floor.liveness() {
         policy
             .guarantees_mut()
-            .set_level(GuaranteeDimension::Replay, release_guarantees.replay());
+            .set_level(GuaranteeDimension::Liveness, floor.liveness());
     }
-    if policy.guarantees().boundaries() < release_guarantees.boundaries() {
-        policy.guarantees_mut().set_level(
-            GuaranteeDimension::Boundaries,
-            release_guarantees.boundaries(),
-        );
-    }
-    if policy.guarantees().errors() < release_guarantees.errors() {
+    if policy.guarantees().replay() < floor.replay() {
         policy
             .guarantees_mut()
-            .set_errors(release_guarantees.errors());
+            .set_level(GuaranteeDimension::Replay, floor.replay());
+    }
+    if policy.guarantees().boundaries() < floor.boundaries() {
+        policy
+            .guarantees_mut()
+            .set_level(GuaranteeDimension::Boundaries, floor.boundaries());
+    }
+    if policy.guarantees().errors() < floor.errors() {
+        policy.guarantees_mut().set_errors(floor.errors());
     }
 }
 

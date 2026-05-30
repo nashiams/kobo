@@ -11,14 +11,12 @@ error[K0025]: Kobo cannot use this ownership hint
 5 |     let buf = String::from("kobo");
   |         --- hint applies to this value
   |
-What Kobo found:
-  The hint asks Kobo to move `buf`, but the code mutably uses `buf` more than once.
-Why this matters:
-  A moved value has only one owner. This code needs a shape that can support repeated mutable use.
+
+I found: The hint asks Kobo to move `buf`, but the code mutably uses `buf` more than once.
+
+Why I care: A moved value has only one owner. This code needs a shape that can support repeated mutable use.
+
 Try this:
   Remove the hint, change it to match the sharing pattern, or refactor so `buf` has only one owner.
-More:
-  Run `kobo explain K0025` for examples and deeper context.
-  Also: if this sharing is intentional, let Kobo choose the shared representation and review it with
-  `kobo inspect`
-  Rerun: kobo check tests\ui\K0025_hint_ignored.kobo:4
+
+Hint: if this sharing is intentional, let Kobo choose the shared representation and review it with `kobo inspect`. Run `kobo explain K0025`. Rerun with `kobo check tests\ui\K0025_hint_ignored.kobo:4`.

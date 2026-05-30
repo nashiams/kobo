@@ -284,8 +284,8 @@ deny_downgrade_without_reason = true
         "release strict_paths should raise matching files back to strict boundaries"
     );
     assert_eq!(
-        public_json["guarantees"]["ownership"], "record",
-        "non-matching files should keep the explicit gradual project policy"
+        public_json["guarantees"]["ownership"], "strict",
+        "explicit release profile must not be downgraded by project defaults"
     );
 }
 
@@ -450,9 +450,9 @@ fn k010x_explain_codes_use_runtime_meanings() {
     let project = TestProject::new("k010x-explain");
 
     for (code, meaning) in [
-        ("K0100", "liveness"),
-        ("K0102", "nondeterminism"),
-        ("K0103", "uncontrolled"),
+        ("K0100", "obligation"),
+        ("K0102", "change between runs"),
+        ("K0103", "replay"),
         ("K0104", "diverged"),
         ("K0105", "budget"),
         ("K0107", "boundary"),
@@ -463,7 +463,7 @@ fn k010x_explain_codes_use_runtime_meanings() {
         assert_contains(&text, &code.to_lowercase(), "explain must name code");
         assert_contains(&text, meaning, "explain must use guarantee-policy meaning");
         assert!(
-            !text.contains("parser recovery") && !text.contains("syntax error recovered"),
+            !text.contains("parser recovery") && !text.contains("old syntax recovery title"),
             "{code} must not retain old parser-recovery meaning:\n{text}"
         );
     }

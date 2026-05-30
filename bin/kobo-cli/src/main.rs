@@ -344,12 +344,12 @@ pub(crate) enum KoboCommand {
         /// Scan a standalone Rust Cargo project without requiring Kobo sources.
         #[arg(long, value_name = "DIR")]
         cargo: Option<PathBuf>,
-        /// Output ownership debt JSON (schema_version=1)
         #[arg(long)]
         json: bool,
-        /// Output a single summary line
         #[arg(long)]
         summary: bool,
+        #[arg(long, value_enum, default_value_t = ColorArg::Auto)]
+        color: ColorArg,
         /// Show borrow overlap analysis
         #[arg(long)]
         borrows: bool,

@@ -76,7 +76,7 @@ fn crunch(values: Vec<u64>) {
     assert_contains(
         &unsafe_output.combined(),
         "state",
-        "diagnostic should name the non-Send captured variable",
+        "diagnostic should name the task-local captured variable",
     );
 
     let generated = inspect_source(
@@ -129,13 +129,13 @@ fn crunch(values: Vec<u64>) {
 
     assert_failure(
         &output,
-        "parallel loop should reject user-defined captures that carry non-Send fields",
+        "parallel loop should reject user-defined captures that must stay task-local",
     );
-    for expected in ["state", "LocalState", "non-Send"] {
+    for expected in ["state", "LocalState", "task-local"] {
         assert_contains(
             &output.combined(),
             expected,
-            "parallel diagnostic should name the user-defined non-Send capture",
+            "parallel diagnostic should name the user-defined task-local capture",
         );
     }
 }
@@ -161,9 +161,9 @@ fn crunch(values: Vec<Rc<u64>>) {
 
     assert_failure(
         &output,
-        "parallel lowering should reject non-Send iterator item types before emitting Rayon",
+        "parallel lowering should reject task-local iterator item types before emitting Rayon",
     );
-    for expected in ["values", "Rc", "non-Send"] {
+    for expected in ["values", "Rc", "task-local"] {
         assert_contains(
             &output.combined(),
             expected,
@@ -262,7 +262,7 @@ fn crunch(values: Vec<u64>) {
     assert_not_contains(
         &generated,
         "values.par_iter()",
-        "default inspect must not emit par_iter for non-Send captures",
+        "default inspect must not emit par_iter for task-local captures",
     );
     assert_contains(
         &generated,
@@ -462,8 +462,8 @@ fn crunch(values: Vec<u64>) {
         &project.root,
     );
 
-    assert_failure(&output, "non-Send parallel capture should fail");
-    for expected in ["non-Send", "state", "Rc"] {
+    assert_failure(&output, "task-local parallel capture should fail");
+    for expected in ["task-local", "state", "Rc"] {
         assert_contains(
             &output.combined(),
             expected,

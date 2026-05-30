@@ -94,7 +94,7 @@ fn normalize_line(line: &str) -> String {
 }
 
 #[test]
-fn k0100_liveness_diagnostic_snapshot() {
+fn k0100_obligation_not_finished_diagnostic_snapshot() {
     let project = TestProject::new("model-k0100-snapshot");
     let file = project.main_file(
         r#"
@@ -122,7 +122,7 @@ fn missing_ack() {
     assert_failure(&output, "missing liveness action should fail");
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0100");
-    assert_json_diagnostic_snapshot("k0100_liveness_diagnostic", &diagnostic);
+    assert_json_diagnostic_snapshot("k0100_obligation_not_finished_diagnostic", &diagnostic);
     assert_eq!(diagnostic["category"], "liveness");
     assert_contains(
         diagnostic["decision"].as_str().unwrap_or_default(),
@@ -168,7 +168,7 @@ fn handler() {
 }
 
 #[test]
-fn k0102_raw_nondeterminism_diagnostic_snapshot() {
+fn k0102_replay_path_can_change_diagnostic_snapshot() {
     let project = TestProject::new("model-k0102-snapshot");
     let file = project.main_file(
         r#"
@@ -191,20 +191,20 @@ fn raw_time() {
         ],
         &project.root,
     );
-    assert_failure(&output, "raw nondeterminism should fail");
+    assert_failure(&output, "changing replay input should fail");
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0102");
-    assert_json_diagnostic_snapshot("k0102_raw_nondeterminism_diagnostic", &diagnostic);
+    assert_json_diagnostic_snapshot("k0102_replay_path_can_change_diagnostic", &diagnostic);
     assert_eq!(diagnostic["category"], "nondeterminism");
     assert_contains(
         diagnostic["explanation"].as_str().unwrap_or_default(),
-        "nondeterminism",
+        "change between runs",
         "K0102 should explain deterministic replay impact",
     );
 }
 
 #[test]
-fn k0103_uncontrolled_effect_diagnostic_snapshot() {
+fn k0103_action_not_replayable_yet_diagnostic_snapshot() {
     let project = TestProject::new("model-k0103-snapshot");
     let file = project.main_file(
         r#"
@@ -229,11 +229,11 @@ fn crash_path() {
     );
     assert_failure(
         &output,
-        "crash injection should fail as uncontrolled effect",
+        "crash injection should fail as unreplayable action",
     );
     let diagnostic = json_diagnostic(&output);
     assert_eq!(diagnostic["code"], "K0103");
-    assert_json_diagnostic_snapshot("k0103_uncontrolled_effect_diagnostic", &diagnostic);
+    assert_json_diagnostic_snapshot("k0103_action_not_replayable_yet_diagnostic", &diagnostic);
     assert_eq!(diagnostic["category"], "replay");
     assert_contains(
         diagnostic["decision"].as_str().unwrap_or_default(),

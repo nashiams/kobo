@@ -8,20 +8,38 @@ use kobo_debt::borrow_report::{build_borrow_report, BorrowReport};
 use kobo_debt::patterns::{detect_migration_patterns, format_patterns};
 use kobo_debt::{build_debt_report, format_warn_early};
 use kobo_driver::{lifetime_erasure_debt_report, run_kir_phase};
-use kobo_ir::debt::{DebtReport, WarnEarlyPattern};
+use kobo_errors::ColorMode;
+use kobo_ir::debt::DebtReport;
 use kobo_ir::MustCallObligation;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 use syn::visit::Visit;
 
 use super::{boundary_projection, session::build_session, summary_validation};
 
-pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result<()> {
+mod migration_estimate;
+mod ownership;
+use migration_estimate::{
+    migration_estimate_json, migration_estimate_label, precursor_codes, precursor_warning_json,
+};
+use ownership::{
+    colorize_debt_output, extend_unique_ownership_debt, format_ownership_debt,
+    ownership_debt_records, resolve_debt_color_mode, rustc_escape_debt_for_file,
+};
+
+pub(super) fn cmd_debt(
+    file: &Path,
+    json: bool,
+    summary: bool,
+    color_mode: ColorMode,
+) -> anyhow::Result<()> {
     let mut session = build_session(file, None)?;
     let (_, kir) = run_kir_phase(&mut session, file)
         .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
 
     let (file_count, line_count) = count_files_and_lines(session.file_set());
-    let report = build_debt_report(&kir, file_count, line_count);
+    let mut ownership_debt = ownership_debt_records(&kir, &session);
+    extend_unique_ownership_debt(&mut ownership_debt, rustc_escape_debt_for_file(file)?);
+    let report = build_debt_report(&kir, file_count, line_count, ownership_debt);
     let boundary_policies = boundary_projection::projections_for_file(file, &session.config)?;
 
     if json {
@@ -43,6 +61,11 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
             object.insert(
                 "precursor_warnings".to_owned(),
                 serde_json::Value::Array(precursor_warning_json(&report)),
+            );
+            object.insert(
+                "ownership_warnings".to_owned(),
+                serde_json::to_value(&report.ownership_debt)
+                    .context("failed to serialize ownership debt records")?,
             );
             object.insert(
                 "boundary_policies".to_owned(),
@@ -69,21 +92,30 @@ pub(super) fn cmd_debt(file: &Path, json: bool, summary: bool) -> anyhow::Result
             report.complexity.tier1,
             report.complexity.tier2,
             report.complexity.tier3,
-            report.warn_early.len(),
+            report.warn_early.len() + report.ownership_debt.len(),
             migration_estimate_label(&report),
         );
         return Ok(());
     }
 
     // Human-readable output.
-    let human = format_warn_early(&report);
-    if human.is_empty() {
+    let mut sections = Vec::new();
+    let ownership = format_ownership_debt(session.file_set(), &report);
+    if !ownership.is_empty() {
+        sections.push(ownership);
+    }
+    let structural = format_warn_early(&report);
+    if !structural.is_empty() {
+        sections.push(structural);
+    }
+    if sections.is_empty() {
         println!(
             "Debt report: {} RcMutShared site(s). No active structural warnings.",
             report.inventory.rc_mut_shared
         );
     } else {
-        println!("{human}");
+        let color = resolve_debt_color_mode(color_mode);
+        println!("{}", colorize_debt_output(&sections.join("\n"), color));
     }
     for boundary in &boundary_policies {
         println!("{}", boundary.debt_line());
@@ -222,7 +254,8 @@ fn debt_watch_scan(file: &Path) -> anyhow::Result<DebtWatchScan> {
         .map_err(|()| anyhow::anyhow!("failed to build KIR for {}", file.display()))?;
 
     let (file_count, line_count) = count_files_and_lines(session.file_set());
-    let report = build_debt_report(&kir, file_count, line_count);
+    let ownership_debt = ownership_debt_records(&kir, &session);
+    let report = build_debt_report(&kir, file_count, line_count, ownership_debt);
     let codes = precursor_codes(&report);
     Ok(DebtWatchScan { report, codes })
 }
@@ -276,62 +309,6 @@ fn debt_watch_snapshot(
         "precursor_codes": codes,
         "migration_estimate": migration_estimate_json(report),
     })
-}
-
-fn migration_estimate_json(report: &DebtReport) -> serde_json::Value {
-    serde_json::json!({
-        "label": migration_estimate_label(report),
-        "estimated_site_count": report.inventory.rc_mut_shared,
-        "tier1": report.complexity.tier1,
-        "tier2": report.complexity.tier2,
-        "tier3": report.complexity.tier3,
-        "precursor_warning_count": report.warn_early.len(),
-    })
-}
-
-fn migration_estimate_label(report: &DebtReport) -> &'static str {
-    if report.complexity.tier3 > 0 {
-        "estimated-high"
-    } else if report.complexity.tier2 > 0 || !report.warn_early.is_empty() {
-        "estimated-medium"
-    } else {
-        "estimated-low"
-    }
-}
-
-fn precursor_warning_json(report: &DebtReport) -> Vec<serde_json::Value> {
-    report
-        .warn_early
-        .iter()
-        .map(|fact| {
-            serde_json::json!({
-                "code": warn_early_code(&fact.pattern),
-                "pattern": fact.pattern.clone(),
-                "struct_name": fact.struct_name.clone(),
-                "suppressed": fact.suppressed,
-            })
-        })
-        .collect()
-}
-
-fn precursor_codes(report: &DebtReport) -> Vec<&'static str> {
-    let mut codes = report
-        .warn_early
-        .iter()
-        .map(|fact| warn_early_code(&fact.pattern))
-        .collect::<Vec<_>>();
-    codes.sort_unstable();
-    codes.dedup();
-    codes
-}
-
-fn warn_early_code(pattern: &WarnEarlyPattern) -> &'static str {
-    match pattern {
-        WarnEarlyPattern::BidirectionalRcLinks { .. } => "K0080-P1",
-        WarnEarlyPattern::ParentChildBackPointer { .. } => "K0080-P2",
-        WarnEarlyPattern::SharedMutableAt3PlusSites { .. } => "K0080-P3",
-        WarnEarlyPattern::SelfReferentialStruct { .. } => "K0080-P4",
-    }
 }
 
 pub(super) fn cmd_debt_cargo(root: &Path, json: bool, summary: bool) -> anyhow::Result<()> {

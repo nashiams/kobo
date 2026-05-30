@@ -36,7 +36,7 @@ pub fn capabilities() -> &'static [BackendCapability] {
             display_name: "generated-rust-process",
             executes_now: true,
             integration_level: "generated-user-rust",
-            scenario_execution: "compiler-owned-generated-rust",
+            scenario_execution: "kobo-managed-generated-rust",
             ecosystem_scope: "generated-user-rust",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: true,
@@ -132,12 +132,12 @@ pub fn capabilities() -> &'static [BackendCapability] {
             display_name: "failpoints",
             executes_now: true,
             integration_level: "generated-user-rust-adapter",
-            scenario_execution: "compiler-owned-failure-hooks",
+            scenario_execution: "kobo-managed-failure-hooks",
             ecosystem_scope: "generated-user-rust-adapter",
             full_ecosystem_exploration: false,
             registered_boundary_exploration: true,
             coverage_scope: "full-registered-boundaries-failpoint-adapter",
-            role: "compiler-owned failure injection hooks",
+            role: "Kobo-managed failure injection hooks",
         },
     ]
 }

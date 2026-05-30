@@ -43,7 +43,7 @@ mod witness;
 
 pub(super) use backend::BackendExpertOptions;
 use backend::{parse_engine, reserved_backend_fit_json, ProfileRoles};
-use failure::emit_failure;
+use failure::{emit_failure, failure_exit_message};
 use fuzz::{run_fuzz_portfolio, FuzzPlan};
 use replay_scope::validate_run_boundary_declarations;
 pub(super) use run::cmd_test;

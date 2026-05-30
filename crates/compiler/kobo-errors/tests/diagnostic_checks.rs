@@ -98,27 +98,27 @@ fn source_coverage_k010x_codes_match_registry() {
     let expectations = [
         (
             KErrorCode::K0100,
-            "checked-runtime-liveness-token-dropped",
+            "obligation-not-finished",
             DiagnosticCategory::Liveness,
-            "liveness token",
+            "obligation",
         ),
         (
             KErrorCode::K0101,
-            "liveness-obligation-escaped",
+            "obligation-leaves-local-check",
             DiagnosticCategory::Liveness,
-            "escape",
+            "leaving",
         ),
         (
             KErrorCode::K0102,
-            "raw-nondeterminism-on-replay-path",
+            "replay-path-can-change",
             DiagnosticCategory::Nondeterminism,
-            "nondeterminism",
+            "change",
         ),
         (
             KErrorCode::K0103,
-            "uncontrolled-effect-blocks-replay",
+            "action-not-replayable-yet",
             DiagnosticCategory::Replay,
-            "uncontrolled",
+            "outside world",
         ),
         (
             KErrorCode::K0104,
@@ -166,13 +166,13 @@ fn source_coverage_k010x_codes_match_registry() {
             KErrorCode::K0115,
             "invalid-kwit-witness-schema",
             DiagnosticCategory::BoundaryPolicy,
-            "schema_version 0",
+            "Older witnesses",
         ),
         (
             KErrorCode::K0116,
             "scenario-coverage-incomplete",
             DiagnosticCategory::Replay,
-            "Unsupported constructs",
+            "Uncovered behavior",
         ),
         (
             KErrorCode::K0117,
@@ -288,6 +288,156 @@ fn every_emitted_active_code_is_registered_and_marked_active() {
         assert_eq!(entry.code_text, code.as_str());
         assert_eq!(code.metadata().short_description, entry.title);
     }
+}
+
+#[test]
+fn active_diagnostic_copy_is_jargon_free_and_renderable() {
+    let registry = diagnostic_registry();
+    let banned_terms = [
+        "liveness token",
+        "unresolved-delivery",
+        "mismatched types",
+        "terminal transition",
+        "KIR",
+        "node id",
+        "KoboSpan",
+        "compiler-owned",
+        "raw nondeterminism",
+        "uncontrolled effect",
+        "cannot enter @strict",
+        "syntax error recovered",
+        "rustc error remapped",
+        "ecosystem policy parse error",
+        "Option 1:",
+    ];
+
+    let mut files = FileSetBuilder::new();
+    let file_id = files.add_file(
+        "copy.kobo".into(),
+        "fn main() {\n    demo();\n}\n".to_owned(),
+    );
+    let file_set = files.as_file_set();
+
+    for entry in registry.active_entries() {
+        for field in [entry.title, entry.summary, entry.explain] {
+            for banned in banned_terms {
+                assert!(
+                    !field.contains(banned),
+                    "{} contains banned term `{banned}` in `{field}`",
+                    entry.code
+                );
+            }
+        }
+
+        let diagnostic = kobo_errors::KDiagnostic::new(
+            entry.code,
+            entry.default_severity,
+            kobo_errors::DiagLabel::primary(KoboSpan::new(16, 20, file_id), "user-visible label"),
+            entry.summary,
+            "Change the source shape so Kobo can keep this behavior explicit.",
+        );
+        let rendered = kobo_errors::render_diagnostic_card(
+            file_set,
+            &diagnostic,
+            kobo_errors::ColorMode::Never,
+        );
+
+        assert!(
+            rendered.contains("I found:"),
+            "{} missing I found",
+            entry.code
+        );
+        assert!(
+            rendered.contains("Why I care:"),
+            "{} missing Why I care",
+            entry.code
+        );
+        assert!(
+            rendered.contains("Try this:"),
+            "{} missing Try this",
+            entry.code
+        );
+        assert!(
+            rendered.contains(&format!("Hint: Run `kobo explain {}`.", entry.code)),
+            "{} missing compact explain hint",
+            entry.code
+        );
+        assert!(!rendered.contains("What Kobo found:"));
+        assert!(!rendered.contains("Why this matters:"));
+        assert!(!rendered.contains("More:"));
+        for banned in banned_terms {
+            assert!(
+                !rendered.contains(banned),
+                "{} rendered banned term `{banned}`:\n{rendered}",
+                entry.code
+            );
+        }
+
+        let explain = kobo_errors::explain_code(entry.code.as_str())
+            .unwrap_or_else(|| panic!("{} missing explain page", entry.code));
+        assert!(
+            explain.contains("I found:"),
+            "{} explain missing I found",
+            entry.code
+        );
+        assert!(
+            explain.contains("Why I care:"),
+            "{} explain missing Why I care",
+            entry.code
+        );
+        assert!(
+            explain.contains("Try this:"),
+            "{} explain missing Try this",
+            entry.code
+        );
+        assert!(
+            explain.contains("Hint: Run `kobo explain"),
+            "{} explain missing compact hint",
+            entry.code
+        );
+        for banned in banned_terms {
+            assert!(
+                !explain.contains(banned),
+                "{} explain banned term `{banned}`:\n{explain}",
+                entry.code
+            );
+        }
+    }
+}
+
+#[test]
+fn doctor_hint_only_appears_for_project_or_boundary_diagnostics() {
+    let mut files = FileSetBuilder::new();
+    let file_id = files.add_file("copy.kobo".into(), "fn main() { demo(); }\n".to_owned());
+    let file_set = files.as_file_set();
+
+    let ownership = kobo_errors::KDiagnostic::new(
+        KErrorCode::K0001,
+        Severity::Warning,
+        kobo_errors::DiagLabel::primary(KoboSpan::new(12, 16, file_id), "value used here"),
+        "A value is used after ownership has moved away from it.",
+        "Clone the value or pass a reference.",
+    );
+    let ownership_text =
+        kobo_errors::render_diagnostic_card(file_set, &ownership, kobo_errors::ColorMode::Never);
+    assert!(
+        !ownership_text.contains("kobo doctor"),
+        "local ownership errors should not suggest doctor:\n{ownership_text}"
+    );
+
+    let boundary = kobo_errors::KDiagnostic::new(
+        KErrorCode::K0107,
+        Severity::Warning,
+        kobo_errors::DiagLabel::primary(KoboSpan::new(12, 16, file_id), "boundary needs policy"),
+        "An external crate boundary needs a replay policy.",
+        "Choose a boundary policy.",
+    );
+    let boundary_text =
+        kobo_errors::render_diagnostic_card(file_set, &boundary, kobo_errors::ColorMode::Never);
+    assert!(
+        boundary_text.contains("kobo doctor"),
+        "boundary/project diagnostics should include doctor hint:\n{boundary_text}"
+    );
 }
 
 #[test]
@@ -447,8 +597,8 @@ fn typed_json_and_lsp_payloads_share_the_same_diagnostic_data() {
     let json = kobo_errors::DiagnosticJson::from_diagnostic(file_set, &diagnostic);
     assert_eq!(json.schema_version, 1);
     assert_eq!(json.code, "K0110");
-    assert_eq!(json.slug, "syntax-error-recovered");
-    assert_eq!(json.title, "syntax error recovered");
+    assert_eq!(json.slug, "syntax-not-readable-yet");
+    assert_eq!(json.title, "I could not read this syntax yet");
     assert_eq!(json.primary.file_path.as_deref(), Some("demo.kobo"));
     assert_eq!(json.primary.byte_start, 10);
     assert_eq!(json.primary.byte_end, 16);

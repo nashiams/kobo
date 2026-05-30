@@ -7,7 +7,7 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
   "category": "replay",
   "code": "K0103",
   "decision": "Model the effect, record the effect stream, move it outside replay, or mark replay debt explicitly.",
-  "explanation": "An uncontrolled effect can change outside Kobo's replay model. The scenario needs a model, a recording, or an explicit debt boundary before Kobo can trust the replay.",
+  "explanation": "An outside action can change beyond this scenario. I need a model, a recording, or an explicit debt boundary before I can trust the replay.",
   "line": 4,
   "message": "<temp-path>",
   "notes": [],
@@ -26,10 +26,10 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
   "schema_version": 1,
   "secondary": [],
   "severity": "error",
-  "slug": "uncontrolled-effect-blocks-replay",
+  "slug": "action-not-replayable-yet",
   "suggestions": [],
   "suppressed_by": null,
   "suppression": null,
-  "title": "scenario cannot replay an uncontrolled effect",
+  "title": "I do not know how to replay this action yet",
   "upstream": null
 }

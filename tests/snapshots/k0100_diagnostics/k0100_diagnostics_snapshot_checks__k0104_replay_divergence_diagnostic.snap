@@ -20,7 +20,7 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "adapter_version": "0.1.0",
       "backend": "generated-rust-process",
       "integration_level": "generated-user-rust",
-      "scenario_execution": "compiler-owned-generated-rust"
+      "scenario_execution": "kobo-managed-generated-rust"
     },
     "boundary_ledger": [
       {
@@ -379,7 +379,7 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
       "adapter_version": "0.1.0",
       "backend": "generated-rust-process",
       "integration_level": "generated-user-rust",
-      "scenario_execution": "compiler-owned-generated-rust"
+      "scenario_execution": "kobo-managed-generated-rust"
     },
     "boundary_ledger": [
       {

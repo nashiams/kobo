@@ -25,12 +25,11 @@ pub(super) fn cmd_run(
     erase_lifetimes: bool,
 ) -> anyhow::Result<()> {
     let guarantee_policy = if let Some(profile) = guarantee_profile {
-        let loaded = policy::load_effective_policy(Some(file), profile)?;
-        if let Some(downgrade) = loaded.downgrade() {
-            policy::emit_downgrade(downgrade, ErrorFormat::Human)?;
-            anyhow::bail!("guarantee policy downgrade requires reason ledger entry");
-        }
-        Some(loaded)
+        Some(policy::load_explicit_profile_policy(
+            file,
+            profile,
+            ErrorFormat::Human,
+        )?)
     } else {
         None
     };

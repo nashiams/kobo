@@ -41,13 +41,12 @@ pub(super) fn cmd_check(
     reject_invalid_field_capability_views(file, error_format, color_mode)?;
     reject_malformed_scenario_attributes(file, error_format)?;
     reject_invalid_ecosystem_policy(file, error_format)?;
-    let effective_policy = if guarantee_profile.is_some() || print_policy.is_some() {
-        let profile = guarantee_profile.unwrap_or(GuaranteeProfileArg::Dev);
-        Some(policy::load_effective_policy(Some(file), profile)?)
-    } else {
-        let base_policy = cli_policy.clone().unwrap_or_default();
-        policy::load_configured_release_policy(Some(file), &base_policy)?
-    };
+    let effective_policy = policy::load_check_effective_policy(
+        file,
+        cli_policy.as_ref(),
+        guarantee_profile,
+        print_policy.is_some(),
+    )?;
     if let Some(loaded) = effective_policy.as_ref() {
         if let Some(downgrade) = loaded.downgrade() {
             policy::emit_downgrade(downgrade, error_format)?;
@@ -95,7 +94,6 @@ pub(super) fn cmd_check(
             let emitted_replay_blocking_diagnostic = has_replay_blocking_diagnostic(&session);
 
             if pipeline {
-                // S-14: Run middleware ordering heuristic.
                 let warnings = run_pipeline_ordering_check(&mut session, file);
                 if warnings.is_empty() {
                     eprintln!("[kobo] pipeline: no ordering issues detected");
@@ -277,7 +275,7 @@ fn reject_invalid_boundary_policy_value(
         ),
         ErrorFormat::Human => eprintln!("error[K0120]: {message} in {}", config_path.display()),
     }
-    anyhow::bail!("K0120 ecosystem policy parse error")
+    anyhow::bail!("K0120 could not read ecosystem policy metadata")
 }
 
 fn nearest_kobo_config(file: &Path) -> Option<PathBuf> {
@@ -1445,12 +1443,14 @@ fn project_contextual_suggestions(
                 KDiagnostic::new(
                     KErrorCode::K0100,
                     severity,
-                    DiagLabel::primary(span, "must_call obligation may need liveness review"),
-                    "must_call metadata appears with an early return path",
+                    DiagLabel::primary(span, "this obligation may leave without finishing"),
+                    "I found must_call metadata near an early return path.",
                     DiagDecision(
-                        "run `kobo debt --liveness` for path-sensitive liveness debt".to_owned(),
+                        "Want to finish this obligation here?\n  - Call the required action on every return path.\n  - Move cleanup into a helper that always runs.\n  - Record debt only when cleanup happens outside this function."
+                            .to_owned(),
                     ),
                 )
+                .with_hint("Every path must finish the obligation or pass it on as visible debt")
                 .with_suggestion(DiagnosticSuggestion::new(
                     "run kobo debt --liveness for this file (confidence: high)",
                     SuggestionApplicability::Unspecified,

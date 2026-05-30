@@ -6,8 +6,8 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
 {
   "category": "nondeterminism",
   "code": "K0102",
-  "decision": "Route time, randomness, file IO, and task scheduling through modeled facades before claiming replay evidence.",
-  "explanation": "Replay evidence only stays useful when the same inputs produce the same event stream. Raw nondeterminism can make a replay pass or fail for the wrong reason.",
+  "decision": "Route time, randomness, file IO, and task scheduling through deterministic modeled facades before claiming replay evidence.",
+  "explanation": "Replay evidence only stays useful when the same inputs produce the same event stream. Values that change between runs can make a replay pass or fail for the wrong reason.",
   "line": 6,
   "message": "<temp-path>",
   "notes": [],
@@ -26,10 +26,10 @@ expression: "serde_json::to_string_pretty(&normalized).expect(\"normalized diagn
   "schema_version": 1,
   "secondary": [],
   "severity": "error",
-  "slug": "raw-nondeterminism-on-replay-path",
+  "slug": "replay-path-can-change",
   "suggestions": [],
   "suppressed_by": null,
   "suppression": null,
-  "title": "raw nondeterminism appears on a replay path",
+  "title": "this replay path can change between runs",
   "upstream": null
 }

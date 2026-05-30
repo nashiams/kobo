@@ -34,10 +34,6 @@ pub fn run_check_pipeline(session: &mut CompileSession, input: &Path) -> Result<
     run_analysis_phase(session, &kir)
 }
 
-/// S-14: Run pipeline ordering heuristic on the parsed file.
-///
-/// Parses the file, extracts middleware call sites, and checks for common
-/// ordering mistakes (auth-after-handler, log-after-response, etc.).
 pub fn run_pipeline_ordering_check(
     session: &mut CompileSession,
     input: &Path,
@@ -118,18 +114,16 @@ fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) 
                 }
                 let message = strict_liveness_failure_message(&failure);
                 session.diagnostics.push(KDiagnostic::new(
-                    KErrorCode::K0100,
-                    severity,
-                    DiagLabel::primary(
-                        failure.span,
-                        "unresolved strict liveness obligation",
-                    ),
-                    message,
-                    DiagDecision(
-                        "discharge, return, transfer, suppress with reason, or mark the boundary explicit"
-                            .to_owned(),
-                    ),
-                ));
+                KErrorCode::K0100,
+                severity,
+                DiagLabel::primary(failure.span, "this obligation still needs an ending"),
+                message,
+                DiagDecision(
+                    "Want to finish this obligation here?\n  - Call the required action on every path.\n  - Pass the obligation to a helper that always finishes it.\n  - Use debt(...) only when cleanup happens somewhere else and you want that visible."
+                        .to_owned(),
+                ),
+            )
+            .with_hint("Every path through this scenario must end the obligation or pass it on as debt"));
             }
         }
     }
@@ -270,12 +264,12 @@ fn strict_liveness_failure_message(failure: &DriverStrictLivenessFailure) -> Str
     if failure.exit_kind == "unsupported_container" {
         let container = failure.detail.as_deref().unwrap_or("unsupported container");
         return format!(
-            "strict liveness: unsupported obligation container `{container}` keeps `{}` unresolved",
+            "I found `{}` inside `{container}` and cannot prove the obligation finishes",
             failure.binding
         );
     }
     format!(
-        "strict liveness: unresolved obligation `{}` reaches {}",
+        "I found a path where `{}` reaches {} before the obligation is finished",
         failure.binding, failure.exit_kind
     )
 }
@@ -491,17 +485,17 @@ fn async_violation_diagnostic_parts(
     match kind {
         AsyncViolationKind::NonSendCapture { binding_name, .. } => (
             KErrorCode::K0060,
-            format!("binding `{binding_name}` is not Send"),
+            format!("`{binding_name}` cannot move safely into this async task"),
             format!(
-                "binding `{binding_name}` would use single-thread sharing, but this async context requires Send"
+                "`{binding_name}` uses state that must stay on the current task, but this async task can move elsewhere"
             ),
             "use message passing, clone owned data, or keep the task on a local executor".to_owned(),
         ),
         AsyncViolationKind::NonSyncShared { binding_name, .. } => (
             KErrorCode::K0061,
-            format!("binding `{binding_name}` is not Sync for shared access"),
+            format!("`{binding_name}` cannot be shared safely across async tasks"),
             format!(
-                "binding `{binding_name}` requires Sync for cross-task sharing, but the current ownership shape is not Sync"
+                "`{binding_name}` uses shared state that only works on one task at a time"
             ),
             "restructure with channels, actor ownership, or an explicit async shared state policy".to_owned(),
         ),
@@ -514,9 +508,9 @@ fn async_violation_diagnostic_parts(
         ),
         AsyncViolationKind::StrictAsyncViolation { binding_name, .. } => (
             KErrorCode::K0063,
-            format!("release profile: async wrapping not permitted for `{binding_name}`"),
+            format!("release cannot add async ownership wrapping for `{binding_name}`"),
             format!(
-                "inside @strict enforcement, binding `{binding_name}` cannot use ownership wrappers in async context"
+                "`{binding_name}` would need generated async ownership wrapping inside a strict block"
             ),
             "use @strict async fn when the async strict protocol is intentional, or move this work into a synchronous helper".to_owned(),
         ),
@@ -558,12 +552,12 @@ fn project_send_root_cause_diagnostics(session: &mut CompileSession, kir: &Kir) 
             DiagLabel::primary(
                 diagnostic.spawn_span,
                 format!(
-                    "future requires Send but `{}` uses {}",
+                    "normal spawn cannot safely carry `{}` because it uses {}",
                     diagnostic.binding_name, diagnostic.wrapper_type
                 ),
             ),
             format!(
-                "binding `{}` cannot cross thread boundary — {}\n   = {}",
+                "`{}` needs task-local ownership here because it uses {}. {}",
                 diagnostic.binding_name, diagnostic.wrapper_type, diagnostic.suggestion
             ),
             DiagDecision(diagnostic.suggestion.clone()),
@@ -577,12 +571,11 @@ fn project_guard_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) {
         let severity = resolve_severity(KErrorCode::K0064, session.guarantee_policy())
             .unwrap_or(Severity::Warning);
         let label = format!(
-            "{:?} `{}` held across .await",
-            violation.guard_kind, violation.binding_name
+            "`{}` keeps a guard alive across .await",
+            violation.binding_name
         );
         let explanation = format!(
-            "binding `{}` holds a {:?} guard that is live across a suspend point\n   \
-             = this causes runtime deadlocks and `future is not Send` errors",
+            "`{}` keeps a {:?} guard while the task pauses; another task can wait on the same guard and never make progress",
             violation.binding_name, violation.guard_kind
         );
         session.diagnostics.push(KDiagnostic::new(
@@ -751,13 +744,13 @@ fn project_task_local_diagnostics(session: &mut CompileSession) {
                         severity,
                         DiagLabel::primary(
                             span,
-                            format!("normal spawn captures non-Send `{binding_name}`"),
+                            format!("normal spawn cannot safely carry `{binding_name}`"),
                         ),
                         format!(
-                            "binding `{binding_name}` uses {type_name}, which cannot cross the Send boundary required by normal spawn"
+                            "`{binding_name}` uses {type_name}, which must stay on this task unless you choose a thread-safe owner"
                         ),
                         DiagDecision(
-                            "use spawn local for intentional task-local work, or change the captured state to a Send type such as Arc".to_owned(),
+                            "use spawn local for intentional task-local work, or move the shared state behind a thread-safe owner".to_owned(),
                         ),
                     ));
                 }
@@ -778,7 +771,7 @@ fn project_task_local_diagnostics(session: &mut CompileSession) {
                             format!("task-local future `{binding_name}` escapes its LocalSet"),
                         ),
                         format!(
-                            "task-local handle `{binding_name}` must stay inside the LocalSet that owns its non-Send execution context"
+                            "task-local handle `{binding_name}` must stay inside the local task zone that owns it"
                         ),
                         DiagDecision(
                             "await or drop the task-local handle inside the spawn local zone".to_owned(),
@@ -823,11 +816,11 @@ fn parallel_warning_message(kind: &ParallelWarningKind) -> (String, String, Stri
             binding_name,
             type_name,
         } => (
-            format!("parallel loop captures non-Send `{binding_name}`"),
+            format!("parallel loop captures task-local `{binding_name}`"),
             format!(
-                "`{binding_name}` uses `{type_name}`, which cannot safely cross Rayon worker threads"
+                "`{binding_name}` uses `{type_name}`, which cannot safely cross worker threads"
             ),
-            "change the captured state to a Send + Sync type such as Arc, or keep the loop serial"
+            "change the captured state to a thread-safe shared owner such as Arc, or keep the loop serial"
                 .to_owned(),
         ),
         ParallelWarningKind::SharedMutation { binding_name } => (
@@ -888,11 +881,16 @@ fn project_live_borrow_liveness_diagnostics(session: &mut CompileSession, kir: &
                         binding.binding_name
                     ),
                 ),
-                "KIR liveness found a borrow that is still used after the move; Kobo must preserve the original value through shared ownership or a clone".to_owned(),
+                "I found a borrow that is still used after the value moves, so the original value must stay available".to_owned(),
                 DiagDecision(
-                    "shorten the borrow scope before the move, or keep the generated shared/clone lowering".to_owned(),
+                    "End the borrow before the move, move only an unborrowed field, or keep shared ownership as explicit debt".to_owned(),
                 ),
             )
+            .with_finding(format!(
+                "`{}` moves while a borrow remains live.",
+                binding.binding_name
+            ))
+            .with_hint("Shorten the borrow before the move, clone before moving, or keep an explicit shared owner")
             .with_secondary_label(DiagLabel::secondary(
                 borrow_span,
                 "borrow starts here and remains live at the move",
@@ -969,10 +967,13 @@ fn project_nondeterminism_diagnostics(session: &mut CompileSession) {
                     severity,
                     DiagLabel::primary(
                         span,
-                        format!("raw {} nondeterminism: {}", pattern.class_name, pattern.operation),
+                        format!(
+                            "{} can change between runs: {}",
+                            pattern.class_name, pattern.operation
+                        ),
                     ),
                     format!(
-                        "raw {} nondeterminism appears in a scenario or future replay zone through `{}`",
+                        "{} can change between scenario runs through `{}`",
                         pattern.class_name, pattern.operation
                     ),
                     DiagDecision(
@@ -980,9 +981,7 @@ fn project_nondeterminism_diagnostics(session: &mut CompileSession) {
                             .to_owned(),
                     ),
                 )
-                .with_note(DiagnosticNote::new(format!(
-                    "occurrences: {occurrences}"
-                ))),
+                .with_note(DiagnosticNote::new(format!("occurrences: {occurrences}"))),
             );
         }
     }

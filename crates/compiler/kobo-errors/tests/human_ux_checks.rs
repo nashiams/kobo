@@ -57,22 +57,22 @@ fn every_k_code_has_elm_level_explain_page() {
             .unwrap_or_else(|| panic!("missing explain text for {}", code.as_str()));
 
         assert!(
-            text.contains("What happened"),
-            "{} explain must say what happened:\n{text}",
+            text.contains("I found:"),
+            "{} explain must say what Kobo found:\n{text}",
             code.as_str()
         );
         assert!(
-            text.contains("Why this matters"),
+            text.contains("Why I care:"),
             "{} explain must teach why it matters:\n{text}",
             code.as_str()
         );
         assert!(
-            text.contains("How to fix"),
+            text.contains("Try this:"),
             "{} explain must include fix guidance:\n{text}",
             code.as_str()
         );
         assert!(
-            text.contains("Option 1:"),
+            text.contains("\n-") || text.contains("Want to"),
             "{} explain must offer explicit fix choices:\n{text}",
             code.as_str()
         );
@@ -91,12 +91,12 @@ fn active_explain_pages_are_human_teaching_pages() {
             .unwrap_or_else(|| panic!("missing explain text for {}", code.as_str()));
 
         assert!(
-            text.contains("What happened") || text.contains("What Kobo found"),
+            text.contains("I found:"),
             "{} explain should describe the problem in user language:\n{text}",
             code.as_str()
         );
         assert!(
-            text.contains("How to fix") || text.contains("What to do"),
+            text.contains("Try this:"),
             "{} explain should include remediation:\n{text}",
             code.as_str()
         );
@@ -156,22 +156,22 @@ fn every_active_explain_page_has_specific_fix_and_example() {
             .unwrap_or_else(|| panic!("missing explain text for {}", entry.code_text));
 
         assert!(
-            text.contains("What happened"),
-            "{} explain must say what happened:\n{text}",
+            text.contains("I found:"),
+            "{} explain must say what Kobo found:\n{text}",
             entry.code_text
         );
         assert!(
-            text.contains("Why this matters"),
+            text.contains("Why I care:"),
             "{} explain must teach why it matters:\n{text}",
             entry.code_text
         );
         assert!(
-            text.contains("How to fix"),
+            text.contains("Try this:"),
             "{} explain must include a fix section:\n{text}",
             entry.code_text
         );
         assert!(
-            text.contains("Option 1:"),
+            text.contains("\n-") || text.contains("Want to"),
             "{} explain must give explicit fix choices:\n{text}",
             entry.code_text
         );
@@ -227,7 +227,9 @@ fn active_explain_pages_have_specific_prod_depth_guidance() {
         let text = explain_code(code_text)
             .unwrap_or_else(|| panic!("missing explain text for {code_text}"));
         assert!(
-            text.contains("Option 1:") && text.contains("Problem:") && text.contains("Fix:"),
+            (text.contains("\n-") || text.contains("Want to"))
+                && text.contains("Problem:")
+                && text.contains("Fix:"),
             "{code_text} explain must be a concrete teaching page:\n{text}"
         );
         for fallback in fallback_prose {
@@ -262,12 +264,17 @@ fn high_traffic_explain_pages_include_small_examples() {
 }
 
 #[test]
-fn high_traffic_explain_pages_use_option_style_fix_guidance() {
+fn high_traffic_explain_pages_use_choice_style_fix_guidance() {
     for code in active_codes_to_check() {
         let text = explain_code(code.as_str()).expect("explain page should exist");
         assert!(
-            text.contains("Option 1:"),
+            text.contains("\n-") || text.contains("Want to"),
             "{} explain should give fix guidance as explicit choices:\n{text}",
+            code.as_str()
+        );
+        assert!(
+            !text.contains("Option 1:"),
+            "{} explain should not use old option labels:\n{text}",
             code.as_str()
         );
     }

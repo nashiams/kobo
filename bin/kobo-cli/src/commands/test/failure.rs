@@ -5,6 +5,10 @@ use super::{
 };
 use crate::commands::session;
 
+mod actions;
+
+use actions::scenario_failure_actions;
+
 pub(super) fn emit_failure(
     file: &Path,
     source: &str,
@@ -20,8 +24,12 @@ pub(super) fn emit_failure(
         file_id,
     );
     let message = match witness_path {
-        Some(path) => format!("{}; witness {}", failure.message, path.display()),
-        None => failure.message.clone(),
+        Some(path) => format!(
+            "{}; witness {}",
+            scenario_failure_primary_message(failure),
+            path.display()
+        ),
+        None => scenario_failure_primary_message(failure),
     };
     let diagnostic = KDiagnostic::new(
         failure.code,
@@ -30,7 +38,8 @@ pub(super) fn emit_failure(
         scenario_failure_explanation(failure),
         DiagDecision(scenario_failure_decision(failure)),
     )
-    .with_finding(scenario_failure_finding(failure, witness_path));
+    .with_finding(scenario_failure_finding(failure, witness_path))
+    .with_hint(scenario_failure_hint(failure));
 
     match error_format {
         ErrorFormat::Json => {
@@ -54,15 +63,13 @@ fn scenario_failure_finding(failure: &ScenarioFailure, witness_path: Option<&Pat
     let finding = match failure.code {
         KErrorCode::K0100 => {
             let binding = scenario_failure_label(failure).unwrap_or("the value");
-            format!(
-                "A checked scenario can drop `{binding}` before calling one of its required actions."
-            )
+            format!("This path leaves `{binding}` open.")
         }
         KErrorCode::K0102 => {
-            "This replay path uses raw time, randomness, file IO, or task scheduling.".to_owned()
+            "This replay path uses time, randomness, file IO, or task scheduling that can change between runs.".to_owned()
         }
         KErrorCode::K0103 => {
-            "This replay path performs an effect Kobo cannot replay deterministically.".to_owned()
+            "This replay path performs an action I do not know how to replay yet.".to_owned()
         }
         KErrorCode::K0105 => {
             "This scenario exceeded the quick simulation budget before it finished.".to_owned()
@@ -101,16 +108,28 @@ fn scenario_failure_finding(failure: &ScenarioFailure, witness_path: Option<&Pat
     }
 }
 
+fn scenario_failure_primary_message(failure: &ScenarioFailure) -> String {
+    match failure.code {
+        KErrorCode::K0100 => {
+            let binding = scenario_failure_label(failure).unwrap_or("the obligation");
+            format!("this path leaves `{binding}` open")
+        }
+        KErrorCode::K0102 => "this replay path can change between runs".to_owned(),
+        KErrorCode::K0103 => failure.message.clone(),
+        _ => failure.message.clone(),
+    }
+}
+
 fn scenario_failure_explanation(failure: &ScenarioFailure) -> String {
     match failure.code {
         KErrorCode::K0100 => {
-            "Kobo tracks must_call values as obligations. Every return, cancellation, or replayed path must finish the obligation before the value leaves scope.".to_owned()
+            "I need every path in this scenario to say what happened to the obligation.".to_owned()
         }
         KErrorCode::K0102 => {
-            "Replay evidence only stays useful when the same inputs produce the same event stream. Raw nondeterminism can make a replay pass or fail for the wrong reason.".to_owned()
+            "Replay evidence only stays useful when the same inputs produce the same event stream. Values that change between runs can make a replay pass or fail for the wrong reason.".to_owned()
         }
         KErrorCode::K0103 => {
-            "An uncontrolled effect can change outside Kobo's replay model. The scenario needs a model, a recording, or an explicit debt boundary before Kobo can trust the replay.".to_owned()
+            "An outside action can change beyond this scenario. I need a model, a recording, or an explicit debt boundary before I can trust the replay.".to_owned()
         }
         KErrorCode::K0105 => {
             "The quick profile is for small, fast evidence. A scenario that exceeds its budget needs to be shrunk or moved to a slower profile.".to_owned()
@@ -151,11 +170,11 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
             let actions = scenario_failure_actions(&failure.message)
                 .unwrap_or_else(|| "one required action".to_owned());
             format!(
-                "Call {actions} on every path, or record explicit debt if cleanup happens outside this scenario."
+                "Want to finish the obligation here?\n  - Call one of these actions: {actions}.\n  - Use debt(...) only when cleanup happens somewhere else and you want that visible."
             )
         }
         KErrorCode::K0102 => {
-            "Route time, randomness, file IO, and task scheduling through modeled facades before claiming replay evidence.".to_owned()
+            "Route time, randomness, file IO, and task scheduling through deterministic modeled facades before claiming replay evidence.".to_owned()
         }
         KErrorCode::K0103 => {
             "Model the effect, record the effect stream, move it outside replay, or mark replay debt explicitly.".to_owned()
@@ -193,6 +212,19 @@ fn scenario_failure_decision(failure: &ScenarioFailure) -> String {
     }
 }
 
+fn scenario_failure_hint(failure: &ScenarioFailure) -> String {
+    match failure.code {
+        KErrorCode::K0100 => "Every path through this scenario must end the obligation; use debt(...) for outside cleanup.".to_owned(),
+        KErrorCode::K0102 => {
+            "Values that can change between runs must be modeled, recorded, moved outside replay, or accepted as debt.".to_owned()
+        }
+        KErrorCode::K0103 => {
+            "Actions outside Kobo's replay model need a model, a recording, an outside boundary, or visible debt.".to_owned()
+        }
+        _ => String::new(),
+    }
+}
+
 fn scenario_failure_label(failure: &ScenarioFailure) -> Option<&str> {
     failure
         .events
@@ -204,7 +236,14 @@ pub(super) fn scenario_failure_has_event(failure: &ScenarioFailure, kind: &str) 
     failure.events.iter().any(|event| event.kind == kind)
 }
 
-fn scenario_failure_actions(message: &str) -> Option<String> {
-    let actions = message.split("discharge with ").nth(1)?;
-    Some(actions.trim_end_matches('.').to_owned())
+pub(super) fn failure_exit_message(failure: &ScenarioFailure) -> String {
+    match failure.code {
+        KErrorCode::K0100 => {
+            let binding = scenario_failure_label(failure).unwrap_or("the obligation");
+            format!("This path leaves `{binding}` open.")
+        }
+        KErrorCode::K0102 => "This replay path can change between runs.".to_owned(),
+        KErrorCode::K0103 => "I do not know how to replay this action yet.".to_owned(),
+        _ => failure.message.clone(),
+    }
 }

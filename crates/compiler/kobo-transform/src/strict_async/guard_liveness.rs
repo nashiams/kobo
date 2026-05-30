@@ -1,8 +1,8 @@
 /// Guard liveness analysis for async contexts.
 ///
 /// Detects MutexGuard, RwLockReadGuard, and RwLockWriteGuard bindings
-/// that are live across `.await` points. These cause runtime deadlocks
-/// and compile errors (`future is not Send`). The analysis produces
+/// that are live across `.await` points. These can block other tasks
+/// and make the async task unable to move safely. The analysis produces
 /// advisory facts that the driver projects as K0062 diagnostics.
 use kobo_ir::{Kir, KirNodeId, KoboSpan};
 

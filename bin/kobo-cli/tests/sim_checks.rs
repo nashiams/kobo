@@ -431,7 +431,7 @@ fn sim_quick_liveness_failure_emits_k0100_and_witness() {
 
     assert_failure(&output, "unresolved must_call scenario should fail");
     let text = output.combined();
-    assert_contains(&text, "K0100", "liveness token drop must emit K0100");
+    assert_contains(&text, "K0100", "obligation drop must emit K0100");
     assert_contains(
         &text,
         "ack",
@@ -577,7 +577,7 @@ fn inspect_sim_uses_policy_transparency_wording() {
     let text = output.combined();
     assert_contains(
         &text,
-        "simulation check transparency",
+        "simulation transparency",
         "inspect --sim should describe the stable simulation transparency surface",
     );
     assert_not_contains(
@@ -798,7 +798,7 @@ fn raw_clock_on_replay_path_emits_k0102() {
 
     assert_failure(&output, "raw clock on replay path should fail");
     let text = output.combined();
-    assert_contains(&text, "K0102", "raw nondeterminism must emit K0102");
+    assert_contains(&text, "K0102", "changing replay input must emit K0102");
     assert_contains(
         &text,
         "deterministic",
@@ -829,13 +829,13 @@ fn uncontrolled_effect() {
         &project.root,
     );
 
-    assert_failure(&output, "uncontrolled effect must block exact replay");
+    assert_failure(&output, "unreplayable action must block exact replay");
     let text = output.combined();
-    assert_contains(&text, "K0103", "uncontrolled effect must emit K0103");
+    assert_contains(&text, "K0103", "unreplayable action must emit K0103");
     assert_contains(
         &text,
-        "uncontrolled",
-        "K0103 message must name uncontrolled replay effect",
+        "I do not know how to replay",
+        "K0103 message must name the action Kobo cannot replay yet",
     );
 }
 

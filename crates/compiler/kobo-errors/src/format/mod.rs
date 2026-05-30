@@ -1,6 +1,9 @@
+mod hints;
+mod labels;
 mod owner;
 mod sections;
 mod source;
+mod span;
 mod strict;
 mod wrapping;
 
@@ -13,11 +16,12 @@ use kobo_ir::FileSet;
 
 use crate::diagnostic::{DiagnosticRelatedInfo, KDiagnostic};
 
-use sections::{push_more_section, push_section};
+use hints::push_hint_section;
+use sections::{push_inline_section, push_section};
 use source::render_label_group;
 
 pub use owner::{render_k0020, render_k0021, DiagOwnerStats};
-pub use source::render_span_compact;
+pub use span::render_span_compact;
 pub use strict::{
     render_k0041, render_k0042, render_k0043, render_k0063, render_labeled_cross_boundary,
 };
@@ -32,14 +36,10 @@ pub fn format_diagnostic(file_set: &FileSet, diagnostic: &KDiagnostic) -> String
     ));
     rendered.push('\n');
     rendered.push_str(&render_label_group(file_set, diagnostic));
-    push_section(&mut rendered, "What Kobo found:", card_finding(diagnostic));
-    push_section(
-        &mut rendered,
-        "Why this matters:",
-        &diagnostic.explanation.0,
-    );
+    push_inline_section(&mut rendered, "I found:", card_finding(diagnostic));
+    push_inline_section(&mut rendered, "Why I care:", &diagnostic.explanation.0);
     push_section(&mut rendered, "Try this:", &diagnostic.decision.0);
-    push_more_section(&mut rendered, diagnostic);
+    push_hint_section(&mut rendered, diagnostic);
 
     rendered
 }

@@ -1644,7 +1644,7 @@ fn validate_exact_scope_metadata(witness: &Value, error_format: ErrorFormat) -> 
     {
         let payload = serde_json::json!({
             "code": "K0117",
-            "message": "exact witness must disclose compiler-owned replay scope and must not claim full ecosystem exploration",
+            "message": "exact witness must disclose the Kobo-managed replay scope and must not claim full ecosystem exploration",
             "replay_contract": witness["replay_contract"].clone(),
             "ecosystem_scope": witness["ecosystem_scope"].clone(),
             "full_ecosystem_exploration": witness["full_ecosystem_exploration"].clone(),

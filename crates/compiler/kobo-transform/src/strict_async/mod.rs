@@ -7,8 +7,8 @@ use crate::cfg::{build_cfg, compute_send_requirements, SendRequirements};
 /// Check async ownership constraints and return violation facts.
 ///
 /// Invariant (k006x_async_executor.md):
-/// - In strict mode: non-Send bindings in async context → K0063
-/// - In all modes: non-Send bindings crossing spawn → K0060
+/// - In strict mode: task-local bindings in async context -> K0063
+/// - In all modes: task-local bindings crossing spawn -> K0060
 /// - Non-Sync mutable shared across tasks → K0061
 /// - Async code without executor dependency → K0062
 ///
@@ -32,9 +32,9 @@ pub fn check_strict_async(
         let needs_send = send_reqs.needs_send(binding.node);
         let shared = &binding.shared_facts;
 
-        // K0060: non-Send binding in async context that needs Send
+        // K0060: task-local binding in async context that needs a movable task
         // Conservative: any async binding that needs_send but has sharing
-        // (Rc-wrapped bindings are not Send)
+        // (Rc-wrapped bindings stay local)
         if !binding.async_shared && needs_send && shared.needs_sharing && !binding.is_copy_known {
             violations.push(AsyncViolationFact {
                 span: binding.span,
@@ -45,8 +45,8 @@ pub fn check_strict_async(
             });
         }
 
-        // K0061: non-Sync mutable shared binding in async context
-        // RefCell is not Sync — if the binding needs mutable sharing in async,
+        // K0061: mutable shared binding crosses async tasks without an async owner.
+        // If the binding needs mutable sharing in async,
         // the standard Rc<RefCell<T>> wrapper is not safe for cross-task access.
         if !binding.async_shared
             && needs_send

@@ -206,7 +206,7 @@ fn liveness_failure_events(obligations: &[HarnessObligation]) -> Option<Vec<Scen
         .find(|obligation| !obligation.is_discharged)
         .map(|obligation| {
             vec![ScenarioEvent {
-                kind: "liveness-token-drop".to_owned(),
+                kind: "obligation-left-open".to_owned(),
                 label: Some(obligation.binding.clone()),
                 value: None,
                 io: None,

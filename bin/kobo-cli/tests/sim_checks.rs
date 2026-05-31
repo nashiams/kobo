@@ -161,6 +161,43 @@ fn sim_test_rejects_unknown_profile_without_backend_default() {
 }
 
 #[test]
+fn sim_test_infers_profile_when_scenario_metadata_omits_profile() {
+    let project = TestProject::new("sim-test-inferred-profile");
+    project.write(
+        "Kobo.toml",
+        r#"[sim]
+show_backend_choices = true
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario]
+fn inferred_sync_route() {
+    let total = 1 + 1;
+    let _kept = total;
+}
+"#,
+    );
+
+    let output = run_kobo(
+        &[
+            s("test"),
+            s("--sim"),
+            s("quick"),
+            s("--engine"),
+            s("semantic"),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "profile-less scenario should run");
+    let json = first_json(&output, "inferred profile JSON");
+    assert_eq!(json["backend_profile"], "sync");
+    assert_eq!(json["backend"], "loom");
+}
+
+#[test]
 fn sim_init_target_mutation_changes_generated_metadata() {
     let project = TestProject::new("sim-init-mutation");
     let file = project.write(

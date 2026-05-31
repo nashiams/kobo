@@ -129,7 +129,7 @@ pub fn build_kir(ast: &KoboFile, id_gen: &mut NodeIdGen, options: TransformOptio
     let core_cfg_facts = core_cfg_facts_from_graph(&cfg, &kir);
     kir.set_core_cfg_facts(core_cfg_facts.clone());
     let scenario_programs = attach_core_cfg_to_scenarios(
-        crate::scenario::build_scenario_programs(ast, kir.must_call_obligations(), "checked"),
+        crate::scenario::build_scenario_programs(ast, kir.must_call_obligations()),
         core_cfg_facts,
     );
     kir.set_scenario_programs(scenario_programs);

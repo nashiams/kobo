@@ -12,9 +12,7 @@ pub fn build_scenario_program(
     artifacts: &CodegenArtifacts,
     target: &str,
     source_hash: String,
-    fallback_profile: &str,
 ) -> Result<ScenarioProgram, ScenarioBuildError> {
-    let _ = fallback_profile;
     let mut program = artifacts
         .scenario_programs
         .iter()

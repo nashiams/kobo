@@ -167,7 +167,6 @@ fn prepare_test_context(
         &artifacts,
         &target_name,
         document.source_hash.clone(),
-        &execution_profile,
     )?;
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),

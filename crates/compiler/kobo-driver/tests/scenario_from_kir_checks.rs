@@ -33,7 +33,6 @@ fn scenario_model_is_derived_from_compiler_facts_not_fixture_names() {
         &codegen,
         &format!("handle_{suffix}"),
         "test-source-hash".to_owned(),
-        "checked",
     )
     .expect("scenario program");
 
@@ -85,13 +84,9 @@ fn transaction_entry() {
 "#;
 
     let codegen = run_codegen_for_source_with_policy(source, "checked").expect("codegen artifacts");
-    let scenario = build_scenario_program(
-        &codegen,
-        "transaction_entry",
-        "test-source-hash".to_owned(),
-        "sync",
-    )
-    .expect("scenario program");
+    let scenario =
+        build_scenario_program(&codegen, "transaction_entry", "test-source-hash".to_owned())
+            .expect("scenario program");
 
     assert!(
         scenario

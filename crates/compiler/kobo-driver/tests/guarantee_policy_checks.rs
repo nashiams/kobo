@@ -42,6 +42,15 @@ fn diagnostics_resolve_from_guarantee_policy_not_legacy_mode() {
 }
 
 #[test]
+fn release_policy_makes_liveness_and_replay_strict() {
+    let release_policy = GuaranteePolicy::for_profile(GuaranteeProfile::Release);
+    let guarantees = release_policy.guarantees();
+
+    assert_eq!(guarantees.liveness(), GuaranteeLevel::Strict);
+    assert_eq!(guarantees.replay(), GuaranteeLevel::Strict);
+}
+
+#[test]
 fn kobo_config_expands_profile_and_guarantee_tables_into_policy() {
     let config = parse_kobo_config(
         r#"

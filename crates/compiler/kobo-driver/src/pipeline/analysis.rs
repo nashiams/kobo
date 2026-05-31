@@ -107,26 +107,34 @@ fn project_strict_liveness_diagnostics(session: &mut CompileSession, kir: &Kir) 
         let recursive_functions = strict_liveness_recursive_functions(program);
         for function in &core.functions {
             for failure in strict_liveness_failures(function, &recursive_functions) {
-                if session.diagnostics.iter().any(|diagnostic| {
+                let diagnostic = strict_liveness_diagnostic(&failure, severity);
+                if let Some(index) = session.diagnostics.iter().position(|diagnostic| {
                     diagnostic.code == KErrorCode::K0100 && diagnostic.primary.span == failure.span
                 }) {
+                    session.diagnostics[index] = diagnostic;
                     continue;
                 }
-                let message = strict_liveness_failure_message(&failure);
-                session.diagnostics.push(KDiagnostic::new(
-                KErrorCode::K0100,
-                severity,
-                DiagLabel::primary(failure.span, "this obligation still needs an ending"),
-                message,
-                DiagDecision(
-                    "Want to finish this obligation here?\n  - Call the required action on every path.\n  - Pass the obligation to a helper that always finishes it.\n  - Use debt(...) only when cleanup happens somewhere else and you want that visible."
-                        .to_owned(),
-                ),
-            )
-            .with_hint("Every path through this scenario must end the obligation or pass it on as debt"));
+                session.diagnostics.push(diagnostic);
             }
         }
     }
+}
+
+fn strict_liveness_diagnostic(
+    failure: &DriverStrictLivenessFailure,
+    severity: Severity,
+) -> KDiagnostic {
+    KDiagnostic::new(
+        KErrorCode::K0100,
+        severity,
+        DiagLabel::primary(failure.span, "this obligation still needs an ending"),
+        strict_liveness_failure_message(failure),
+        DiagDecision(
+            "Want to finish this obligation here?\n  - Call the required action on every path.\n  - Pass the obligation to a helper that always finishes it.\n  - Use debt(...) only when cleanup happens somewhere else and you want that visible."
+                .to_owned(),
+        ),
+    )
+    .with_hint("Every path through this scenario must end the obligation or pass it on as debt")
 }
 
 fn strict_liveness_failures(
@@ -264,12 +272,12 @@ fn strict_liveness_failure_message(failure: &DriverStrictLivenessFailure) -> Str
     if failure.exit_kind == "unsupported_container" {
         let container = failure.detail.as_deref().unwrap_or("unsupported container");
         return format!(
-            "I found `{}` inside `{container}` and cannot prove the obligation finishes",
+            "strict liveness: I found `{}` inside `{container}` and cannot prove the obligation finishes",
             failure.binding
         );
     }
     format!(
-        "I found a path where `{}` reaches {} before the obligation is finished",
+        "strict liveness: I found a path where `{}` reaches {} before the obligation is finished",
         failure.binding, failure.exit_kind
     )
 }

@@ -150,8 +150,8 @@ impl GuaranteeSet {
             },
             GuaranteeProfile::Release => Self {
                 ownership: GuaranteeLevel::Strict,
-                liveness: GuaranteeLevel::Checked,
-                replay: GuaranteeLevel::Checked,
+                liveness: GuaranteeLevel::Strict,
+                replay: GuaranteeLevel::Strict,
                 boundaries: GuaranteeLevel::Strict,
                 errors: ErrorPolicy::Explicit,
             },

@@ -63,9 +63,14 @@ fn configured_seed_count(run: &FullDepthRun, executed_seed_count: u64) -> u64 {
 }
 
 fn seed_count_from_label(label: &str) -> Option<u64> {
+    u64_from_label_field(label, "count")
+}
+
+fn u64_from_label_field(label: &str, field: &str) -> Option<u64> {
+    let prefix = format!("{field}=");
     label
         .split(';')
-        .find_map(|part| part.strip_prefix("count="))
+        .find_map(|part| part.strip_prefix(&prefix))
         .and_then(|value| value.parse::<u64>().ok())
 }
 
@@ -77,9 +82,12 @@ fn seed_portfolio_cap_json(run: &FullDepthRun) -> serde_json::Value {
     else {
         return serde_json::Value::Null;
     };
+    let label = event.label.as_deref();
     serde_json::json!({
         "reason": "wall-clock",
         "elapsed_ms": event.value,
+        "executed_seed_count": label.and_then(|value| u64_from_label_field(value, "executed")),
+        "configured_seed_count": label.and_then(seed_count_from_label),
         "label": event.label,
     })
 }

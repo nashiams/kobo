@@ -54,6 +54,7 @@ pub(super) fn run_seed_portfolio(
 
     let mut combined_events = Vec::new();
     let mut last_seed = options.seed;
+    let mut last_run = None;
     let started_at = Instant::now();
     for index in 0..plan.target_seed_count {
         if index > 0 && plan.has_expired(started_at) {
@@ -88,7 +89,14 @@ pub(super) fn run_seed_portfolio(
             return Ok((selected_run, seed));
         }
         combined_events.extend(exploration.events.iter().cloned());
+        last_run = Some(exploration);
         last_seed = seed;
+    }
+
+    if let Some(mut selected_run) = last_run {
+        selected_run.events = combined_events;
+        refresh_seed_portfolio_digest(&mut selected_run);
+        return Ok((selected_run, last_seed));
     }
 
     anyhow::bail!(
@@ -214,5 +222,63 @@ fn refresh_seed_portfolio_digest(run: &mut FullDepthRun) {
     }
     if run.digest.agreement == "matched" {
         run.digest.agreement = "matched+seed-portfolio".to_owned();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_cmd::json_schema;
+    use kobo_ir::{FileId, KoboSpan, ScenarioCoverageFacts, ScenarioOp, ScenarioOpKind};
+
+    #[test]
+    fn semantic_only_returns_capped_portfolio_evidence() {
+        let program = kobo_ir::ScenarioProgram {
+            file_id: FileId(0),
+            target: "capped".to_owned(),
+            source_hash: "hash".to_owned(),
+            operations: vec![ScenarioOp {
+                span: KoboSpan::generated(FileId(0)),
+                kind: ScenarioOpKind::Return,
+            }],
+            boundaries: Vec::new(),
+            coverage: ScenarioCoverageFacts::default(),
+        };
+        let options = kobo_sim_core::ScenarioOptions {
+            seed: 41,
+            ..kobo_sim_core::ScenarioOptions::default()
+        };
+
+        let (run, executed_seed) = run_seed_portfolio(
+            &program,
+            "",
+            &options,
+            EngineMode::SemanticOnly,
+            SeedPortfolioPlan::with_target_seed_count(3)
+                .with_wall_clock_limit(Duration::from_millis(0)),
+        )
+        .expect("semantic-only capped portfolio should return evidence");
+
+        assert_eq!(executed_seed, 41);
+        assert!(
+            run.events
+                .iter()
+                .any(|event| event.kind == "scheduler-seed-case" && event.value == Some(41)),
+            "first seed should still be represented"
+        );
+        assert!(
+            run.events
+                .iter()
+                .any(|event| event.kind == "scheduler-seed-portfolio-cap"),
+            "semantic-only cap should be observable in events"
+        );
+        let scheduler = json_schema::scheduler_json("deep", executed_seed, &run, None);
+        assert_eq!(scheduler["seed_count"], 1);
+        assert_eq!(scheduler["configured_seed_count"], 3);
+        assert_eq!(scheduler["portfolio_complete"], false);
+        assert_eq!(scheduler["portfolio_cap"]["reason"], "wall-clock");
+        assert_eq!(scheduler["portfolio_cap"]["executed_seed_count"], 1);
+        assert_eq!(scheduler["portfolio_cap"]["configured_seed_count"], 3);
+        assert_eq!(run.digest.agreement, "semantic-only");
     }
 }

@@ -1,8 +1,10 @@
 mod cli_test_support;
 
+use std::time::Duration;
+
 use cli_test_support::{
     assert_contains, assert_failure, assert_not_contains, assert_success, first_json, fixture_text,
-    path_arg, run_kobo, s, unique_symbol, TestProject,
+    path_arg, run_kobo, run_kobo_with_timeout, s, unique_symbol, TestProject,
 };
 
 #[test]
@@ -543,17 +545,31 @@ fn sim_quick_no_scenario_is_clear_failure() {
 #[test]
 fn sim_deep_is_public_runtime_scheduler_profile() {
     let project = TestProject::new("sim-deep-public");
-    let file = project.copy_fixture("sim/gateway.kobo", "src/gateway.kobo");
+    project.write(
+        "Kobo.toml",
+        r#"[sim]
+show_backend_choices = true
+"#,
+    );
+    let file = project.main_file(
+        r#"
+#[kobo::scenario(profile = "sync")]
+fn deep_scheduler_route() {
+}
+"#,
+    );
 
-    let output = run_kobo(
+    let output = run_kobo_with_timeout(
         &[
             s("test"),
             s("--sim"),
             s("deep"),
-            s("--events=json"),
+            s("--engine"),
+            s("semantic"),
             path_arg(&file),
         ],
         &project.root,
+        Duration::from_secs(30),
     );
 
     assert_success(&output, "runtime should run deep simulation honestly");
@@ -563,6 +579,20 @@ fn sim_deep_is_public_runtime_scheduler_profile() {
         &json["scheduler"].to_string(),
         "pct",
         "deep profile must use the non-quick scheduler portfolio",
+    );
+    assert_eq!(
+        json["scheduler"]["configured_seed_count"], 1024,
+        "deep profile must target a thousand-plus seed portfolio by default",
+    );
+    assert!(
+        json["scheduler"]["portfolio_complete"] == true
+            || json["scheduler"]["portfolio_cap"]["reason"] == "wall-clock",
+        "deep profile must either finish the configured portfolio or report the wall-clock cap: {}",
+        json["scheduler"]
+    );
+    assert_eq!(
+        json["scheduler"]["event_budget"], 1_000_000,
+        "deep profile must use the public deep schedule budget by default",
     );
 }
 

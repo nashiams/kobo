@@ -6,8 +6,12 @@ use super::{
     serde_json, sim_model, validate_run_boundary_declarations, write_run_witness,
     BackendExpertOptions, DebtControlSource, EngineMode, ErrorFormat, FullDepthRun, FuzzPlan,
     GuaranteePolicy, GuaranteeProfile, Path, PathBuf, ProfileRoles, ScenarioDocument,
-    ScenarioProgram,
+    ScenarioProgram, SeedPortfolioPlan,
 };
+use std::time::Duration;
+
+const DEFAULT_DEEP_SEED_COUNT: u64 = 1024;
+const DEFAULT_DEEP_WALL_CLOCK_LIMIT: Duration = Duration::from_secs(5);
 use crate::commands::session;
 
 struct TestCommandRequest<'a> {
@@ -273,10 +277,22 @@ fn execute_scenario(
             &context.artifacts.rs_source,
             &context.options,
             context.engine.clone(),
-            context.configured_seed_count.unwrap_or(1),
+            seed_portfolio_plan(context),
         )?,
     };
     Ok((run, executed_seed, fuzz_plan))
+}
+
+fn seed_portfolio_plan(context: &TestExecutionContext) -> SeedPortfolioPlan {
+    let target_seed_count = context
+        .configured_seed_count
+        .or_else(|| default_seed_count(&context.sim_profile))
+        .unwrap_or(1);
+    let plan = SeedPortfolioPlan::with_target_seed_count(target_seed_count);
+    if context.sim_profile == "deep" && target_seed_count >= DEFAULT_DEEP_SEED_COUNT {
+        return plan.with_wall_clock_limit(DEFAULT_DEEP_WALL_CLOCK_LIMIT);
+    }
+    plan
 }
 
 fn apply_replay_checks(
@@ -482,9 +498,16 @@ fn is_stable_simulation_profile(profile: &str) -> bool {
 fn default_budget(sim_profile: &str) -> Option<u64> {
     match sim_profile {
         "quick" => Some(64),
-        "deep" => Some(1024),
+        "deep" => Some(1_000_000),
         "replay" => Some(64),
         "exhaustive" => Some(16),
+        _ => None,
+    }
+}
+
+fn default_seed_count(sim_profile: &str) -> Option<u64> {
+    match sim_profile {
+        "deep" => Some(DEFAULT_DEEP_SEED_COUNT),
         _ => None,
     }
 }

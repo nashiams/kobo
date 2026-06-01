@@ -51,15 +51,15 @@ fn trap_string_only_profiles_do_not_count() {
         policy
             .pointer("/guarantees/liveness")
             .and_then(|value| value.as_str()),
-        Some("checked"),
-        "release policy must keep checked liveness despite source text"
+        Some("strict"),
+        "release policy must keep strict liveness despite source text"
     );
     assert_eq!(
         policy
             .pointer("/guarantees/replay")
             .and_then(|value| value.as_str()),
-        Some("checked"),
-        "release policy must keep checked replay despite source text"
+        Some("strict"),
+        "release policy must keep strict replay despite source text"
     );
     let text = output.combined();
     assert_contains(

@@ -48,7 +48,7 @@ use fuzz::{run_fuzz_portfolio, FuzzPlan};
 use replay_scope::validate_run_boundary_declarations;
 pub(super) use run::cmd_test;
 use runtime_boundary::runtime_boundary_evidence;
-use seed_portfolio::run_seed_portfolio;
+use seed_portfolio::{run_seed_portfolio, SeedPortfolioPlan};
 use trace_checks::apply_trace_checks;
 use witness::{print_events, write_run_witness};
 

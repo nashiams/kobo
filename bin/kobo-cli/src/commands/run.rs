@@ -433,7 +433,6 @@ fn generated_harness_inspection(
         &artifacts,
         &target_name,
         document.source_hash.clone(),
-        &backend_profile,
     )?;
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: "inspect".to_owned(),

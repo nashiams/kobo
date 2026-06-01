@@ -348,7 +348,7 @@ struct LineInfo<'a> {
 
 #[derive(Clone, Debug)]
 struct ScenarioHeader {
-    profile: String,
+    profile: Option<String>,
 }
 
 pub(super) fn load_document(file: &Path) -> anyhow::Result<ScenarioDocument> {
@@ -608,14 +608,13 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
         let trimmed = line.text.trim();
         if trimmed.contains("kobo::scenario") {
             pending_header = Some(ScenarioHeader {
-                profile: extract_named_string(trimmed, "profile")
-                    .unwrap_or_else(|| "async".to_owned()),
+                profile: extract_named_string(trimmed, "profile"),
             });
             continue;
         }
         if trimmed.contains("kobo::concurrent_test") {
             pending_header = Some(ScenarioHeader {
-                profile: "sync".to_owned(),
+                profile: Some("sync".to_owned()),
             });
             continue;
         }
@@ -624,9 +623,12 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
         };
         if let Some(name) = parse_function_name(trimmed) {
             if let Some((body_start, body)) = extract_body(source, line.offset) {
+                let profile = header
+                    .profile
+                    .unwrap_or_else(|| infer_scenario_profile(trimmed, &body));
                 scenarios.push(Scenario {
                     name,
-                    profile: header.profile,
+                    profile,
                     body,
                     body_start,
                 });
@@ -635,6 +637,12 @@ fn parse_scenarios(source: &str) -> Vec<Scenario> {
     }
     scenarios.extend(ward_scenarios(source));
     scenarios
+}
+
+fn infer_scenario_profile(signature: &str, body: &str) -> String {
+    profile_shape_for_source(&format!("{signature}\n{body}"))
+        .as_profile()
+        .to_owned()
 }
 
 fn ward_must_call_types(source: &str) -> Vec<MustCallType> {

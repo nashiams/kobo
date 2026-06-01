@@ -49,7 +49,7 @@ async fn service(request: Request) {
 "#;
     let mut id_gen = NodeIdGen::new();
     let ast = parse_file(source, FileId(0), &mut id_gen).expect("parse should succeed");
-    let program = build_scenario_programs(&ast, &[], "async")
+    let program = build_scenario_programs(&ast, &[])
         .into_iter()
         .find(|program| program.target == "service")
         .expect("service scenario should lower");

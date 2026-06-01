@@ -9,9 +9,7 @@ use super::{
 pub fn build_scenario_programs(
     ast: &KoboFile,
     must_call_obligations: &[MustCallObligation],
-    fallback_profile: &str,
 ) -> Vec<ScenarioProgram> {
-    let _ = fallback_profile;
     let file = ast.syn_file();
     let functions = collect_functions(file);
     let call_graph = ScenarioCallGraph::build(&functions);

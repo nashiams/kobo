@@ -198,12 +198,8 @@ fn replay_v1(
     )?;
     let artifacts = kobo_driver::run_codegen_pipeline(&mut session, &verified_source.path)
         .map_err(|()| anyhow::anyhow!("failed to rebuild compiler scenario artifacts"))?;
-    let scenario_program = kobo_driver::build_scenario_program(
-        &artifacts,
-        &target,
-        verified_source.hash.clone(),
-        profile,
-    )?;
+    let scenario_program =
+        kobo_driver::build_scenario_program(&artifacts, &target, verified_source.hash.clone())?;
     let options = kobo_sim_core::ScenarioOptions {
         sim_profile: sim_profile.to_owned(),
         profile: profile.to_owned(),

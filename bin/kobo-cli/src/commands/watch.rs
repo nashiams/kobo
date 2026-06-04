@@ -168,6 +168,7 @@ struct WatchedFile {
     path: PathBuf,
     snapshot: Option<FileSnapshot>,
     unresolved_error: Option<WatchErrorFingerprint>,
+    pending_startup_error: Option<WatchErrorFingerprint>,
 }
 
 #[derive(Clone, Copy)]
@@ -412,14 +413,15 @@ fn watched_files(
         .files
         .iter()
         .map(|path| {
-            let (snapshot, unresolved_error) = match snapshot_source.snapshot(path) {
+            let (snapshot, pending_startup_error) = match snapshot_source.snapshot(path) {
                 Ok(snapshot) => (Some(snapshot), None),
-                Err(_) => (None, None),
+                Err(error) => (None, Some(WatchErrorFingerprint::from_error(&error))),
             };
             Ok(WatchedFile {
                 path: path.clone(),
                 snapshot,
-                unresolved_error,
+                unresolved_error: None,
+                pending_startup_error,
             })
         })
         .collect()
@@ -557,6 +559,14 @@ fn changed_existing_files(
 ) -> Vec<WatchChange> {
     let mut changes = Vec::new();
     for file in watched {
+        if let Some(fingerprint) = file.pending_startup_error.take() {
+            file.unresolved_error = Some(fingerprint.clone());
+            changes.push(WatchChange::unknown(
+                &file.path,
+                file.snapshot,
+                Some(&fingerprint),
+            ));
+        }
         match snapshot_source.snapshot(&file.path) {
             Ok(current) => {
                 file.unresolved_error = None;
@@ -590,8 +600,12 @@ fn changed_existing_files(
                     continue;
                 }
                 let previous = file.snapshot.take();
-                file.unresolved_error = Some(fingerprint);
-                changes.push(WatchChange::removed(&file.path, previous));
+                file.unresolved_error = Some(fingerprint.clone());
+                changes.push(WatchChange::removed(
+                    &file.path,
+                    previous,
+                    Some(&fingerprint),
+                ));
             }
             Err(error) => {
                 let fingerprint = WatchErrorFingerprint::from_error(&error);
@@ -643,6 +657,7 @@ fn created_watch_files(
                     path: file.clone(),
                     snapshot: Some(current),
                     unresolved_error: None,
+                    pending_startup_error: None,
                 });
                 changes.push(WatchChange::created(file, current.modified));
             }
@@ -652,9 +667,10 @@ fn created_watch_files(
                     path: file.clone(),
                     snapshot: None,
                     unresolved_error: Some(fingerprint.clone()),
+                    pending_startup_error: None,
                 });
                 if error.kind() == io::ErrorKind::NotFound {
-                    changes.push(WatchChange::removed(file, None));
+                    changes.push(WatchChange::removed(file, None, Some(&fingerprint)));
                 } else {
                     changes.push(WatchChange::unknown(file, None, Some(&fingerprint)));
                 }
@@ -726,7 +742,11 @@ impl WatchChange {
         }
     }
 
-    fn removed(path: &Path, previous: Option<FileSnapshot>) -> Self {
+    fn removed(
+        path: &Path,
+        previous: Option<FileSnapshot>,
+        fingerprint: Option<&WatchErrorFingerprint>,
+    ) -> Self {
         Self {
             display: relative_display(path),
             event_kind: WatchEventKind::Remove,
@@ -734,7 +754,7 @@ impl WatchChange {
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unique,
             evidence_grade: EventEvidenceGrade::MetadataOnly,
-            error_fingerprint: None,
+            error_fingerprint: fingerprint.map(WatchErrorFingerprint::as_label),
             additional_paths: Vec::new(),
             raw_events: Vec::new(),
         }
@@ -1076,6 +1096,7 @@ mod tests {
                 is_readonly: false,
             }),
             unresolved_error: None,
+            pending_startup_error: None,
         }];
 
         let changes = collect_watch_changes(
@@ -1143,6 +1164,7 @@ mod tests {
                 is_readonly: false,
             }),
             unresolved_error: None,
+            pending_startup_error: None,
         }];
 
         let window = collect_debounce_window(
@@ -1260,8 +1282,8 @@ mod tests {
             "startup snapshot failures should not abort watch setup",
         );
         assert!(
-            watched[0].unresolved_error.is_none(),
-            "startup errors should be reported by the first scan, not hidden during setup",
+            watched[0].pending_startup_error.is_some(),
+            "startup errors should wait as pending typed evidence for the first scan",
         );
 
         let first_window = collect_debounce_window(
@@ -1313,6 +1335,75 @@ mod tests {
     }
 
     #[test]
+    fn startup_snapshot_error_then_recovery_preserves_unknown_evidence() {
+        let root = temp_watch_root("startup-unknown-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+
+        let changes = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &OkSnapshotSource {
+                snapshot: FileSnapshot {
+                    modified: UNIX_EPOCH + Duration::from_secs(1),
+                    len: 13,
+                    is_readonly: false,
+                },
+            },
+        )
+        .unwrap();
+        let kinds = changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec!["unknown", "create"],
+            "startup unknown evidence should be kept before the recovery create",
+        );
+        assert_eq!(
+            changes[0].error_fingerprint.as_deref(),
+            Some("permission_denied:message:startup denied"),
+        );
+        assert!(watched[0].pending_startup_error.is_none());
+        assert!(watched[0].unresolved_error.is_none());
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
+        assert_eq!(state["event_batches"][0]["events"][1]["kind"], "create");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn snapshot_none_not_found_and_recovery_are_tracked() {
         let root = temp_watch_root("snapshot-none-transitions");
         let src = root.join("src");
@@ -1328,6 +1419,7 @@ mod tests {
             path: root_file.clone(),
             snapshot: None,
             unresolved_error: None,
+            pending_startup_error: None,
         }];
 
         let not_found = collect_watch_changes(
@@ -1340,6 +1432,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(not_found[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            not_found[0].error_fingerprint.as_deref(),
+            Some("not_found:message:missing"),
+        );
         assert!(watched[0].snapshot.is_none());
         assert_eq!(
             watched[0]
@@ -1362,6 +1458,21 @@ mod tests {
         assert!(
             repeated_not_found.is_empty(),
             "same snapshot-none NotFound should not repeat remove evidence",
+        );
+
+        let changed_not_found = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "still missing but different",
+            },
+        )
+        .unwrap();
+        assert_eq!(changed_not_found[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            changed_not_found[0].error_fingerprint.as_deref(),
+            Some("not_found:message:still missing but different"),
         );
 
         let recovered = collect_watch_changes(
@@ -1406,6 +1517,7 @@ mod tests {
                 is_readonly: false,
             }),
             unresolved_error: None,
+            pending_startup_error: None,
         }];
 
         let changes = collect_watch_changes(

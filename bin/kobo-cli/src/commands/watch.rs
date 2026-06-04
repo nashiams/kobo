@@ -519,6 +519,9 @@ fn normalize_rename_events(changes: Vec<WatchChange>) -> Vec<WatchChange> {
     if remove_index == create_index {
         return remaining;
     }
+    if remaining[remove_index].display == remaining[create_index].display {
+        return remaining;
+    }
 
     let create = remaining.remove(create_index);
     let adjusted_remove_index = if create_index < remove_index {
@@ -704,7 +707,7 @@ fn merge_window_changes(changes: &mut Vec<WatchChange>, later_changes: Vec<Watch
     for later_change in later_changes {
         if let Some(existing) = changes
             .iter_mut()
-            .find(|existing| existing.display == later_change.display)
+            .find(|existing| existing.can_coalesce_with(&later_change))
         {
             existing.event_kind = later_change.event_kind;
             existing.current_modified_ms = later_change.current_modified_ms;
@@ -720,6 +723,12 @@ fn merge_window_changes(changes: &mut Vec<WatchChange>, later_changes: Vec<Watch
 }
 
 impl WatchChange {
+    fn can_coalesce_with(&self, other: &Self) -> bool {
+        self.display == other.display
+            && self.event_kind.as_str() == other.event_kind.as_str()
+            && self.error_fingerprint == other.error_fingerprint
+    }
+
     fn modified(path: &Path, previous: SystemTime, current: SystemTime) -> Self {
         Self {
             display: relative_display(path),
@@ -1017,6 +1026,37 @@ mod tests {
     impl WatchSnapshotSource for OkSnapshotSource {
         fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
             Ok(self.snapshot)
+        }
+    }
+
+    struct SequenceSnapshotSource {
+        steps: std::sync::Mutex<Vec<io::Result<FileSnapshot>>>,
+    }
+
+    impl SequenceSnapshotSource {
+        fn new(mut steps: Vec<io::Result<FileSnapshot>>) -> Self {
+            steps.reverse();
+            Self {
+                steps: std::sync::Mutex::new(steps),
+            }
+        }
+    }
+
+    impl WatchSnapshotSource for SequenceSnapshotSource {
+        fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
+            self.steps
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or_else(|| Ok(test_snapshot(99)))
+        }
+    }
+
+    fn test_snapshot(seconds: u64) -> FileSnapshot {
+        FileSnapshot {
+            modified: UNIX_EPOCH + Duration::from_secs(seconds),
+            len: 13,
+            is_readonly: false,
         }
     }
 
@@ -1419,6 +1459,150 @@ mod tests {
         let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
         assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
         assert_eq!(state["event_batches"][0]["events"][1]["kind"], "create");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_unknown_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("startup-unknown-window-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![Ok(test_snapshot(1)), Ok(test_snapshot(1))]),
+        )
+        .unwrap()
+        .expect("startup unknown followed by create should produce one window");
+        let kinds = window
+            .changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["unknown", "create"]);
+        assert_eq!(
+            window
+                .changes
+                .iter()
+                .find(|change| change.event_kind.as_str() == "unknown")
+                .and_then(|change| change.error_fingerprint.as_deref()),
+            Some("permission_denied:message:startup denied"),
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_not_found_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("startup-not-found-window-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing",
+            },
+        )
+        .unwrap();
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![
+                Err(io::Error::new(io::ErrorKind::NotFound, "startup missing")),
+                Ok(test_snapshot(1)),
+                Ok(test_snapshot(1)),
+            ]),
+        )
+        .unwrap()
+        .expect("startup NotFound followed by create should produce one window");
+        let kinds = window
+            .changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["remove", "create"]);
+        assert_eq!(
+            window
+                .changes
+                .iter()
+                .find(|change| change.event_kind.as_str() == "remove")
+                .and_then(|change| change.error_fingerprint.as_deref()),
+            Some("not_found:message:startup missing"),
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn same_path_remove_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("same-path-remove-create-window");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(test_snapshot(0)),
+            unresolved_error: None,
+            pending_startup_error: None,
+        }];
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![
+                Err(io::Error::new(io::ErrorKind::NotFound, "gone")),
+                Ok(test_snapshot(1)),
+                Ok(test_snapshot(1)),
+            ]),
+        )
+        .unwrap()
+        .expect("same-path remove/create should produce one window");
+        let kinds = window
+            .changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["remove", "create"]);
+        assert_eq!(
+            window
+                .changes
+                .iter()
+                .find(|change| change.event_kind.as_str() == "remove")
+                .and_then(|change| change.error_fingerprint.as_deref()),
+            Some("not_found:message:gone"),
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

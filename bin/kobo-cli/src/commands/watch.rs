@@ -559,16 +559,16 @@ fn changed_existing_files(
 ) -> Vec<WatchChange> {
     let mut changes = Vec::new();
     for file in watched {
-        if let Some(fingerprint) = file.pending_startup_error.take() {
-            file.unresolved_error = Some(fingerprint.clone());
-            changes.push(WatchChange::unknown(
-                &file.path,
-                file.snapshot,
-                Some(&fingerprint),
-            ));
-        }
+        let pending_startup_error = file.pending_startup_error.take();
         match snapshot_source.snapshot(&file.path) {
             Ok(current) => {
+                if let Some(fingerprint) = pending_startup_error {
+                    changes.push(WatchChange::unknown(
+                        &file.path,
+                        file.snapshot,
+                        Some(&fingerprint),
+                    ));
+                }
                 file.unresolved_error = None;
                 match file.snapshot {
                     Some(previous) if current.has_modified_change(previous) => {
@@ -596,6 +596,15 @@ fn changed_existing_files(
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let fingerprint = WatchErrorFingerprint::from_error(&error);
+                if let Some(pending) =
+                    pending_startup_error.filter(|pending| pending.kind != io::ErrorKind::NotFound)
+                {
+                    changes.push(WatchChange::unknown(
+                        &file.path,
+                        file.snapshot,
+                        Some(&pending),
+                    ));
+                }
                 if file.unresolved_error.as_ref() == Some(&fingerprint) {
                     continue;
                 }
@@ -609,6 +618,17 @@ fn changed_existing_files(
             }
             Err(error) => {
                 let fingerprint = WatchErrorFingerprint::from_error(&error);
+                if let Some(pending) = pending_startup_error {
+                    changes.push(WatchChange::unknown(
+                        &file.path,
+                        file.snapshot,
+                        Some(&pending),
+                    ));
+                    if pending == fingerprint {
+                        file.unresolved_error = Some(fingerprint);
+                        continue;
+                    }
+                }
                 if file.unresolved_error.as_ref() == Some(&fingerprint) {
                     continue;
                 }
@@ -1399,6 +1419,77 @@ mod tests {
         let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
         assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
         assert_eq!(state["event_batches"][0]["events"][1]["kind"], "create");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_not_found_becomes_fingerprinted_remove_evidence() {
+        let root = temp_watch_root("startup-not-found-remove");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing",
+            },
+        )
+        .unwrap();
+
+        let first_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing",
+            },
+        )
+        .unwrap()
+        .expect("startup NotFound should become remove evidence");
+        assert_eq!(first_window.changes.len(), 1);
+        assert_eq!(first_window.changes[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            first_window.changes[0].error_fingerprint.as_deref(),
+            Some("not_found:message:startup missing"),
+        );
+
+        let changed_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing but different",
+            },
+        )
+        .unwrap()
+        .expect("changed startup NotFound identity should reopen remove evidence");
+        assert_eq!(changed_window.changes[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            changed_window.changes[0].error_fingerprint.as_deref(),
+            Some("not_found:message:startup missing but different"),
+        );
+
+        let repeated_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing but different",
+            },
+        )
+        .unwrap();
+        assert!(
+            repeated_window.is_none(),
+            "same startup NotFound identity should not repeat remove evidence",
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

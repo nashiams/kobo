@@ -283,7 +283,7 @@ fn watch_simple_observes_module_change_and_persists_reload_state() {
         "event batch: watch-batch-1",
         "debounce window: watch-window-1",
         "restart decision: rerun",
-        "child lifecycle: no child process started",
+        "child lifecycle: in-process rerun finished",
         "reload checkpoint: source-map-and-diagnostics",
         "restartable: true",
     ] {
@@ -327,6 +327,184 @@ fn watch_simple_observes_module_change_and_persists_reload_state() {
     assert_eq!(state["restart_decisions"][0]["action"], "rerun");
     assert_eq!(
         state["child_lifecycle_obligations"][0]["resolution"],
-        "no_child_started"
+        "in_process_rerun_finished"
     );
+}
+
+#[test]
+fn watch_simple_batches_multiple_module_changes_into_one_restart_window() {
+    let project = TestProject::new("model-watch-batched-reload");
+    let main = project.main_file("mod service;\nmod worker;\nfn main() {}\n");
+    let service = project.write("src/service.kobo", "fn helper() {}\n");
+    let worker = project.write("src/worker.kobo", "fn helper() {}\n");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("watch")
+        .arg("--simple")
+        .arg(&main)
+        .env("KOBO_WATCH_ONCE", "1")
+        .current_dir(&project.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch process should launch");
+
+    thread::sleep(Duration::from_millis(500));
+    std::fs::write(&service, "fn helper() { let value = 1; }\n")
+        .expect("watched service module should be writable");
+    std::fs::write(&worker, "fn helper() { let value = 2; }\n")
+        .expect("watched worker module should be writable");
+
+    let output = wait_child_output(child, Duration::from_secs(8));
+    assert_success(
+        &output,
+        "watch --simple should exit after one batched scoped module change",
+    );
+    let text = output.combined();
+    assert_eq!(
+        text.matches("Triggering rebuild").count(),
+        1,
+        "same-window module changes should cause one restart:\n{text}",
+    );
+
+    let state_path = project.root.join(".kobo/watch/source-watch.json");
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("watch state should read"),
+    )
+    .expect("watch state should parse");
+    assert_eq!(
+        state["event_batches"][0]["events"].as_array().map(Vec::len),
+        Some(2),
+        "batched state should retain both changed source files",
+    );
+    let events = state["event_batches"][0]["events"].to_string();
+    assert_contains(
+        &events,
+        "src/service.kobo",
+        "batched event evidence should include service module",
+    );
+    assert_contains(
+        &events,
+        "src/worker.kobo",
+        "batched event evidence should include worker module",
+    );
+    assert_eq!(
+        state["restart_decisions"].as_array().map(Vec::len),
+        Some(1),
+        "batched changes should produce one restart decision",
+    );
+}
+
+#[test]
+fn watch_simple_records_failed_rerun_outcome_after_execution() {
+    let project = TestProject::new("model-watch-failed-rerun");
+    let main = project.main_file("fn main() {}\n");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("watch")
+        .arg("--simple")
+        .arg(&main)
+        .env("KOBO_WATCH_ONCE", "1")
+        .current_dir(&project.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch process should launch");
+
+    thread::sleep(Duration::from_millis(500));
+    std::fs::write(&main, "fn main() {\n    let broken = ;\n}\n")
+        .expect("watched main module should be writable");
+
+    let output = wait_child_output(child, Duration::from_secs(8));
+    assert_success(
+        &output,
+        "watch --simple should keep running semantics even when the rerun reports diagnostics",
+    );
+    let state_path = project.root.join(".kobo/watch/source-watch.json");
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("watch state should read"),
+    )
+    .expect("watch state should parse");
+    assert_eq!(state["restart_decisions"][0]["outcome"], "failed");
+    assert!(
+        state["restart_decisions"][0]["diagnostic_count"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "failed rerun should persist diagnostic count",
+    );
+    assert_eq!(
+        state["child_lifecycle_obligations"][0]["resolution"],
+        "in_process_rerun_finished"
+    );
+}
+
+#[test]
+fn watch_simple_discovers_new_kobo_file_after_start() {
+    let project = TestProject::new("model-watch-create-event");
+    let main = project.main_file("fn main() {}\n");
+    let created = project.root.join("src/new_module.kobo");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("watch")
+        .arg("--simple")
+        .arg(&main)
+        .env("KOBO_WATCH_ONCE", "1")
+        .current_dir(&project.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch process should launch");
+
+    thread::sleep(Duration::from_millis(500));
+    std::fs::write(&created, "fn helper() {}\n").expect("new watched module should write");
+
+    let output = wait_child_output(child, Duration::from_secs(8));
+    assert_success(
+        &output,
+        "watch --simple should exit after a new Kobo source appears",
+    );
+    let state_path = project.root.join(".kobo/watch/source-watch.json");
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("watch state should read"),
+    )
+    .expect("watch state should parse");
+    assert_eq!(state["changes"][0]["path"], "src/new_module.kobo");
+    assert_eq!(state["changes"][0]["event_kind"], "create");
+    assert_eq!(state["event_batches"][0]["events"][0]["kind"], "create");
+}
+
+#[test]
+fn watch_simple_records_removed_kobo_file_instead_of_dropping_it() {
+    let project = TestProject::new("model-watch-remove-event");
+    let main = project.main_file("mod service;\nfn main() {}\n");
+    let service = project.write("src/service.kobo", "fn helper() {}\n");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("watch")
+        .arg("--simple")
+        .arg(&main)
+        .env("KOBO_WATCH_ONCE", "1")
+        .current_dir(&project.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch process should launch");
+
+    thread::sleep(Duration::from_millis(500));
+    std::fs::remove_file(&service).expect("watched service module should be removable");
+
+    let output = wait_child_output(child, Duration::from_secs(8));
+    assert_success(
+        &output,
+        "watch --simple should exit after a watched Kobo source is removed",
+    );
+    let state_path = project.root.join(".kobo/watch/source-watch.json");
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("watch state should read"),
+    )
+    .expect("watch state should parse");
+    assert_eq!(state["changes"][0]["path"], "src/service.kobo");
+    assert_eq!(state["changes"][0]["event_kind"], "remove");
+    assert_eq!(state["event_batches"][0]["events"][0]["kind"], "remove");
+    assert_eq!(state["event_batches"][0]["replay_grade"], "partial");
 }

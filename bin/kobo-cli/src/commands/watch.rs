@@ -1,10 +1,13 @@
 mod evidence;
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::session::{build_session, render_diagnostics};
-use evidence::{WatchEvidence, WatchExecutionMode};
+use evidence::{
+    DuplicateStatus, RestartPolicyBranch, WatchEventInput, WatchEventKind, WatchEvidence,
+    WatchExecutionMode, WatchRerunOutcome, WatchRerunReport, DEBOUNCE_INTERVAL_MS,
+};
 use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
 
 /// File-watcher re-run on save.
@@ -38,7 +41,7 @@ pub(super) fn cmd_watch(
     let scope = watch_scope(file)?;
     let state_path = source_watch_state_path()?;
     let persisted_state_loaded = state_path.is_file();
-    persist_source_watch_state(file, &scope, &[], persisted_state_loaded, None)?;
+    persist_source_watch_state(file, &scope, persisted_state_loaded, None)?;
     println!(
         "Watching {} ({mode_label} mode, scoped-persist-reload, Ctrl+C to stop)",
         file.display(),
@@ -49,50 +52,49 @@ pub(super) fn cmd_watch(
     println!("reload checkpoint: source-map-and-diagnostics");
     println!("restartable: true");
 
+    let mut scope = scope;
     let mut watched = watched_files(&scope)?;
     let mut change_sequence = 0;
 
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
 
-        let Some(change) = next_change(&mut watched) else {
+        let Some(changes) = collect_debounce_window(&mut scope, &mut watched)? else {
             continue;
         };
         change_sequence += 1;
-        let evidence = WatchEvidence::for_change(
+        let mut evidence = WatchEvidence::for_window(
             change_sequence,
             relative_display(file),
-            change.display.clone(),
+            changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
             if build {
                 WatchExecutionMode::Build
             } else {
                 WatchExecutionMode::Simple
             },
-            change.previous_modified_ms,
-            change.current_modified_ms,
         );
 
+        let changed_paths = evidence.changed_paths();
         println!(
             "[kobo-watch] Change detected in {}, recompiling...",
-            change.display
+            changed_paths.join(", ")
         );
-        println!("changed file: {}", change.display);
+        for changed_path in changed_paths {
+            println!("changed file: {changed_path}");
+        }
+        let report = if build {
+            on_file_changed_build(file)
+        } else {
+            on_file_changed(file)
+        };
+        evidence.record_rerun_report(report);
         for line in evidence.human_lines() {
             println!("{line}");
         }
-        let changes = vec![change.to_json(&evidence)];
-        persist_source_watch_state(
-            file,
-            &scope,
-            &changes,
-            persisted_state_loaded,
-            Some(&evidence),
-        )?;
-        if build {
-            on_file_changed_build(file);
-        } else {
-            on_file_changed(file);
-        }
+        persist_source_watch_state(file, &scope, persisted_state_loaded, Some(&evidence))?;
         if run_once {
             break;
         }
@@ -109,8 +111,11 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     };
     let scope = watch_scope(file)?;
     let target = relative_display(file);
-    let changed = changed.map(relative_display);
-    let evidence = WatchEvidence::for_plan(target.clone(), changed.clone());
+    let changed_display = changed.map(relative_display);
+    let plan_branch = changed
+        .map(|path| plan_change_branch(&scope, path))
+        .unwrap_or(RestartPolicyBranch::PlanOnly);
+    let evidence = WatchEvidence::for_plan(1, target.clone(), changed_display.clone(), plan_branch);
     println!("Watch plan");
     println!("mode: scoped-persist-reload");
     println!("scope: {target}");
@@ -127,28 +132,44 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     for line in evidence.human_lines() {
         println!("{line}");
     }
-    if let Some(changed) = changed {
-        println!("invalidated: {changed}");
-        println!("reason: changed file belongs to scoped watch plan");
-        println!("rerun target: kobo check {target}");
-        println!("rerun target: kobo inspect {target}");
+    if let Some(changed) = changed_display {
+        if matches!(plan_branch, RestartPolicyBranch::ChangedInScope) {
+            println!("invalidated: {changed}");
+            println!("reason: changed file belongs to scoped watch plan");
+            println!("rerun target: kobo check {target}");
+            println!("rerun target: kobo inspect {target}");
+        } else {
+            println!("ignored: {changed}");
+            println!("reason: changed file is outside scoped watch plan");
+        }
     }
     Ok(())
 }
 
 struct WatchScope {
+    root: PathBuf,
+    root_file: PathBuf,
     files: Vec<PathBuf>,
 }
 
 struct WatchedFile {
     path: PathBuf,
+    snapshot: Option<FileSnapshot>,
+}
+
+#[derive(Clone, Copy)]
+struct FileSnapshot {
     modified: SystemTime,
+    len: u64,
+    is_readonly: bool,
 }
 
 struct WatchChange {
     display: String,
-    previous_modified_ms: u128,
-    current_modified_ms: u128,
+    event_kind: WatchEventKind,
+    previous_modified_ms: Option<u128>,
+    current_modified_ms: Option<u128>,
+    duplicate_status: DuplicateStatus,
 }
 
 fn watch_scope(file: &Path) -> anyhow::Result<WatchScope> {
@@ -159,7 +180,11 @@ fn watch_scope(file: &Path) -> anyhow::Result<WatchScope> {
         files.push(file.to_path_buf());
     }
     files.sort();
-    Ok(WatchScope { files })
+    Ok(WatchScope {
+        root: root.to_path_buf(),
+        root_file: file.to_path_buf(),
+        files,
+    })
 }
 
 fn collect_kobo_watch_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -185,17 +210,37 @@ fn collect_kobo_watch_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Res
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
-    left.canonicalize().ok() == right.canonicalize().ok()
+    normalized_path(left) == normalized_path(right)
 }
 
-fn relative_display(path: &Path) -> String {
-    let absolute = if path.is_absolute() {
+fn normalized_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| absolute_path(path))
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()
             .map(|cwd| cwd.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
-    };
+    }
+}
+
+fn plan_change_branch(scope: &WatchScope, changed: &Path) -> RestartPolicyBranch {
+    if path_in_scope(scope, changed) {
+        RestartPolicyBranch::ChangedInScope
+    } else {
+        RestartPolicyBranch::IgnoredOutOfScope
+    }
+}
+
+fn path_in_scope(scope: &WatchScope, changed: &Path) -> bool {
+    scope.files.iter().any(|file| same_path(file, changed))
+}
+
+fn relative_display(path: &Path) -> String {
+    let absolute = absolute_path(path);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     absolute
         .strip_prefix(&cwd)
@@ -218,7 +263,6 @@ fn source_watch_state_path() -> anyhow::Result<PathBuf> {
 fn persist_source_watch_state(
     root_file: &Path,
     scope: &WatchScope,
-    changes: &[serde_json::Value],
     persisted_state_loaded: bool,
     evidence: Option<&WatchEvidence>,
 ) -> anyhow::Result<()> {
@@ -239,6 +283,9 @@ fn persist_source_watch_state(
         .unwrap_or_default();
     let child_lifecycle_obligations = evidence
         .map(|watch_evidence| vec![watch_evidence.child_lifecycle_json()])
+        .unwrap_or_default();
+    let changes = evidence
+        .map(WatchEvidence::changes_json)
         .unwrap_or_default();
     let value = serde_json::json!({
         "schema_version": 1,
@@ -274,41 +321,196 @@ fn watched_files(scope: &WatchScope) -> anyhow::Result<Vec<WatchedFile>> {
         .map(|path| {
             Ok(WatchedFile {
                 path: path.clone(),
-                modified: get_mtime(path)?,
+                snapshot: Some(get_file_snapshot(path)?),
             })
         })
         .collect()
 }
 
-fn next_change(watched: &mut [WatchedFile]) -> Option<WatchChange> {
+fn collect_debounce_window(
+    scope: &mut WatchScope,
+    watched: &mut Vec<WatchedFile>,
+) -> anyhow::Result<Option<Vec<WatchChange>>> {
+    let mut changes = collect_watch_changes(scope, watched)?;
+    if changes.is_empty() {
+        return Ok(None);
+    }
+
+    loop {
+        std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
+        let later_changes = collect_watch_changes(scope, watched)?;
+        if later_changes.is_empty() {
+            changes.sort_by(|left, right| left.display.cmp(&right.display));
+            return Ok(Some(changes));
+        }
+        merge_window_changes(&mut changes, later_changes);
+    }
+}
+
+fn collect_watch_changes(
+    scope: &mut WatchScope,
+    watched: &mut Vec<WatchedFile>,
+) -> anyhow::Result<Vec<WatchChange>> {
+    let mut changes = changed_existing_files(watched);
+    refresh_watch_scope(scope)?;
+    changes.extend(created_watch_files(scope, watched));
+    Ok(changes)
+}
+
+fn changed_existing_files(watched: &mut [WatchedFile]) -> Vec<WatchChange> {
+    let mut changes = Vec::new();
     for file in watched {
-        let Ok(current) = get_mtime(&file.path) else {
-            continue;
-        };
-        if current != file.modified {
-            let previous = file.modified;
-            file.modified = current;
-            return Some(WatchChange {
-                display: relative_display(&file.path),
-                previous_modified_ms: system_time_millis(previous),
-                current_modified_ms: system_time_millis(current),
-            });
+        match get_file_snapshot(&file.path) {
+            Ok(current) => match file.snapshot {
+                Some(previous) if current.has_modified_change(previous) => {
+                    file.snapshot = Some(current);
+                    changes.push(WatchChange::modified(
+                        &file.path,
+                        previous.modified,
+                        current.modified,
+                    ));
+                }
+                Some(previous) if current.has_metadata_change(previous) => {
+                    file.snapshot = Some(current);
+                    changes.push(WatchChange::metadata(
+                        &file.path,
+                        previous.modified,
+                        current.modified,
+                    ));
+                }
+                None => {
+                    file.snapshot = Some(current);
+                    changes.push(WatchChange::created(&file.path, current.modified));
+                }
+                _ => {}
+            },
+            Err(_) if file.snapshot.is_some() => {
+                let previous = file.snapshot.take();
+                changes.push(WatchChange::removed(&file.path, previous));
+            }
+            Err(_) => {}
         }
     }
-    None
+    changes
+}
+
+fn refresh_watch_scope(scope: &mut WatchScope) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    collect_kobo_watch_files(&scope.root, &mut files)?;
+    if !files
+        .iter()
+        .any(|candidate| same_path(candidate, &scope.root_file))
+    {
+        files.push(scope.root_file.clone());
+    }
+    files.sort();
+    scope.files = files;
+    Ok(())
+}
+
+fn created_watch_files(scope: &WatchScope, watched: &mut Vec<WatchedFile>) -> Vec<WatchChange> {
+    let mut changes = Vec::new();
+    for file in &scope.files {
+        if watched
+            .iter()
+            .any(|watched_file| same_path(&watched_file.path, file))
+        {
+            continue;
+        }
+        match get_file_snapshot(file) {
+            Ok(current) => {
+                watched.push(WatchedFile {
+                    path: file.clone(),
+                    snapshot: Some(current),
+                });
+                changes.push(WatchChange::created(file, current.modified));
+            }
+            Err(_) => {
+                watched.push(WatchedFile {
+                    path: file.clone(),
+                    snapshot: None,
+                });
+                changes.push(WatchChange::unknown(file));
+            }
+        }
+    }
+    changes
+}
+
+fn merge_window_changes(changes: &mut Vec<WatchChange>, later_changes: Vec<WatchChange>) {
+    for later_change in later_changes {
+        if let Some(existing) = changes
+            .iter_mut()
+            .find(|existing| existing.display == later_change.display)
+        {
+            existing.event_kind = later_change.event_kind;
+            existing.current_modified_ms = later_change.current_modified_ms;
+            existing.duplicate_status = DuplicateStatus::Coalesced;
+        } else {
+            changes.push(later_change);
+        }
+    }
 }
 
 impl WatchChange {
-    fn to_json(&self, evidence: &WatchEvidence) -> serde_json::Value {
-        serde_json::json!({
-            "kind": "source_change",
-            "path": self.display,
-            "event_kind": evidence.event_kind(),
-            "batch_id": evidence.batch_id(),
-            "replay_grade": evidence.replay_grade(),
-            "previous_modified_ms": self.previous_modified_ms,
-            "current_modified_ms": self.current_modified_ms,
-        })
+    fn modified(path: &Path, previous: SystemTime, current: SystemTime) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Modify,
+            previous_modified_ms: Some(system_time_millis(previous)),
+            current_modified_ms: Some(system_time_millis(current)),
+            duplicate_status: DuplicateStatus::Unique,
+        }
+    }
+
+    fn created(path: &Path, current: SystemTime) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Create,
+            previous_modified_ms: None,
+            current_modified_ms: Some(system_time_millis(current)),
+            duplicate_status: DuplicateStatus::Unique,
+        }
+    }
+
+    fn metadata(path: &Path, previous: SystemTime, current: SystemTime) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Metadata,
+            previous_modified_ms: Some(system_time_millis(previous)),
+            current_modified_ms: Some(system_time_millis(current)),
+            duplicate_status: DuplicateStatus::Unique,
+        }
+    }
+
+    fn removed(path: &Path, previous: Option<FileSnapshot>) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Remove,
+            previous_modified_ms: previous.map(|snapshot| system_time_millis(snapshot.modified)),
+            current_modified_ms: None,
+            duplicate_status: DuplicateStatus::Unique,
+        }
+    }
+
+    fn unknown(path: &Path) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Unknown,
+            previous_modified_ms: None,
+            current_modified_ms: None,
+            duplicate_status: DuplicateStatus::Unknown,
+        }
+    }
+
+    fn into_event_input(self) -> WatchEventInput {
+        WatchEventInput {
+            path: self.display,
+            event_kind: self.event_kind,
+            previous_modified_ms: self.previous_modified_ms,
+            current_modified_ms: self.current_modified_ms,
+            duplicate_status: self.duplicate_status,
+        }
     }
 }
 
@@ -328,8 +530,31 @@ fn get_mtime(file: &Path) -> anyhow::Result<SystemTime> {
         .map_err(|e| anyhow::anyhow!("cannot get mtime for {}: {}", file.display(), e))
 }
 
+fn get_file_snapshot(file: &Path) -> anyhow::Result<FileSnapshot> {
+    let metadata = std::fs::metadata(file)
+        .map_err(|e| anyhow::anyhow!("cannot stat {}: {}", file.display(), e))?;
+    let modified = metadata
+        .modified()
+        .map_err(|e| anyhow::anyhow!("cannot get mtime for {}: {}", file.display(), e))?;
+    Ok(FileSnapshot {
+        modified,
+        len: metadata.len(),
+        is_readonly: metadata.permissions().readonly(),
+    })
+}
+
+impl FileSnapshot {
+    fn has_modified_change(self, previous: Self) -> bool {
+        self.modified != previous.modified
+    }
+
+    fn has_metadata_change(self, previous: Self) -> bool {
+        self.len != previous.len || self.is_readonly != previous.is_readonly
+    }
+}
+
 /// Called when a file change is detected — runs the check pipeline.
-fn on_file_changed(file: &Path) {
+fn on_file_changed(file: &Path) -> WatchRerunReport {
     println!("[kobo-watch] Triggering rebuild for {}", file.display());
     match build_session(file, None) {
         Ok(mut session) => match run_check_pipeline(&mut session, file) {
@@ -340,20 +565,32 @@ fn on_file_changed(file: &Path) {
                 } else {
                     println!("[kobo-watch] {} diagnostic(s)", session.diagnostics.len());
                 }
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Succeeded,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
             Err(()) => {
                 render_diagnostics(&session);
                 eprintln!("[kobo-watch] check failed");
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Failed,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
         },
         Err(e) => {
             eprintln!("[kobo-watch] session error: {e}");
+            WatchRerunReport {
+                outcome: WatchRerunOutcome::Failed,
+                diagnostic_count: 0,
+            }
         }
     }
 }
 
 /// S-29: Called when a file change is detected in --build mode — runs full codegen pipeline.
-fn on_file_changed_build(file: &Path) {
+fn on_file_changed_build(file: &Path) -> WatchRerunReport {
     println!(
         "[kobo-watch] Triggering codegen build for {}",
         file.display()
@@ -366,14 +603,26 @@ fn on_file_changed_build(file: &Path) {
                     "[kobo-watch] codegen OK — wrote {}",
                     artifacts.rs_path.display()
                 );
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Succeeded,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
             Err(()) => {
                 render_diagnostics(&session);
                 eprintln!("[kobo-watch] codegen failed");
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Failed,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
         },
         Err(e) => {
             eprintln!("[kobo-watch] session error: {e}");
+            WatchRerunReport {
+                outcome: WatchRerunOutcome::Failed,
+                diagnostic_count: 0,
+            }
         }
     }
 }
@@ -388,7 +637,7 @@ pub(crate) fn detect_change(file: &Path, since: SystemTime) -> anyhow::Result<bo
 
 /// Debounce interval in milliseconds.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const DEBOUNCE_MS: u64 = 200;
+pub(crate) const DEBOUNCE_MS: u64 = DEBOUNCE_INTERVAL_MS;
 
 #[cfg(test)]
 mod tests {

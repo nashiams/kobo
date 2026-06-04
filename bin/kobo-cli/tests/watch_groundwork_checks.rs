@@ -90,6 +90,40 @@ fn watch_plan_invalidates_changed_service_file() {
 }
 
 #[test]
+fn watch_plan_changed_file_outside_scope_does_not_claim_restart() {
+    let (project, main, _) = watch_project("watch-plan-outside-change");
+    let outside = project.write("other.kobo", "fn outside() {}\n");
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--plan"),
+            path_arg(&main),
+            s("--changed"),
+            path_arg(&outside),
+        ],
+        &project.root,
+    );
+
+    assert_success(&output, "watch --plan --changed should classify changes");
+    let text = output.combined();
+    for expected in [
+        "ignored: other.kobo",
+        "reason: changed file is outside scoped watch plan",
+        "restart decision: no-op",
+    ] {
+        assert_contains(
+            &text,
+            expected,
+            "outside changed file must not invalidate the scoped plan",
+        );
+    }
+    assert!(
+        !text.contains("reason: changed file belongs to scoped watch plan"),
+        "outside changed file must not use the in-scope invalidation reason:\n{text}",
+    );
+}
+
+#[test]
 fn watch_groundwork_is_disabled_for_unscoped_workspace_by_default() {
     let (project, _, _) = watch_project("watch-plan-unscoped");
     let output = run_kobo(&[s("watch"), s("--plan")], &project.root);

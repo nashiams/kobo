@@ -177,9 +177,11 @@ struct FileSnapshot {
     is_readonly: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct WatchErrorFingerprint {
     kind: io::ErrorKind,
+    raw_os_error: Option<i32>,
+    message: String,
 }
 
 trait WatchSnapshotSource {
@@ -190,11 +192,15 @@ struct FsWatchSnapshotSource;
 
 impl WatchErrorFingerprint {
     fn from_error(error: &io::Error) -> Self {
-        Self { kind: error.kind() }
+        Self {
+            kind: error.kind(),
+            raw_os_error: error.raw_os_error(),
+            message: error.to_string(),
+        }
     }
 
-    fn as_label(&self) -> &'static str {
-        match self.kind {
+    fn as_label(&self) -> String {
+        let kind = match self.kind {
             io::ErrorKind::NotFound => "not_found",
             io::ErrorKind::PermissionDenied => "permission_denied",
             io::ErrorKind::AlreadyExists => "already_exists",
@@ -206,7 +212,12 @@ impl WatchErrorFingerprint {
             io::ErrorKind::UnexpectedEof => "unexpected_eof",
             io::ErrorKind::OutOfMemory => "out_of_memory",
             _ => "other",
-        }
+        };
+        let identity = self
+            .raw_os_error
+            .map(|code| format!("os:{code}"))
+            .unwrap_or_else(|| format!("message:{}", self.message));
+        format!("{kind}:{identity}")
     }
 }
 
@@ -401,10 +412,14 @@ fn watched_files(
         .files
         .iter()
         .map(|path| {
+            let (snapshot, unresolved_error) = match snapshot_source.snapshot(path) {
+                Ok(snapshot) => (Some(snapshot), None),
+                Err(_) => (None, None),
+            };
             Ok(WatchedFile {
                 path: path.clone(),
-                snapshot: Some(snapshot_source.snapshot(path)?),
-                unresolved_error: None,
+                snapshot,
+                unresolved_error,
             })
         })
         .collect()
@@ -569,24 +584,27 @@ fn changed_existing_files(
                     _ => {}
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound && file.snapshot.is_some() => {
-                let previous = file.snapshot.take();
-                file.unresolved_error = None;
-                changes.push(WatchChange::removed(&file.path, previous));
-            }
-            Err(error) if file.snapshot.is_some() => {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let fingerprint = WatchErrorFingerprint::from_error(&error);
-                if file.unresolved_error == Some(fingerprint) {
+                if file.unresolved_error.as_ref() == Some(&fingerprint) {
                     continue;
                 }
+                let previous = file.snapshot.take();
                 file.unresolved_error = Some(fingerprint);
+                changes.push(WatchChange::removed(&file.path, previous));
+            }
+            Err(error) => {
+                let fingerprint = WatchErrorFingerprint::from_error(&error);
+                if file.unresolved_error.as_ref() == Some(&fingerprint) {
+                    continue;
+                }
+                file.unresolved_error = Some(fingerprint.clone());
                 changes.push(WatchChange::unknown(
                     &file.path,
                     file.snapshot,
-                    Some(fingerprint),
+                    Some(&fingerprint),
                 ));
             }
-            Err(_) => {}
         }
     }
     changes
@@ -633,9 +651,13 @@ fn created_watch_files(
                 watched.push(WatchedFile {
                     path: file.clone(),
                     snapshot: None,
-                    unresolved_error: Some(fingerprint),
+                    unresolved_error: Some(fingerprint.clone()),
                 });
-                changes.push(WatchChange::unknown(file, None, Some(fingerprint)));
+                if error.kind() == io::ErrorKind::NotFound {
+                    changes.push(WatchChange::removed(file, None));
+                } else {
+                    changes.push(WatchChange::unknown(file, None, Some(&fingerprint)));
+                }
             }
         }
     }
@@ -721,7 +743,7 @@ impl WatchChange {
     fn unknown(
         path: &Path,
         previous: Option<FileSnapshot>,
-        fingerprint: Option<WatchErrorFingerprint>,
+        fingerprint: Option<&WatchErrorFingerprint>,
     ) -> Self {
         Self {
             display: relative_display(path),
@@ -730,7 +752,7 @@ impl WatchChange {
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unknown,
             evidence_grade: EventEvidenceGrade::Unknown,
-            error_fingerprint: fingerprint.map(|value| value.as_label().to_owned()),
+            error_fingerprint: fingerprint.map(WatchErrorFingerprint::as_label),
             additional_paths: Vec::new(),
             raw_events: Vec::new(),
         }
@@ -939,11 +961,22 @@ mod tests {
 
     struct ErrorSnapshotSource {
         kind: io::ErrorKind,
+        message: &'static str,
     }
 
     impl WatchSnapshotSource for ErrorSnapshotSource {
         fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
-            Err(io::Error::new(self.kind, "forced snapshot failure"))
+            Err(io::Error::new(self.kind, self.message))
+        }
+    }
+
+    struct OkSnapshotSource {
+        snapshot: FileSnapshot,
+    }
+
+    impl WatchSnapshotSource for OkSnapshotSource {
+        fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
+            Ok(self.snapshot)
         }
     }
 
@@ -1050,6 +1083,7 @@ mod tests {
             &mut watched,
             &ErrorSnapshotSource {
                 kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied first",
             },
         )
         .unwrap();
@@ -1083,7 +1117,7 @@ mod tests {
         assert_eq!(state["changes"][0]["replay_grade"], "partial");
         assert_eq!(
             state["event_batches"][0]["events"][0]["error_fingerprint"],
-            "permission_denied"
+            "permission_denied:message:permission denied first"
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1116,6 +1150,7 @@ mod tests {
             &mut watched,
             &ErrorSnapshotSource {
                 kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied first",
             },
         )
         .unwrap()
@@ -1160,7 +1195,7 @@ mod tests {
         assert_eq!(state["changes"][0]["event_kind"], "unknown");
         assert_eq!(
             state["event_batches"][0]["events"][0]["error_fingerprint"],
-            "permission_denied"
+            "permission_denied:message:permission denied first"
         );
 
         let second_window = collect_debounce_window(
@@ -1168,6 +1203,7 @@ mod tests {
             &mut watched,
             &ErrorSnapshotSource {
                 kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied first",
             },
         )
         .unwrap();
@@ -1180,7 +1216,8 @@ mod tests {
             &mut scope,
             &mut watched,
             &ErrorSnapshotSource {
-                kind: io::ErrorKind::Other,
+                kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied second",
             },
         )
         .unwrap()
@@ -1191,7 +1228,159 @@ mod tests {
         );
         assert_eq!(
             changed_error_window.changes[0].error_fingerprint.as_deref(),
-            Some("other")
+            Some("permission_denied:message:permission denied second")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_snapshot_error_enters_unknown_state_and_suppresses_repeat() {
+        let root = temp_watch_root("startup-unknown-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+        assert_eq!(watched.len(), 1);
+        assert!(
+            watched[0].snapshot.is_none(),
+            "startup snapshot failures should not abort watch setup",
+        );
+        assert!(
+            watched[0].unresolved_error.is_none(),
+            "startup errors should be reported by the first scan, not hidden during setup",
+        );
+
+        let first_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap()
+        .expect("startup snapshot failure should become unknown evidence");
+        assert_eq!(first_window.changes[0].event_kind.as_str(), "unknown");
+        assert_eq!(
+            first_window.changes[0].error_fingerprint.as_deref(),
+            Some("permission_denied:message:startup denied")
+        );
+
+        let repeated_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+        assert!(
+            repeated_window.is_none(),
+            "same startup snapshot failure should not trigger another restart window",
+        );
+
+        let changed_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied but different",
+            },
+        )
+        .unwrap()
+        .expect("same error kind with changed identity should reopen evidence");
+        assert_eq!(
+            changed_window.changes[0].error_fingerprint.as_deref(),
+            Some("permission_denied:message:startup denied but different")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn snapshot_none_not_found_and_recovery_are_tracked() {
+        let root = temp_watch_root("snapshot-none-transitions");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: None,
+            unresolved_error: None,
+        }];
+
+        let not_found = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "missing",
+            },
+        )
+        .unwrap();
+        assert_eq!(not_found[0].event_kind.as_str(), "remove");
+        assert!(watched[0].snapshot.is_none());
+        assert_eq!(
+            watched[0]
+                .unresolved_error
+                .as_ref()
+                .map(WatchErrorFingerprint::as_label)
+                .as_deref(),
+            Some("not_found:message:missing"),
+        );
+
+        let repeated_not_found = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "missing",
+            },
+        )
+        .unwrap();
+        assert!(
+            repeated_not_found.is_empty(),
+            "same snapshot-none NotFound should not repeat remove evidence",
+        );
+
+        let recovered = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &OkSnapshotSource {
+                snapshot: FileSnapshot {
+                    modified: UNIX_EPOCH + Duration::from_secs(1),
+                    len: 13,
+                    is_readonly: false,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(recovered[0].event_kind.as_str(), "create");
+        assert!(watched[0].snapshot.is_some());
+        assert!(
+            watched[0].unresolved_error.is_none(),
+            "successful snapshot should clear unresolved error state",
         );
 
         let _ = std::fs::remove_dir_all(&root);
@@ -1224,6 +1413,7 @@ mod tests {
             &mut watched,
             &ErrorSnapshotSource {
                 kind: io::ErrorKind::NotFound,
+                message: "gone",
             },
         )
         .unwrap();

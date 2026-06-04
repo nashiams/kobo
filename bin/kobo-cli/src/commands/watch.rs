@@ -5,8 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::session::{build_session, render_diagnostics};
 use evidence::{
-    DuplicateStatus, RestartPolicyBranch, WatchEventInput, WatchEventKind, WatchEvidence,
-    WatchExecutionMode, WatchRerunOutcome, WatchRerunReport, DEBOUNCE_INTERVAL_MS,
+    DebounceWindowInput, DuplicateStatus, RestartPolicyBranch, WatchEventInput, WatchEventKind,
+    WatchEventPathInput, WatchEvidence, WatchExecutionMode, WatchPathRole, WatchRerunOutcome,
+    WatchRerunReport, DEBOUNCE_INTERVAL_MS,
 };
 use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
 
@@ -38,10 +39,11 @@ pub(super) fn cmd_watch(
 
     let mode_label = if build { "build" } else { "simple" };
     let run_once = std::env::var_os("KOBO_WATCH_ONCE").is_some();
+    let max_windows = watch_max_windows();
     let scope = watch_scope(file)?;
     let state_path = source_watch_state_path()?;
     let persisted_state_loaded = state_path.is_file();
-    persist_source_watch_state(file, &scope, persisted_state_loaded, None)?;
+    persist_source_watch_state(file, &scope, persisted_state_loaded, &[])?;
     println!(
         "Watching {} ({mode_label} mode, scoped-persist-reload, Ctrl+C to stop)",
         file.display(),
@@ -55,21 +57,27 @@ pub(super) fn cmd_watch(
     let mut scope = scope;
     let mut watched = watched_files(&scope)?;
     let mut change_sequence = 0;
+    let mut evidence_history = Vec::new();
 
     loop {
         std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
 
-        let Some(changes) = collect_debounce_window(&mut scope, &mut watched)? else {
+        let Some(window) = collect_debounce_window(&mut scope, &mut watched)? else {
             continue;
         };
         change_sequence += 1;
         let mut evidence = WatchEvidence::for_window(
             change_sequence,
             relative_display(file),
-            changes
+            window
+                .changes
                 .into_iter()
                 .map(WatchChange::into_event_input)
                 .collect(),
+            DebounceWindowInput {
+                has_timer_extension: window.has_timer_extension,
+                extension_cause_paths: window.extension_cause_paths,
+            },
             if build {
                 WatchExecutionMode::Build
             } else {
@@ -94,8 +102,9 @@ pub(super) fn cmd_watch(
         for line in evidence.human_lines() {
             println!("{line}");
         }
-        persist_source_watch_state(file, &scope, persisted_state_loaded, Some(&evidence))?;
-        if run_once {
+        evidence_history.push(evidence);
+        persist_source_watch_state(file, &scope, persisted_state_loaded, &evidence_history)?;
+        if run_once || max_windows.is_some_and(|limit| evidence_history.len() >= limit) {
             break;
         }
     }
@@ -170,6 +179,13 @@ struct WatchChange {
     previous_modified_ms: Option<u128>,
     current_modified_ms: Option<u128>,
     duplicate_status: DuplicateStatus,
+    additional_paths: Vec<WatchEventPathInput>,
+}
+
+struct DebounceWindow {
+    changes: Vec<WatchChange>,
+    has_timer_extension: bool,
+    extension_cause_paths: Vec<String>,
 }
 
 fn watch_scope(file: &Path) -> anyhow::Result<WatchScope> {
@@ -260,11 +276,18 @@ fn source_watch_state_path() -> anyhow::Result<PathBuf> {
     Ok(state_dir.join("source-watch.json"))
 }
 
+fn watch_max_windows() -> Option<usize> {
+    std::env::var("KOBO_WATCH_MAX_WINDOWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|limit| *limit > 0)
+}
+
 fn persist_source_watch_state(
     root_file: &Path,
     scope: &WatchScope,
     persisted_state_loaded: bool,
-    evidence: Option<&WatchEvidence>,
+    evidence_history: &[WatchEvidence],
 ) -> anyhow::Result<()> {
     let state_path = source_watch_state_path()?;
     let scope_files = scope
@@ -272,21 +295,30 @@ fn persist_source_watch_state(
         .iter()
         .map(|file| relative_display(file))
         .collect::<Vec<_>>();
-    let event_batches = evidence
-        .map(|watch_evidence| vec![watch_evidence.event_batch_json()])
-        .unwrap_or_default();
-    let debounce_windows = evidence
-        .map(|watch_evidence| vec![watch_evidence.debounce_window_json()])
-        .unwrap_or_default();
-    let restart_decisions = evidence
-        .map(|watch_evidence| vec![watch_evidence.restart_decision_json()])
-        .unwrap_or_default();
-    let child_lifecycle_obligations = evidence
-        .map(|watch_evidence| vec![watch_evidence.child_lifecycle_json()])
-        .unwrap_or_default();
-    let changes = evidence
+    let event_batches = evidence_history
+        .iter()
+        .map(WatchEvidence::event_batch_json)
+        .collect::<Vec<_>>();
+    let debounce_windows = evidence_history
+        .iter()
+        .map(WatchEvidence::debounce_window_json)
+        .collect::<Vec<_>>();
+    let restart_decisions = evidence_history
+        .iter()
+        .map(WatchEvidence::restart_decision_json)
+        .collect::<Vec<_>>();
+    let child_lifecycle_obligations = evidence_history
+        .iter()
+        .map(WatchEvidence::child_lifecycle_json)
+        .collect::<Vec<_>>();
+    let changes = evidence_history
+        .last()
         .map(WatchEvidence::changes_json)
         .unwrap_or_default();
+    let watcher_evidence = evidence_history
+        .last()
+        .map(WatchEvidence::watcher_evidence)
+        .unwrap_or("metadata-only");
     let value = serde_json::json!({
         "schema_version": 1,
         "mode": "source_watch_state",
@@ -297,9 +329,7 @@ fn persist_source_watch_state(
         "reload_checkpoint": "source-map-and-diagnostics",
         "restartable": true,
         "persisted_state_loaded": persisted_state_loaded,
-        "watcher_evidence": evidence
-            .map(WatchEvidence::watcher_evidence)
-            .unwrap_or("metadata-only"),
+        "watcher_evidence": watcher_evidence,
         "rerun_targets": [
             format!("kobo check {}", relative_display(root_file)),
             format!("kobo inspect {}", relative_display(root_file)),
@@ -330,21 +360,70 @@ fn watched_files(scope: &WatchScope) -> anyhow::Result<Vec<WatchedFile>> {
 fn collect_debounce_window(
     scope: &mut WatchScope,
     watched: &mut Vec<WatchedFile>,
-) -> anyhow::Result<Option<Vec<WatchChange>>> {
+) -> anyhow::Result<Option<DebounceWindow>> {
     let mut changes = collect_watch_changes(scope, watched)?;
     if changes.is_empty() {
         return Ok(None);
     }
+    let mut has_timer_extension = false;
+    let mut extension_cause_paths = Vec::new();
 
     loop {
         std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
         let later_changes = collect_watch_changes(scope, watched)?;
         if later_changes.is_empty() {
+            changes = normalize_rename_events(changes);
             changes.sort_by(|left, right| left.display.cmp(&right.display));
-            return Ok(Some(changes));
+            extension_cause_paths.sort();
+            extension_cause_paths.dedup();
+            return Ok(Some(DebounceWindow {
+                changes,
+                has_timer_extension,
+                extension_cause_paths,
+            }));
         }
+        has_timer_extension = true;
+        extension_cause_paths.extend(later_changes.iter().map(|change| change.display.clone()));
         merge_window_changes(&mut changes, later_changes);
     }
+}
+
+fn normalize_rename_events(changes: Vec<WatchChange>) -> Vec<WatchChange> {
+    let mut remaining = changes;
+    let remove_index = remaining
+        .iter()
+        .position(|change| matches!(change.event_kind, WatchEventKind::Remove));
+    let create_index = remaining
+        .iter()
+        .position(|change| matches!(change.event_kind, WatchEventKind::Create));
+
+    let (Some(remove_index), Some(create_index)) = (remove_index, create_index) else {
+        return remaining;
+    };
+    if remove_index == create_index {
+        return remaining;
+    }
+
+    let create = remaining.remove(create_index);
+    let adjusted_remove_index = if create_index < remove_index {
+        remove_index - 1
+    } else {
+        remove_index
+    };
+    let remove = remaining.remove(adjusted_remove_index);
+
+    if !same_parent_display(&remove.display, &create.display) {
+        remaining.push(remove);
+        remaining.push(create);
+        return remaining;
+    }
+
+    remaining.push(WatchChange::renamed(remove, create));
+    remaining
+}
+
+fn same_parent_display(left: &str, right: &str) -> bool {
+    Path::new(left).parent() == Path::new(right).parent()
 }
 
 fn collect_watch_changes(
@@ -460,6 +539,7 @@ impl WatchChange {
             previous_modified_ms: Some(system_time_millis(previous)),
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
+            additional_paths: Vec::new(),
         }
     }
 
@@ -470,6 +550,7 @@ impl WatchChange {
             previous_modified_ms: None,
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
+            additional_paths: Vec::new(),
         }
     }
 
@@ -480,6 +561,7 @@ impl WatchChange {
             previous_modified_ms: Some(system_time_millis(previous)),
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
+            additional_paths: Vec::new(),
         }
     }
 
@@ -490,6 +572,7 @@ impl WatchChange {
             previous_modified_ms: previous.map(|snapshot| system_time_millis(snapshot.modified)),
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unique,
+            additional_paths: Vec::new(),
         }
     }
 
@@ -500,12 +583,47 @@ impl WatchChange {
             previous_modified_ms: None,
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unknown,
+            additional_paths: Vec::new(),
+        }
+    }
+
+    fn renamed(remove: WatchChange, create: WatchChange) -> Self {
+        let parent_path = Path::new(&create.display)
+            .parent()
+            .map(|path| {
+                path.components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default();
+        Self {
+            display: remove.display,
+            event_kind: WatchEventKind::Rename,
+            previous_modified_ms: remove.previous_modified_ms,
+            current_modified_ms: create.current_modified_ms,
+            duplicate_status: DuplicateStatus::Coalesced,
+            additional_paths: vec![
+                WatchEventPathInput {
+                    role: WatchPathRole::DestinationPath,
+                    path: create.display,
+                },
+                WatchEventPathInput {
+                    role: WatchPathRole::ParentPath,
+                    path: parent_path,
+                },
+            ],
         }
     }
 
     fn into_event_input(self) -> WatchEventInput {
-        WatchEventInput {
+        let mut paths = vec![WatchEventPathInput {
+            role: WatchPathRole::SourcePath,
             path: self.display,
+        }];
+        paths.extend(self.additional_paths);
+        WatchEventInput {
+            paths,
             event_kind: self.event_kind,
             previous_modified_ms: self.previous_modified_ms,
             current_modified_ms: self.current_modified_ms,
@@ -697,5 +815,25 @@ mod tests {
     #[test]
     fn debounce_interval_is_200ms() {
         assert_eq!(DEBOUNCE_MS, 200);
+    }
+
+    #[test]
+    fn unknown_watch_change_persists_partial_unknown_evidence() {
+        let change = WatchChange::unknown(Path::new("src/raced.kobo"));
+        let evidence = WatchEvidence::for_window(
+            1,
+            "src/main.kobo".to_owned(),
+            vec![change.into_event_input()],
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let batch = evidence.event_batch_json();
+
+        assert_eq!(batch["events"][0]["kind"], "unknown");
+        assert_eq!(batch["replay_grade"], "partial");
+        assert_eq!(batch["events"][0]["duplicate_or_coalesced"], "unknown");
     }
 }

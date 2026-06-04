@@ -4,11 +4,22 @@ pub(super) const DEBOUNCE_INTERVAL_MS: u64 = 200;
 
 #[derive(Clone)]
 pub(super) struct WatchEventInput {
-    pub path: String,
+    pub paths: Vec<WatchEventPathInput>,
     pub event_kind: WatchEventKind,
     pub previous_modified_ms: Option<u128>,
     pub current_modified_ms: Option<u128>,
     pub duplicate_status: DuplicateStatus,
+}
+
+#[derive(Clone)]
+pub(super) struct WatchEventPathInput {
+    pub role: WatchPathRole,
+    pub path: String,
+}
+
+pub(super) struct DebounceWindowInput {
+    pub has_timer_extension: bool,
+    pub extension_cause_paths: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -23,6 +34,7 @@ pub(super) enum WatchEventKind {
     Create,
     Modify,
     Remove,
+    Rename,
     Metadata,
     Unknown,
     Rescan,
@@ -91,7 +103,14 @@ struct DebounceWindowEvidence {
     has_timer_creation: bool,
     has_timer_cancellation: bool,
     has_fired: bool,
+    extension_cause_paths: Vec<String>,
+    event_memberships: Vec<DebounceEventMembership>,
     event_batches: Vec<WatchBatchId>,
+}
+
+struct DebounceEventMembership {
+    batch_id: WatchBatchId,
+    path: String,
 }
 
 struct RestartDecisionEvidence {
@@ -139,8 +158,10 @@ enum ReplayGrade {
 }
 
 #[derive(Clone, Copy)]
-enum WatchPathRole {
+pub(super) enum WatchPathRole {
     SourcePath,
+    DestinationPath,
+    ParentPath,
 }
 
 #[derive(Clone, Copy)]
@@ -201,12 +222,19 @@ impl WatchEvidence {
             root_path,
             selected_paths,
             vec![WatchEventInput {
-                path: changed_path.unwrap_or_else(|| "planned scope".to_owned()),
+                paths: vec![WatchEventPathInput {
+                    role: WatchPathRole::SourcePath,
+                    path: changed_path.unwrap_or_else(|| "planned scope".to_owned()),
+                }],
                 event_kind,
                 previous_modified_ms: None,
                 current_modified_ms: None,
                 duplicate_status: DuplicateStatus::Unknown,
             }],
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
             WatchExecutionMode::Plan,
             branch,
             WatchRerunOutcome::Planned,
@@ -218,14 +246,20 @@ impl WatchEvidence {
         sequence: usize,
         root_path: String,
         events: Vec<WatchEventInput>,
+        debounce: DebounceWindowInput,
         mode: WatchExecutionMode,
     ) -> Self {
-        let selected_paths = events.iter().map(|event| event.path.clone()).collect();
+        let selected_paths = events
+            .iter()
+            .filter_map(WatchEventInput::primary_path)
+            .map(str::to_owned)
+            .collect();
         Self::new(
             sequence,
             root_path,
             selected_paths,
             events,
+            debounce,
             mode,
             RestartPolicyBranch::ChangedInScope,
             WatchRerunOutcome::Planned,
@@ -238,6 +272,7 @@ impl WatchEvidence {
         root_path: String,
         selected_paths: Vec<String>,
         events: Vec<WatchEventInput>,
+        debounce: DebounceWindowInput,
         mode: WatchExecutionMode,
         branch: RestartPolicyBranch,
         outcome: WatchRerunOutcome,
@@ -246,7 +281,8 @@ impl WatchEvidence {
         let batch_id = WatchBatchId::new(sequence);
         let window_id = WatchWindowId::new(sequence);
         let event_batch = WatchEventBatch::new(batch_id.clone(), events);
-        let debounce_window = DebounceWindowEvidence::new(window_id, batch_id);
+        let debounce_window =
+            DebounceWindowEvidence::new(window_id, batch_id, &event_batch, debounce);
         let restart_decision = RestartDecisionEvidence::new(
             branch,
             selected_paths,
@@ -354,12 +390,21 @@ impl WatchEventBatch {
             WatchEventKind::Create,
             WatchEventKind::Modify,
             WatchEventKind::Remove,
+            WatchEventKind::Rename,
             WatchEventKind::Metadata,
             WatchEventKind::Unknown,
             WatchEventKind::Rescan,
         ]
         .into_iter()
         .map(|event_kind| event_kind.as_str())
+        .collect::<Vec<_>>();
+        let known_path_roles = [
+            WatchPathRole::SourcePath,
+            WatchPathRole::DestinationPath,
+            WatchPathRole::ParentPath,
+        ]
+        .into_iter()
+        .map(|path_role| path_role.as_str())
         .collect::<Vec<_>>();
         serde_json::json!({
             "id": self.id.as_str(),
@@ -368,6 +413,7 @@ impl WatchEventBatch {
             "ordering_guarantee": self.ordering_guarantee.as_str(),
             "replay_grade": self.replay_grade.as_str(),
             "known_event_kinds": known_event_kinds,
+            "known_path_roles": known_path_roles,
             "events": self.events.iter().map(WatchEventEvidence::to_json).collect::<Vec<_>>(),
         })
     }
@@ -396,14 +442,24 @@ impl From<WatchEventInput> for WatchEventEvidence {
     fn from(input: WatchEventInput) -> Self {
         Self {
             event_kind: input.event_kind,
-            paths: vec![WatchEventPath {
-                role: WatchPathRole::SourcePath,
-                path: input.path,
-            }],
+            paths: input
+                .paths
+                .into_iter()
+                .map(|path| WatchEventPath {
+                    role: path.role,
+                    path: path.path,
+                })
+                .collect(),
             duplicate_status: input.duplicate_status,
             previous_modified_ms: input.previous_modified_ms,
             current_modified_ms: input.current_modified_ms,
         }
+    }
+}
+
+impl WatchEventInput {
+    fn primary_path(&self) -> Option<&str> {
+        self.paths.first().map(|path| path.path.as_str())
     }
 }
 
@@ -417,15 +473,30 @@ impl WatchEventPath {
 }
 
 impl DebounceWindowEvidence {
-    fn new(id: WatchWindowId, batch_id: WatchBatchId) -> Self {
+    fn new(
+        id: WatchWindowId,
+        batch_id: WatchBatchId,
+        batch: &WatchEventBatch,
+        debounce: DebounceWindowInput,
+    ) -> Self {
+        let event_memberships = batch
+            .events
+            .iter()
+            .map(|event| DebounceEventMembership {
+                batch_id: batch_id.clone(),
+                path: event.primary_path().to_owned(),
+            })
+            .collect();
         Self {
             id,
             interval_ms: DEBOUNCE_INTERVAL_MS,
             timer_evidence: EvidenceGrade::MetadataOnly,
             replay_grade: ReplayGrade::Partial,
             has_timer_creation: true,
-            has_timer_cancellation: false,
+            has_timer_cancellation: debounce.has_timer_extension,
             has_fired: true,
+            extension_cause_paths: debounce.extension_cause_paths,
+            event_memberships,
             event_batches: vec![batch_id],
         }
     }
@@ -438,8 +509,19 @@ impl DebounceWindowEvidence {
             "replay_grade": self.replay_grade.as_str(),
             "timer_created": self.has_timer_creation,
             "timer_cancelled": self.has_timer_cancellation,
+            "extension_cause": self.extension_cause_paths,
+            "event_membership": self.event_memberships.iter().map(DebounceEventMembership::to_json).collect::<Vec<_>>(),
             "fired": self.has_fired,
             "event_batches": self.event_batches.iter().map(WatchBatchId::as_str).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl DebounceEventMembership {
+    fn to_json(&self) -> Value {
+        serde_json::json!({
+            "batch_id": self.batch_id.as_str(),
+            "path": self.path,
         })
     }
 }
@@ -577,6 +659,7 @@ impl WatchEventKind {
             Self::Create => "create",
             Self::Modify => "modify",
             Self::Remove => "remove",
+            Self::Rename => "rename",
             Self::Metadata => "metadata",
             Self::Unknown => "unknown",
             Self::Rescan => "rescan",
@@ -588,6 +671,8 @@ impl WatchPathRole {
     fn as_str(&self) -> &'static str {
         match self {
             Self::SourcePath => "source_path",
+            Self::DestinationPath => "destination_path",
+            Self::ParentPath => "parent_path",
         }
     }
 }

@@ -10,6 +10,7 @@ pub(super) struct WatchEventInput {
     pub current_modified_ms: Option<u128>,
     pub duplicate_status: DuplicateStatus,
     pub evidence_grade: EventEvidenceGrade,
+    pub error_fingerprint: Option<String>,
     pub raw_events: Vec<RawWatchEventInput>,
 }
 
@@ -104,6 +105,7 @@ struct WatchEventEvidence {
     previous_modified_ms: Option<u128>,
     current_modified_ms: Option<u128>,
     evidence_grade: EventEvidenceGrade,
+    error_fingerprint: Option<String>,
     raw_events: Vec<RawWatchEventEvidence>,
 }
 
@@ -253,6 +255,7 @@ impl WatchEvidence {
                 current_modified_ms: None,
                 duplicate_status: DuplicateStatus::Unknown,
                 evidence_grade: EventEvidenceGrade::Unknown,
+                error_fingerprint: None,
                 raw_events: Vec::new(),
             }],
             DebounceWindowInput {
@@ -374,6 +377,7 @@ impl WatchEvidence {
                     "batch_id": self.batch.id.as_str(),
                     "replay_grade": self.batch.replay_grade.as_str(),
                     "evidence_grade": event.evidence_grade.as_str(),
+                    "error_fingerprint": event.error_fingerprint.clone(),
                     "previous_modified_ms": event.previous_modified_ms,
                     "current_modified_ms": event.current_modified_ms,
                     "raw_events": event.raw_events.iter().map(RawWatchEventEvidence::to_json).collect::<Vec<_>>(),
@@ -461,6 +465,7 @@ impl WatchEventEvidence {
             "previous_modified_ms": self.previous_modified_ms,
             "current_modified_ms": self.current_modified_ms,
             "evidence_grade": self.evidence_grade.as_str(),
+            "error_fingerprint": self.error_fingerprint.clone(),
             "raw_events": self.raw_events.iter().map(RawWatchEventEvidence::to_json).collect::<Vec<_>>(),
         })
     }
@@ -482,6 +487,7 @@ impl From<WatchEventInput> for WatchEventEvidence {
             previous_modified_ms: input.previous_modified_ms,
             current_modified_ms: input.current_modified_ms,
             evidence_grade: input.evidence_grade,
+            error_fingerprint: input.error_fingerprint,
             raw_events: input
                 .raw_events
                 .into_iter()

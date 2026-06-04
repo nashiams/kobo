@@ -167,6 +167,7 @@ struct WatchScope {
 struct WatchedFile {
     path: PathBuf,
     snapshot: Option<FileSnapshot>,
+    unresolved_error: Option<WatchErrorFingerprint>,
 }
 
 #[derive(Clone, Copy)]
@@ -176,11 +177,38 @@ struct FileSnapshot {
     is_readonly: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WatchErrorFingerprint {
+    kind: io::ErrorKind,
+}
+
 trait WatchSnapshotSource {
     fn snapshot(&self, file: &Path) -> io::Result<FileSnapshot>;
 }
 
 struct FsWatchSnapshotSource;
+
+impl WatchErrorFingerprint {
+    fn from_error(error: &io::Error) -> Self {
+        Self { kind: error.kind() }
+    }
+
+    fn as_label(&self) -> &'static str {
+        match self.kind {
+            io::ErrorKind::NotFound => "not_found",
+            io::ErrorKind::PermissionDenied => "permission_denied",
+            io::ErrorKind::AlreadyExists => "already_exists",
+            io::ErrorKind::InvalidInput => "invalid_input",
+            io::ErrorKind::InvalidData => "invalid_data",
+            io::ErrorKind::TimedOut => "timed_out",
+            io::ErrorKind::Interrupted => "interrupted",
+            io::ErrorKind::WouldBlock => "would_block",
+            io::ErrorKind::UnexpectedEof => "unexpected_eof",
+            io::ErrorKind::OutOfMemory => "out_of_memory",
+            _ => "other",
+        }
+    }
+}
 
 struct WatchChange {
     display: String,
@@ -189,6 +217,7 @@ struct WatchChange {
     current_modified_ms: Option<u128>,
     duplicate_status: DuplicateStatus,
     evidence_grade: EventEvidenceGrade,
+    error_fingerprint: Option<String>,
     additional_paths: Vec<WatchEventPathInput>,
     raw_events: Vec<RawWatchEventInput>,
 }
@@ -375,6 +404,7 @@ fn watched_files(
             Ok(WatchedFile {
                 path: path.clone(),
                 snapshot: Some(snapshot_source.snapshot(path)?),
+                unresolved_error: None,
             })
         })
         .collect()
@@ -513,35 +543,48 @@ fn changed_existing_files(
     let mut changes = Vec::new();
     for file in watched {
         match snapshot_source.snapshot(&file.path) {
-            Ok(current) => match file.snapshot {
-                Some(previous) if current.has_modified_change(previous) => {
-                    file.snapshot = Some(current);
-                    changes.push(WatchChange::modified(
-                        &file.path,
-                        previous.modified,
-                        current.modified,
-                    ));
+            Ok(current) => {
+                file.unresolved_error = None;
+                match file.snapshot {
+                    Some(previous) if current.has_modified_change(previous) => {
+                        file.snapshot = Some(current);
+                        changes.push(WatchChange::modified(
+                            &file.path,
+                            previous.modified,
+                            current.modified,
+                        ));
+                    }
+                    Some(previous) if current.has_metadata_change(previous) => {
+                        file.snapshot = Some(current);
+                        changes.push(WatchChange::metadata(
+                            &file.path,
+                            previous.modified,
+                            current.modified,
+                        ));
+                    }
+                    None => {
+                        file.snapshot = Some(current);
+                        changes.push(WatchChange::created(&file.path, current.modified));
+                    }
+                    _ => {}
                 }
-                Some(previous) if current.has_metadata_change(previous) => {
-                    file.snapshot = Some(current);
-                    changes.push(WatchChange::metadata(
-                        &file.path,
-                        previous.modified,
-                        current.modified,
-                    ));
-                }
-                None => {
-                    file.snapshot = Some(current);
-                    changes.push(WatchChange::created(&file.path, current.modified));
-                }
-                _ => {}
-            },
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound && file.snapshot.is_some() => {
                 let previous = file.snapshot.take();
+                file.unresolved_error = None;
                 changes.push(WatchChange::removed(&file.path, previous));
             }
-            Err(_) if file.snapshot.is_some() => {
-                changes.push(WatchChange::unknown(&file.path, file.snapshot));
+            Err(error) if file.snapshot.is_some() => {
+                let fingerprint = WatchErrorFingerprint::from_error(&error);
+                if file.unresolved_error == Some(fingerprint) {
+                    continue;
+                }
+                file.unresolved_error = Some(fingerprint);
+                changes.push(WatchChange::unknown(
+                    &file.path,
+                    file.snapshot,
+                    Some(fingerprint),
+                ));
             }
             Err(_) => {}
         }
@@ -581,15 +624,18 @@ fn created_watch_files(
                 watched.push(WatchedFile {
                     path: file.clone(),
                     snapshot: Some(current),
+                    unresolved_error: None,
                 });
                 changes.push(WatchChange::created(file, current.modified));
             }
-            Err(_) => {
+            Err(error) => {
+                let fingerprint = WatchErrorFingerprint::from_error(&error);
                 watched.push(WatchedFile {
                     path: file.clone(),
                     snapshot: None,
+                    unresolved_error: Some(fingerprint),
                 });
-                changes.push(WatchChange::unknown(file, None));
+                changes.push(WatchChange::unknown(file, None, Some(fingerprint)));
             }
         }
     }
@@ -606,6 +652,7 @@ fn merge_window_changes(changes: &mut Vec<WatchChange>, later_changes: Vec<Watch
             existing.current_modified_ms = later_change.current_modified_ms;
             existing.duplicate_status = DuplicateStatus::Coalesced;
             existing.evidence_grade = later_change.evidence_grade;
+            existing.error_fingerprint = later_change.error_fingerprint;
             existing.additional_paths = later_change.additional_paths;
             existing.raw_events = later_change.raw_events;
         } else {
@@ -623,6 +670,7 @@ impl WatchChange {
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
             evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: None,
             additional_paths: Vec::new(),
             raw_events: Vec::new(),
         }
@@ -636,6 +684,7 @@ impl WatchChange {
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
             evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: None,
             additional_paths: Vec::new(),
             raw_events: Vec::new(),
         }
@@ -649,6 +698,7 @@ impl WatchChange {
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
             evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: None,
             additional_paths: Vec::new(),
             raw_events: Vec::new(),
         }
@@ -662,12 +712,17 @@ impl WatchChange {
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unique,
             evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: None,
             additional_paths: Vec::new(),
             raw_events: Vec::new(),
         }
     }
 
-    fn unknown(path: &Path, previous: Option<FileSnapshot>) -> Self {
+    fn unknown(
+        path: &Path,
+        previous: Option<FileSnapshot>,
+        fingerprint: Option<WatchErrorFingerprint>,
+    ) -> Self {
         Self {
             display: relative_display(path),
             event_kind: WatchEventKind::Unknown,
@@ -675,6 +730,7 @@ impl WatchChange {
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unknown,
             evidence_grade: EventEvidenceGrade::Unknown,
+            error_fingerprint: fingerprint.map(|value| value.as_label().to_owned()),
             additional_paths: Vec::new(),
             raw_events: Vec::new(),
         }
@@ -699,6 +755,7 @@ impl WatchChange {
             current_modified_ms: create.current_modified_ms,
             duplicate_status: DuplicateStatus::Coalesced,
             evidence_grade: EventEvidenceGrade::ModelledFromMetadata,
+            error_fingerprint: None,
             additional_paths: vec![
                 WatchEventPathInput {
                     role: WatchPathRole::DestinationPath,
@@ -741,6 +798,7 @@ impl WatchChange {
             current_modified_ms: self.current_modified_ms,
             duplicate_status: self.duplicate_status,
             evidence_grade: self.evidence_grade,
+            error_fingerprint: self.error_fingerprint,
             raw_events: self.raw_events,
         }
     }
@@ -946,7 +1004,7 @@ mod tests {
 
     #[test]
     fn unknown_watch_change_persists_partial_unknown_evidence() {
-        let change = WatchChange::unknown(Path::new("src/raced.kobo"), None);
+        let change = WatchChange::unknown(Path::new("src/raced.kobo"), None, None);
         let evidence = WatchEvidence::for_window(
             1,
             "src/main.kobo".to_owned(),
@@ -984,6 +1042,7 @@ mod tests {
                 len: 13,
                 is_readonly: false,
             }),
+            unresolved_error: None,
         }];
 
         let changes = collect_watch_changes(
@@ -1022,6 +1081,10 @@ mod tests {
         );
         assert_eq!(state["changes"][0]["event_kind"], "unknown");
         assert_eq!(state["changes"][0]["replay_grade"], "partial");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["error_fingerprint"],
+            "permission_denied"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1045,6 +1108,7 @@ mod tests {
                 len: 13,
                 is_readonly: false,
             }),
+            unresolved_error: None,
         }];
 
         let window = collect_debounce_window(
@@ -1060,11 +1124,11 @@ mod tests {
         assert_eq!(window.changes[0].event_kind.as_str(), "unknown");
         assert!(matches!(
             window.changes[0].duplicate_status,
-            DuplicateStatus::Coalesced
+            DuplicateStatus::Unknown
         ));
         assert!(
-            window.has_timer_extension,
-            "repeated unknown evidence should record the debounce extension"
+            !window.has_timer_extension,
+            "remembered identical unknown evidence should make the next scan quiet"
         );
         assert!(
             watched[0].snapshot.is_some(),
@@ -1090,10 +1154,45 @@ mod tests {
         assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
         assert_eq!(
             state["event_batches"][0]["events"][0]["duplicate_or_coalesced"],
-            "coalesced"
+            "unknown"
         );
-        assert_eq!(state["debounce_windows"][0]["timer_cancelled"], true);
+        assert_eq!(state["debounce_windows"][0]["timer_cancelled"], false);
         assert_eq!(state["changes"][0]["event_kind"], "unknown");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["error_fingerprint"],
+            "permission_denied"
+        );
+
+        let second_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+            },
+        )
+        .unwrap();
+        assert!(
+            second_window.is_none(),
+            "same unresolved snapshot error should not create another restart window",
+        );
+
+        let changed_error_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::Other,
+            },
+        )
+        .unwrap()
+        .expect("changed snapshot error identity should reopen watcher evidence");
+        assert_eq!(
+            changed_error_window.changes[0].event_kind.as_str(),
+            "unknown"
+        );
+        assert_eq!(
+            changed_error_window.changes[0].error_fingerprint.as_deref(),
+            Some("other")
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1117,6 +1216,7 @@ mod tests {
                 len: 13,
                 is_readonly: false,
             }),
+            unresolved_error: None,
         }];
 
         let changes = collect_watch_changes(

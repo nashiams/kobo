@@ -631,7 +631,7 @@ fn watch_simple_records_removed_kobo_file_instead_of_dropping_it() {
 }
 
 #[test]
-fn watch_simple_normalizes_rename_paths_in_one_window() {
+fn watch_simple_marks_rename_as_metadata_candidate_with_raw_events() {
     let project = TestProject::new("model-watch-rename-event");
     let main = project.main_file("mod service;\nfn main() {}\n");
     let service = project.write("src/service.kobo", "fn helper() {}\n");
@@ -658,7 +658,14 @@ fn watch_simple_normalizes_rename_paths_in_one_window() {
         &std::fs::read_to_string(&state_path).expect("watch state should read"),
     )
     .expect("watch state should parse");
-    assert_eq!(state["event_batches"][0]["events"][0]["kind"], "rename");
+    assert_eq!(
+        state["event_batches"][0]["events"][0]["kind"],
+        "rename_candidate"
+    );
+    assert_eq!(
+        state["event_batches"][0]["events"][0]["evidence_grade"],
+        "modelled_from_metadata"
+    );
     let paths = state["event_batches"][0]["events"][0]["paths"].to_string();
     for expected in [
         "source_path",
@@ -673,6 +680,80 @@ fn watch_simple_normalizes_rename_paths_in_one_window() {
         &state["event_batches"][0]["known_path_roles"].to_string(),
         "destination_path",
         "batch should publish supported path roles",
+    );
+    let raw_events = state["event_batches"][0]["events"][0]["raw_events"].to_string();
+    assert_contains(
+        &raw_events,
+        "remove",
+        "rename candidate should preserve the raw remove event",
+    );
+    assert_contains(
+        &raw_events,
+        "create",
+        "rename candidate should preserve the raw create event",
+    );
+    assert_contains(
+        &state["changes"][0].to_string(),
+        "modelled_from_metadata",
+        "compact change list should also expose the modelled evidence grade",
+    );
+}
+
+#[test]
+fn watch_simple_keeps_multiple_create_remove_pairs_as_raw_events() {
+    let project = TestProject::new("model-watch-multi-remove-create");
+    let main = project.main_file("mod service;\nmod extra;\nfn main() {}\n");
+    let service = project.write("src/service.kobo", "fn helper() {}\n");
+    let extra = project.write("src/extra.kobo", "fn extra() {}\n");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("watch")
+        .arg("--simple")
+        .arg(&main)
+        .env("KOBO_WATCH_ONCE", "1")
+        .current_dir(&project.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch process should launch");
+
+    thread::sleep(Duration::from_millis(500));
+    std::fs::remove_file(&service).expect("first watched source should remove");
+    std::fs::remove_file(&extra).expect("second watched source should remove");
+    project.write("src/new_service.kobo", "fn helper() {}\n");
+    project.write("src/new_extra.kobo", "fn extra() {}\n");
+
+    let output = wait_child_output(child, Duration::from_secs(8));
+    assert_success(
+        &output,
+        "watch should exit after one multi-pair remove/create window",
+    );
+    let state_path = project.root.join(".kobo/watch/source-watch.json");
+    let state: Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).expect("watch state should read"),
+    )
+    .expect("watch state should parse");
+    let events = state["event_batches"][0]["events"]
+        .as_array()
+        .expect("watch events should be an array");
+    let event_kinds = events
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    assert!(
+        !event_kinds.contains(&"rename_candidate"),
+        "ambiguous multi-pair remove/create windows should not invent one rename candidate: {event_kinds:?}",
+    );
+    assert_eq!(
+        event_kinds.iter().filter(|kind| **kind == "remove").count(),
+        2,
+        "both removes should remain visible as raw watcher facts",
+    );
+    assert_eq!(
+        event_kinds.iter().filter(|kind| **kind == "create").count(),
+        2,
+        "both creates should remain visible as raw watcher facts",
     );
 }
 

@@ -1,13 +1,14 @@
 mod evidence;
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::session::{build_session, render_diagnostics};
 use evidence::{
-    DebounceWindowInput, DuplicateStatus, RestartPolicyBranch, WatchEventInput, WatchEventKind,
-    WatchEventPathInput, WatchEvidence, WatchExecutionMode, WatchPathRole, WatchRerunOutcome,
-    WatchRerunReport, DEBOUNCE_INTERVAL_MS,
+    DebounceWindowInput, DuplicateStatus, EventEvidenceGrade, RawWatchEventInput,
+    RestartPolicyBranch, WatchEventInput, WatchEventKind, WatchEventPathInput, WatchEvidence,
+    WatchExecutionMode, WatchPathRole, WatchRerunOutcome, WatchRerunReport, DEBOUNCE_INTERVAL_MS,
 };
 use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
 
@@ -55,14 +56,16 @@ pub(super) fn cmd_watch(
     println!("restartable: true");
 
     let mut scope = scope;
-    let mut watched = watched_files(&scope)?;
+    let snapshot_source = FsWatchSnapshotSource;
+    let mut watched = watched_files(&scope, &snapshot_source)?;
     let mut change_sequence = 0;
     let mut evidence_history = Vec::new();
 
     loop {
         std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
 
-        let Some(window) = collect_debounce_window(&mut scope, &mut watched)? else {
+        let Some(window) = collect_debounce_window(&mut scope, &mut watched, &snapshot_source)?
+        else {
             continue;
         };
         change_sequence += 1;
@@ -173,13 +176,21 @@ struct FileSnapshot {
     is_readonly: bool,
 }
 
+trait WatchSnapshotSource {
+    fn snapshot(&self, file: &Path) -> io::Result<FileSnapshot>;
+}
+
+struct FsWatchSnapshotSource;
+
 struct WatchChange {
     display: String,
     event_kind: WatchEventKind,
     previous_modified_ms: Option<u128>,
     current_modified_ms: Option<u128>,
     duplicate_status: DuplicateStatus,
+    evidence_grade: EventEvidenceGrade,
     additional_paths: Vec<WatchEventPathInput>,
+    raw_events: Vec<RawWatchEventInput>,
 }
 
 struct DebounceWindow {
@@ -290,6 +301,17 @@ fn persist_source_watch_state(
     evidence_history: &[WatchEvidence],
 ) -> anyhow::Result<()> {
     let state_path = source_watch_state_path()?;
+    let value = source_watch_state_json(root_file, scope, persisted_state_loaded, evidence_history);
+    std::fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
+        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", state_path.display()))
+}
+
+fn source_watch_state_json(
+    root_file: &Path,
+    scope: &WatchScope,
+    persisted_state_loaded: bool,
+    evidence_history: &[WatchEvidence],
+) -> serde_json::Value {
     let scope_files = scope
         .files
         .iter()
@@ -319,7 +341,7 @@ fn persist_source_watch_state(
         .last()
         .map(WatchEvidence::watcher_evidence)
         .unwrap_or("metadata-only");
-    let value = serde_json::json!({
+    serde_json::json!({
         "schema_version": 1,
         "mode": "source_watch_state",
         "scope": {
@@ -339,19 +361,20 @@ fn persist_source_watch_state(
         "debounce_windows": debounce_windows,
         "restart_decisions": restart_decisions,
         "child_lifecycle_obligations": child_lifecycle_obligations,
-    });
-    std::fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
-        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", state_path.display()))
+    })
 }
 
-fn watched_files(scope: &WatchScope) -> anyhow::Result<Vec<WatchedFile>> {
+fn watched_files(
+    scope: &WatchScope,
+    snapshot_source: &impl WatchSnapshotSource,
+) -> anyhow::Result<Vec<WatchedFile>> {
     scope
         .files
         .iter()
         .map(|path| {
             Ok(WatchedFile {
                 path: path.clone(),
-                snapshot: Some(get_file_snapshot(path)?),
+                snapshot: Some(snapshot_source.snapshot(path)?),
             })
         })
         .collect()
@@ -360,8 +383,9 @@ fn watched_files(scope: &WatchScope) -> anyhow::Result<Vec<WatchedFile>> {
 fn collect_debounce_window(
     scope: &mut WatchScope,
     watched: &mut Vec<WatchedFile>,
+    snapshot_source: &impl WatchSnapshotSource,
 ) -> anyhow::Result<Option<DebounceWindow>> {
-    let mut changes = collect_watch_changes(scope, watched)?;
+    let mut changes = collect_watch_changes(scope, watched, snapshot_source)?;
     if changes.is_empty() {
         return Ok(None);
     }
@@ -370,7 +394,7 @@ fn collect_debounce_window(
 
     loop {
         std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
-        let later_changes = collect_watch_changes(scope, watched)?;
+        let later_changes = collect_watch_changes(scope, watched, snapshot_source)?;
         if later_changes.is_empty() {
             changes = normalize_rename_events(changes);
             changes.sort_by(|left, right| left.display.cmp(&right.display));
@@ -390,6 +414,18 @@ fn collect_debounce_window(
 
 fn normalize_rename_events(changes: Vec<WatchChange>) -> Vec<WatchChange> {
     let mut remaining = changes;
+    let remove_count = remaining
+        .iter()
+        .filter(|change| matches!(change.event_kind, WatchEventKind::Remove))
+        .count();
+    let create_count = remaining
+        .iter()
+        .filter(|change| matches!(change.event_kind, WatchEventKind::Create))
+        .count();
+    if remove_count != 1 || create_count != 1 {
+        return remaining;
+    }
+
     let remove_index = remaining
         .iter()
         .position(|change| matches!(change.event_kind, WatchEventKind::Remove));
@@ -418,7 +454,7 @@ fn normalize_rename_events(changes: Vec<WatchChange>) -> Vec<WatchChange> {
         return remaining;
     }
 
-    remaining.push(WatchChange::renamed(remove, create));
+    remaining.push(WatchChange::rename_candidate(remove, create));
     remaining
 }
 
@@ -429,17 +465,21 @@ fn same_parent_display(left: &str, right: &str) -> bool {
 fn collect_watch_changes(
     scope: &mut WatchScope,
     watched: &mut Vec<WatchedFile>,
+    snapshot_source: &impl WatchSnapshotSource,
 ) -> anyhow::Result<Vec<WatchChange>> {
-    let mut changes = changed_existing_files(watched);
+    let mut changes = changed_existing_files(watched, snapshot_source);
     refresh_watch_scope(scope)?;
-    changes.extend(created_watch_files(scope, watched));
+    changes.extend(created_watch_files(scope, watched, snapshot_source));
     Ok(changes)
 }
 
-fn changed_existing_files(watched: &mut [WatchedFile]) -> Vec<WatchChange> {
+fn changed_existing_files(
+    watched: &mut [WatchedFile],
+    snapshot_source: &impl WatchSnapshotSource,
+) -> Vec<WatchChange> {
     let mut changes = Vec::new();
     for file in watched {
-        match get_file_snapshot(&file.path) {
+        match snapshot_source.snapshot(&file.path) {
             Ok(current) => match file.snapshot {
                 Some(previous) if current.has_modified_change(previous) => {
                     file.snapshot = Some(current);
@@ -463,9 +503,12 @@ fn changed_existing_files(watched: &mut [WatchedFile]) -> Vec<WatchChange> {
                 }
                 _ => {}
             },
-            Err(_) if file.snapshot.is_some() => {
+            Err(error) if error.kind() == io::ErrorKind::NotFound && file.snapshot.is_some() => {
                 let previous = file.snapshot.take();
                 changes.push(WatchChange::removed(&file.path, previous));
+            }
+            Err(_) if file.snapshot.is_some() => {
+                changes.push(WatchChange::unknown(&file.path, file.snapshot));
             }
             Err(_) => {}
         }
@@ -487,7 +530,11 @@ fn refresh_watch_scope(scope: &mut WatchScope) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn created_watch_files(scope: &WatchScope, watched: &mut Vec<WatchedFile>) -> Vec<WatchChange> {
+fn created_watch_files(
+    scope: &WatchScope,
+    watched: &mut Vec<WatchedFile>,
+    snapshot_source: &impl WatchSnapshotSource,
+) -> Vec<WatchChange> {
     let mut changes = Vec::new();
     for file in &scope.files {
         if watched
@@ -496,7 +543,7 @@ fn created_watch_files(scope: &WatchScope, watched: &mut Vec<WatchedFile>) -> Ve
         {
             continue;
         }
-        match get_file_snapshot(file) {
+        match snapshot_source.snapshot(file) {
             Ok(current) => {
                 watched.push(WatchedFile {
                     path: file.clone(),
@@ -509,7 +556,7 @@ fn created_watch_files(scope: &WatchScope, watched: &mut Vec<WatchedFile>) -> Ve
                     path: file.clone(),
                     snapshot: None,
                 });
-                changes.push(WatchChange::unknown(file));
+                changes.push(WatchChange::unknown(file, None));
             }
         }
     }
@@ -525,6 +572,9 @@ fn merge_window_changes(changes: &mut Vec<WatchChange>, later_changes: Vec<Watch
             existing.event_kind = later_change.event_kind;
             existing.current_modified_ms = later_change.current_modified_ms;
             existing.duplicate_status = DuplicateStatus::Coalesced;
+            existing.evidence_grade = later_change.evidence_grade;
+            existing.additional_paths = later_change.additional_paths;
+            existing.raw_events = later_change.raw_events;
         } else {
             changes.push(later_change);
         }
@@ -539,7 +589,9 @@ impl WatchChange {
             previous_modified_ms: Some(system_time_millis(previous)),
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
             additional_paths: Vec::new(),
+            raw_events: Vec::new(),
         }
     }
 
@@ -550,7 +602,9 @@ impl WatchChange {
             previous_modified_ms: None,
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
             additional_paths: Vec::new(),
+            raw_events: Vec::new(),
         }
     }
 
@@ -561,7 +615,9 @@ impl WatchChange {
             previous_modified_ms: Some(system_time_millis(previous)),
             current_modified_ms: Some(system_time_millis(current)),
             duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
             additional_paths: Vec::new(),
+            raw_events: Vec::new(),
         }
     }
 
@@ -572,22 +628,26 @@ impl WatchChange {
             previous_modified_ms: previous.map(|snapshot| system_time_millis(snapshot.modified)),
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
             additional_paths: Vec::new(),
+            raw_events: Vec::new(),
         }
     }
 
-    fn unknown(path: &Path) -> Self {
+    fn unknown(path: &Path, previous: Option<FileSnapshot>) -> Self {
         Self {
             display: relative_display(path),
             event_kind: WatchEventKind::Unknown,
-            previous_modified_ms: None,
+            previous_modified_ms: previous.map(|snapshot| system_time_millis(snapshot.modified)),
             current_modified_ms: None,
             duplicate_status: DuplicateStatus::Unknown,
+            evidence_grade: EventEvidenceGrade::Unknown,
             additional_paths: Vec::new(),
+            raw_events: Vec::new(),
         }
     }
 
-    fn renamed(remove: WatchChange, create: WatchChange) -> Self {
+    fn rename_candidate(remove: WatchChange, create: WatchChange) -> Self {
         let parent_path = Path::new(&create.display)
             .parent()
             .map(|path| {
@@ -597,20 +657,39 @@ impl WatchChange {
                     .join("/")
             })
             .unwrap_or_default();
+        let source_path = remove.display;
+        let destination_path = create.display;
         Self {
-            display: remove.display,
-            event_kind: WatchEventKind::Rename,
+            display: source_path.clone(),
+            event_kind: WatchEventKind::RenameCandidate,
             previous_modified_ms: remove.previous_modified_ms,
             current_modified_ms: create.current_modified_ms,
             duplicate_status: DuplicateStatus::Coalesced,
+            evidence_grade: EventEvidenceGrade::ModelledFromMetadata,
             additional_paths: vec![
                 WatchEventPathInput {
                     role: WatchPathRole::DestinationPath,
-                    path: create.display,
+                    path: destination_path.clone(),
                 },
                 WatchEventPathInput {
                     role: WatchPathRole::ParentPath,
                     path: parent_path,
+                },
+            ],
+            raw_events: vec![
+                RawWatchEventInput {
+                    event_kind: WatchEventKind::Remove,
+                    paths: vec![WatchEventPathInput {
+                        role: WatchPathRole::SourcePath,
+                        path: source_path,
+                    }],
+                },
+                RawWatchEventInput {
+                    event_kind: WatchEventKind::Create,
+                    paths: vec![WatchEventPathInput {
+                        role: WatchPathRole::DestinationPath,
+                        path: destination_path,
+                    }],
                 },
             ],
         }
@@ -628,6 +707,8 @@ impl WatchChange {
             previous_modified_ms: self.previous_modified_ms,
             current_modified_ms: self.current_modified_ms,
             duplicate_status: self.duplicate_status,
+            evidence_grade: self.evidence_grade,
+            raw_events: self.raw_events,
         }
     }
 }
@@ -648,12 +729,15 @@ fn get_mtime(file: &Path) -> anyhow::Result<SystemTime> {
         .map_err(|e| anyhow::anyhow!("cannot get mtime for {}: {}", file.display(), e))
 }
 
-fn get_file_snapshot(file: &Path) -> anyhow::Result<FileSnapshot> {
-    let metadata = std::fs::metadata(file)
-        .map_err(|e| anyhow::anyhow!("cannot stat {}: {}", file.display(), e))?;
-    let modified = metadata
-        .modified()
-        .map_err(|e| anyhow::anyhow!("cannot get mtime for {}: {}", file.display(), e))?;
+impl WatchSnapshotSource for FsWatchSnapshotSource {
+    fn snapshot(&self, file: &Path) -> io::Result<FileSnapshot> {
+        get_file_snapshot(file)
+    }
+}
+
+fn get_file_snapshot(file: &Path) -> io::Result<FileSnapshot> {
+    let metadata = std::fs::metadata(file)?;
+    let modified = metadata.modified()?;
     Ok(FileSnapshot {
         modified,
         len: metadata.len(),
@@ -762,6 +846,16 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    struct ErrorSnapshotSource {
+        kind: io::ErrorKind,
+    }
+
+    impl WatchSnapshotSource for ErrorSnapshotSource {
+        fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
+            Err(io::Error::new(self.kind, "forced snapshot failure"))
+        }
+    }
+
     #[test]
     fn watch_detects_file_change() {
         let dir = std::env::temp_dir().join("kobo_watch_test");
@@ -819,7 +913,7 @@ mod tests {
 
     #[test]
     fn unknown_watch_change_persists_partial_unknown_evidence() {
-        let change = WatchChange::unknown(Path::new("src/raced.kobo"));
+        let change = WatchChange::unknown(Path::new("src/raced.kobo"), None);
         let evidence = WatchEvidence::for_window(
             1,
             "src/main.kobo".to_owned(),
@@ -835,5 +929,139 @@ mod tests {
         assert_eq!(batch["events"][0]["kind"], "unknown");
         assert_eq!(batch["replay_grade"], "partial");
         assert_eq!(batch["events"][0]["duplicate_or_coalesced"], "unknown");
+        assert_eq!(batch["events"][0]["evidence_grade"], "unknown");
+    }
+
+    #[test]
+    fn scanner_snapshot_error_persists_unknown_event() {
+        let root = temp_watch_root("unknown-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(FileSnapshot {
+                modified: UNIX_EPOCH,
+                len: 13,
+                is_readonly: false,
+            }),
+        }];
+
+        let changes = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+            },
+        )
+        .unwrap();
+        assert_eq!(changes[0].event_kind.as_str(), "unknown");
+        assert!(
+            watched[0].snapshot.is_some(),
+            "non-NotFound snapshot failures should keep the prior snapshot instead of inventing a remove",
+        );
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["evidence_grade"],
+            "unknown"
+        );
+        assert_eq!(state["changes"][0]["event_kind"], "unknown");
+        assert_eq!(state["changes"][0]["replay_grade"], "partial");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scanner_not_found_snapshot_persists_remove_event() {
+        let root = temp_watch_root("not-found-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(FileSnapshot {
+                modified: UNIX_EPOCH,
+                len: 13,
+                is_readonly: false,
+            }),
+        }];
+
+        let changes = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+            },
+        )
+        .unwrap();
+        assert_eq!(changes[0].event_kind.as_str(), "remove");
+        assert!(
+            watched[0].snapshot.is_none(),
+            "NotFound is the snapshot failure that clears the watched file state",
+        );
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "remove");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["evidence_grade"],
+            "metadata_only"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn temp_watch_root(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "kobo-watch-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
     }
 }

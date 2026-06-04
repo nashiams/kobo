@@ -9,12 +9,20 @@ pub(super) struct WatchEventInput {
     pub previous_modified_ms: Option<u128>,
     pub current_modified_ms: Option<u128>,
     pub duplicate_status: DuplicateStatus,
+    pub evidence_grade: EventEvidenceGrade,
+    pub raw_events: Vec<RawWatchEventInput>,
 }
 
 #[derive(Clone)]
 pub(super) struct WatchEventPathInput {
     pub role: WatchPathRole,
     pub path: String,
+}
+
+#[derive(Clone)]
+pub(super) struct RawWatchEventInput {
+    pub event_kind: WatchEventKind,
+    pub paths: Vec<WatchEventPathInput>,
 }
 
 pub(super) struct DebounceWindowInput {
@@ -34,7 +42,7 @@ pub(super) enum WatchEventKind {
     Create,
     Modify,
     Remove,
-    Rename,
+    RenameCandidate,
     Metadata,
     Unknown,
     Rescan,
@@ -44,6 +52,13 @@ pub(super) enum WatchEventKind {
 pub(super) enum DuplicateStatus {
     Unique,
     Coalesced,
+    Unknown,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum EventEvidenceGrade {
+    MetadataOnly,
+    ModelledFromMetadata,
     Unknown,
 }
 
@@ -88,11 +103,18 @@ struct WatchEventEvidence {
     duplicate_status: DuplicateStatus,
     previous_modified_ms: Option<u128>,
     current_modified_ms: Option<u128>,
+    evidence_grade: EventEvidenceGrade,
+    raw_events: Vec<RawWatchEventEvidence>,
 }
 
 struct WatchEventPath {
     role: WatchPathRole,
     path: String,
+}
+
+struct RawWatchEventEvidence {
+    event_kind: WatchEventKind,
+    paths: Vec<WatchEventPath>,
 }
 
 struct DebounceWindowEvidence {
@@ -230,6 +252,8 @@ impl WatchEvidence {
                 previous_modified_ms: None,
                 current_modified_ms: None,
                 duplicate_status: DuplicateStatus::Unknown,
+                evidence_grade: EventEvidenceGrade::Unknown,
+                raw_events: Vec::new(),
             }],
             DebounceWindowInput {
                 has_timer_extension: false,
@@ -349,8 +373,10 @@ impl WatchEvidence {
                     "event_kind": event.event_kind.as_str(),
                     "batch_id": self.batch.id.as_str(),
                     "replay_grade": self.batch.replay_grade.as_str(),
+                    "evidence_grade": event.evidence_grade.as_str(),
                     "previous_modified_ms": event.previous_modified_ms,
                     "current_modified_ms": event.current_modified_ms,
+                    "raw_events": event.raw_events.iter().map(RawWatchEventEvidence::to_json).collect::<Vec<_>>(),
                 })
             })
             .collect()
@@ -390,7 +416,7 @@ impl WatchEventBatch {
             WatchEventKind::Create,
             WatchEventKind::Modify,
             WatchEventKind::Remove,
-            WatchEventKind::Rename,
+            WatchEventKind::RenameCandidate,
             WatchEventKind::Metadata,
             WatchEventKind::Unknown,
             WatchEventKind::Rescan,
@@ -434,6 +460,8 @@ impl WatchEventEvidence {
             "duplicate_or_coalesced": self.duplicate_status.as_str(),
             "previous_modified_ms": self.previous_modified_ms,
             "current_modified_ms": self.current_modified_ms,
+            "evidence_grade": self.evidence_grade.as_str(),
+            "raw_events": self.raw_events.iter().map(RawWatchEventEvidence::to_json).collect::<Vec<_>>(),
         })
     }
 }
@@ -453,6 +481,12 @@ impl From<WatchEventInput> for WatchEventEvidence {
             duplicate_status: input.duplicate_status,
             previous_modified_ms: input.previous_modified_ms,
             current_modified_ms: input.current_modified_ms,
+            evidence_grade: input.evidence_grade,
+            raw_events: input
+                .raw_events
+                .into_iter()
+                .map(RawWatchEventEvidence::from)
+                .collect(),
         }
     }
 }
@@ -463,11 +497,36 @@ impl WatchEventInput {
     }
 }
 
+impl From<RawWatchEventInput> for RawWatchEventEvidence {
+    fn from(input: RawWatchEventInput) -> Self {
+        Self {
+            event_kind: input.event_kind,
+            paths: input
+                .paths
+                .into_iter()
+                .map(|path| WatchEventPath {
+                    role: path.role,
+                    path: path.path,
+                })
+                .collect(),
+        }
+    }
+}
+
 impl WatchEventPath {
     fn to_json(&self) -> Value {
         serde_json::json!({
             "role": self.role.as_str(),
             "path": self.path,
+        })
+    }
+}
+
+impl RawWatchEventEvidence {
+    fn to_json(&self) -> Value {
+        serde_json::json!({
+            "kind": self.event_kind.as_str(),
+            "paths": self.paths.iter().map(WatchEventPath::to_json).collect::<Vec<_>>(),
         })
     }
 }
@@ -659,10 +718,20 @@ impl WatchEventKind {
             Self::Create => "create",
             Self::Modify => "modify",
             Self::Remove => "remove",
-            Self::Rename => "rename",
+            Self::RenameCandidate => "rename_candidate",
             Self::Metadata => "metadata",
             Self::Unknown => "unknown",
             Self::Rescan => "rescan",
+        }
+    }
+}
+
+impl EventEvidenceGrade {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::MetadataOnly => "metadata_only",
+            Self::ModelledFromMetadata => "modelled_from_metadata",
+            Self::Unknown => "unknown",
         }
     }
 }

@@ -234,6 +234,19 @@ fn watch_persist_reload_loop_is_scoped_and_restartable() {
             "watch plan should expose scoped restart state",
         );
     }
+    for expected in [
+        "watcher evidence: metadata-only",
+        "event batch: watch-batch-1",
+        "debounce window: watch-window-1 (200ms)",
+        "restart decision: rerun",
+        "child lifecycle: no child process started",
+    ] {
+        assert_contains(
+            &text,
+            expected,
+            "watch plan should expose typed watcher and supervisor evidence",
+        );
+    }
 }
 
 #[test]
@@ -267,6 +280,10 @@ fn watch_simple_observes_module_change_and_persists_reload_state() {
         "scoped-persist-reload",
         "persisted state loaded",
         "changed file: src/service.kobo",
+        "event batch: watch-batch-1",
+        "debounce window: watch-window-1",
+        "restart decision: rerun",
+        "child lifecycle: no child process started",
         "reload checkpoint: source-map-and-diagnostics",
         "restartable: true",
     ] {
@@ -288,10 +305,28 @@ fn watch_simple_observes_module_change_and_persists_reload_state() {
     .expect("watch state should parse");
     assert_eq!(state["reload_checkpoint"], "source-map-and-diagnostics");
     assert_eq!(state["restartable"], Value::Bool(true));
+    assert_eq!(state["watcher_evidence"], "metadata-only");
     assert_contains(
         &state["scope"]["files"].to_string(),
         "src/service.kobo",
         "watch state should retain scoped module files",
     );
     assert_eq!(state["changes"][0]["path"], "src/service.kobo");
+    assert_eq!(state["changes"][0]["event_kind"], "modify");
+    assert_eq!(state["event_batches"][0]["id"], "watch-batch-1");
+    assert_eq!(state["event_batches"][0]["replay_grade"], "partial");
+    assert_eq!(
+        state["event_batches"][0]["events"][0]["paths"][0]["role"],
+        "source_path"
+    );
+    assert_eq!(state["debounce_windows"][0]["id"], "watch-window-1");
+    assert_eq!(
+        state["debounce_windows"][0]["interval_ms"],
+        Value::from(200)
+    );
+    assert_eq!(state["restart_decisions"][0]["action"], "rerun");
+    assert_eq!(
+        state["child_lifecycle_obligations"][0]["resolution"],
+        "no_child_started"
+    );
 }

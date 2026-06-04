@@ -1,7 +1,10 @@
+mod evidence;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::session::{build_session, render_diagnostics};
+use evidence::{WatchEvidence, WatchExecutionMode};
 use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
 
 /// File-watcher re-run on save.
@@ -35,7 +38,7 @@ pub(super) fn cmd_watch(
     let scope = watch_scope(file)?;
     let state_path = source_watch_state_path()?;
     let persisted_state_loaded = state_path.is_file();
-    persist_source_watch_state(file, &scope, &[], persisted_state_loaded)?;
+    persist_source_watch_state(file, &scope, &[], persisted_state_loaded, None)?;
     println!(
         "Watching {} ({mode_label} mode, scoped-persist-reload, Ctrl+C to stop)",
         file.display(),
@@ -47,6 +50,7 @@ pub(super) fn cmd_watch(
     println!("restartable: true");
 
     let mut watched = watched_files(&scope)?;
+    let mut change_sequence = 0;
 
     loop {
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -54,14 +58,36 @@ pub(super) fn cmd_watch(
         let Some(change) = next_change(&mut watched) else {
             continue;
         };
+        change_sequence += 1;
+        let evidence = WatchEvidence::for_change(
+            change_sequence,
+            relative_display(file),
+            change.display.clone(),
+            if build {
+                WatchExecutionMode::Build
+            } else {
+                WatchExecutionMode::Simple
+            },
+            change.previous_modified_ms,
+            change.current_modified_ms,
+        );
 
         println!(
             "[kobo-watch] Change detected in {}, recompiling...",
             change.display
         );
         println!("changed file: {}", change.display);
-        let changes = vec![change.to_json()];
-        persist_source_watch_state(file, &scope, &changes, persisted_state_loaded)?;
+        for line in evidence.human_lines() {
+            println!("{line}");
+        }
+        let changes = vec![change.to_json(&evidence)];
+        persist_source_watch_state(
+            file,
+            &scope,
+            &changes,
+            persisted_state_loaded,
+            Some(&evidence),
+        )?;
         if build {
             on_file_changed_build(file);
         } else {
@@ -84,6 +110,7 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     let scope = watch_scope(file)?;
     let target = relative_display(file);
     let changed = changed.map(relative_display);
+    let evidence = WatchEvidence::for_plan(target.clone(), changed.clone());
     println!("Watch plan");
     println!("mode: scoped-persist-reload");
     println!("scope: {target}");
@@ -97,6 +124,9 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     println!("rerun targets:");
     println!("rerun target: kobo check {target}");
     println!("rerun target: kobo inspect {target}");
+    for line in evidence.human_lines() {
+        println!("{line}");
+    }
     if let Some(changed) = changed {
         println!("invalidated: {changed}");
         println!("reason: changed file belongs to scoped watch plan");
@@ -190,6 +220,7 @@ fn persist_source_watch_state(
     scope: &WatchScope,
     changes: &[serde_json::Value],
     persisted_state_loaded: bool,
+    evidence: Option<&WatchEvidence>,
 ) -> anyhow::Result<()> {
     let state_path = source_watch_state_path()?;
     let scope_files = scope
@@ -197,6 +228,18 @@ fn persist_source_watch_state(
         .iter()
         .map(|file| relative_display(file))
         .collect::<Vec<_>>();
+    let event_batches = evidence
+        .map(|watch_evidence| vec![watch_evidence.event_batch_json()])
+        .unwrap_or_default();
+    let debounce_windows = evidence
+        .map(|watch_evidence| vec![watch_evidence.debounce_window_json()])
+        .unwrap_or_default();
+    let restart_decisions = evidence
+        .map(|watch_evidence| vec![watch_evidence.restart_decision_json()])
+        .unwrap_or_default();
+    let child_lifecycle_obligations = evidence
+        .map(|watch_evidence| vec![watch_evidence.child_lifecycle_json()])
+        .unwrap_or_default();
     let value = serde_json::json!({
         "schema_version": 1,
         "mode": "source_watch_state",
@@ -207,11 +250,18 @@ fn persist_source_watch_state(
         "reload_checkpoint": "source-map-and-diagnostics",
         "restartable": true,
         "persisted_state_loaded": persisted_state_loaded,
+        "watcher_evidence": evidence
+            .map(WatchEvidence::watcher_evidence)
+            .unwrap_or("metadata-only"),
         "rerun_targets": [
             format!("kobo check {}", relative_display(root_file)),
             format!("kobo inspect {}", relative_display(root_file)),
         ],
         "changes": changes,
+        "event_batches": event_batches,
+        "debounce_windows": debounce_windows,
+        "restart_decisions": restart_decisions,
+        "child_lifecycle_obligations": child_lifecycle_obligations,
     });
     std::fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
         .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", state_path.display()))
@@ -249,10 +299,13 @@ fn next_change(watched: &mut [WatchedFile]) -> Option<WatchChange> {
 }
 
 impl WatchChange {
-    fn to_json(&self) -> serde_json::Value {
+    fn to_json(&self, evidence: &WatchEvidence) -> serde_json::Value {
         serde_json::json!({
             "kind": "source_change",
             "path": self.display,
+            "event_kind": evidence.event_kind(),
+            "batch_id": evidence.batch_id(),
+            "replay_grade": evidence.replay_grade(),
             "previous_modified_ms": self.previous_modified_ms,
             "current_modified_ms": self.current_modified_ms,
         })

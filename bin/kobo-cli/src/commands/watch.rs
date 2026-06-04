@@ -396,20 +396,53 @@ fn collect_debounce_window(
         std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
         let later_changes = collect_watch_changes(scope, watched, snapshot_source)?;
         if later_changes.is_empty() {
-            changes = normalize_rename_events(changes);
-            changes.sort_by(|left, right| left.display.cmp(&right.display));
-            extension_cause_paths.sort();
-            extension_cause_paths.dedup();
-            return Ok(Some(DebounceWindow {
+            return Ok(Some(finalize_debounce_window(
                 changes,
                 has_timer_extension,
                 extension_cause_paths,
-            }));
+            )));
+        }
+        if repeated_unknown_changes(&changes, &later_changes) {
+            has_timer_extension = true;
+            extension_cause_paths.extend(later_changes.iter().map(|change| change.display.clone()));
+            merge_window_changes(&mut changes, later_changes);
+            return Ok(Some(finalize_debounce_window(
+                changes,
+                has_timer_extension,
+                extension_cause_paths,
+            )));
         }
         has_timer_extension = true;
         extension_cause_paths.extend(later_changes.iter().map(|change| change.display.clone()));
         merge_window_changes(&mut changes, later_changes);
     }
+}
+
+fn finalize_debounce_window(
+    mut changes: Vec<WatchChange>,
+    has_timer_extension: bool,
+    mut extension_cause_paths: Vec<String>,
+) -> DebounceWindow {
+    changes = normalize_rename_events(changes);
+    changes.sort_by(|left, right| left.display.cmp(&right.display));
+    extension_cause_paths.sort();
+    extension_cause_paths.dedup();
+    DebounceWindow {
+        changes,
+        has_timer_extension,
+        extension_cause_paths,
+    }
+}
+
+fn repeated_unknown_changes(existing: &[WatchChange], later: &[WatchChange]) -> bool {
+    !later.is_empty()
+        && later.iter().all(|later_change| {
+            matches!(later_change.event_kind, WatchEventKind::Unknown)
+                && existing.iter().any(|existing_change| {
+                    existing_change.display == later_change.display
+                        && matches!(existing_change.event_kind, WatchEventKind::Unknown)
+                })
+        })
 }
 
 fn normalize_rename_events(changes: Vec<WatchChange>) -> Vec<WatchChange> {
@@ -989,6 +1022,78 @@ mod tests {
         );
         assert_eq!(state["changes"][0]["event_kind"], "unknown");
         assert_eq!(state["changes"][0]["replay_grade"], "partial");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_unknown_snapshot_error_closes_debounce_window() {
+        let root = temp_watch_root("persistent-unknown-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(FileSnapshot {
+                modified: UNIX_EPOCH,
+                len: 13,
+                is_readonly: false,
+            }),
+        }];
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+            },
+        )
+        .unwrap()
+        .expect("persistent unknown evidence should still close a debounce window");
+        assert_eq!(window.changes.len(), 1);
+        assert_eq!(window.changes[0].event_kind.as_str(), "unknown");
+        assert!(matches!(
+            window.changes[0].duplicate_status,
+            DuplicateStatus::Coalesced
+        ));
+        assert!(
+            window.has_timer_extension,
+            "repeated unknown evidence should record the debounce extension"
+        );
+        assert!(
+            watched[0].snapshot.is_some(),
+            "persistent unknown should preserve the last usable snapshot for recovery",
+        );
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            window
+                .changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: window.has_timer_extension,
+                extension_cause_paths: window.extension_cause_paths,
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["duplicate_or_coalesced"],
+            "coalesced"
+        );
+        assert_eq!(state["debounce_windows"][0]["timer_cancelled"], true);
+        assert_eq!(state["changes"][0]["event_kind"], "unknown");
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -485,10 +485,9 @@ fn repeated_unknown_changes(existing: &[WatchChange], later: &[WatchChange]) -> 
     !later.is_empty()
         && later.iter().all(|later_change| {
             matches!(later_change.event_kind, WatchEventKind::Unknown)
-                && existing.iter().any(|existing_change| {
-                    existing_change.display == later_change.display
-                        && matches!(existing_change.event_kind, WatchEventKind::Unknown)
-                })
+                && existing
+                    .iter()
+                    .any(|existing_change| existing_change.can_coalesce_with(later_change))
         })
 }
 
@@ -844,6 +843,8 @@ impl WatchChange {
                         role: WatchPathRole::SourcePath,
                         path: source_path,
                     }],
+                    evidence_grade: remove.evidence_grade,
+                    error_fingerprint: remove.error_fingerprint,
                 },
                 RawWatchEventInput {
                     event_kind: WatchEventKind::Create,
@@ -851,6 +852,8 @@ impl WatchChange {
                         role: WatchPathRole::DestinationPath,
                         path: destination_path,
                     }],
+                    evidence_grade: create.evidence_grade,
+                    error_fingerprint: create.error_fingerprint,
                 },
             ],
         }
@@ -1510,6 +1513,78 @@ mod tests {
     }
 
     #[test]
+    fn changed_unknown_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("changed-unknown-window-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "first denied",
+            },
+        )
+        .unwrap();
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "second denied",
+                )),
+                Ok(test_snapshot(1)),
+                Ok(test_snapshot(1)),
+            ]),
+        )
+        .unwrap()
+        .expect("changed unknown followed by create should produce one window");
+        let event_inputs = window
+            .changes
+            .into_iter()
+            .map(WatchChange::into_event_input)
+            .collect::<Vec<_>>();
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            event_inputs,
+            DebounceWindowInput {
+                has_timer_extension: window.has_timer_extension,
+                extension_cause_paths: window.extension_cause_paths,
+            },
+            WatchExecutionMode::Simple,
+        );
+        let batch = evidence.event_batch_json();
+        let events = batch["events"]
+            .as_array()
+            .expect("events should be an array");
+        let kinds = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(kinds, vec!["unknown", "unknown", "create"]);
+        assert_eq!(
+            events[0]["error_fingerprint"],
+            "permission_denied:message:first denied"
+        );
+        assert_eq!(
+            events[1]["error_fingerprint"],
+            "permission_denied:message:second denied"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn startup_not_found_then_create_within_debounce_window_stays_visible() {
         let root = temp_watch_root("startup-not-found-window-recovery");
         let src = root.join("src");
@@ -1605,6 +1680,55 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_candidate_raw_remove_keeps_not_found_fingerprint() {
+        let fingerprint = WatchErrorFingerprint {
+            kind: io::ErrorKind::NotFound,
+            raw_os_error: None,
+            message: "startup missing".to_owned(),
+        };
+        let window = finalize_debounce_window(
+            vec![
+                WatchChange::removed(Path::new("src/service.kobo"), None, Some(&fingerprint)),
+                WatchChange::created(
+                    Path::new("src/moved_service.kobo"),
+                    UNIX_EPOCH + Duration::from_secs(1),
+                ),
+            ],
+            false,
+            Vec::new(),
+        );
+        assert_eq!(window.changes.len(), 1);
+        assert_eq!(window.changes[0].event_kind.as_str(), "rename_candidate");
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            "src/main.kobo".to_owned(),
+            window
+                .changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let batch = evidence.event_batch_json();
+        let raw_events = batch["events"][0]["raw_events"]
+            .as_array()
+            .expect("rename candidate raw events should be an array");
+
+        assert_eq!(raw_events[0]["kind"], "remove");
+        assert_eq!(
+            raw_events[0]["error_fingerprint"],
+            "not_found:message:startup missing",
+        );
+        assert_eq!(raw_events[0]["evidence_grade"], "metadata_only");
+        assert_eq!(raw_events[1]["kind"], "create");
     }
 
     #[test]

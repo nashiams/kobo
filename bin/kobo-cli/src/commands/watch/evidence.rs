@@ -24,6 +24,8 @@ pub(super) struct WatchEventPathInput {
 pub(super) struct RawWatchEventInput {
     pub event_kind: WatchEventKind,
     pub paths: Vec<WatchEventPathInput>,
+    pub evidence_grade: EventEvidenceGrade,
+    pub error_fingerprint: Option<String>,
 }
 
 pub(super) struct DebounceWindowInput {
@@ -117,6 +119,8 @@ struct WatchEventPath {
 struct RawWatchEventEvidence {
     event_kind: WatchEventKind,
     paths: Vec<WatchEventPath>,
+    evidence_grade: EventEvidenceGrade,
+    error_fingerprint: Option<String>,
 }
 
 struct DebounceWindowEvidence {
@@ -515,6 +519,8 @@ impl From<RawWatchEventInput> for RawWatchEventEvidence {
                     path: path.path,
                 })
                 .collect(),
+            evidence_grade: input.evidence_grade,
+            error_fingerprint: input.error_fingerprint,
         }
     }
 }
@@ -533,6 +539,8 @@ impl RawWatchEventEvidence {
         serde_json::json!({
             "kind": self.event_kind.as_str(),
             "paths": self.paths.iter().map(WatchEventPath::to_json).collect::<Vec<_>>(),
+            "evidence_grade": self.evidence_grade.as_str(),
+            "error_fingerprint": self.error_fingerprint.clone(),
         })
     }
 }

@@ -21,7 +21,7 @@
       "unsupported_guarantees": [
         "global_total_order"
       ],
-      "replay_confidence": "metadata-only",
+      "replay_confidence": "modelled",
       "source_map_anchor": "events[]",
       "cargo_features": [
         "default"
@@ -78,7 +78,7 @@
       "unsupported_guarantees": [
         "real_os_time_determinism"
       ],
-      "replay_confidence": "partial",
+      "replay_confidence": "modelled",
       "source_map_anchor": "events[]",
       "cargo_features": [
         "default"
@@ -136,7 +136,7 @@
       "unsupported_guarantees": [
         "arbitrary_scheduler_equivalence"
       ],
-      "replay_confidence": "partial",
+      "replay_confidence": "modelled",
       "source_map_anchor": "events[].async_step",
       "cargo_features": [
         "rt",
@@ -3353,7 +3353,7 @@
       "window": 1,
       "timestamp_ms": 10,
       "duplicate_marker": "unique",
-      "evidence_grade": "metadata_only"
+      "evidence_grade": "modeled"
     },
     {
       "kind": "watcher_event",
@@ -3362,7 +3362,7 @@
       "window": 1,
       "timestamp_ms": 11,
       "duplicate_marker": "duplicate",
-      "evidence_grade": "metadata_only"
+      "evidence_grade": "modeled"
     },
     {
       "kind": "watcher_event",
@@ -3371,12 +3371,13 @@
       "window": 1,
       "timestamp_ms": 12,
       "duplicate_marker": "duplicate",
-      "evidence_grade": "metadata_only"
+      "evidence_grade": "modeled"
     },
     {
       "kind": "timer_fired",
       "window": 1,
-      "timestamp_ms": 210
+      "timestamp_ms": 210,
+      "evidence_grade": "modeled"
     },
     {
       "kind": "restart_decision",
@@ -3399,7 +3400,7 @@
       "window": 2,
       "timestamp_ms": 250,
       "duplicate_marker": "unique",
-      "evidence_grade": "metadata_only"
+      "evidence_grade": "modeled"
     },
     {
       "kind": "child_exit",
@@ -3410,7 +3411,8 @@
     {
       "kind": "timer_fired",
       "window": 2,
-      "timestamp_ms": 450
+      "timestamp_ms": 450,
+      "evidence_grade": "modeled"
     },
     {
       "kind": "restart_decision",

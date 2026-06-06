@@ -2066,6 +2066,12 @@ fn find_dependency<'a>(cargo: &'a TomlValue, name: &str) -> Option<&'a TomlValue
     ["dependencies", "dev-dependencies", "build-dependencies"]
         .iter()
         .find_map(|section| cargo.get(*section).and_then(|table| table.get(name)))
+        .or_else(|| {
+            cargo
+                .get("workspace")
+                .and_then(|workspace| workspace.get("dependencies"))
+                .and_then(|table| table.get(name))
+        })
 }
 
 fn dependency_features(dependency: &TomlValue) -> BTreeSet<&str> {
@@ -2114,4 +2120,26 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dependency_lookup_reads_workspace_dependencies() {
+        let cargo = r#"
+[workspace]
+members = ["."]
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+"#
+        .parse::<TomlValue>()
+        .expect("workspace manifest should parse");
+
+        let dependency = find_dependency(&cargo, "clap").expect("workspace dependency is visible");
+        assert!(dependency_features(dependency).contains("derive"));
+        assert!(find_dependency(&cargo, "missing").is_none());
+    }
 }

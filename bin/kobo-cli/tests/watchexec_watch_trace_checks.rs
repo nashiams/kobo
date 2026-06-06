@@ -737,7 +737,7 @@ fn watch_trace_import_emits_replayable_witness_with_adapter_contracts() {
     )
     .expect("trace witness should parse");
     assert_eq!(witness_json["mode"], "watch_trace_witness");
-    assert_eq!(witness_json["replay_grade"], "partial");
+    assert_eq!(witness_json["replay_grade"], "modeled");
     assert_eq!(
         witness_json["adapter_summaries"].as_array().map(Vec::len),
         Some(5)
@@ -787,8 +787,83 @@ fn watch_trace_import_emits_replayable_witness_with_adapter_contracts() {
     assert_success(&replay, "imported watch trace witness should replay");
     assert_contains(
         &replay.stdout,
-        r#""replay":"watch_trace_exact""#,
+        r#""replay":"watch_trace_modeled""#,
         "watch trace replay should confirm the witness hash",
+    );
+}
+
+#[test]
+fn watch_trace_import_keeps_missing_timer_evidence_partial() {
+    let project = TestProject::new("watchexec-trace-partial-timer");
+    let trace = project.write(
+        "traces/partial-timer.json",
+        &trace_with_events(
+            r#"[
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 10,
+      "duplicate_marker": "unique",
+      "evidence_grade": "modeled"
+    },
+    {
+      "kind": "timer_fired",
+      "window": 1,
+      "timestamp_ms": 210
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "timestamp_ms": 211
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-1",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 212
+    },
+    {
+      "kind": "child_exit",
+      "child_id": "cmd-1",
+      "exit_code": 0,
+      "timestamp_ms": 260
+    }
+  ]"#,
+        ),
+    );
+    let witness = project.root.join(".kobo/witnesses/partial-timer.kwit");
+
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&trace),
+            s("--witness-out"),
+            path_arg(&witness),
+        ],
+        &project.root,
+    );
+    assert_success(&output, "partial timer trace import should succeed");
+
+    let witness_json: Value = serde_json::from_str(
+        &fs::read_to_string(&witness).expect("partial trace witness should be readable"),
+    )
+    .expect("partial trace witness should parse");
+    assert_eq!(witness_json["replay_grade"], "partial");
+    assert_eq!(witness_json["trace_import"]["modeled"], false);
+    assert_eq!(witness_json["trace_import"]["metadata_only"], true);
+
+    let replay = run_kobo(&[s("replay"), path_arg(&witness)], &project.root);
+    assert_success(&replay, "partial timer witness should still replay");
+    assert_contains(
+        &replay.stdout,
+        r#""replay":"watch_trace_partial""#,
+        "watch trace replay should preserve the weaker evidence grade",
     );
 }
 

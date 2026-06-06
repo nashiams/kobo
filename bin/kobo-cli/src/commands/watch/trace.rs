@@ -143,8 +143,9 @@ enum TraceEventKind {
     Shutdown,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum TraceReplayGrade {
+    Modeled,
     Partial,
     Debt,
 }
@@ -266,7 +267,7 @@ pub(super) fn replay_watch_trace_witness(
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "replay": "watch_trace_exact",
+            "replay": normalized.replay_grade.replay_label(),
             "mode": WATCH_TRACE_WITNESS_MODE,
             "replay_grade": normalized.replay_grade.as_str(),
             "raw_events": raw_events.len(),
@@ -1305,7 +1306,7 @@ fn event_batch_json(
         "id": format!("watch-trace-batch-{sequence}"),
         "window": window,
         "backend": "trace-import",
-        "watcher_evidence": "metadata-only",
+        "watcher_evidence": trace.watcher_evidence_label(),
         "ordering_guarantee": "trace-order",
         "replay_grade": replay_grade.as_str(),
         "events": coalesced_watcher_events(trace),
@@ -1326,13 +1327,7 @@ fn debounce_window_json(
     json!({
         "id": format!("watch-trace-window-{sequence}"),
         "window": window,
-        "timer_evidence": if trace.has_timer_fired {
-            "metadata-only"
-        } else if trace.shutdown_resolved {
-            "shutdown-resolved"
-        } else {
-            "missing"
-        },
+        "timer_evidence": trace.timer_evidence_label(),
         "replay_grade": if trace.has_timer_fired || trace.shutdown_resolved { replay_grade.as_str() } else { "debt" },
         "timer_created": true,
         "timer_cancelled": trace.watcher_events.len() > 1 || trace.shutdown_resolved,
@@ -1499,6 +1494,8 @@ fn replay_grade_for_windows(windows: &BTreeMap<u64, WindowTrace>) -> TraceReplay
         .any(|window| !window.has_timer_fired && !window.shutdown_resolved)
     {
         TraceReplayGrade::Debt
+    } else if windows.values().all(WindowTrace::has_modeled_evidence) {
+        TraceReplayGrade::Modeled
     } else {
         TraceReplayGrade::Partial
     }
@@ -1527,9 +1524,9 @@ fn witness_json(
         "replay_guarantee": normalized.replay_grade.as_str(),
         "trace_import": {
             "exact": false,
-            "modeled": true,
+            "modeled": normalized.replay_grade == TraceReplayGrade::Modeled,
             "sampled": false,
-            "metadata_only": true,
+            "metadata_only": normalized.replay_grade == TraceReplayGrade::Partial,
             "opaque": false,
         },
         "adapter_summaries": adapter_summary_json(adapter_summaries),
@@ -1738,8 +1735,17 @@ impl TraceEventKind {
 impl TraceReplayGrade {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Modeled => "modeled",
             Self::Partial => "partial",
             Self::Debt => "debt",
+        }
+    }
+
+    fn replay_label(self) -> &'static str {
+        match self {
+            Self::Modeled => "watch_trace_modeled",
+            Self::Partial => "watch_trace_partial",
+            Self::Debt => "watch_trace_debt",
         }
     }
 }
@@ -1753,4 +1759,55 @@ impl Default for WindowTrace {
             shutdown_resolved: false,
         }
     }
+}
+
+impl WindowTrace {
+    fn has_modeled_evidence(&self) -> bool {
+        self.watcher_events
+            .iter()
+            .all(|event| evidence_grade_is_modeled(&event.evidence_grade))
+            && self
+                .timer_events
+                .iter()
+                .all(|event| value_evidence_grade_is_modeled(event))
+    }
+
+    fn watcher_evidence_label(&self) -> &'static str {
+        if self
+            .watcher_events
+            .iter()
+            .all(|event| evidence_grade_is_modeled(&event.evidence_grade))
+        {
+            "modeled"
+        } else {
+            "metadata-only"
+        }
+    }
+
+    fn timer_evidence_label(&self) -> &'static str {
+        if self.has_timer_fired
+            && self
+                .timer_events
+                .iter()
+                .all(|event| value_evidence_grade_is_modeled(event))
+        {
+            "modeled"
+        } else if self.has_timer_fired {
+            "metadata-only"
+        } else if self.shutdown_resolved {
+            "shutdown-resolved"
+        } else {
+            "missing"
+        }
+    }
+}
+
+fn value_evidence_grade_is_modeled(value: &Value) -> bool {
+    value["evidence_grade"]
+        .as_str()
+        .is_some_and(evidence_grade_is_modeled)
+}
+
+fn evidence_grade_is_modeled(grade: &str) -> bool {
+    matches!(grade, "modeled" | "modelled" | "exact")
 }

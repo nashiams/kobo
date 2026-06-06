@@ -170,25 +170,38 @@ fn required_external_comparisons_json() -> String {
             .as_str()
             .expect("comparison behavior should be present")
             .to_owned();
+        let disposition = comparison["disposition"]
+            .as_str()
+            .expect("comparison disposition should be present")
+            .to_owned();
         comparison["modeled_facts"] = Value::from(vec![
             "event_kind",
             "path_filter",
             "child_lifecycle",
             "timer_order",
         ]);
-        comparison["parity_fixtures"] =
-            Value::from(vec![test_parity_fixture(&implementation, &behavior)]);
-        comparison["mutation_checks"] =
-            Value::from(test_mutation_checks(&implementation, &behavior));
+        comparison["parity_fixtures"] = Value::from(vec![test_parity_fixture(
+            &implementation,
+            &behavior,
+            &disposition,
+        )]);
+        comparison["mutation_checks"] = Value::from(test_mutation_checks(
+            &implementation,
+            &behavior,
+            &disposition,
+        ));
     }
     serde_json::to_string(&comparisons).expect("external comparison fixture should serialize")
 }
 
-fn test_parity_fixture(implementation: &str, behavior: &str) -> Value {
+fn test_parity_fixture(implementation: &str, behavior: &str, disposition: &str) -> Value {
     let fixture_name = format!("{}::{}", implementation, behavior.replace(' ', "_"));
-    let artifact = json!({
+    let mut artifact = json!({
         "implementation": implementation,
         "behavior": behavior,
+        "disposition": disposition,
+        "model_binding": test_model_binding(disposition, behavior),
+        "source_visible_facts": ["implementation", "behavior", "disposition", "evidence_anchor"],
         "assertions": [
             "fixture keeps the modeled behavior visible",
             "fixture changes replay evidence when the behavior is removed"
@@ -196,16 +209,20 @@ fn test_parity_fixture(implementation: &str, behavior: &str) -> Value {
         "observed_facts": ["event_kind", "path_filter", "child_lifecycle", "timer_order"],
         "fixture_id": fixture_name,
     });
+    add_boundary_reason(&mut artifact, disposition);
     test_comparison_artifact(&fixture_name, "parity_fixture", artifact)
 }
 
-fn test_mutation_checks(implementation: &str, behavior: &str) -> Vec<Value> {
+fn test_mutation_checks(implementation: &str, behavior: &str, disposition: &str) -> Vec<Value> {
     ["event-order-swap", "path-filter-flip", "child-exit-drop"]
         .iter()
         .map(|mutation| {
-            let artifact = json!({
+            let mut artifact = json!({
                 "implementation": implementation,
                 "behavior": behavior,
+                "disposition": disposition,
+                "model_binding": test_model_binding(disposition, behavior),
+                "source_visible_facts": ["implementation", "behavior", "disposition", "evidence_anchor"],
                 "mutation": mutation,
                 "expected_detection": "watch trace import or replay hash changes",
                 "assertions": [
@@ -213,9 +230,24 @@ fn test_mutation_checks(implementation: &str, behavior: &str) -> Vec<Value> {
                     "mutation is not accepted as silent parity"
                 ],
             });
+            add_boundary_reason(&mut artifact, disposition);
             test_comparison_artifact(mutation, "mutation_check", artifact)
         })
         .collect()
+}
+
+fn test_model_binding(disposition: &str, behavior: &str) -> Value {
+    json!({
+        "kind": disposition,
+        "anchor": format!("external_comparisons::{behavior}"),
+    })
+}
+
+fn add_boundary_reason(artifact: &mut Value, disposition: &str) {
+    if matches!(disposition, "debt_item" | "explicit_non_goal") {
+        artifact["boundary_reason"] =
+            Value::from("comparison stays visible as an honest boundary before full replacement");
+    }
 }
 
 fn test_comparison_artifact(name: &str, artifact_kind: &str, artifact_json: Value) -> Value {
@@ -1548,6 +1580,51 @@ fn watch_trace_import_requires_modeled_external_comparison_details() {
         &output.combined(),
         "missing external comparison modeled_facts",
         "trace import should require modeled comparison facts",
+    );
+}
+
+#[test]
+fn watch_trace_import_requires_external_comparison_model_binding() {
+    let project = TestProject::new("watchexec-trace-external-comparison-model-binding");
+    let mut comparisons: Value = serde_json::from_str(&required_external_comparisons_json())
+        .expect("comparison fixture should parse");
+    comparisons[0]["parity_fixtures"][0]["artifact_json"]
+        .as_object_mut()
+        .expect("artifact json should be an object")
+        .remove("model_binding");
+    let artifact_json = comparisons[0]["parity_fixtures"][0]["artifact_json"].clone();
+    comparisons[0]["parity_fixtures"][0]["artifact_hash"] =
+        Value::from(kobo_sim_core::digest::stable_hash(
+            &serde_json::to_string(&artifact_json).expect("artifact should serialize"),
+        ));
+    let trace = project.write(
+        "traces/unbound_comparison_artifact.json",
+        &format!(
+            r#"{{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": {adapter_summaries},
+  "external_comparisons": {comparisons},
+  "events": {events}
+}}"#,
+            adapter_summaries = required_adapter_summaries_json(),
+            comparisons =
+                serde_json::to_string(&comparisons).expect("comparison fixture should serialize"),
+            events = valid_watchexec_events(),
+        ),
+    );
+    let output = run_kobo(
+        &[s("watch"), s("--import-trace"), path_arg(&trace)],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "unbound external comparison artifact should fail import",
+    );
+    assert_contains(
+        &output.combined(),
+        "missing external comparison parity_fixtures model_binding",
+        "trace import should require source-visible model binding on comparison artifacts",
     );
 }
 

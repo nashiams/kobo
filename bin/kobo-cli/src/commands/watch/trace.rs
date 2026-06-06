@@ -128,6 +128,15 @@ enum AdapterKind {
     AsyncRuntime,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ComparisonDisposition {
+    SemanticRule,
+    FormalAdapterContract,
+    ReplayFixture,
+    DebtItem,
+    ExplicitNonGoal,
+}
+
 #[derive(Clone, Copy)]
 enum TraceEventKind {
     WatcherEvent,
@@ -473,9 +482,13 @@ fn source_watch_comparison_fixtures(
     behavior: &str,
 ) -> anyhow::Result<Vec<Value>> {
     let fixture_name = comparison_artifact_name(implementation, behavior);
-    let artifact = json!({
+    let disposition = source_watch_comparison_disposition(behavior);
+    let mut artifact = json!({
         "implementation": implementation,
         "behavior": behavior,
+        "disposition": disposition,
+        "model_binding": comparison_model_binding(disposition, behavior),
+        "source_visible_facts": ["implementation", "behavior", "disposition", "evidence_anchor"],
         "assertions": [
             "trace keeps the modeled behavior visible",
             "replay hash changes when the modeled behavior is removed"
@@ -483,6 +496,7 @@ fn source_watch_comparison_fixtures(
         "observed_facts": source_watch_comparison_facts(behavior),
         "fixture_id": fixture_name,
     });
+    add_comparison_boundary_reason(&mut artifact, disposition);
     Ok(vec![comparison_artifact_entry(
         &fixture_name,
         "parity_fixture",
@@ -494,6 +508,7 @@ fn source_watch_comparison_mutations(
     implementation: &str,
     behavior: &str,
 ) -> anyhow::Result<Vec<Value>> {
+    let disposition = source_watch_comparison_disposition(behavior);
     let mutations = if behavior.contains("ignore")
         || behavior.contains("path")
         || behavior.contains("root")
@@ -522,9 +537,12 @@ fn source_watch_comparison_mutations(
     mutations
         .into_iter()
         .map(|mutation| {
-            let artifact = json!({
+            let mut artifact = json!({
                 "implementation": implementation,
                 "behavior": behavior,
+                "disposition": disposition,
+                "model_binding": comparison_model_binding(disposition, behavior),
+                "source_visible_facts": ["implementation", "behavior", "disposition", "evidence_anchor"],
                 "mutation": mutation,
                 "expected_detection": "watch trace import or replay hash changes",
                 "assertions": [
@@ -532,9 +550,24 @@ fn source_watch_comparison_mutations(
                     "mutation is not accepted as silent parity"
                 ],
             });
+            add_comparison_boundary_reason(&mut artifact, disposition);
             comparison_artifact_entry(mutation, "mutation_check", artifact)
         })
         .collect()
+}
+
+fn comparison_model_binding(disposition: &str, behavior: &str) -> Value {
+    json!({
+        "kind": disposition,
+        "anchor": format!("external_comparisons::{behavior}"),
+    })
+}
+
+fn add_comparison_boundary_reason(artifact: &mut Value, disposition: &str) {
+    if matches!(disposition, "debt_item" | "explicit_non_goal") {
+        artifact["boundary_reason"] =
+            Value::from("comparison stays visible as an honest boundary before full replacement");
+    }
 }
 
 fn comparison_artifact_name(implementation: &str, behavior: &str) -> String {
@@ -769,10 +802,10 @@ fn parse_external_comparisons(value: &Value) -> anyhow::Result<Vec<ExternalCompa
 fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison> {
     let implementation = require_comparison_str(value, "implementation")?;
     let behavior = require_comparison_str(value, "behavior")?;
-    let disposition = require_comparison_str(value, "disposition")?;
-    if !is_known_comparison_disposition(disposition) {
-        anyhow::bail!("unknown external comparison disposition: {disposition}");
-    }
+    let disposition_text = require_comparison_str(value, "disposition")?;
+    let Some(disposition) = ComparisonDisposition::parse(disposition_text) else {
+        anyhow::bail!("unknown external comparison disposition: {disposition_text}");
+    };
     require_comparison_str(value, "reason")?;
     require_comparison_str(value, "evidence_anchor")?;
     require_comparison_array(value, "modeled_facts")?;
@@ -782,6 +815,7 @@ fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison
         "parity_fixture",
         implementation,
         behavior,
+        disposition,
     )?;
     require_comparison_artifacts(
         value,
@@ -789,6 +823,7 @@ fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison
         "mutation_check",
         implementation,
         behavior,
+        disposition,
     )?;
     Ok(ExternalComparison {
         json: value.clone(),
@@ -848,6 +883,7 @@ fn require_comparison_artifacts(
     expected_kind: &str,
     implementation: &str,
     behavior: &str,
+    disposition: ComparisonDisposition,
 ) -> anyhow::Result<()> {
     let artifacts = value[field]
         .as_array()
@@ -856,7 +892,14 @@ fn require_comparison_artifacts(
         anyhow::bail!("empty external comparison {field}");
     }
     for artifact in artifacts {
-        require_comparison_artifact(artifact, field, expected_kind, implementation, behavior)?;
+        require_comparison_artifact(
+            artifact,
+            field,
+            expected_kind,
+            implementation,
+            behavior,
+            disposition,
+        )?;
     }
     Ok(())
 }
@@ -867,6 +910,7 @@ fn require_comparison_artifact(
     expected_kind: &str,
     implementation: &str,
     behavior: &str,
+    disposition: ComparisonDisposition,
 ) -> anyhow::Result<()> {
     if !artifact.is_object() {
         anyhow::bail!("external comparison {field} entry must be an artifact object");
@@ -889,12 +933,36 @@ fn require_comparison_artifact(
         anyhow::bail!("external comparison {field} artifact_hash mismatch");
     }
     require_artifact_identity(artifact_json, implementation, behavior, field)?;
+    require_artifact_model_binding(artifact_json, disposition, field)?;
     require_artifact_array(artifact_json, "assertions", field)?;
     if expected_kind == "parity_fixture" {
         require_artifact_array(artifact_json, "observed_facts", field)?;
     } else {
         require_artifact_str(artifact_json, "mutation", field)?;
         require_artifact_str(artifact_json, "expected_detection", field)?;
+    }
+    Ok(())
+}
+
+fn require_artifact_model_binding(
+    artifact_json: &Value,
+    disposition: ComparisonDisposition,
+    field: &str,
+) -> anyhow::Result<()> {
+    if artifact_json["disposition"].as_str() != Some(disposition.as_str()) {
+        anyhow::bail!("external comparison {field} artifact disposition mismatch");
+    }
+    require_artifact_array(artifact_json, "source_visible_facts", field)?;
+    let binding = &artifact_json["model_binding"];
+    if !binding.is_object() || binding.as_object().is_some_and(serde_json::Map::is_empty) {
+        anyhow::bail!("missing external comparison {field} model_binding");
+    }
+    if binding["kind"].as_str() != Some(disposition.as_str()) {
+        anyhow::bail!("external comparison {field} model_binding kind mismatch");
+    }
+    require_artifact_str(binding, "anchor", field)?;
+    if disposition.requires_boundary_reason() {
+        require_artifact_str(artifact_json, "boundary_reason", field)?;
     }
     Ok(())
 }
@@ -937,17 +1005,6 @@ fn require_artifact_array(value: &Value, field: &str, label: &str) -> anyhow::Re
         }
     }
     Ok(())
-}
-
-fn is_known_comparison_disposition(disposition: &str) -> bool {
-    matches!(
-        disposition,
-        "semantic_rule"
-            | "formal_adapter_contract"
-            | "replay_fixture"
-            | "debt_item"
-            | "explicit_non_goal"
-    )
 }
 
 fn raw_events(value: &Value) -> anyhow::Result<Vec<Value>> {
@@ -1710,6 +1767,33 @@ impl AdapterKind {
             Self::PathFilter => "path_filter",
             Self::AsyncRuntime => "async_runtime",
         }
+    }
+}
+
+impl ComparisonDisposition {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "semantic_rule" => Some(Self::SemanticRule),
+            "formal_adapter_contract" => Some(Self::FormalAdapterContract),
+            "replay_fixture" => Some(Self::ReplayFixture),
+            "debt_item" => Some(Self::DebtItem),
+            "explicit_non_goal" => Some(Self::ExplicitNonGoal),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SemanticRule => "semantic_rule",
+            Self::FormalAdapterContract => "formal_adapter_contract",
+            Self::ReplayFixture => "replay_fixture",
+            Self::DebtItem => "debt_item",
+            Self::ExplicitNonGoal => "explicit_non_goal",
+        }
+    }
+
+    fn requires_boundary_reason(self) -> bool {
+        matches!(self, Self::DebtItem | Self::ExplicitNonGoal)
     }
 }
 

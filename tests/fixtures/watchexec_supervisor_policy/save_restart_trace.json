@@ -162,7 +162,7 @@
         {
           "name": "watchexec::coalesced_filesystem_events",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "2882c156e6f76e28",
+          "artifact_hash": "4443aff85d7414d8",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "coalesced filesystem events",
@@ -176,7 +176,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchexec::coalesced_filesystem_events"
+            "fixture_id": "watchexec::coalesced_filesystem_events",
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::coalesced filesystem events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -184,7 +195,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "0b2da8fe45839e5e",
+          "artifact_hash": "26852e0aaefbbfd2",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "coalesced filesystem events",
@@ -193,13 +204,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::coalesced filesystem events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "3ae0756d5a7cd215",
+          "artifact_hash": "b7455780965c4957",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "coalesced filesystem events",
@@ -208,13 +230,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::coalesced filesystem events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "1a1788493afede6c",
+          "artifact_hash": "e417937b50e92700",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "coalesced filesystem events",
@@ -223,6 +256,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::coalesced filesystem events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -244,7 +288,7 @@
         {
           "name": "watchexec::.gitignore_and_.ignore_loading",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "6104319d3f8b340b",
+          "artifact_hash": "3bead4d9ae2c5f91",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": ".gitignore and .ignore loading",
@@ -258,7 +302,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchexec::.gitignore_and_.ignore_loading"
+            "fixture_id": "watchexec::.gitignore_and_.ignore_loading",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::.gitignore and .ignore loading"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -266,7 +321,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "1542da39f1ce7c3a",
+          "artifact_hash": "6e3f4f56c057a864",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": ".gitignore and .ignore loading",
@@ -275,13 +330,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::.gitignore and .ignore loading"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "90e9634c83878ef1",
+          "artifact_hash": "2058b8eb3cae79c1",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": ".gitignore and .ignore loading",
@@ -290,13 +356,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::.gitignore and .ignore loading"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "aca2e1b70240cb78",
+          "artifact_hash": "abc4c7821fb4228e",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": ".gitignore and .ignore loading",
@@ -305,6 +382,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::.gitignore and .ignore loading"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -326,7 +414,7 @@
         {
           "name": "watchexec::process_group_behavior",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "e37f7b5674fb0530",
+          "artifact_hash": "0ce34dd8d11ab689",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "process group behavior",
@@ -340,7 +428,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchexec::process_group_behavior"
+            "fixture_id": "watchexec::process_group_behavior",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::process group behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -348,7 +447,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "70e6fb48ac64ac97",
+          "artifact_hash": "a6f95f8347cb3c6e",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "process group behavior",
@@ -357,13 +456,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::process group behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "bde12d3b0d8e187c",
+          "artifact_hash": "6dca17a272348063",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "process group behavior",
@@ -372,13 +482,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::process group behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "6de7cc0ee39c1bc3",
+          "artifact_hash": "02b1dcd41dca433c",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "process group behavior",
@@ -387,6 +508,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::process group behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -408,7 +540,7 @@
         {
           "name": "watchexec::changed-path_delivery_through_environment_variables_or_stdin",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "678fe99f25dbb308",
+          "artifact_hash": "1992fa511800ac95",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "changed-path delivery through environment variables or stdin",
@@ -422,7 +554,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchexec::changed-path_delivery_through_environment_variables_or_stdin"
+            "fixture_id": "watchexec::changed-path_delivery_through_environment_variables_or_stdin",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::changed-path delivery through environment variables or stdin"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -430,7 +573,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "2850183a1591f7e7",
+          "artifact_hash": "2a5f7294bab1eb76",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "changed-path delivery through environment variables or stdin",
@@ -439,13 +582,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::changed-path delivery through environment variables or stdin"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "fe43bf8230a8768c",
+          "artifact_hash": "cfde6a834396fedb",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "changed-path delivery through environment variables or stdin",
@@ -454,13 +608,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::changed-path delivery through environment variables or stdin"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "7606f9bcb7d35813",
+          "artifact_hash": "29826831c66d7074",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "changed-path delivery through environment variables or stdin",
@@ -469,6 +634,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::changed-path delivery through environment variables or stdin"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -490,7 +666,7 @@
         {
           "name": "watchexec::watchexec_event_signal_supervisor_process_wrapping_ignore_project_origin_notify_coverage",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "aea6fd6266c735d8",
+          "artifact_hash": "afae38e3f11b4f42",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
@@ -504,7 +680,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchexec::watchexec_event_signal_supervisor_process_wrapping_ignore_project_origin_notify_coverage"
+            "fixture_id": "watchexec::watchexec_event_signal_supervisor_process_wrapping_ignore_project_origin_notify_coverage",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::watchexec event signal supervisor process wrapping ignore project origin notify coverage"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -512,7 +699,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "a00cd6d80ff71f8e",
+          "artifact_hash": "f3d4f120f8ed67ac",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
@@ -521,13 +708,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::watchexec event signal supervisor process wrapping ignore project origin notify coverage"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "056f4443dfac42c5",
+          "artifact_hash": "b2875c48769c5799",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
@@ -536,13 +734,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::watchexec event signal supervisor process wrapping ignore project origin notify coverage"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "d7bec21c7981895c",
+          "artifact_hash": "0c2eebf212347566",
           "artifact_json": {
             "implementation": "watchexec",
             "behavior": "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
@@ -551,6 +760,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::watchexec event signal supervisor process wrapping ignore project origin notify coverage"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -572,7 +792,7 @@
         {
           "name": "nodemon::extension_watch_lists_and_executed-script_extension_inference",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "47d2eb0eec274946",
+          "artifact_hash": "cdc93c403d81603a",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "extension watch lists and executed-script extension inference",
@@ -586,7 +806,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "nodemon::extension_watch_lists_and_executed-script_extension_inference"
+            "fixture_id": "nodemon::extension_watch_lists_and_executed-script_extension_inference",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::extension watch lists and executed-script extension inference"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -594,7 +825,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "1529a8361144e094",
+          "artifact_hash": "47dbb2c8e7074760",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "extension watch lists and executed-script extension inference",
@@ -603,13 +834,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::extension watch lists and executed-script extension inference"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "0086bc3c190e4003",
+          "artifact_hash": "277c3b060a5ad64d",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "extension watch lists and executed-script extension inference",
@@ -618,13 +860,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::extension watch lists and executed-script extension inference"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "12a24d27d7a2cafe",
+          "artifact_hash": "ee9eb87380a216fa",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "extension watch lists and executed-script extension inference",
@@ -633,6 +886,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::extension watch lists and executed-script extension inference"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -654,7 +918,7 @@
         {
           "name": "nodemon::absolute-path_ignore_rules_and_default_ignore_directories",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "aa19d74eeb3386fe",
+          "artifact_hash": "fc4c1f7197e619b0",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "absolute-path ignore rules and default ignore directories",
@@ -668,7 +932,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "nodemon::absolute-path_ignore_rules_and_default_ignore_directories"
+            "fixture_id": "nodemon::absolute-path_ignore_rules_and_default_ignore_directories",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::absolute-path ignore rules and default ignore directories"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -676,7 +951,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "5e5af8d7e4d71d22",
+          "artifact_hash": "224f19e2a38a2a4a",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "absolute-path ignore rules and default ignore directories",
@@ -685,13 +960,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::absolute-path ignore rules and default ignore directories"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "8719f3fc61459f09",
+          "artifact_hash": "405506493d51fb7f",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "absolute-path ignore rules and default ignore directories",
@@ -700,13 +986,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::absolute-path ignore rules and default ignore directories"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "768f0b7aa26c44b0",
+          "artifact_hash": "bbc6fc124038b408",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "absolute-path ignore rules and default ignore directories",
@@ -715,6 +1012,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::absolute-path ignore rules and default ignore directories"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -736,7 +1044,7 @@
         {
           "name": "nodemon::legacy_polling_fallback_for_mounted_or_unreliable_filesystems",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "0a3e3484c780a5a9",
+          "artifact_hash": "a696c19fdc3ca953",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "legacy polling fallback for mounted or unreliable filesystems",
@@ -750,7 +1058,19 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "nodemon::legacy_polling_fallback_for_mounted_or_unreliable_filesystems"
+            "fixture_id": "nodemon::legacy_polling_fallback_for_mounted_or_unreliable_filesystems",
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::legacy polling fallback for mounted or unreliable filesystems"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ],
@@ -758,7 +1078,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "28a02317e8a285a4",
+          "artifact_hash": "01eed48c33587118",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "legacy polling fallback for mounted or unreliable filesystems",
@@ -767,13 +1087,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::legacy polling fallback for mounted or unreliable filesystems"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "8375065e15d3f453",
+          "artifact_hash": "28dbaaa771bd00b5",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "legacy polling fallback for mounted or unreliable filesystems",
@@ -782,13 +1114,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::legacy polling fallback for mounted or unreliable filesystems"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "58d735e7dcc4e34e",
+          "artifact_hash": "e831a28cead93bc2",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "legacy polling fallback for mounted or unreliable filesystems",
@@ -797,7 +1141,19 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::legacy polling fallback for mounted or unreliable filesystems"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ]
@@ -818,7 +1174,7 @@
         {
           "name": "nodemon::delayed_restart_after_bursty_writes",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "6328e017e66437d4",
+          "artifact_hash": "aaf4ffa2c5ebe209",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "delayed restart after bursty writes",
@@ -832,7 +1188,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "nodemon::delayed_restart_after_bursty_writes"
+            "fixture_id": "nodemon::delayed_restart_after_bursty_writes",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::delayed restart after bursty writes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -840,7 +1207,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "5b4e4ee158578f4f",
+          "artifact_hash": "0ccd5441d4ee9620",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "delayed restart after bursty writes",
@@ -849,13 +1216,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::delayed restart after bursty writes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "5325e66d9ff9b9a4",
+          "artifact_hash": "31c2949f9a18360d",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "delayed restart after bursty writes",
@@ -864,13 +1242,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::delayed restart after bursty writes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "19e8a06f9aeda12b",
+          "artifact_hash": "11841f5cf0e54eba",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "delayed restart after bursty writes",
@@ -879,6 +1268,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::delayed restart after bursty writes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -900,7 +1300,7 @@
         {
           "name": "nodemon::custom_stop_or_reload_signals_and_process-tree_signal_delivery",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "564f61e0a650ba00",
+          "artifact_hash": "b43338dacce891b2",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "custom stop or reload signals and process-tree signal delivery",
@@ -914,7 +1314,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "nodemon::custom_stop_or_reload_signals_and_process-tree_signal_delivery"
+            "fixture_id": "nodemon::custom_stop_or_reload_signals_and_process-tree_signal_delivery",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::custom stop or reload signals and process-tree signal delivery"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -922,7 +1333,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "826573437e72283e",
+          "artifact_hash": "47e691b62a1d9734",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "custom stop or reload signals and process-tree signal delivery",
@@ -931,13 +1342,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::custom stop or reload signals and process-tree signal delivery"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "4e2116fcb62de375",
+          "artifact_hash": "d14259fc86aa2291",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "custom stop or reload signals and process-tree signal delivery",
@@ -946,13 +1368,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::custom stop or reload signals and process-tree signal delivery"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "d6149d91e2096a4c",
+          "artifact_hash": "5ab16aecaa8cc51e",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "custom stop or reload signals and process-tree signal delivery",
@@ -961,6 +1394,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::custom stop or reload signals and process-tree signal delivery"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -982,7 +1426,7 @@
         {
           "name": "nodemon::equivalence_fixtures_for_extension_filtering_ignored_paths_polling_fallback_delay_restart_and_signal_restart",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "c1d861f7fa39a00d",
+          "artifact_hash": "854b1d8741318c43",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
@@ -996,7 +1440,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "nodemon::equivalence_fixtures_for_extension_filtering_ignored_paths_polling_fallback_delay_restart_and_signal_restart"
+            "fixture_id": "nodemon::equivalence_fixtures_for_extension_filtering_ignored_paths_polling_fallback_delay_restart_and_signal_restart",
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1004,7 +1459,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "59c68bf2cd34bad6",
+          "artifact_hash": "bbef169ac369b97e",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
@@ -1013,13 +1468,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "25326c1a8f8ac39d",
+          "artifact_hash": "f28fb78a96d659f3",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
@@ -1028,13 +1494,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "72ba05a6345e5434",
+          "artifact_hash": "261cf822d388ba4c",
           "artifact_json": {
             "implementation": "nodemon",
             "behavior": "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
@@ -1043,6 +1520,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1064,7 +1552,7 @@
         {
           "name": "chokidar::raw_watcher_events_normalize_into_add_change_unlink_addDir_unlinkDir_ready_raw_and_error",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "6fc65cf14dd4d975",
+          "artifact_hash": "bbedbff1feee11bc",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
@@ -1078,7 +1566,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "chokidar::raw_watcher_events_normalize_into_add_change_unlink_addDir_unlinkDir_ready_raw_and_error"
+            "fixture_id": "chokidar::raw_watcher_events_normalize_into_add_change_unlink_addDir_unlinkDir_ready_raw_and_error",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1086,7 +1585,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "f478dca89bb0b91a",
+          "artifact_hash": "96d8f0b71d1cb0ed",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
@@ -1095,13 +1594,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "2d8ad8a6bff172d1",
+          "artifact_hash": "077f10fc6c6980cc",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
@@ -1110,13 +1620,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "db1e3c607d6c8cd8",
+          "artifact_hash": "ed6f5a7d1fe5f705",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
@@ -1125,6 +1646,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1146,7 +1678,7 @@
         {
           "name": "chokidar::atomic_write_delete-plus-add_normalization",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "4558abad4e1ba813",
+          "artifact_hash": "33b4b6280fe367f3",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "atomic write delete-plus-add normalization",
@@ -1160,7 +1692,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "chokidar::atomic_write_delete-plus-add_normalization"
+            "fixture_id": "chokidar::atomic_write_delete-plus-add_normalization",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::atomic write delete-plus-add normalization"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1168,7 +1711,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "6b38c1c356ca7607",
+          "artifact_hash": "afbec9f5f346207b",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "atomic write delete-plus-add normalization",
@@ -1177,13 +1720,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::atomic write delete-plus-add normalization"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "0b554a3e4d1e602c",
+          "artifact_hash": "af408d3a52964e52",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "atomic write delete-plus-add normalization",
@@ -1192,13 +1746,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::atomic write delete-plus-add normalization"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "4496e1428e44cd33",
+          "artifact_hash": "27c342bdccc94a4f",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "atomic write delete-plus-add normalization",
@@ -1207,6 +1772,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::atomic write delete-plus-add normalization"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1228,7 +1804,7 @@
         {
           "name": "chokidar::chunked-write_stability_before_emitting_change",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "e1bf80d773df8d8e",
+          "artifact_hash": "61148aa10d5995e0",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "chunked-write stability before emitting change",
@@ -1242,7 +1818,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "chokidar::chunked-write_stability_before_emitting_change"
+            "fixture_id": "chokidar::chunked-write_stability_before_emitting_change",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::chunked-write stability before emitting change"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1250,7 +1837,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "495f6547e60a3a75",
+          "artifact_hash": "5d84821f23670ad3",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "chunked-write stability before emitting change",
@@ -1259,13 +1846,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::chunked-write stability before emitting change"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "4b259bb8ee267452",
+          "artifact_hash": "e5ddc63a62dc1bba",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "chunked-write stability before emitting change",
@@ -1274,13 +1872,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::chunked-write stability before emitting change"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "b063932a1aa9d8cd",
+          "artifact_hash": "63fb8d3cf0481ef7",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "chunked-write stability before emitting change",
@@ -1289,6 +1898,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::chunked-write stability before emitting change"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1310,7 +1930,7 @@
         {
           "name": "chokidar::recursion_depth_symlink_cwd_relative_dynamic_add_unwatch_close",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "b152fb773022c02c",
+          "artifact_hash": "b77cf8c769c2f7ad",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "recursion depth symlink cwd relative dynamic add unwatch close",
@@ -1324,7 +1944,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "chokidar::recursion_depth_symlink_cwd_relative_dynamic_add_unwatch_close"
+            "fixture_id": "chokidar::recursion_depth_symlink_cwd_relative_dynamic_add_unwatch_close",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursion depth symlink cwd relative dynamic add unwatch close"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1332,7 +1963,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "9cf04379636e031a",
+          "artifact_hash": "57c4403a60d80271",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "recursion depth symlink cwd relative dynamic add unwatch close",
@@ -1341,13 +1972,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursion depth symlink cwd relative dynamic add unwatch close"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "d6023f7787aebcd1",
+          "artifact_hash": "16efb6299a8aeaf0",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "recursion depth symlink cwd relative dynamic add unwatch close",
@@ -1356,13 +1998,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursion depth symlink cwd relative dynamic add unwatch close"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "34f2a26cbd711ad8",
+          "artifact_hash": "62e5cac6cac06729",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "recursion depth symlink cwd relative dynamic add unwatch close",
@@ -1371,6 +2024,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursion depth symlink cwd relative dynamic add unwatch close"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1392,7 +2056,7 @@
         {
           "name": "chokidar::polling_intervals_permission_errors_and_handle_exhaustion_diagnostics",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "b822440251b999db",
+          "artifact_hash": "1ea46a43bafd973a",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "polling intervals permission errors and handle exhaustion diagnostics",
@@ -1406,7 +2070,19 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "chokidar::polling_intervals_permission_errors_and_handle_exhaustion_diagnostics"
+            "fixture_id": "chokidar::polling_intervals_permission_errors_and_handle_exhaustion_diagnostics",
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::polling intervals permission errors and handle exhaustion diagnostics"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ],
@@ -1414,7 +2090,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "060470b8cb037a0e",
+          "artifact_hash": "6cc4bdc01e295489",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "polling intervals permission errors and handle exhaustion diagnostics",
@@ -1423,13 +2099,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::polling intervals permission errors and handle exhaustion diagnostics"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "6b66de249ab89d45",
+          "artifact_hash": "61ca210ea8eb8d78",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "polling intervals permission errors and handle exhaustion diagnostics",
@@ -1438,13 +2126,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::polling intervals permission errors and handle exhaustion diagnostics"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "e4916f31001d84dc",
+          "artifact_hash": "52987c2388463411",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "polling intervals permission errors and handle exhaustion diagnostics",
@@ -1453,7 +2153,19 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::polling intervals permission errors and handle exhaustion diagnostics"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ]
@@ -1474,7 +2186,7 @@
         {
           "name": "chokidar::raw_event_details_as_boundary_evidence",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "2cbd9c911cc74063",
+          "artifact_hash": "a35e20b11e6ac567",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw event details as boundary evidence",
@@ -1488,7 +2200,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "chokidar::raw_event_details_as_boundary_evidence"
+            "fixture_id": "chokidar::raw_event_details_as_boundary_evidence",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::raw event details as boundary evidence"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1496,7 +2219,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "421ba38a108b7e27",
+          "artifact_hash": "52f67d56dd7baca7",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw event details as boundary evidence",
@@ -1505,13 +2228,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::raw event details as boundary evidence"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "a8b37a83f0dfbacc",
+          "artifact_hash": "2d15e6b83b4f581e",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw event details as boundary evidence",
@@ -1520,13 +2254,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::raw event details as boundary evidence"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "30c5d940f1a5de53",
+          "artifact_hash": "e58322a30a9f605b",
           "artifact_json": {
             "implementation": "chokidar",
             "behavior": "raw event details as boundary evidence",
@@ -1535,6 +2280,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::raw event details as boundary evidence"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1556,7 +2312,7 @@
         {
           "name": "watchdog::immutable_filesystem_event_facts",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "8b9e1cd2be308f2d",
+          "artifact_hash": "0620dc86df366ef0",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "immutable filesystem event facts",
@@ -1570,7 +2326,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchdog::immutable_filesystem_event_facts"
+            "fixture_id": "watchdog::immutable_filesystem_event_facts",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::immutable filesystem event facts"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1578,7 +2345,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "278b264dc798bbc2",
+          "artifact_hash": "eb963b7a4ef4e649",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "immutable filesystem event facts",
@@ -1587,13 +2354,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::immutable filesystem event facts"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "ade2d2c270db2729",
+          "artifact_hash": "ca35db9d22e38638",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "immutable filesystem event facts",
@@ -1602,13 +2380,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::immutable filesystem event facts"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "7fbd68b3e8d95bd0",
+          "artifact_hash": "35fc39bdb65802d1",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "immutable filesystem event facts",
@@ -1617,6 +2406,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::immutable filesystem event facts"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1638,7 +2438,7 @@
         {
           "name": "watchdog::moved_modified_created_closed_deleted_and_directory_events",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "0d54195e0cae6d99",
+          "artifact_hash": "85fcdcbdc8e40e8a",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "moved modified created closed deleted and directory events",
@@ -1652,7 +2452,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchdog::moved_modified_created_closed_deleted_and_directory_events"
+            "fixture_id": "watchdog::moved_modified_created_closed_deleted_and_directory_events",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::moved modified created closed deleted and directory events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1660,7 +2471,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "56aecc3a7ef9def4",
+          "artifact_hash": "a0b9e2b44cbce5db",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "moved modified created closed deleted and directory events",
@@ -1669,13 +2480,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::moved modified created closed deleted and directory events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "908f98e6f631ac63",
+          "artifact_hash": "da34b4d646e4b0b2",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "moved modified created closed deleted and directory events",
@@ -1684,13 +2506,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::moved modified created closed deleted and directory events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "f3c208a7630987de",
+          "artifact_hash": "7e2c239041e235af",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "moved modified created closed deleted and directory events",
@@ -1699,6 +2532,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::moved modified created closed deleted and directory events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1720,7 +2564,7 @@
         {
           "name": "watchdog::pattern_regex_ignore_directory_and_case-sensitive_matching",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "af3d74535708b342",
+          "artifact_hash": "06fde9002352ac56",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "pattern regex ignore directory and case-sensitive matching",
@@ -1734,7 +2578,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchdog::pattern_regex_ignore_directory_and_case-sensitive_matching"
+            "fixture_id": "watchdog::pattern_regex_ignore_directory_and_case-sensitive_matching",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::pattern regex ignore directory and case-sensitive matching"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1742,7 +2597,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "bcafdef597efc62b",
+          "artifact_hash": "efa1a8fff3223bf5",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "pattern regex ignore directory and case-sensitive matching",
@@ -1751,13 +2606,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::pattern regex ignore directory and case-sensitive matching"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "e214ff5b39b24690",
+          "artifact_hash": "d496ad9bde50fa04",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "pattern regex ignore directory and case-sensitive matching",
@@ -1766,13 +2632,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::pattern regex ignore directory and case-sensitive matching"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "aa60671901635c97",
+          "artifact_hash": "c8551260b57521dd",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "pattern regex ignore directory and case-sensitive matching",
@@ -1781,6 +2658,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::pattern regex ignore directory and case-sensitive matching"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1802,7 +2690,7 @@
         {
           "name": "watchdog::skip_repeated_identical_consecutive_events",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "d936cb4d8c79920a",
+          "artifact_hash": "89c30a32d81b6862",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "skip repeated identical consecutive events",
@@ -1816,7 +2704,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchdog::skip_repeated_identical_consecutive_events"
+            "fixture_id": "watchdog::skip_repeated_identical_consecutive_events",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::skip repeated identical consecutive events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1824,7 +2723,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "231d630481d8140b",
+          "artifact_hash": "488212bea9261dcb",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "skip repeated identical consecutive events",
@@ -1833,13 +2732,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::skip repeated identical consecutive events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "7ab490721b2cdaf0",
+          "artifact_hash": "604d87ad7a5039e2",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "skip repeated identical consecutive events",
@@ -1848,13 +2758,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::skip repeated identical consecutive events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "3233bd5d98776cf7",
+          "artifact_hash": "4d9075331711535f",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "skip repeated identical consecutive events",
@@ -1863,6 +2784,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::skip repeated identical consecutive events"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1884,7 +2816,7 @@
         {
           "name": "watchdog::observer_lifecycle_schedule_start_dispatch_unschedule_stop",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "d40c9d33e3a59f62",
+          "artifact_hash": "17477fc0a9f34c00",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "observer lifecycle schedule start dispatch unschedule stop",
@@ -1898,7 +2830,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchdog::observer_lifecycle_schedule_start_dispatch_unschedule_stop"
+            "fixture_id": "watchdog::observer_lifecycle_schedule_start_dispatch_unschedule_stop",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::observer lifecycle schedule start dispatch unschedule stop"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1906,7 +2849,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "13281a92c884e05d",
+          "artifact_hash": "8911f3e9e41b2fa1",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "observer lifecycle schedule start dispatch unschedule stop",
@@ -1915,13 +2858,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::observer lifecycle schedule start dispatch unschedule stop"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "a6b6aa0d65bd766a",
+          "artifact_hash": "504157e987845e60",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "observer lifecycle schedule start dispatch unschedule stop",
@@ -1930,13 +2884,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::observer lifecycle schedule start dispatch unschedule stop"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "c4fd41e2b6f0e1c5",
+          "artifact_hash": "5886d45d6d842f59",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "observer lifecycle schedule start dispatch unschedule stop",
@@ -1945,6 +2910,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::observer lifecycle schedule start dispatch unschedule stop"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -1966,7 +2942,7 @@
         {
           "name": "watchdog::platform_observer_choices_for_Linux_macOS_BSD_Windows_and_polling",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "001871f93fa54287",
+          "artifact_hash": "8bd07600be8af617",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "platform observer choices for Linux macOS BSD Windows and polling",
@@ -1980,7 +2956,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchdog::platform_observer_choices_for_Linux_macOS_BSD_Windows_and_polling"
+            "fixture_id": "watchdog::platform_observer_choices_for_Linux_macOS_BSD_Windows_and_polling",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform observer choices for Linux macOS BSD Windows and polling"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -1988,7 +2975,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "ee1b7acd9519792d",
+          "artifact_hash": "511f160435b1b8b1",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "platform observer choices for Linux macOS BSD Windows and polling",
@@ -1997,13 +2984,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform observer choices for Linux macOS BSD Windows and polling"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "2442d7800d8d4c7a",
+          "artifact_hash": "d47080a201ae5c30",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "platform observer choices for Linux macOS BSD Windows and polling",
@@ -2012,13 +3010,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform observer choices for Linux macOS BSD Windows and polling"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "c4656aeae56d1b95",
+          "artifact_hash": "e003b2053c425e69",
           "artifact_json": {
             "implementation": "watchdog",
             "behavior": "platform observer choices for Linux macOS BSD Windows and polling",
@@ -2027,6 +3036,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform observer choices for Linux macOS BSD Windows and polling"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2048,7 +3068,7 @@
         {
           "name": "watchfiles::debounced_sets_of_file_changes",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "6d1b9f2572281a84",
+          "artifact_hash": "3e9ee334f2dc8915",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounced sets of file changes",
@@ -2062,7 +3082,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchfiles::debounced_sets_of_file_changes"
+            "fixture_id": "watchfiles::debounced_sets_of_file_changes",
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::debounced sets of file changes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2070,7 +3101,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "2b623a096de3d7b9",
+          "artifact_hash": "75ea8a699560a0d2",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounced sets of file changes",
@@ -2079,13 +3110,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::debounced sets of file changes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "25234333490bd396",
+          "artifact_hash": "06aab3df7cc12a57",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounced sets of file changes",
@@ -2094,13 +3136,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::debounced sets of file changes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "3ccba1ce0cc19be1",
+          "artifact_hash": "53d702ebf0564200",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounced sets of file changes",
@@ -2109,6 +3162,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::debounced sets of file changes"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2130,7 +3194,7 @@
         {
           "name": "watchfiles::synchronous_watch_and_async_watch_thread_handoff_cancellation",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "1ceec3be7827fe2b",
+          "artifact_hash": "50fe4b553c1398a3",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "synchronous watch and async watch thread handoff cancellation",
@@ -2144,7 +3208,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchfiles::synchronous_watch_and_async_watch_thread_handoff_cancellation"
+            "fixture_id": "watchfiles::synchronous_watch_and_async_watch_thread_handoff_cancellation",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::synchronous watch and async watch thread handoff cancellation"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2152,7 +3227,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "90c02df2235a7354",
+          "artifact_hash": "b2d1df05f8f2311a",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "synchronous watch and async watch thread handoff cancellation",
@@ -2161,13 +3236,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::synchronous watch and async watch thread handoff cancellation"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "259e4c1d87f678c3",
+          "artifact_hash": "11d78ba8e166d6cf",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "synchronous watch and async watch thread handoff cancellation",
@@ -2176,13 +3262,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::synchronous watch and async watch thread handoff cancellation"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "f41eb5b610a861be",
+          "artifact_hash": "05facf16d1f5c718",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "synchronous watch and async watch thread handoff cancellation",
@@ -2191,6 +3288,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::synchronous watch and async watch thread handoff cancellation"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2212,7 +3320,7 @@
         {
           "name": "watchfiles::debounce_step_timeout_yield-on-timeout_stop_recursive_permission_forced_polling_polling_delay",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "74e9f45e55262534",
+          "artifact_hash": "e17897c77e308b9b",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
@@ -2226,7 +3334,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchfiles::debounce_step_timeout_yield-on-timeout_stop_recursive_permission_forced_polling_polling_delay"
+            "fixture_id": "watchfiles::debounce_step_timeout_yield-on-timeout_stop_recursive_permission_forced_polling_polling_delay",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2234,7 +3353,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "026ba40e98493675",
+          "artifact_hash": "cc89e071ca360bc8",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
@@ -2243,13 +3362,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "0431da7fa0657052",
+          "artifact_hash": "2713fa02364422a5",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
@@ -2258,13 +3388,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "cabf5d2a8f98eccd",
+          "artifact_hash": "e0a72193d106e432",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
@@ -2273,6 +3414,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2294,7 +3446,7 @@
         {
           "name": "watchfiles::Windows-specific_async_timeout_behavior",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "6204f1db8305c971",
+          "artifact_hash": "d7f088bcd3f786bf",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "Windows-specific async timeout behavior",
@@ -2308,7 +3460,19 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "watchfiles::Windows-specific_async_timeout_behavior"
+            "fixture_id": "watchfiles::Windows-specific_async_timeout_behavior",
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::Windows-specific async timeout behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ],
@@ -2316,7 +3480,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "4d75a7f7d96e6b3a",
+          "artifact_hash": "759bd9a5258258a2",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "Windows-specific async timeout behavior",
@@ -2325,13 +3489,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::Windows-specific async timeout behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "c91c310a6b277df1",
+          "artifact_hash": "8e2198026916af27",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "Windows-specific async timeout behavior",
@@ -2340,13 +3516,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::Windows-specific async timeout behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "80a864d60c33a078",
+          "artifact_hash": "76bdeb74c0942050",
           "artifact_json": {
             "implementation": "watchfiles",
             "behavior": "Windows-specific async timeout behavior",
@@ -2355,7 +3543,19 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::Windows-specific async timeout behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ]
@@ -2376,7 +3576,7 @@
         {
           "name": "Watchman::recursive_watched_roots_and_root-settle_before_command_execution",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "ec63f615fc9ec1ed",
+          "artifact_hash": "e4eabccfa524bd0a",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "recursive watched roots and root-settle before command execution",
@@ -2390,7 +3590,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "Watchman::recursive_watched_roots_and_root-settle_before_command_execution"
+            "fixture_id": "Watchman::recursive_watched_roots_and_root-settle_before_command_execution",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursive watched roots and root-settle before command execution"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2398,7 +3609,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "ef7995e693861882",
+          "artifact_hash": "6ca3ce73329fc077",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "recursive watched roots and root-settle before command execution",
@@ -2407,13 +3618,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursive watched roots and root-settle before command execution"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "b474ef1b3bbc46e9",
+          "artifact_hash": "18e4fa9e6152582e",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "recursive watched roots and root-settle before command execution",
@@ -2422,13 +3644,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursive watched roots and root-settle before command execution"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "3c39372867ed3890",
+          "artifact_hash": "e51aeb252f913feb",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "recursive watched roots and root-settle before command execution",
@@ -2437,6 +3670,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::recursive watched roots and root-settle before command execution"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2458,7 +3702,7 @@
         {
           "name": "Watchman::conservative_uncertain-file_startup_behavior",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "dcbb8614a7301b53",
+          "artifact_hash": "872e8f1d3f928168",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "conservative uncertain-file startup behavior",
@@ -2472,7 +3716,19 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "Watchman::conservative_uncertain-file_startup_behavior"
+            "fixture_id": "Watchman::conservative_uncertain-file_startup_behavior",
+            "disposition": "explicit_non_goal",
+            "model_binding": {
+              "kind": "explicit_non_goal",
+              "anchor": "external_comparisons::conservative uncertain-file startup behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ],
@@ -2480,7 +3736,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "893233d52d9d9a9c",
+          "artifact_hash": "61821910e1a9fafd",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "conservative uncertain-file startup behavior",
@@ -2489,13 +3745,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "explicit_non_goal",
+            "model_binding": {
+              "kind": "explicit_non_goal",
+              "anchor": "external_comparisons::conservative uncertain-file startup behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "03e846e960ed327b",
+          "artifact_hash": "56e355c15de6bb5c",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "conservative uncertain-file startup behavior",
@@ -2504,13 +3772,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "explicit_non_goal",
+            "model_binding": {
+              "kind": "explicit_non_goal",
+              "anchor": "external_comparisons::conservative uncertain-file startup behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "7e76d3dfd0781216",
+          "artifact_hash": "1ab79f29ecbd0c55",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "conservative uncertain-file startup behavior",
@@ -2519,7 +3799,19 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "explicit_non_goal",
+            "model_binding": {
+              "kind": "explicit_non_goal",
+              "anchor": "external_comparisons::conservative uncertain-file startup behavior"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ]
@@ -2540,7 +3832,7 @@
         {
           "name": "Watchman::project-root_discovery_through_root_files_and_root_enforcement",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "bcdd815562733f85",
+          "artifact_hash": "d282afcbba594999",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "project-root discovery through root files and root enforcement",
@@ -2554,7 +3846,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "Watchman::project-root_discovery_through_root_files_and_root_enforcement"
+            "fixture_id": "Watchman::project-root_discovery_through_root_files_and_root_enforcement",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::project-root discovery through root files and root enforcement"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2562,7 +3865,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "00a6831e1cae2549",
+          "artifact_hash": "9a1bca2405eb3c5f",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "project-root discovery through root files and root enforcement",
@@ -2571,13 +3874,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::project-root discovery through root files and root enforcement"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "c2ccd38186c0e5e6",
+          "artifact_hash": "5827713606a5fa06",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "project-root discovery through root files and root enforcement",
@@ -2586,13 +3900,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::project-root discovery through root files and root enforcement"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "57f771f0440ccef1",
+          "artifact_hash": "4a4379d144fbba43",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "project-root discovery through root files and root enforcement",
@@ -2601,6 +3926,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::project-root discovery through root files and root enforcement"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2622,7 +3958,7 @@
         {
           "name": "Watchman::case-insensitive_filesystem_behavior_canonical_recovery_and_case-only_rename",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "75d57661a66b3cbf",
+          "artifact_hash": "ca3539b82a12e5d8",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "case-insensitive filesystem behavior canonical recovery and case-only rename",
@@ -2636,7 +3972,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "Watchman::case-insensitive_filesystem_behavior_canonical_recovery_and_case-only_rename"
+            "fixture_id": "Watchman::case-insensitive_filesystem_behavior_canonical_recovery_and_case-only_rename",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::case-insensitive filesystem behavior canonical recovery and case-only rename"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2644,7 +3991,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "66fe2b3bf485a692",
+          "artifact_hash": "8448fa29b36d64d3",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "case-insensitive filesystem behavior canonical recovery and case-only rename",
@@ -2653,13 +4000,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::case-insensitive filesystem behavior canonical recovery and case-only rename"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "684489a3d45b8879",
+          "artifact_hash": "0ca23e44f2e275ba",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "case-insensitive filesystem behavior canonical recovery and case-only rename",
@@ -2668,13 +4026,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::case-insensitive filesystem behavior canonical recovery and case-only rename"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "736e457bb8821d60",
+          "artifact_hash": "9b22b3c451b75cf7",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "case-insensitive filesystem behavior canonical recovery and case-only rename",
@@ -2683,6 +4052,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::case-insensitive filesystem behavior canonical recovery and case-only rename"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2704,7 +4084,7 @@
         {
           "name": "Watchman::unsupported_or_illegal_filesystem_types",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "acb5a00fc42c8278",
+          "artifact_hash": "f9acc4c308b53173",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "unsupported or illegal filesystem types",
@@ -2718,7 +4098,19 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "Watchman::unsupported_or_illegal_filesystem_types"
+            "fixture_id": "Watchman::unsupported_or_illegal_filesystem_types",
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::unsupported or illegal filesystem types"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ],
@@ -2726,7 +4118,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "992b844c39e26930",
+          "artifact_hash": "a918520e0c83f11b",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "unsupported or illegal filesystem types",
@@ -2735,13 +4127,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::unsupported or illegal filesystem types"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "31e5c88241d8f51f",
+          "artifact_hash": "cce077bec8b78df2",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "unsupported or illegal filesystem types",
@@ -2750,13 +4154,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::unsupported or illegal filesystem types"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "527583feaa1fdfaa",
+          "artifact_hash": "319825322a1ac4ef",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "unsupported or illegal filesystem types",
@@ -2765,7 +4181,19 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::unsupported or illegal filesystem types"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ]
@@ -2786,7 +4214,7 @@
         {
           "name": "Watchman::symlink_policy",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "0bda6017fbf20975",
+          "artifact_hash": "3225f95120110165",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "symlink policy",
@@ -2800,7 +4228,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "Watchman::symlink_policy"
+            "fixture_id": "Watchman::symlink_policy",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::symlink policy"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2808,7 +4247,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "8a882945cf12b99d",
+          "artifact_hash": "6218dbe0ba6520cf",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "symlink policy",
@@ -2817,13 +4256,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::symlink policy"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "3e0125baa0bd59aa",
+          "artifact_hash": "8aa542e6b1392776",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "symlink policy",
@@ -2832,13 +4282,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::symlink policy"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "92547a7559a9a605",
+          "artifact_hash": "c9ae9792122ef8b3",
           "artifact_json": {
             "implementation": "Watchman",
             "behavior": "symlink policy",
@@ -2847,6 +4308,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::symlink policy"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -2868,7 +4340,7 @@
         {
           "name": "go-air::build_command_entrypoint_full_command_binary_args_pre-build_and_post-exit",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "7ab482ef49fcf74d",
+          "artifact_hash": "ac5e50bafb1cec61",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "build command entrypoint full command binary args pre-build and post-exit",
@@ -2882,7 +4354,19 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "go-air::build_command_entrypoint_full_command_binary_args_pre-build_and_post-exit"
+            "fixture_id": "go-air::build_command_entrypoint_full_command_binary_args_pre-build_and_post-exit",
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::build command entrypoint full command binary args pre-build and post-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ],
@@ -2890,7 +4374,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "f3ee518b95646bcd",
+          "artifact_hash": "8d246bcd772f6d59",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "build command entrypoint full command binary args pre-build and post-exit",
@@ -2899,13 +4383,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::build command entrypoint full command binary args pre-build and post-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "ea7b98ca998c3b9a",
+          "artifact_hash": "924d51716729a108",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "build command entrypoint full command binary args pre-build and post-exit",
@@ -2914,13 +4410,25 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::build command entrypoint full command binary args pre-build and post-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "4e169d96547cfdb5",
+          "artifact_hash": "99b2bde001262ea1",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "build command entrypoint full command binary args pre-build and post-exit",
@@ -2929,7 +4437,19 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
-            ]
+            ],
+            "disposition": "debt_item",
+            "model_binding": {
+              "kind": "debt_item",
+              "anchor": "external_comparisons::build command entrypoint full command binary args pre-build and post-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ],
+            "boundary_reason": "comparison stays visible as an honest boundary before full replacement"
           }
         }
       ]
@@ -2950,7 +4470,7 @@
         {
           "name": "go-air::include_exclude_regex_unchanged_dangerous-root_and_symlink_following",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "eb3948c018249cc7",
+          "artifact_hash": "0fd3a20247d5580c",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "include exclude regex unchanged dangerous-root and symlink following",
@@ -2964,7 +4484,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "go-air::include_exclude_regex_unchanged_dangerous-root_and_symlink_following"
+            "fixture_id": "go-air::include_exclude_regex_unchanged_dangerous-root_and_symlink_following",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::include exclude regex unchanged dangerous-root and symlink following"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -2972,7 +4503,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "a411a79edb6554ec",
+          "artifact_hash": "d3a75f324f002f8d",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "include exclude regex unchanged dangerous-root and symlink following",
@@ -2981,13 +4512,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::include exclude regex unchanged dangerous-root and symlink following"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "04acfa54bf9e4acb",
+          "artifact_hash": "549a8a940fcdda6c",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "include exclude regex unchanged dangerous-root and symlink following",
@@ -2996,13 +4538,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::include exclude regex unchanged dangerous-root and symlink following"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "d0b676fd59d3c566",
+          "artifact_hash": "7c17a30336d0e6a5",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "include exclude regex unchanged dangerous-root and symlink following",
@@ -3011,6 +4564,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::include exclude regex unchanged dangerous-root and symlink following"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -3032,7 +4596,7 @@
         {
           "name": "go-air::polling_stop-on-error_interrupt-before-kill_kill_delay_rerun_clean-on-exit",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "40ef203731ad7dee",
+          "artifact_hash": "a7c267deea7c7b9e",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
@@ -3046,7 +4610,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "go-air::polling_stop-on-error_interrupt-before-kill_kill_delay_rerun_clean-on-exit"
+            "fixture_id": "go-air::polling_stop-on-error_interrupt-before-kill_kill_delay_rerun_clean-on-exit",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -3054,7 +4629,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "248f749f793359b3",
+          "artifact_hash": "ef8cc602abbd9481",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
@@ -3063,13 +4638,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "64ff47560b047888",
+          "artifact_hash": "ebd47813f6eb7440",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
@@ -3078,13 +4664,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "9aac829b211c2aef",
+          "artifact_hash": "5d285be11b9147b9",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
@@ -3093,6 +4690,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -3114,7 +4722,7 @@
         {
           "name": "go-air::platform-specific_build_overrides",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "8400ff955d52290a",
+          "artifact_hash": "e77616d2b257b562",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "platform-specific build overrides",
@@ -3128,7 +4736,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "go-air::platform-specific_build_overrides"
+            "fixture_id": "go-air::platform-specific_build_overrides",
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform-specific build overrides"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -3136,7 +4755,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "2c10ff46289ee417",
+          "artifact_hash": "ec062cc27432ba1d",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "platform-specific build overrides",
@@ -3145,13 +4764,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform-specific build overrides"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "790b313889c84ffc",
+          "artifact_hash": "5d12cd9aa905e8fc",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "platform-specific build overrides",
@@ -3160,13 +4790,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform-specific build overrides"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "db0c48894ae24643",
+          "artifact_hash": "90603b11deb377f5",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "platform-specific build overrides",
@@ -3175,6 +4816,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "formal_adapter_contract",
+            "model_binding": {
+              "kind": "formal_adapter_contract",
+              "anchor": "external_comparisons::platform-specific build overrides"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -3196,7 +4848,7 @@
         {
           "name": "go-air::environment_file_loading_and_app_environment_inheritance",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "ab8ac426611a4bde",
+          "artifact_hash": "625af426ad4841e9",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "environment file loading and app environment inheritance",
@@ -3210,7 +4862,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "go-air::environment_file_loading_and_app_environment_inheritance"
+            "fixture_id": "go-air::environment_file_loading_and_app_environment_inheritance",
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::environment file loading and app environment inheritance"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -3218,7 +4881,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "43cfd519263f07b4",
+          "artifact_hash": "f858f7da0e239f3b",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "environment file loading and app environment inheritance",
@@ -3227,13 +4890,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::environment file loading and app environment inheritance"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "db91edfdaf8fab23",
+          "artifact_hash": "2fde975d04c57112",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "environment file loading and app environment inheritance",
@@ -3242,13 +4916,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::environment file loading and app environment inheritance"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "8c916cd85225269e",
+          "artifact_hash": "e2ad7d7b827c870f",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "environment file loading and app environment inheritance",
@@ -3257,6 +4942,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "semantic_rule",
+            "model_binding": {
+              "kind": "semantic_rule",
+              "anchor": "external_comparisons::environment file loading and app environment inheritance"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }
@@ -3278,7 +4974,7 @@
         {
           "name": "go-air::parity_fixtures_for_config_defaults_cli_overrides_Docker_mounted_volumes_and_platform_executable_paths",
           "artifact_kind": "parity_fixture",
-          "artifact_hash": "eb847fd9602dccd7",
+          "artifact_hash": "96c89cd6e154b972",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
@@ -3292,7 +4988,18 @@
               "child_lifecycle",
               "timer_order"
             ],
-            "fixture_id": "go-air::parity_fixtures_for_config_defaults_cli_overrides_Docker_mounted_volumes_and_platform_executable_paths"
+            "fixture_id": "go-air::parity_fixtures_for_config_defaults_cli_overrides_Docker_mounted_volumes_and_platform_executable_paths",
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
+            ]
           }
         }
       ],
@@ -3300,7 +5007,7 @@
         {
           "name": "event-order-swap",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "fc95d5f581976cce",
+          "artifact_hash": "1d9634ea6374af31",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
@@ -3309,13 +5016,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "path-filter-flip",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "d67a22ef277f9805",
+          "artifact_hash": "a0e79f882f7152b0",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
@@ -3324,13 +5042,24 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         },
         {
           "name": "child-exit-drop",
           "artifact_kind": "mutation_check",
-          "artifact_hash": "5ef91db01b80129c",
+          "artifact_hash": "65fd889a11674de9",
           "artifact_json": {
             "implementation": "go-air",
             "behavior": "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
@@ -3339,6 +5068,17 @@
             "assertions": [
               "mutation targets a modeled fact",
               "mutation is not accepted as silent parity"
+            ],
+            "disposition": "replay_fixture",
+            "model_binding": {
+              "kind": "replay_fixture",
+              "anchor": "external_comparisons::parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths"
+            },
+            "source_visible_facts": [
+              "implementation",
+              "behavior",
+              "disposition",
+              "evidence_anchor"
             ]
           }
         }

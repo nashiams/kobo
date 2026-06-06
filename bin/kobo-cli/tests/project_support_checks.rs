@@ -686,6 +686,62 @@ fn command_proves_target(evidence_kind: &str, subject: &str) -> String {
     }
 }
 
+fn measurements_json(evidence_kind: &str, subject: &str) -> String {
+    let measurement = if evidence_kind == "performance" {
+        serde_json::json!([{
+            "name": subject,
+            "value": performance_value(subject),
+            "baseline_value": performance_baseline(subject),
+            "sample_count": 5,
+            "unit": performance_unit(subject),
+        }])
+    } else {
+        serde_json::json!([{
+            "name": subject,
+            "value": 1.0,
+            "unit": "sample",
+        }])
+    };
+    measurement.to_string()
+}
+
+fn performance_unit(subject: &str) -> &'static str {
+    match subject {
+        "startup" | "steady_state" | "restart" => "ms",
+        "memory" => "MiB",
+        "binary" => "bytes",
+        "watch_tree_scaling" => "paths_per_second",
+        "event_burst_scaling" => "events_per_second",
+        _ => "sample",
+    }
+}
+
+fn performance_value(subject: &str) -> f64 {
+    match subject {
+        "startup" => 42.0,
+        "steady_state" => 3.5,
+        "restart" => 18.0,
+        "memory" => 28.0,
+        "binary" => 8_388_608.0,
+        "watch_tree_scaling" => 12_000.0,
+        "event_burst_scaling" => 80_000.0,
+        _ => 1.0,
+    }
+}
+
+fn performance_baseline(subject: &str) -> f64 {
+    match subject {
+        "startup" => 50.0,
+        "steady_state" => 4.0,
+        "restart" => 20.0,
+        "memory" => 32.0,
+        "binary" => 9_437_184.0,
+        "watch_tree_scaling" => 10_000.0,
+        "event_burst_scaling" => 75_000.0,
+        _ => 1.0,
+    }
+}
+
 fn write_evidence(
     project: &TestProject,
     path: &str,
@@ -709,6 +765,7 @@ fn write_evidence(
     let proves_target = command_proves_target(evidence_kind, subject);
     let covered_paths = json_string_array(subject_covered_paths(evidence_kind, subject));
     let covered_modules = json_string_array(proof_debt_modules());
+    let measurements_json = measurements_json(evidence_kind, subject);
     let decision = if evidence_kind == "proof_debt_report" {
         "same_project_map"
     } else {
@@ -733,9 +790,7 @@ fn write_evidence(
     {{"name": "{subject}-conformance", "status": "passed"}}
   ],
   "stale_check": {{"status": "passed", "crate_version": "1.0.0", "features": ["default", "polling", "rt", "time", "derive"]}},
-  "measurements": [
-    {{"name": "{subject}", "value": 1.0, "unit": "sample"}}
-  ],
+  "measurements": {measurements_json},
   "mutation_results": ["task-order", "timer-order", "cancel-order", "channel-delivery"],
   "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"],
   "decision": "{decision}"
@@ -1570,6 +1625,41 @@ fn doctor_project_support_rejects_command_without_subject_proof_marker() {
         &value["project_support"]["blockers"].to_string(),
         "conformance_evidence evidence command missing proves entry for async_runtime",
         "evidence command must declare the exact subject it proves",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_placeholder_performance_measurement() {
+    let project = TestProject::new("doctor-project-support-placeholder-performance");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let performance_evidence_path = project.root.join(".kobo/evidence/perf-startup.json");
+    let mut performance_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&performance_evidence_path).expect("performance evidence should read"),
+    )
+    .expect("performance evidence should parse");
+    performance_evidence["measurements"][0]["unit"] = serde_json::json!("passed_command");
+    fs::write(
+        &performance_evidence_path,
+        serde_json::to_string_pretty(&performance_evidence)
+            .expect("performance evidence should serialize"),
+    )
+    .expect("performance evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "placeholder performance report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "startup performance measurement unit passed_command does not prove startup",
+        "performance evidence must use a subject-specific measurement unit",
     );
 }
 

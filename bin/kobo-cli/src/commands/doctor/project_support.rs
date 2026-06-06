@@ -1606,6 +1606,7 @@ fn validate_evidence_document(
     }
     if expected_kind == "performance" {
         require_non_empty_array(document, "measurements", label, blockers);
+        validate_performance_measurements(document, &target_name, label, blockers);
     }
 }
 
@@ -1709,6 +1710,79 @@ fn required_subject_paths(
 
 fn evidence_target_name(expected_kind: &str, expected_subject: Option<&str>) -> String {
     expected_subject.unwrap_or(expected_kind).to_owned()
+}
+
+fn validate_performance_measurements(
+    document: &Value,
+    expected_subject: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let Some(required_units) = required_performance_units(expected_subject) else {
+        return;
+    };
+    let measurements = document["measurements"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut has_subject_measurement = false;
+    for measurement in measurements {
+        if measurement["name"].as_str() != Some(expected_subject) {
+            continue;
+        }
+        has_subject_measurement = true;
+        validate_positive_number(&measurement, "value", label, blockers);
+        validate_positive_number(&measurement, "baseline_value", label, blockers);
+        validate_positive_u64(&measurement, "sample_count", label, blockers);
+        let unit = measurement["unit"].as_str().unwrap_or("");
+        if !required_units.contains(&unit) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} performance measurement unit {unit} does not prove {expected_subject}"
+            )));
+        }
+    }
+    if !has_subject_measurement {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} performance measurements missing {expected_subject}"
+        )));
+    }
+}
+
+fn required_performance_units(subject: &str) -> Option<&'static [&'static str]> {
+    match subject {
+        "startup" | "steady_state" | "restart" => Some(&["ms"]),
+        "memory" => Some(&["bytes", "MiB"]),
+        "binary" => Some(&["bytes"]),
+        "watch_tree_scaling" => Some(&["paths_per_second"]),
+        "event_burst_scaling" => Some(&["events_per_second"]),
+        _ => None,
+    }
+}
+
+fn validate_positive_number(
+    value: &Value,
+    field: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if !matches!(value[field].as_f64(), Some(number) if number > 0.0) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} performance measurement {field} must be positive"
+        )));
+    }
+}
+
+fn validate_positive_u64(
+    value: &Value,
+    field: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if !matches!(value[field].as_u64(), Some(number) if number > 0) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} performance measurement {field} must be positive"
+        )));
+    }
 }
 
 fn evidence_command_proves_kind(expected_kind: &str, argv: &[String]) -> bool {

@@ -130,7 +130,7 @@ insta = "1"
         project,
         ".kobo/evidence/async.json",
         "async_runtime",
-        "async",
+        "async_runtime",
         &behavior_command,
     );
     write_evidence(
@@ -339,8 +339,44 @@ default = []
         "pub struct Watchexec;\npub fn configure() {}\n",
     );
     project.write(
+        "upstream/watchexec/crates/lib/src/watchexec.rs",
+        "pub fn run_watchexec() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/lib/src/paths.rs",
+        "pub fn normalize_path() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/lib/src/late_join_set.rs",
+        "pub fn join_tasks() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/lib/src/action/worker.rs",
+        "pub fn run_worker() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/lib/src/action/return.rs",
+        "pub fn classify_exit() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/lib/src/sources/fs.rs",
+        "pub fn read_fs_events() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/lib/src/sources/signal.rs",
+        "pub fn read_signals() {}\n",
+    );
+    project.write(
         "upstream/watchexec/crates/events/src/lib.rs",
         "pub struct Event;\npub fn normalize_event() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/events/src/fs.rs",
+        "pub fn filesystem_event() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/events/src/serde_formats.rs",
+        "pub fn serialize_event() {}\n",
     );
     project.write(
         "upstream/watchexec/crates/cli/src/main.rs",
@@ -351,8 +387,28 @@ default = []
         "pub struct CliSurface;\npub fn parse_restart_flag() {}\n",
     );
     project.write(
+        "upstream/watchexec/crates/cli/src/args/logging.rs",
+        "pub fn parse_logging() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/cli/src/config.rs",
+        "pub fn read_config() {}\n",
+    );
+    project.write(
         "upstream/watchexec/crates/supervisor/src/lib.rs",
         "pub mod debounce;\npub mod policy;\npub struct Supervisor;\npub struct RestartPolicy;\npub fn restart_policy() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/supervisor/src/command.rs",
+        "pub fn spawn_command() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/supervisor/src/errors.rs",
+        "pub fn supervisor_error() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/supervisor/src/job/state.rs",
+        "pub fn job_state() {}\n",
     );
     project.write(
         "upstream/watchexec/crates/supervisor/src/policy.rs",
@@ -434,16 +490,38 @@ default = []
     project.write("upstream/watchexec/fixtures/signals.json", "{}\n");
     project.write("upstream/watchexec/fixtures/config.toml", "debounce = 50\n");
     project.write("upstream/watchexec/fixtures/logging.json", "{}\n");
+    project.write(
+        "upstream/watchexec/release.toml",
+        "artifact = \"watchexec\"\n",
+    );
+    project.write(
+        "upstream/watchexec/install/install.ps1",
+        "Write-Output watchexec\n",
+    );
     project.write("upstream/watchexec/target/release/watchexec", "binary\n");
 }
 
 fn upstream_module_paths() -> &'static [&'static str] {
     &[
         "crates/lib/src/lib.rs",
+        "crates/lib/src/watchexec.rs",
+        "crates/lib/src/paths.rs",
+        "crates/lib/src/late_join_set.rs",
+        "crates/lib/src/action/worker.rs",
+        "crates/lib/src/action/return.rs",
+        "crates/lib/src/sources/fs.rs",
+        "crates/lib/src/sources/signal.rs",
         "crates/events/src/lib.rs",
+        "crates/events/src/fs.rs",
+        "crates/events/src/serde_formats.rs",
         "crates/cli/src/main.rs",
         "crates/cli/src/lib.rs",
+        "crates/cli/src/args/logging.rs",
+        "crates/cli/src/config.rs",
         "crates/supervisor/src/lib.rs",
+        "crates/supervisor/src/command.rs",
+        "crates/supervisor/src/errors.rs",
+        "crates/supervisor/src/job/state.rs",
         "crates/supervisor/src/policy.rs",
         "crates/supervisor/src/debounce.rs",
         "crates/platform/src/lib.rs",
@@ -520,6 +598,94 @@ fn json_string_array(values: &[&str]) -> String {
         .join(", ")
 }
 
+fn subject_covered_paths(evidence_kind: &str, subject: &str) -> &'static [&'static str] {
+    match (evidence_kind, subject) {
+        ("language_surface", _) => upstream_module_paths(),
+        ("platform_model", "filesystem_events") => &[
+            "crates/events/src/fs.rs",
+            "crates/lib/src/sources/fs.rs",
+            "crates/platform/src/lib.rs",
+        ],
+        ("platform_model", "watcher_backend") => {
+            &["crates/platform/src/lib.rs", "crates/lib/src/sources/fs.rs"]
+        }
+        ("platform_model", "paths") => &["crates/platform/src/lib.rs", "crates/lib/src/paths.rs"],
+        ("platform_model", "process_execution") => &[
+            "crates/supervisor/src/command.rs",
+            "crates/lib/src/action/worker.rs",
+        ],
+        ("platform_model", "signals") => &[
+            "crates/signals/src/lib.rs",
+            "crates/lib/src/sources/signal.rs",
+        ],
+        ("platform_model", "process_groups") => &["crates/supervisor/src/command.rs"],
+        ("platform_model", "environment_variables") => &["crates/cli/src/config.rs"],
+        ("platform_model", "terminal_io") | ("platform_model", "stdio") => {
+            &["crates/cli/src/lib.rs"]
+        }
+        ("platform_model", "timers") => &["crates/supervisor/src/debounce.rs"],
+        ("adapter_summary", "watcher_backend") => &["crates/lib/src/sources/fs.rs"],
+        ("adapter_summary", "async_runtime") => &["crates/lib/src/late_join_set.rs"],
+        ("adapter_summary", "process_handling") => &["crates/supervisor/src/command.rs"],
+        ("adapter_summary", "signal_handling") => &["crates/signals/src/lib.rs"],
+        ("adapter_summary", "ignore_path") => &["crates/ignore/src/lib.rs"],
+        ("adapter_summary", "config") => &["crates/cli/src/config.rs"],
+        ("adapter_summary", "cli") => &["crates/cli/src/args/logging.rs"],
+        ("adapter_summary", "shell_parsing") => &["crates/supervisor/src/command.rs"],
+        ("adapter_summary", "serialization") => &["crates/events/src/serde_formats.rs"],
+        ("adapter_summary", "logging_tracing") => &["crates/cli/src/args/logging.rs"],
+        ("adapter_summary", "terminal_helpers") => &["crates/cli/src/lib.rs"],
+        ("adapter_summary", "errors") => &["crates/supervisor/src/errors.rs"],
+        ("async_runtime", _) => &[
+            "crates/lib/src/late_join_set.rs",
+            "crates/lib/src/action/worker.rs",
+        ],
+        ("generated_backend", _) => upstream_module_paths(),
+        ("test_release_parity", "upstream_tests") | ("upstream_tests", _) => &[
+            "crates/cli/tests/cli_flags.rs",
+            "crates/supervisor/tests/restart.rs",
+        ],
+        ("test_release_parity", "kobo_replay_tests") => &["fixtures/save.json"],
+        ("test_release_parity", "kobo_liveness_tests") => &["crates/supervisor/src/job/state.rs"],
+        ("test_release_parity", "cli_behavior") => &["crates/cli/src/main.rs"],
+        ("test_release_parity", "config_behavior") => &["crates/cli/src/config.rs"],
+        ("test_release_parity", "exit_behavior") => &["crates/lib/src/action/return.rs"],
+        ("test_release_parity", "logging_behavior") => &["crates/cli/src/args/logging.rs"],
+        ("test_release_parity", "package_behavior")
+        | ("test_release_parity", "install_behavior") => {
+            &["Cargo.toml", "release.toml", "install/install.ps1"]
+        }
+        ("test_release_parity", "platform_behavior") => &["crates/platform/src/lib.rs"],
+        ("performance", "startup")
+        | ("performance", "steady_state")
+        | ("performance", "restart") => &["crates/lib/src/watchexec.rs"],
+        ("performance", "memory") | ("performance", "binary") => {
+            &["Cargo.toml", "release.toml", "target/release/watchexec"]
+        }
+        ("performance", "watch_tree_scaling") | ("performance", "event_burst_scaling") => {
+            &["crates/lib/src/sources/fs.rs"]
+        }
+        _ => upstream_module_paths(),
+    }
+}
+
+fn command_proves_target(evidence_kind: &str, subject: &str) -> String {
+    match evidence_kind {
+        "upstream_inventory" => "upstream_inventory".to_owned(),
+        "language_surface" => "language_surface".to_owned(),
+        "generated_backend" => "generated_backend".to_owned(),
+        "async_runtime" => "async_runtime".to_owned(),
+        "upstream_tests" => "upstream_tests".to_owned(),
+        "platform_model"
+        | "adapter_summary"
+        | "test_release_parity"
+        | "performance"
+        | "proof_debt_report"
+        | "reviewer_report" => subject.to_owned(),
+        _ => subject.to_owned(),
+    }
+}
+
 fn write_evidence(
     project: &TestProject,
     path: &str,
@@ -540,7 +706,8 @@ fn write_evidence(
         r#", "output_match": {}"#,
         serde_json::to_string(evidence_command.output_match).unwrap()
     );
-    let covered_paths = json_string_array(upstream_module_paths());
+    let proves_target = command_proves_target(evidence_kind, subject);
+    let covered_paths = json_string_array(subject_covered_paths(evidence_kind, subject));
     let covered_modules = json_string_array(proof_debt_modules());
     let decision = if evidence_kind == "proof_debt_report" {
         "same_project_map"
@@ -559,7 +726,7 @@ fn write_evidence(
   "covered_modules": [{covered_modules}],
   "tested_platforms": ["windows", "macos", "linux"],
   "commands": [
-    {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}"{cwd_json}{output_match_json}}}
+    {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}", "proves": ["{proves_target}"]{cwd_json}{output_match_json}}}
   ],
   "behavior_tests": ["watcher", "restart", "signal", "stdin", "path_filter"],
   "conformance_results": [
@@ -1335,6 +1502,74 @@ fn doctor_project_support_rejects_metadata_only_future_evidence() {
         &value["project_support"]["blockers"].to_string(),
         "conformance_evidence evidence command does not prove async_runtime",
         "future evidence must be backed by a subject-specific command",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_unrelated_subject_coverage() {
+    let project = TestProject::new("doctor-project-support-unrelated-subject-coverage");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let adapter_evidence_path = project.root.join(".kobo/evidence/adapter-async.json");
+    let mut adapter_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&adapter_evidence_path).expect("adapter evidence should read"),
+    )
+    .expect("adapter evidence should parse");
+    adapter_evidence["covered_paths"] = serde_json::json!(["crates/cli/src/main.rs"]);
+    fs::write(
+        &adapter_evidence_path,
+        serde_json::to_string_pretty(&adapter_evidence).expect("adapter evidence should serialize"),
+    )
+    .expect("adapter evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "unrelated subject coverage report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "replay_evidence evidence does not cover async_runtime subject path",
+        "adapter evidence must cover paths tied to its subject",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_command_without_subject_proof_marker() {
+    let project = TestProject::new("doctor-project-support-missing-proof-marker");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let async_evidence_path = project.root.join(".kobo/evidence/async.json");
+    let mut async_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&async_evidence_path).expect("async evidence should read"),
+    )
+    .expect("async evidence should parse");
+    async_evidence["commands"][0]["proves"] = serde_json::json!(["watcher_backend"]);
+    fs::write(
+        &async_evidence_path,
+        serde_json::to_string_pretty(&async_evidence).expect("async evidence should serialize"),
+    )
+    .expect("async evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "missing proof marker report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "conformance_evidence evidence command missing proves entry for async_runtime",
+        "evidence command must declare the exact subject it proves",
     );
 }
 

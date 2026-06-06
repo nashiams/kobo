@@ -1187,7 +1187,7 @@ fn validate_async_runtime(
         runtime,
         "conformance_evidence",
         "async_runtime",
-        None,
+        Some("async_runtime"),
         blockers,
     ) {
         require_set(
@@ -1558,16 +1558,22 @@ fn validate_evidence_document(
             )));
         }
     }
+    require_subject_coverage(document, expected_kind, expected_subject, label, blockers);
     let commands = document["commands"].as_array();
     if commands.map_or(true, Vec::is_empty) {
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence must include command results"
         )));
     }
+    let target_name = evidence_target_name(expected_kind, expected_subject);
+    let mut has_kind_command = false;
     let mut has_subject_command = false;
     for command in commands.into_iter().flatten() {
         if let Some(argv) = command_argv(command, label, blockers) {
-            has_subject_command |= evidence_command_proves(expected_kind, &argv);
+            if evidence_command_proves_kind(expected_kind, &argv) {
+                has_kind_command = true;
+                has_subject_command |= evidence_command_declares_target(command, &target_name);
+            }
         }
         let command_text = command["command"].as_str().unwrap_or("").trim();
         if command_text.is_empty() {
@@ -1588,10 +1594,14 @@ fn validate_evidence_document(
         }
         validate_command_transcript(root, command, command_text, output_hash, label, blockers);
     }
-    if !has_subject_command {
+    if !has_kind_command {
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence command does not prove {}",
-            evidence_target_name(expected_kind, expected_subject)
+            target_name
+        )));
+    } else if !has_subject_command {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command missing proves entry for {target_name}"
         )));
     }
     if expected_kind == "performance" {
@@ -1599,11 +1609,109 @@ fn validate_evidence_document(
     }
 }
 
+fn require_subject_coverage(
+    document: &Value,
+    expected_kind: &str,
+    expected_subject: Option<&str>,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let Some(expected_subject) = expected_subject else {
+        return;
+    };
+    let Some(required_paths) = required_subject_paths(expected_kind, expected_subject) else {
+        return;
+    };
+    let covered_paths = string_set(&document["covered_paths"]);
+    let has_subject_path = required_paths.iter().any(|required_path| {
+        covered_paths
+            .iter()
+            .any(|path| path.contains(required_path))
+    });
+    if !has_subject_path {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence does not cover {expected_subject} subject path"
+        )));
+    }
+}
+
+fn required_subject_paths(
+    expected_kind: &str,
+    expected_subject: &str,
+) -> Option<&'static [&'static str]> {
+    match (expected_kind, expected_subject) {
+        ("platform_model", "filesystem_events") => Some(&[
+            "crates/events/src/fs.rs",
+            "crates/platform/src",
+            "crates/lib/src/sources/fs.rs",
+        ]),
+        ("platform_model", "watcher_backend") => {
+            Some(&["crates/platform/src", "crates/lib/src/sources/fs.rs"])
+        }
+        ("platform_model", "paths") => Some(&["crates/platform/src", "crates/lib/src/paths.rs"]),
+        ("platform_model", "process_execution") => {
+            Some(&["crates/supervisor/src", "crates/lib/src/action"])
+        }
+        ("platform_model", "signals") => {
+            Some(&["crates/signals/src", "crates/lib/src/sources/signal.rs"])
+        }
+        ("platform_model", "process_groups") => Some(&["crates/supervisor/src", "process"]),
+        ("platform_model", "environment_variables") => Some(&["crates/cli/src", "env"]),
+        ("platform_model", "terminal_io") => Some(&["crates/cli/src", "terminal"]),
+        ("platform_model", "stdio") => Some(&["crates/cli/src", "stdio"]),
+        ("platform_model", "timers") => Some(&["crates/supervisor/src/debounce.rs", "timer"]),
+        ("adapter_summary", "watcher_backend") => Some(&["crates/lib/src/sources/fs.rs", "notify"]),
+        ("adapter_summary", "async_runtime") => Some(&["crates/lib/src/late_join_set.rs", "tokio"]),
+        ("adapter_summary", "process_handling") => Some(&["crates/supervisor/src", "process"]),
+        ("adapter_summary", "signal_handling") => Some(&["crates/signals/src"]),
+        ("adapter_summary", "ignore_path") => Some(&["crates/ignore", "ignore-files"]),
+        ("adapter_summary", "config") => Some(&["crates/cli/src/config.rs"]),
+        ("adapter_summary", "cli") => Some(&["crates/cli/src/args"]),
+        ("adapter_summary", "shell_parsing") => Some(&["crates/supervisor/src/command"]),
+        ("adapter_summary", "serialization") => Some(&["crates/events/src/serde_formats.rs"]),
+        ("adapter_summary", "logging_tracing") => Some(&["crates/cli/src/args/logging.rs"]),
+        ("adapter_summary", "terminal_helpers") => Some(&["crates/cli/src"]),
+        ("adapter_summary", "errors") => {
+            Some(&["crates/lib/src/error", "crates/supervisor/src/errors.rs"])
+        }
+        ("async_runtime", "async_runtime") | ("async_runtime", "async") => Some(&[
+            "crates/lib/src/late_join_set.rs",
+            "crates/lib/src/action/worker.rs",
+        ]),
+        ("test_release_parity", "upstream_tests") | ("upstream_tests", "upstream") => {
+            Some(&["crates/events/tests", "crates/cli/tests", "tests"])
+        }
+        ("test_release_parity", "kobo_replay_tests") => Some(&["fixtures", "replay"]),
+        ("test_release_parity", "kobo_liveness_tests") => {
+            Some(&["crates/supervisor/src/job", "liveness"])
+        }
+        ("test_release_parity", "cli_behavior") => Some(&["crates/cli/src"]),
+        ("test_release_parity", "config_behavior") => Some(&["crates/cli/src/config.rs"]),
+        ("test_release_parity", "exit_behavior") => Some(&["crates/lib/src/action/return.rs"]),
+        ("test_release_parity", "logging_behavior") => Some(&["crates/cli/src/args/logging.rs"]),
+        ("test_release_parity", "package_behavior") => Some(&["Cargo.toml", "release.toml"]),
+        ("test_release_parity", "platform_behavior") => Some(&["crates/platform/src"]),
+        ("test_release_parity", "install_behavior") => Some(&["release.toml", "install"]),
+        ("performance", "startup")
+        | ("performance", "steady_state")
+        | ("performance", "restart") => {
+            Some(&["crates/lib/src/watchexec.rs", "crates/supervisor/src"])
+        }
+        ("performance", "memory") | ("performance", "binary") => {
+            Some(&["Cargo.toml", "release.toml"])
+        }
+        ("performance", "watch_tree_scaling") | ("performance", "event_burst_scaling") => {
+            Some(&["crates/lib/src/sources/fs.rs", "crates/events/src"])
+        }
+        _ => None,
+    }
+}
+
 fn evidence_target_name(expected_kind: &str, expected_subject: Option<&str>) -> String {
     expected_subject.unwrap_or(expected_kind).to_owned()
 }
 
-fn evidence_command_proves(expected_kind: &str, argv: &[String]) -> bool {
+fn evidence_command_proves_kind(expected_kind: &str, argv: &[String]) -> bool {
     match expected_kind {
         "upstream_inventory" => is_cargo_subcommand(argv, "metadata"),
         "language_surface" => {
@@ -1630,6 +1738,10 @@ fn evidence_command_proves(expected_kind: &str, argv: &[String]) -> bool {
         }
         _ => false,
     }
+}
+
+fn evidence_command_declares_target(command: &Value, target_name: &str) -> bool {
+    string_set(&command["proves"]).contains(target_name)
 }
 
 fn is_cargo_subcommand(argv: &[String], subcommand: &str) -> bool {

@@ -25,6 +25,7 @@ enum TraceEventKind {
     ChildSignal,
     ChildKill,
     ChildDetach,
+    Shutdown,
 }
 
 #[derive(Clone, Copy)]
@@ -64,6 +65,7 @@ struct ChildState {
 struct WindowTrace {
     watcher_events: Vec<WatcherTraceEvent>,
     has_timer_fired: bool,
+    shutdown_resolved: bool,
 }
 
 struct NormalizedTrace {
@@ -527,6 +529,7 @@ fn normalize_trace(raw_events: &[Value]) -> anyhow::Result<NormalizedTrace> {
     let mut windows = BTreeMap::<u64, WindowTrace>::new();
     let mut restart_decisions = Vec::new();
     let mut child_lifecycle = Vec::new();
+    let mut shutdown_resolutions = Vec::new();
     let mut active_children = BTreeMap::<String, ChildState>::new();
 
     for event in raw_events {
@@ -545,6 +548,13 @@ fn normalize_trace(raw_events: &[Value]) -> anyhow::Result<NormalizedTrace> {
             | TraceEventKind::ChildDetach => {
                 record_child_resolution(&mut active_children, &mut child_lifecycle, event)?
             }
+            TraceEventKind::Shutdown => record_shutdown(
+                &mut windows,
+                &mut active_children,
+                &mut child_lifecycle,
+                &mut shutdown_resolutions,
+                event,
+            )?,
         }
     }
 
@@ -552,7 +562,13 @@ fn normalize_trace(raw_events: &[Value]) -> anyhow::Result<NormalizedTrace> {
     let replay_grade = replay_grade_for_windows(&windows);
     Ok(NormalizedTrace {
         replay_grade,
-        json: normalized_json(windows, restart_decisions, child_lifecycle, replay_grade),
+        json: normalized_json(
+            windows,
+            restart_decisions,
+            child_lifecycle,
+            shutdown_resolutions,
+            replay_grade,
+        ),
     })
 }
 
@@ -644,6 +660,83 @@ fn record_child_resolution(
     Ok(())
 }
 
+fn record_shutdown(
+    windows: &mut BTreeMap<u64, WindowTrace>,
+    active_children: &mut BTreeMap<String, ChildState>,
+    child_lifecycle: &mut Vec<Value>,
+    shutdown_resolutions: &mut Vec<Value>,
+    event: &Value,
+) -> anyhow::Result<()> {
+    let resolves_timers = event["resolves_timers"].as_bool().unwrap_or(false);
+    let resolves_children = event["resolves_children"].as_bool().unwrap_or(false);
+    if !resolves_timers && !resolves_children {
+        anyhow::bail!("shutdown event must resolve timers, children, or both");
+    }
+
+    let pending_windows = shutdown_pending_windows(event, windows)?;
+    if resolves_timers {
+        for window in &pending_windows {
+            windows.entry(*window).or_default().shutdown_resolved = true;
+        }
+    }
+
+    let child_resolution = event["child_resolution"].as_str().unwrap_or("killed");
+    if resolves_children && !is_child_resolution_label(child_resolution) {
+        anyhow::bail!("unsupported shutdown child resolution: {child_resolution}");
+    }
+    let mut resolved_children = Vec::new();
+    if resolves_children {
+        let child_ids = active_children.keys().cloned().collect::<Vec<_>>();
+        for child_id in child_ids {
+            let Some(started_child) = active_children.remove(&child_id) else {
+                continue;
+            };
+            resolved_children.push(started_child.child_id.clone());
+            child_lifecycle.push(json!({
+                "child_id": started_child.child_id,
+                "policy": started_child.policy,
+                "command": started_child.command,
+                "obligation": "started child must be waited, signaled, killed, or detached",
+                "resolution": child_resolution,
+                "exit_code": event["exit_code"].clone(),
+                "source_event": event,
+            }));
+        }
+    }
+
+    shutdown_resolutions.push(json!({
+        "resolves_timers": resolves_timers,
+        "resolves_children": resolves_children,
+        "pending_windows": pending_windows,
+        "resolved_children": resolved_children,
+        "child_resolution": child_resolution,
+        "source_event": event,
+    }));
+    Ok(())
+}
+
+fn shutdown_pending_windows(
+    event: &Value,
+    windows: &BTreeMap<u64, WindowTrace>,
+) -> anyhow::Result<Vec<u64>> {
+    if let Some(pending_windows) = event["pending_windows"].as_array() {
+        return pending_windows
+            .iter()
+            .map(|window| {
+                window
+                    .as_u64()
+                    .ok_or_else(|| anyhow::anyhow!("shutdown pending_windows must be numeric"))
+            })
+            .collect();
+    }
+    Ok(windows
+        .iter()
+        .filter_map(|(window, trace)| {
+            (!trace.has_timer_fired && !trace.shutdown_resolved).then_some(*window)
+        })
+        .collect())
+}
+
 fn reject_orphan_children(active_children: &BTreeMap<String, ChildState>) -> anyhow::Result<()> {
     if let Some(child) = active_children.values().next() {
         anyhow::bail!(
@@ -669,6 +762,7 @@ fn normalized_json(
     windows: BTreeMap<u64, WindowTrace>,
     restart_decisions: Vec<Value>,
     child_lifecycle: Vec<Value>,
+    shutdown_resolutions: Vec<Value>,
     replay_grade: TraceReplayGrade,
 ) -> Value {
     let event_batches = windows
@@ -688,6 +782,7 @@ fn normalized_json(
         "debounce_windows": debounce_windows,
         "restart_decisions": restart_decisions,
         "child_lifecycle_obligations": child_lifecycle,
+        "shutdown_resolutions": shutdown_resolutions,
     })
 }
 
@@ -722,10 +817,17 @@ fn debounce_window_json(
     json!({
         "id": format!("watch-trace-window-{sequence}"),
         "window": window,
-        "timer_evidence": if trace.has_timer_fired { "metadata-only" } else { "missing" },
-        "replay_grade": if trace.has_timer_fired { replay_grade.as_str() } else { "debt" },
+        "timer_evidence": if trace.has_timer_fired {
+            "metadata-only"
+        } else if trace.shutdown_resolved {
+            "shutdown-resolved"
+        } else {
+            "missing"
+        },
+        "replay_grade": if trace.has_timer_fired || trace.shutdown_resolved { replay_grade.as_str() } else { "debt" },
         "timer_created": true,
-        "timer_cancelled": trace.watcher_events.len() > 1,
+        "timer_cancelled": trace.watcher_events.len() > 1 || trace.shutdown_resolved,
+        "shutdown_resolved": trace.shutdown_resolved,
         "fired": trace.has_timer_fired,
         "event_membership": paths.into_iter().collect::<Vec<_>>(),
     })
@@ -773,7 +875,10 @@ fn coalesced_watcher_event_json(
 }
 
 fn replay_grade_for_windows(windows: &BTreeMap<u64, WindowTrace>) -> TraceReplayGrade {
-    if windows.values().any(|window| !window.has_timer_fired) {
+    if windows
+        .values()
+        .any(|window| !window.has_timer_fired && !window.shutdown_resolved)
+    {
         TraceReplayGrade::Debt
     } else {
         TraceReplayGrade::Partial
@@ -925,6 +1030,10 @@ fn resolution_label(event: &Value) -> anyhow::Result<&'static str> {
     }
 }
 
+fn is_child_resolution_label(label: &str) -> bool {
+    matches!(label, "exited" | "signaled" | "killed" | "detached")
+}
+
 impl AdapterKind {
     fn from_str(value: &str) -> anyhow::Result<Self> {
         match value {
@@ -955,6 +1064,7 @@ impl TraceEventKind {
             "child_signal" => Ok(Self::ChildSignal),
             "child_kill" => Ok(Self::ChildKill),
             "child_detach" => Ok(Self::ChildDetach),
+            "shutdown" => Ok(Self::Shutdown),
             kind => anyhow::bail!("unknown watch trace event kind: {kind}"),
         }
     }
@@ -974,6 +1084,7 @@ impl Default for WindowTrace {
         Self {
             watcher_events: Vec::new(),
             has_timer_fired: false,
+            shutdown_resolved: false,
         }
     }
 }

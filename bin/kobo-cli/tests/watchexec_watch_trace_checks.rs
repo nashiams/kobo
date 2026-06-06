@@ -685,6 +685,83 @@ fn watch_trace_import_records_kill_resolution_as_lifecycle_boundary() {
 }
 
 #[test]
+fn watch_trace_import_records_shutdown_resolution_for_timer_and_child() {
+    let project = TestProject::new("watchexec-trace-shutdown-resolution");
+    let trace = project.write(
+        "traces/shutdown-resolution.json",
+        &trace_with_events(
+            r#"[
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 10,
+      "duplicate_marker": "unique",
+      "evidence_grade": "metadata_only"
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "timestamp_ms": 211
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-1",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 212
+    },
+    {
+      "kind": "shutdown",
+      "pending_windows": [1],
+      "resolves_timers": true,
+      "resolves_children": true,
+      "child_resolution": "killed",
+      "timestamp_ms": 300
+    }
+  ]"#,
+        ),
+    );
+    let witness = project
+        .root
+        .join(".kobo/witnesses/shutdown-resolution.kwit");
+
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&trace),
+            s("--witness-out"),
+            path_arg(&witness),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "watch trace import should accept shutdown as explicit timer and child resolution",
+    );
+    let witness_json: Value = serde_json::from_str(
+        &fs::read_to_string(&witness).expect("shutdown-resolution witness should read"),
+    )
+    .expect("shutdown-resolution witness should parse");
+    assert_eq!(
+        witness_json["normalized"]["debounce_windows"][0]["shutdown_resolved"],
+        true
+    );
+    assert_eq!(
+        witness_json["normalized"]["child_lifecycle_obligations"][0]["resolution"],
+        "killed"
+    );
+    assert_eq!(
+        witness_json["normalized"]["shutdown_resolutions"][0]["resolves_timers"],
+        true
+    );
+}
+
+#[test]
 fn watch_trace_import_requires_fresh_watcher_process_and_time_summaries() {
     let project = TestProject::new("watchexec-trace-summary");
     let missing_time = project.write(

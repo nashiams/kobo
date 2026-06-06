@@ -187,6 +187,15 @@ const REQUIRED_MUTATION_TESTS: &[&str] = &[
     "generated_backend_output",
 ];
 
+const REQUIRED_REVIEW_SECTIONS: &[&str] = &[
+    "behavior",
+    "generated_rust",
+    "diagnostics",
+    "proof_debt",
+    "real_command_output",
+    "release_artifacts",
+];
+
 const REQUIRED_UPSTREAM_INVENTORY_FIELDS: &[&str] = &[
     "crate_tree",
     "modules",
@@ -231,7 +240,8 @@ const REQUIRED_PROOF_DEBT_REPORTS: &[&str] = &[
     "inspect_output",
 ];
 
-const EVIDENCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_EVIDENCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_EVIDENCE_COMMAND_TIMEOUT_SECONDS: u64 = 1_800;
 
 static EVIDENCE_COMMAND_CACHE: OnceLock<Mutex<BTreeMap<String, ObservedCommand>>> = OnceLock::new();
 
@@ -1592,6 +1602,15 @@ fn validate_evidence_document(
                             label,
                             blockers,
                         );
+                        validate_subject_command_evidence(
+                            command,
+                            &argv,
+                            transcript_evidence,
+                            expected_kind,
+                            &target_name,
+                            label,
+                            blockers,
+                        );
                     }
                 }
             }
@@ -1625,6 +1644,9 @@ fn validate_evidence_document(
     if expected_kind == "performance" {
         require_non_empty_array(document, "measurements", label, blockers);
         validate_performance_measurements(document, &target_name, label, blockers);
+    }
+    if expected_kind == "reviewer_report" {
+        validate_reviewer_report_document(document, &target_name, label, blockers);
     }
 }
 
@@ -1864,6 +1886,236 @@ fn validate_command_proof_markers(
     }
 }
 
+fn validate_subject_command_evidence(
+    command: &Value,
+    argv: &[String],
+    transcript_evidence: &CommandTranscriptEvidence,
+    expected_kind: &str,
+    target_name: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if matches!(
+        (expected_kind, target_name),
+        ("upstream_tests", "upstream")
+            | ("upstream_tests", "upstream_tests")
+            | ("test_release_parity", "upstream_tests")
+    ) {
+        validate_original_upstream_test_suite(command, argv, transcript_evidence, label, blockers);
+    }
+}
+
+fn validate_original_upstream_test_suite(
+    command: &Value,
+    argv: &[String],
+    transcript_evidence: &CommandTranscriptEvidence,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if !is_original_upstream_test_command(argv) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence must run the original upstream workspace test suite"
+        )));
+    }
+    if !command_cwd_is_upstream_root(command) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence upstream test command must run from the upstream project root"
+        )));
+    }
+    let transcript_output = command_output_from_json(&transcript_evidence.transcript);
+    validate_upstream_test_output(&transcript_output, "transcript", label, blockers);
+    if let Some(observed) = transcript_evidence.observed.as_ref() {
+        let observed_output = command_output_from_observed(observed);
+        validate_upstream_test_output(&observed_output, "rerun command output", label, blockers);
+    }
+}
+
+fn is_original_upstream_test_command(argv: &[String]) -> bool {
+    if !is_cargo_subcommand(argv, "test") {
+        return false;
+    }
+    let cargo_args = argv
+        .iter()
+        .skip(2)
+        .take_while(|argument| argument.as_str() != "--")
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    cargo_args.contains(&"--workspace")
+        && cargo_args.contains(&"--all-targets")
+        && !cargo_args
+            .iter()
+            .any(|argument| is_upstream_test_filter_argument(argument))
+}
+
+fn is_upstream_test_filter_argument(argument: &str) -> bool {
+    matches!(
+        argument,
+        "-p" | "--package"
+            | "--lib"
+            | "--bin"
+            | "--bins"
+            | "--example"
+            | "--examples"
+            | "--test"
+            | "--tests"
+            | "--bench"
+            | "--benches"
+            | "--doc"
+    ) || argument.starts_with("-p")
+        || argument.starts_with("--package=")
+        || argument.starts_with("--bin=")
+        || argument.starts_with("--example=")
+        || argument.starts_with("--test=")
+        || argument.starts_with("--bench=")
+}
+
+fn command_cwd_is_upstream_root(command: &Value) -> bool {
+    let cwd = command["cwd"].as_str().unwrap_or("");
+    let normalized = cwd.replace('\\', "/").to_ascii_lowercase();
+    normalized.ends_with("upstream/watchexec")
+}
+
+fn command_output_from_json(transcript: &Value) -> String {
+    format!(
+        "{}\n{}",
+        transcript["stdout"].as_str().unwrap_or(""),
+        transcript["stderr"].as_str().unwrap_or("")
+    )
+}
+
+fn command_output_from_observed(observed: &ObservedCommand) -> String {
+    format!("{}\n{}", observed.stdout, observed.stderr)
+}
+
+fn validate_upstream_test_output(
+    output: &str,
+    source_name: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if output.contains("test result: FAILED") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence {source_name} includes failed upstream tests"
+        )));
+    }
+    let passed_tests = upstream_test_pass_count(output);
+    if passed_tests == 0 {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence {source_name} has no passing upstream tests"
+        )));
+    }
+}
+
+fn upstream_test_pass_count(output: &str) -> usize {
+    output
+        .lines()
+        .filter_map(parse_test_result_pass_count)
+        .sum()
+}
+
+fn parse_test_result_pass_count(line: &str) -> Option<usize> {
+    let passed_marker = " passed;";
+    let passed_end = line.find(passed_marker)?;
+    let before_passed = &line[..passed_end];
+    let number = before_passed
+        .rsplit(|character: char| !character.is_ascii_digit())
+        .find(|part| !part.is_empty())?;
+    number.parse().ok()
+}
+
+fn validate_reviewer_report_document(
+    document: &Value,
+    reviewer: &str,
+    _label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if document["reviewer"].as_str() != Some(reviewer) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{reviewer} reviewer report must name reviewer {reviewer}"
+        )));
+    }
+    if document["boundary_decision"].as_str() != Some("honest_boundary") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{reviewer} reviewer report must agree the remaining boundary is honest"
+        )));
+    }
+    require_non_empty_str(
+        document,
+        "comparison_summary",
+        &format!("{reviewer} reviewer report"),
+        blockers,
+    );
+    let command_hashes = document_command_hashes(document);
+    let review_sections = document["review_sections"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if review_sections.is_empty() {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{reviewer} reviewer report missing review_sections"
+        )));
+    }
+    for required_section in REQUIRED_REVIEW_SECTIONS {
+        validate_reviewer_section(
+            &review_sections,
+            required_section,
+            &command_hashes,
+            reviewer,
+            blockers,
+        );
+    }
+}
+
+fn document_command_hashes(document: &Value) -> BTreeSet<String> {
+    document["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|command| command["output_hash"].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn validate_reviewer_section(
+    review_sections: &[Value],
+    required_section: &str,
+    command_hashes: &BTreeSet<String>,
+    reviewer: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let Some(section) = review_sections
+        .iter()
+        .find(|section| section["name"].as_str() == Some(required_section))
+    else {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{reviewer} reviewer report missing {required_section} comparison"
+        )));
+        return;
+    };
+    if section["decision"].as_str() != Some("equivalent_or_stronger") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{reviewer} reviewer {required_section} comparison did not approve equivalence"
+        )));
+    }
+    if section["boundary"].as_str() != Some("honest") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{reviewer} reviewer {required_section} comparison did not mark the boundary honest"
+        )));
+    }
+    let command_output_hash = section["command_output_hash"].as_str().unwrap_or("");
+    if !command_hashes.contains(command_output_hash) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{reviewer} reviewer {required_section} comparison is not tied to a command transcript"
+        )));
+    }
+    require_non_empty_array(
+        section,
+        "evidence_refs",
+        &format!("{reviewer} reviewer {required_section} comparison"),
+        blockers,
+    );
+}
+
 fn required_subject_proof_markers(
     expected_kind: &str,
     target_name: &str,
@@ -1880,12 +2132,6 @@ fn required_subject_proof_markers(
             "kobo-proof:async_runtime:shutdown",
             "kobo-proof:async_runtime:blocking",
         ]),
-        ("upstream_tests", "upstream_tests") | ("upstream_tests", "upstream") => {
-            Some(&["kobo-proof:upstream_tests:original-suite"])
-        }
-        ("test_release_parity", "upstream_tests") => {
-            Some(&["kobo-proof:upstream_tests:original-suite"])
-        }
         ("test_release_parity", "kobo_replay_tests") => {
             Some(&["kobo-proof:kobo_replay_tests:replay"])
         }
@@ -2157,13 +2403,52 @@ fn rerun_evidence_command(
         )));
         return None;
     }
-    let key = command_cache_key(&cwd, &argv);
+    let path_prepend = match command["env_path_prepend"].as_str() {
+        Some(path) => {
+            let path = project_path(root, path);
+            if !path.is_dir() {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "{label} evidence command env_path_prepend does not exist: {}",
+                    path.display()
+                )));
+                return None;
+            }
+            Some(path)
+        }
+        None => None,
+    };
+    let timeout = evidence_command_timeout(command, label, blockers)?;
+    let key = command_cache_key(&cwd, &argv, path_prepend.as_deref());
     if let Some(observed) = cached_evidence_command(&key) {
         return Some(observed);
     }
-    let observed = run_evidence_command(&cwd, &argv, label, blockers)?;
+    let observed = run_evidence_command(
+        &cwd,
+        &argv,
+        path_prepend.as_deref(),
+        timeout,
+        label,
+        blockers,
+    )?;
     cache_evidence_command(key, observed.clone());
     Some(observed)
+}
+
+fn evidence_command_timeout(
+    command: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> Option<Duration> {
+    let Some(timeout_seconds) = command["timeout_seconds"].as_u64() else {
+        return Some(DEFAULT_EVIDENCE_COMMAND_TIMEOUT);
+    };
+    if timeout_seconds == 0 || timeout_seconds > MAX_EVIDENCE_COMMAND_TIMEOUT_SECONDS {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command timeout_seconds must be between 1 and {MAX_EVIDENCE_COMMAND_TIMEOUT_SECONDS}"
+        )));
+        return None;
+    }
+    Some(Duration::from_secs(timeout_seconds))
 }
 
 fn command_argv(
@@ -2210,16 +2495,24 @@ fn is_allowed_evidence_program(program: &str) -> bool {
 fn run_evidence_command(
     cwd: &Path,
     argv: &[String],
+    path_prepend: Option<&Path>,
+    timeout: Duration,
     label: &str,
     blockers: &mut Vec<ProjectSupportBlocker>,
 ) -> Option<ObservedCommand> {
-    let mut child = match Command::new(&argv[0])
+    let mut command = Command::new(&argv[0]);
+    command
         .args(&argv[1..])
         .current_dir(cwd)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    if let Some(path_prepend) = path_prepend {
+        let Some(path) = path_with_prepend(path_prepend, blockers, label) else {
+            return None;
+        };
+        command.env("PATH", path);
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             blockers.push(ProjectSupportBlocker::new(format!(
@@ -2242,7 +2535,7 @@ fn run_evidence_command(
                     blockers,
                 ));
             }
-            Ok(None) if started_at.elapsed() < EVIDENCE_COMMAND_TIMEOUT => {
+            Ok(None) if started_at.elapsed() < timeout => {
                 thread::sleep(Duration::from_millis(20));
             }
             Ok(None) => {
@@ -2284,6 +2577,25 @@ fn run_evidence_command(
                 )));
                 return None;
             }
+        }
+    }
+}
+
+fn path_with_prepend(
+    path_prepend: &Path,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+    label: &str,
+) -> Option<std::ffi::OsString> {
+    let existing_path = std::env::var_os("PATH").unwrap_or_default();
+    let paths =
+        std::iter::once(path_prepend.to_path_buf()).chain(std::env::split_paths(&existing_path));
+    match std::env::join_paths(paths) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence command env_path_prepend is invalid: {error}"
+            )));
+            None
         }
     }
 }
@@ -2338,8 +2650,11 @@ fn join_command_stream(
     }
 }
 
-fn command_cache_key(cwd: &Path, argv: &[String]) -> String {
-    format!("{}|{}", cwd.display(), argv.join("\u{1f}"))
+fn command_cache_key(cwd: &Path, argv: &[String], path_prepend: Option<&Path>) -> String {
+    let path_prepend = path_prepend
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    format!("{}|{}|{}", cwd.display(), path_prepend, argv.join("\u{1f}"))
 }
 
 fn cached_evidence_command(key: &str) -> Option<ObservedCommand> {

@@ -590,7 +590,6 @@ fn all_fixture_proof_markers() -> Vec<String> {
         markers.extend(command_proof_markers("performance", subject));
     }
     markers.extend(command_proof_markers("async_runtime", "async_runtime"));
-    markers.extend(command_proof_markers("upstream_tests", "upstream"));
     markers.extend(command_proof_markers("reviewer_report", "reviewer-a"));
     markers.extend(command_proof_markers("reviewer_report", "reviewer-b"));
     markers.into_iter().collect()
@@ -803,10 +802,7 @@ fn command_proof_markers(evidence_kind: &str, subject: &str) -> Vec<String> {
             "kobo-proof:async_runtime:shutdown",
             "kobo-proof:async_runtime:blocking",
         ]),
-        ("upstream_tests", _) => string_vec(&["kobo-proof:upstream_tests:original-suite"]),
-        ("test_release_parity", "upstream_tests") => {
-            string_vec(&["kobo-proof:upstream_tests:original-suite"])
-        }
+        ("upstream_tests", _) | ("test_release_parity", "upstream_tests") => Vec::new(),
         ("test_release_parity", "kobo_replay_tests") => {
             string_vec(&["kobo-proof:kobo_replay_tests:replay"])
         }
@@ -948,6 +944,7 @@ fn write_evidence(
     let covered_paths = json_string_array(subject_covered_paths(evidence_kind, subject));
     let covered_modules = json_string_array(proof_debt_modules());
     let measurements_json = measurements_json(evidence_kind, subject);
+    let reviewer_fields = reviewer_fields_json(evidence_kind, subject, &evidence_command.hash);
     let decision = if evidence_kind == "proof_debt_report" {
         "same_project_map"
     } else {
@@ -975,13 +972,51 @@ fn write_evidence(
   "measurements": {measurements_json},
   "mutation_results": ["task-order", "timer-order", "cancel-order", "channel-delivery"],
   "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"],
-  "decision": "{decision}"
+  "decision": "{decision}"{reviewer_fields}
 }}"#
             ,
             argv_json = evidence_command.argv_json.as_str(),
             transcript_hash = evidence_command.hash.as_str(),
         ),
     );
+}
+
+fn reviewer_fields_json(evidence_kind: &str, reviewer: &str, command_hash: &str) -> String {
+    if evidence_kind != "reviewer_report" {
+        return String::new();
+    }
+    let review_sections = reviewer_section_names()
+        .iter()
+        .map(|section| {
+            serde_json::json!({
+                "name": section,
+                "decision": "equivalent_or_stronger",
+                "boundary": "honest",
+                "evidence_refs": ["commands", "covered_paths", "project-support.json"],
+                "command_output_hash": command_hash,
+            })
+        })
+        .collect::<Vec<_>>();
+    format!(
+        r#",
+  "reviewer": {},
+  "boundary_decision": "honest_boundary",
+  "comparison_summary": "all required comparisons approve equivalent or stronger behavior",
+  "review_sections": {}"#,
+        serde_json::to_string(reviewer).expect("reviewer should serialize"),
+        serde_json::to_string(&review_sections).expect("review sections should serialize")
+    )
+}
+
+fn reviewer_section_names() -> &'static [&'static str] {
+    &[
+        "behavior",
+        "generated_rust",
+        "diagnostics",
+        "proof_debt",
+        "real_command_output",
+        "release_artifacts",
+    ]
 }
 
 fn write_complete_support_manifest(project: &TestProject) {
@@ -1861,6 +1896,72 @@ fn doctor_project_support_rejects_unbound_transcript_proof_marker() {
 }
 
 #[test]
+fn doctor_project_support_rejects_missing_evidence_path_prepend() {
+    let project = TestProject::new("doctor-project-support-missing-path-prepend");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let async_evidence_path = project.root.join(".kobo/evidence/async.json");
+    let mut async_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&async_evidence_path).expect("async evidence should read"),
+    )
+    .expect("async evidence should parse");
+    async_evidence["commands"][0]["env_path_prepend"] =
+        serde_json::json!(".kobo/evidence/missing-bin");
+    fs::write(
+        &async_evidence_path,
+        serde_json::to_string_pretty(&async_evidence).expect("async evidence should serialize"),
+    )
+    .expect("async evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "missing-path-prepend report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "conformance_evidence evidence command env_path_prepend does not exist",
+        "evidence command environment support must be declared and present",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_invalid_evidence_timeout() {
+    let project = TestProject::new("doctor-project-support-invalid-timeout");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let async_evidence_path = project.root.join(".kobo/evidence/async.json");
+    let mut async_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&async_evidence_path).expect("async evidence should read"),
+    )
+    .expect("async evidence should parse");
+    async_evidence["commands"][0]["timeout_seconds"] = serde_json::json!(0);
+    fs::write(
+        &async_evidence_path,
+        serde_json::to_string_pretty(&async_evidence).expect("async evidence should serialize"),
+    )
+    .expect("async evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "invalid-timeout report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "conformance_evidence evidence command timeout_seconds must be between 1 and 1800",
+        "evidence command timeout must stay bounded",
+    );
+}
+
+#[test]
 fn doctor_project_support_rejects_placeholder_performance_measurement() {
     let project = TestProject::new("doctor-project-support-placeholder-performance");
     write_project_files(&project);
@@ -1949,6 +2050,109 @@ fn doctor_project_support_rejects_duplicate_reviewer_evidence_paths() {
         &value["project_support"]["blockers"].to_string(),
         "reviewer reports must use distinct evidence paths",
         "project support gate should reject duplicate reviewer evidence files",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_filtered_upstream_test_command() {
+    let project = TestProject::new("doctor-project-support-filtered-upstream-tests");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let evidence_path = project.root.join(".kobo/evidence/upstream-tests.json");
+    let mut evidence: Value =
+        serde_json::from_str(&fs::read_to_string(&evidence_path).expect("evidence should read"))
+            .expect("evidence should parse");
+    let filtered_argv = [
+        "cargo",
+        "test",
+        "--workspace",
+        "--tests",
+        "--",
+        "--nocapture",
+    ];
+    let filtered_command = filtered_argv.join(" ");
+    let transcript_path = project.root.join(
+        evidence["commands"][0]["transcript_path"]
+            .as_str()
+            .expect("transcript path should exist"),
+    );
+    let mut transcript: Value = serde_json::from_str(
+        &fs::read_to_string(&transcript_path).expect("transcript should read"),
+    )
+    .expect("transcript should parse");
+    transcript["command"] = serde_json::json!(filtered_command);
+    let transcript_source =
+        serde_json::to_string_pretty(&transcript).expect("transcript should serialize");
+    fs::write(&transcript_path, &transcript_source).expect("transcript should write");
+    evidence["commands"][0]["command"] = serde_json::json!(filtered_command);
+    evidence["commands"][0]["argv"] = serde_json::json!(filtered_argv);
+    evidence["commands"][0]["proof_markers"] = serde_json::json!([]);
+    evidence["commands"][0]["output_hash"] = serde_json::json!(stable_hash(&transcript_source));
+    fs::write(
+        &evidence_path,
+        serde_json::to_string_pretty(&evidence).expect("evidence should serialize"),
+    )
+    .expect("evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "filtered-upstream report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "original_upstream_tests evidence must run the original upstream workspace test suite",
+        "upstream evidence must not use a filtered cargo test command",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_incomplete_reviewer_comparison() {
+    let project = TestProject::new("doctor-project-support-incomplete-reviewer");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let reviewer_path = project.root.join(".kobo/evidence/reviewer-a.json");
+    let mut reviewer_evidence: Value =
+        serde_json::from_str(&fs::read_to_string(&reviewer_path).expect("reviewer should read"))
+            .expect("reviewer should parse");
+    let sections = reviewer_evidence["review_sections"]
+        .as_array()
+        .expect("review sections should exist")
+        .iter()
+        .filter(|section| section["name"].as_str() != Some("diagnostics"))
+        .cloned()
+        .collect::<Vec<_>>();
+    reviewer_evidence["review_sections"] = serde_json::json!(sections);
+    reviewer_evidence["review_sections"][0]["command_output_hash"] =
+        serde_json::json!("not-a-command-hash");
+    fs::write(
+        &reviewer_path,
+        serde_json::to_string_pretty(&reviewer_evidence).expect("reviewer should serialize"),
+    )
+    .expect("reviewer should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "incomplete-reviewer report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    let blockers = value["project_support"]["blockers"].to_string();
+    assert_contains(
+        &blockers,
+        "reviewer-a reviewer report missing diagnostics comparison",
+        "reviewer evidence must compare diagnostics independently",
+    );
+    assert_contains(
+        &blockers,
+        "reviewer-a reviewer behavior comparison is not tied to a command transcript",
+        "reviewer comparisons must cite real command output",
     );
 }
 

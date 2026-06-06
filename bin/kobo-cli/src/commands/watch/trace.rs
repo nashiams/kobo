@@ -380,6 +380,9 @@ fn source_watch_state_external_comparisons() -> Vec<Value> {
                 "disposition": source_watch_comparison_disposition(behavior),
                 "reason": source_watch_comparison_reason(implementation, behavior),
                 "evidence_anchor": source_watch_comparison_anchor(behavior),
+                "modeled_facts": source_watch_comparison_facts(behavior),
+                "parity_fixtures": source_watch_comparison_fixtures(implementation, behavior),
+                "mutation_checks": source_watch_comparison_mutations(behavior),
             })
         })
         .collect()
@@ -433,6 +436,70 @@ fn source_watch_comparison_anchor(behavior: &str) -> &'static str {
         "adapter_summaries[process]"
     } else {
         "event_batches[]"
+    }
+}
+
+fn source_watch_comparison_facts(behavior: &str) -> Vec<&'static str> {
+    if behavior.contains("ignore")
+        || behavior.contains("path")
+        || behavior.contains("root")
+        || behavior.contains("symlink")
+        || behavior.contains("case")
+        || behavior.contains("extension")
+        || behavior.contains("include")
+        || behavior.contains("exclude")
+    {
+        vec!["path_filter", "root_scope", "case_policy"]
+    } else if behavior.contains("signal")
+        || behavior.contains("process")
+        || behavior.contains("command")
+        || behavior.contains("environment")
+        || behavior.contains("kill")
+    {
+        vec!["child_lifecycle", "process_group", "changed_path_delivery"]
+    } else if behavior.contains("async")
+        || behavior.contains("scheduler")
+        || behavior.contains("timeout")
+    {
+        vec!["task_order", "timer_order", "cancellation"]
+    } else {
+        vec!["event_kind", "debounce_window", "raw_boundary"]
+    }
+}
+
+fn source_watch_comparison_fixtures(implementation: &str, behavior: &str) -> Vec<String> {
+    vec![format!(
+        "{}::{}",
+        implementation,
+        behavior.replace(' ', "_")
+    )]
+}
+
+fn source_watch_comparison_mutations(behavior: &str) -> Vec<&'static str> {
+    if behavior.contains("ignore")
+        || behavior.contains("path")
+        || behavior.contains("root")
+        || behavior.contains("symlink")
+        || behavior.contains("case")
+        || behavior.contains("extension")
+        || behavior.contains("include")
+        || behavior.contains("exclude")
+    {
+        vec!["path-filter-flip", "root-scope-shift"]
+    } else if behavior.contains("signal")
+        || behavior.contains("process")
+        || behavior.contains("command")
+        || behavior.contains("environment")
+        || behavior.contains("kill")
+    {
+        vec!["child-exit-drop", "signal-order-swap"]
+    } else if behavior.contains("async")
+        || behavior.contains("scheduler")
+        || behavior.contains("timeout")
+    {
+        vec!["timer-order-swap", "cancel-drop"]
+    } else {
+        vec!["event-order-swap", "duplicate-drop"]
     }
 }
 
@@ -657,6 +724,9 @@ fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison
     }
     require_comparison_str(value, "reason")?;
     require_comparison_str(value, "evidence_anchor")?;
+    require_comparison_array(value, "modeled_facts")?;
+    require_comparison_array(value, "parity_fixtures")?;
+    require_comparison_array(value, "mutation_checks")?;
     Ok(ExternalComparison {
         json: value.clone(),
     })
@@ -692,6 +762,21 @@ fn require_comparison_str<'a>(value: &'a Value, field: &str) -> anyhow::Result<&
         anyhow::bail!("empty external comparison {field}");
     }
     Ok(text)
+}
+
+fn require_comparison_array(value: &Value, field: &str) -> anyhow::Result<()> {
+    let values = value[field]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing external comparison {field}"))?;
+    if values.is_empty() {
+        anyhow::bail!("empty external comparison {field}");
+    }
+    for value in values {
+        if value.as_str().unwrap_or("").trim().is_empty() {
+            anyhow::bail!("empty external comparison {field} entry");
+        }
+    }
+    Ok(())
 }
 
 fn is_known_comparison_disposition(disposition: &str) -> bool {

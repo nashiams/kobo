@@ -153,8 +153,40 @@ fn required_adapter_summaries_json() -> String {
 }
 
 fn required_external_comparisons_json() -> String {
-    format!(
-        r#"[
+    let base_json = required_external_comparisons_base_json()
+        .replace("{{", "{")
+        .replace("}}", "}");
+    let mut comparisons: Value = serde_json::from_str(&base_json)
+        .expect("external comparison fixture should be valid JSON");
+    for comparison in comparisons
+        .as_array_mut()
+        .expect("external comparison fixture should be an array")
+    {
+        comparison["modeled_facts"] = Value::from(vec![
+            "event_kind",
+            "path_filter",
+            "child_lifecycle",
+            "timer_order",
+        ]);
+        comparison["parity_fixtures"] = Value::from(vec![format!(
+            "{}::{}",
+            comparison["implementation"].as_str().unwrap_or("unknown"),
+            comparison["behavior"]
+                .as_str()
+                .unwrap_or("unknown")
+                .replace(' ', "_")
+        )]);
+        comparison["mutation_checks"] = Value::from(vec![
+            "event-order-swap",
+            "path-filter-flip",
+            "child-exit-drop",
+        ]);
+    }
+    serde_json::to_string(&comparisons).expect("external comparison fixture should serialize")
+}
+
+fn required_external_comparisons_base_json() -> &'static str {
+    r#"[
     {{
       "implementation": "watchexec",
       "behavior": "coalesced filesystem events",
@@ -429,7 +461,6 @@ fn required_external_comparisons_json() -> String {
       "evidence_anchor": "external_comparisons[]"
     }}
   ]"#
-    )
 }
 
 fn valid_watchexec_events() -> &'static str {
@@ -1357,6 +1388,46 @@ fn watch_trace_import_requires_external_comparison_evidence() {
         &output.combined(),
         "missing external_comparisons",
         "trace import should require explicit external comparison evidence",
+    );
+}
+
+#[test]
+fn watch_trace_import_requires_modeled_external_comparison_details() {
+    let project = TestProject::new("watchexec-trace-external-comparison-details");
+    let mut comparisons: Value = serde_json::from_str(&required_external_comparisons_json())
+        .expect("comparison fixture should parse");
+    comparisons[0]
+        .as_object_mut()
+        .expect("comparison should be an object")
+        .remove("modeled_facts");
+    let trace = project.write(
+        "traces/shallow_comparisons.json",
+        &format!(
+            r#"{{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": {adapter_summaries},
+  "external_comparisons": {comparisons},
+  "events": {events}
+}}"#,
+            adapter_summaries = required_adapter_summaries_json(),
+            comparisons =
+                serde_json::to_string(&comparisons).expect("comparison fixture should serialize"),
+            events = valid_watchexec_events(),
+        ),
+    );
+    let output = run_kobo(
+        &[s("watch"), s("--import-trace"), path_arg(&trace)],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "shallow external comparison evidence should fail import",
+    );
+    assert_contains(
+        &output.combined(),
+        "missing external comparison modeled_facts",
+        "trace import should require modeled comparison facts",
     );
 }
 

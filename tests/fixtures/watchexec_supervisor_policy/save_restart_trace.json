@@ -151,273 +151,819 @@
                                      "behavior":  "coalesced filesystem events",
                                      "disposition":  "replay_fixture",
                                      "reason":  "fixture preserves watchexec \u0027coalesced filesystem events\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "events[]"
+                                     "evidence_anchor":  "events[]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchexec::coalesced_filesystem_events"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchexec",
                                      "behavior":  ".gitignore and .ignore loading",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchexec \u0027.gitignore and .ignore loading\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchexec::.gitignore_and_.ignore_loading"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchexec",
                                      "behavior":  "process group behavior",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchexec \u0027process group behavior\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[process]"
+                                     "evidence_anchor":  "adapter_summaries[process]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchexec::process_group_behavior"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchexec",
                                      "behavior":  "changed-path delivery through environment variables or stdin",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves watchexec \u0027changed-path delivery through environment variables or stdin\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "events[].changed_paths"
+                                     "evidence_anchor":  "events[].changed_paths",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchexec::changed-path_delivery_through_environment_variables_or_stdin"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchexec",
                                      "behavior":  "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchexec \u0027watchexec event signal supervisor process wrapping ignore project origin notify coverage\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[]"
+                                     "evidence_anchor":  "adapter_summaries[]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchexec::watchexec_event_signal_supervisor_process_wrapping_ignore_project_origin_notify_coverage"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "nodemon",
                                      "behavior":  "extension watch lists and executed-script extension inference",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves nodemon \u0027extension watch lists and executed-script extension inference\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "events[].filter_decision"
+                                     "evidence_anchor":  "events[].filter_decision",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "nodemon::extension_watch_lists_and_executed-script_extension_inference"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "nodemon",
                                      "behavior":  "absolute-path ignore rules and default ignore directories",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves nodemon \u0027absolute-path ignore rules and default ignore directories\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "nodemon::absolute-path_ignore_rules_and_default_ignore_directories"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "nodemon",
                                      "behavior":  "legacy polling fallback for mounted or unreliable filesystems",
                                      "disposition":  "debt_item",
                                      "reason":  "fixture preserves nodemon \u0027legacy polling fallback for mounted or unreliable filesystems\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                     "evidence_anchor":  "adapter_summaries[watcher]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "nodemon::legacy_polling_fallback_for_mounted_or_unreliable_filesystems"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "nodemon",
                                      "behavior":  "delayed restart after bursty writes",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves nodemon \u0027delayed restart after bursty writes\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "normalized.debounce_windows"
+                                     "evidence_anchor":  "normalized.debounce_windows",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "nodemon::delayed_restart_after_bursty_writes"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "nodemon",
                                      "behavior":  "custom stop or reload signals and process-tree signal delivery",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves nodemon \u0027custom stop or reload signals and process-tree signal delivery\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "events[].child_signal"
+                                     "evidence_anchor":  "events[].child_signal",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "nodemon::custom_stop_or_reload_signals_and_process-tree_signal_delivery"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "nodemon",
                                      "behavior":  "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
                                      "disposition":  "replay_fixture",
                                      "reason":  "fixture preserves nodemon \u0027equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "external_comparisons[]"
+                                     "evidence_anchor":  "external_comparisons[]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "nodemon::equivalence_fixtures_for_extension_filtering_ignored_paths_polling_fallback_delay_restart_and_signal_restart"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "chokidar",
                                      "behavior":  "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves chokidar \u0027raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                     "evidence_anchor":  "adapter_summaries[watcher]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "chokidar::raw_watcher_events_normalize_into_add_change_unlink_addDir_unlinkDir_ready_raw_and_error"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "chokidar",
                                      "behavior":  "atomic write delete-plus-add normalization",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves chokidar \u0027atomic write delete-plus-add normalization\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "events[].paths"
+                                     "evidence_anchor":  "events[].paths",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "chokidar::atomic_write_delete-plus-add_normalization"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "chokidar",
                                      "behavior":  "chunked-write stability before emitting change",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves chokidar \u0027chunked-write stability before emitting change\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "normalized.debounce_windows"
+                                     "evidence_anchor":  "normalized.debounce_windows",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "chokidar::chunked-write_stability_before_emitting_change"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "chokidar",
                                      "behavior":  "recursion depth symlink cwd relative dynamic add unwatch close",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves chokidar \u0027recursion depth symlink cwd relative dynamic add unwatch close\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "chokidar::recursion_depth_symlink_cwd_relative_dynamic_add_unwatch_close"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "chokidar",
                                      "behavior":  "polling intervals permission errors and handle exhaustion diagnostics",
                                      "disposition":  "debt_item",
                                      "reason":  "fixture preserves chokidar \u0027polling intervals permission errors and handle exhaustion diagnostics\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                     "evidence_anchor":  "adapter_summaries[watcher]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "chokidar::polling_intervals_permission_errors_and_handle_exhaustion_diagnostics"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "chokidar",
                                      "behavior":  "raw event details as boundary evidence",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves chokidar \u0027raw event details as boundary evidence\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "raw_events"
+                                     "evidence_anchor":  "raw_events",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "chokidar::raw_event_details_as_boundary_evidence"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchdog",
                                      "behavior":  "immutable filesystem event facts",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchdog \u0027immutable filesystem event facts\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                     "evidence_anchor":  "adapter_summaries[watcher]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchdog::immutable_filesystem_event_facts"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchdog",
                                      "behavior":  "moved modified created closed deleted and directory events",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves watchdog \u0027moved modified created closed deleted and directory events\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "events[].event_kind"
+                                     "evidence_anchor":  "events[].event_kind",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchdog::moved_modified_created_closed_deleted_and_directory_events"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchdog",
                                      "behavior":  "pattern regex ignore directory and case-sensitive matching",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchdog \u0027pattern regex ignore directory and case-sensitive matching\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchdog::pattern_regex_ignore_directory_and_case-sensitive_matching"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchdog",
                                      "behavior":  "skip repeated identical consecutive events",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves watchdog \u0027skip repeated identical consecutive events\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "normalized.event_batches"
+                                     "evidence_anchor":  "normalized.event_batches",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchdog::skip_repeated_identical_consecutive_events"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchdog",
                                      "behavior":  "observer lifecycle schedule start dispatch unschedule stop",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchdog \u0027observer lifecycle schedule start dispatch unschedule stop\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[]"
+                                     "evidence_anchor":  "adapter_summaries[]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchdog::observer_lifecycle_schedule_start_dispatch_unschedule_stop"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchdog",
                                      "behavior":  "platform observer choices for Linux macOS BSD Windows and polling",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchdog \u0027platform observer choices for Linux macOS BSD Windows and polling\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                     "evidence_anchor":  "adapter_summaries[watcher]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchdog::platform_observer_choices_for_Linux_macOS_BSD_Windows_and_polling"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchfiles",
                                      "behavior":  "debounced sets of file changes",
                                      "disposition":  "replay_fixture",
                                      "reason":  "fixture preserves watchfiles \u0027debounced sets of file changes\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "normalized.debounce_windows"
+                                     "evidence_anchor":  "normalized.debounce_windows",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchfiles::debounced_sets_of_file_changes"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchfiles",
                                      "behavior":  "synchronous watch and async watch thread handoff cancellation",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchfiles \u0027synchronous watch and async watch thread handoff cancellation\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[async_runtime]"
+                                     "evidence_anchor":  "adapter_summaries[async_runtime]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchfiles::synchronous_watch_and_async_watch_thread_handoff_cancellation"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchfiles",
                                      "behavior":  "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves watchfiles \u0027debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[]"
+                                     "evidence_anchor":  "adapter_summaries[]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchfiles::debounce_step_timeout_yield-on-timeout_stop_recursive_permission_forced_polling_polling_delay"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "watchfiles",
                                      "behavior":  "Windows-specific async timeout behavior",
                                      "disposition":  "debt_item",
                                      "reason":  "fixture preserves watchfiles \u0027Windows-specific async timeout behavior\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[async_runtime]"
+                                     "evidence_anchor":  "adapter_summaries[async_runtime]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "watchfiles::Windows-specific_async_timeout_behavior"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "Watchman",
                                      "behavior":  "recursive watched roots and root-settle before command execution",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves Watchman \u0027recursive watched roots and root-settle before command execution\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "Watchman::recursive_watched_roots_and_root-settle_before_command_execution"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "Watchman",
                                      "behavior":  "conservative uncertain-file startup behavior",
                                      "disposition":  "explicit_non_goal",
                                      "reason":  "fixture preserves Watchman \u0027conservative uncertain-file startup behavior\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "trace_import"
+                                     "evidence_anchor":  "trace_import",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "Watchman::conservative_uncertain-file_startup_behavior"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "Watchman",
                                      "behavior":  "project-root discovery through root files and root enforcement",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves Watchman \u0027project-root discovery through root files and root enforcement\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "Watchman::project-root_discovery_through_root_files_and_root_enforcement"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "Watchman",
                                      "behavior":  "case-insensitive filesystem behavior canonical recovery and case-only rename",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves Watchman \u0027case-insensitive filesystem behavior canonical recovery and case-only rename\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "Watchman::case-insensitive_filesystem_behavior_canonical_recovery_and_case-only_rename"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "Watchman",
                                      "behavior":  "unsupported or illegal filesystem types",
                                      "disposition":  "debt_item",
                                      "reason":  "fixture preserves Watchman \u0027unsupported or illegal filesystem types\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                     "evidence_anchor":  "adapter_summaries[watcher]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "Watchman::unsupported_or_illegal_filesystem_types"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "Watchman",
                                      "behavior":  "symlink policy",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves Watchman \u0027symlink policy\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "Watchman::symlink_policy"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "go-air",
                                      "behavior":  "build command entrypoint full command binary args pre-build and post-exit",
                                      "disposition":  "debt_item",
                                      "reason":  "fixture preserves go-air \u0027build command entrypoint full command binary args pre-build and post-exit\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[process]"
+                                     "evidence_anchor":  "adapter_summaries[process]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "go-air::build_command_entrypoint_full_command_binary_args_pre-build_and_post-exit"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "go-air",
                                      "behavior":  "include exclude regex unchanged dangerous-root and symlink following",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves go-air \u0027include exclude regex unchanged dangerous-root and symlink following\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                     "evidence_anchor":  "adapter_summaries[path_filter]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "go-air::include_exclude_regex_unchanged_dangerous-root_and_symlink_following"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "go-air",
                                      "behavior":  "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves go-air \u0027polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[]"
+                                     "evidence_anchor":  "adapter_summaries[]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "go-air::polling_stop-on-error_interrupt-before-kill_kill_delay_rerun_clean-on-exit"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "go-air",
                                      "behavior":  "platform-specific build overrides",
                                      "disposition":  "formal_adapter_contract",
                                      "reason":  "fixture preserves go-air \u0027platform-specific build overrides\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "adapter_summaries[process]"
+                                     "evidence_anchor":  "adapter_summaries[process]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "go-air::platform-specific_build_overrides"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "go-air",
                                      "behavior":  "environment file loading and app environment inheritance",
                                      "disposition":  "semantic_rule",
                                      "reason":  "fixture preserves go-air \u0027environment file loading and app environment inheritance\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "events[].environment"
+                                     "evidence_anchor":  "events[].environment",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "go-air::environment_file_loading_and_app_environment_inheritance"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  },
                                  {
                                      "implementation":  "go-air",
                                      "behavior":  "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
                                      "disposition":  "replay_fixture",
                                      "reason":  "fixture preserves go-air \u0027parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths\u0027 as explicit v0.16.2 comparison evidence",
-                                     "evidence_anchor":  "external_comparisons[]"
+                                     "evidence_anchor":  "external_comparisons[]",
+                                     "modeled_facts":  [
+                                                           "event_kind",
+                                                           "path_filter",
+                                                           "child_lifecycle",
+                                                           "timer_order"
+                                                       ],
+                                     "parity_fixtures":  [
+                                                             "go-air::parity_fixtures_for_config_defaults_cli_overrides_Docker_mounted_volumes_and_platform_executable_paths"
+                                                         ],
+                                     "mutation_checks":  [
+                                                             "event-order-swap",
+                                                             "path-filter-flip",
+                                                             "child-exit-drop"
+                                                         ]
                                  }
                              ],
     "events":  [

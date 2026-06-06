@@ -372,6 +372,73 @@ fn release_profile_blocks_unresolved_watch_lifecycle_debt() {
 }
 
 #[test]
+fn release_profile_blocks_incomplete_watch_debounce_debt() {
+    let project = TestProject::new("release-watch-debounce-gate");
+    let main = project.main_file("fn main() {}\n");
+    let watch_dir = project.root.join(".kobo/watch");
+    std::fs::create_dir_all(&watch_dir).expect("watch state directory should create");
+    std::fs::write(
+        watch_dir.join("source-watch.json"),
+        r#"{
+  "schema_version": 1,
+  "mode": "source_watch_state",
+  "watcher_evidence": "metadata-only",
+  "event_batches": [
+    {
+      "replay_grade": "partial",
+      "events": [
+        {
+          "evidence_grade": "metadata_only"
+        }
+      ]
+    }
+  ],
+  "debounce_windows": [
+    {
+      "timer_evidence": "metadata-only",
+      "replay_grade": "debt"
+    }
+  ],
+  "child_lifecycle_obligations": [
+    {
+      "command_kind": "in_process_check",
+      "resolution": "in_process_rerun_finished"
+    }
+  ]
+}"#,
+    )
+    .expect("watch state should write");
+
+    let check = run_kobo(
+        &[s("check"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &check,
+        "release check should block incomplete watch debounce debt",
+    );
+    assert_contains(
+        &check.combined(),
+        "incomplete debounce shutdown evidence",
+        "release check should name debounce debt",
+    );
+
+    let build = run_kobo(
+        &[s("build"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &build,
+        "release build should block incomplete watch debounce debt",
+    );
+    assert_contains(
+        &build.combined(),
+        "incomplete debounce shutdown evidence",
+        "release build should name debounce debt",
+    );
+}
+
+#[test]
 fn debt_watch_mode_reports_precursor_warning_changes() {
     let root = workspace_root();
     let file = fixture("tests/ui/K0080_P1_node.kobo");

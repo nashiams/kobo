@@ -300,7 +300,7 @@ fn source_watch_state_trace(value: Value) -> anyhow::Result<Value> {
         "schema_version": 1,
         "mode": "watch_trace_input",
         "adapter_summaries": source_watch_state_adapter_summaries(),
-        "external_comparisons": source_watch_state_external_comparisons(),
+        "external_comparisons": source_watch_state_external_comparisons()?,
         "events": source_watch_state_events(&value)?,
     }))
 }
@@ -370,20 +370,20 @@ fn source_watch_state_adapter_summaries() -> Vec<Value> {
     ]
 }
 
-fn source_watch_state_external_comparisons() -> Vec<Value> {
+fn source_watch_state_external_comparisons() -> anyhow::Result<Vec<Value>> {
     REQUIRED_EXTERNAL_COMPARISON_COVERAGE
         .iter()
         .map(|(implementation, behavior)| {
-            json!({
+            Ok(json!({
                 "implementation": implementation,
                 "behavior": behavior,
                 "disposition": source_watch_comparison_disposition(behavior),
                 "reason": source_watch_comparison_reason(implementation, behavior),
                 "evidence_anchor": source_watch_comparison_anchor(behavior),
                 "modeled_facts": source_watch_comparison_facts(behavior),
-                "parity_fixtures": source_watch_comparison_fixtures(implementation, behavior),
-                "mutation_checks": source_watch_comparison_mutations(behavior),
-            })
+                "parity_fixtures": source_watch_comparison_fixtures(implementation, behavior)?,
+                "mutation_checks": source_watch_comparison_mutations(implementation, behavior)?,
+            }))
         })
         .collect()
 }
@@ -467,16 +467,33 @@ fn source_watch_comparison_facts(behavior: &str) -> Vec<&'static str> {
     }
 }
 
-fn source_watch_comparison_fixtures(implementation: &str, behavior: &str) -> Vec<String> {
-    vec![format!(
-        "{}::{}",
-        implementation,
-        behavior.replace(' ', "_")
-    )]
+fn source_watch_comparison_fixtures(
+    implementation: &str,
+    behavior: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let fixture_name = comparison_artifact_name(implementation, behavior);
+    let artifact = json!({
+        "implementation": implementation,
+        "behavior": behavior,
+        "assertions": [
+            "trace keeps the modeled behavior visible",
+            "replay hash changes when the modeled behavior is removed"
+        ],
+        "observed_facts": source_watch_comparison_facts(behavior),
+        "fixture_id": fixture_name,
+    });
+    Ok(vec![comparison_artifact_entry(
+        &fixture_name,
+        "parity_fixture",
+        artifact,
+    )?])
 }
 
-fn source_watch_comparison_mutations(behavior: &str) -> Vec<&'static str> {
-    if behavior.contains("ignore")
+fn source_watch_comparison_mutations(
+    implementation: &str,
+    behavior: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let mutations = if behavior.contains("ignore")
         || behavior.contains("path")
         || behavior.contains("root")
         || behavior.contains("symlink")
@@ -500,7 +517,40 @@ fn source_watch_comparison_mutations(behavior: &str) -> Vec<&'static str> {
         vec!["timer-order-swap", "cancel-drop"]
     } else {
         vec!["event-order-swap", "duplicate-drop"]
-    }
+    };
+    mutations
+        .into_iter()
+        .map(|mutation| {
+            let artifact = json!({
+                "implementation": implementation,
+                "behavior": behavior,
+                "mutation": mutation,
+                "expected_detection": "watch trace import or replay hash changes",
+                "assertions": [
+                    "mutation targets a modeled fact",
+                    "mutation is not accepted as silent parity"
+                ],
+            });
+            comparison_artifact_entry(mutation, "mutation_check", artifact)
+        })
+        .collect()
+}
+
+fn comparison_artifact_name(implementation: &str, behavior: &str) -> String {
+    format!("{}::{}", implementation, behavior.replace(' ', "_"))
+}
+
+fn comparison_artifact_entry(
+    name: &str,
+    artifact_kind: &str,
+    artifact_json: Value,
+) -> anyhow::Result<Value> {
+    Ok(json!({
+        "name": name,
+        "artifact_kind": artifact_kind,
+        "artifact_hash": stable_value_hash(&artifact_json)?,
+        "artifact_json": artifact_json,
+    }))
 }
 
 fn source_watch_state_events(value: &Value) -> anyhow::Result<Vec<Value>> {
@@ -716,8 +766,8 @@ fn parse_external_comparisons(value: &Value) -> anyhow::Result<Vec<ExternalCompa
 }
 
 fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison> {
-    require_comparison_str(value, "implementation")?;
-    require_comparison_str(value, "behavior")?;
+    let implementation = require_comparison_str(value, "implementation")?;
+    let behavior = require_comparison_str(value, "behavior")?;
     let disposition = require_comparison_str(value, "disposition")?;
     if !is_known_comparison_disposition(disposition) {
         anyhow::bail!("unknown external comparison disposition: {disposition}");
@@ -725,8 +775,20 @@ fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison
     require_comparison_str(value, "reason")?;
     require_comparison_str(value, "evidence_anchor")?;
     require_comparison_array(value, "modeled_facts")?;
-    require_comparison_array(value, "parity_fixtures")?;
-    require_comparison_array(value, "mutation_checks")?;
+    require_comparison_artifacts(
+        value,
+        "parity_fixtures",
+        "parity_fixture",
+        implementation,
+        behavior,
+    )?;
+    require_comparison_artifacts(
+        value,
+        "mutation_checks",
+        "mutation_check",
+        implementation,
+        behavior,
+    )?;
     Ok(ExternalComparison {
         json: value.clone(),
     })
@@ -774,6 +836,103 @@ fn require_comparison_array(value: &Value, field: &str) -> anyhow::Result<()> {
     for value in values {
         if value.as_str().unwrap_or("").trim().is_empty() {
             anyhow::bail!("empty external comparison {field} entry");
+        }
+    }
+    Ok(())
+}
+
+fn require_comparison_artifacts(
+    value: &Value,
+    field: &str,
+    expected_kind: &str,
+    implementation: &str,
+    behavior: &str,
+) -> anyhow::Result<()> {
+    let artifacts = value[field]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing external comparison {field}"))?;
+    if artifacts.is_empty() {
+        anyhow::bail!("empty external comparison {field}");
+    }
+    for artifact in artifacts {
+        require_comparison_artifact(artifact, field, expected_kind, implementation, behavior)?;
+    }
+    Ok(())
+}
+
+fn require_comparison_artifact(
+    artifact: &Value,
+    field: &str,
+    expected_kind: &str,
+    implementation: &str,
+    behavior: &str,
+) -> anyhow::Result<()> {
+    if !artifact.is_object() {
+        anyhow::bail!("external comparison {field} entry must be an artifact object");
+    }
+    require_artifact_str(artifact, "name", field)?;
+    let artifact_kind = require_artifact_str(artifact, "artifact_kind", field)?;
+    if artifact_kind != expected_kind {
+        anyhow::bail!("external comparison {field} artifact_kind must be {expected_kind}");
+    }
+    let artifact_hash = require_artifact_str(artifact, "artifact_hash", field)?;
+    let artifact_json = &artifact["artifact_json"];
+    if !artifact_json.is_object()
+        || artifact_json
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty)
+    {
+        anyhow::bail!("external comparison {field} artifact_json must be a non-empty object");
+    }
+    if stable_value_hash(artifact_json)? != artifact_hash {
+        anyhow::bail!("external comparison {field} artifact_hash mismatch");
+    }
+    require_artifact_identity(artifact_json, implementation, behavior, field)?;
+    require_artifact_array(artifact_json, "assertions", field)?;
+    if expected_kind == "parity_fixture" {
+        require_artifact_array(artifact_json, "observed_facts", field)?;
+    } else {
+        require_artifact_str(artifact_json, "mutation", field)?;
+        require_artifact_str(artifact_json, "expected_detection", field)?;
+    }
+    Ok(())
+}
+
+fn require_artifact_identity(
+    artifact_json: &Value,
+    implementation: &str,
+    behavior: &str,
+    field: &str,
+) -> anyhow::Result<()> {
+    if artifact_json["implementation"].as_str() != Some(implementation) {
+        anyhow::bail!("external comparison {field} artifact implementation mismatch");
+    }
+    if artifact_json["behavior"].as_str() != Some(behavior) {
+        anyhow::bail!("external comparison {field} artifact behavior mismatch");
+    }
+    Ok(())
+}
+
+fn require_artifact_str<'a>(value: &'a Value, field: &str, label: &str) -> anyhow::Result<&'a str> {
+    let text = value[field]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing external comparison {label} {field}"))?;
+    if text.trim().is_empty() {
+        anyhow::bail!("empty external comparison {label} {field}");
+    }
+    Ok(text)
+}
+
+fn require_artifact_array(value: &Value, field: &str, label: &str) -> anyhow::Result<()> {
+    let values = value[field]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing external comparison {label} {field}"))?;
+    if values.is_empty() {
+        anyhow::bail!("empty external comparison {label} {field}");
+    }
+    for value in values {
+        if value.as_str().unwrap_or("").trim().is_empty() {
+            anyhow::bail!("empty external comparison {label} {field} entry");
         }
     }
     Ok(())

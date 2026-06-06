@@ -10,7 +10,7 @@ use cli_test_support::{
     assert_contains, assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput,
     TestProject,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -156,33 +156,78 @@ fn required_external_comparisons_json() -> String {
     let base_json = required_external_comparisons_base_json()
         .replace("{{", "{")
         .replace("}}", "}");
-    let mut comparisons: Value = serde_json::from_str(&base_json)
-        .expect("external comparison fixture should be valid JSON");
+    let mut comparisons: Value =
+        serde_json::from_str(&base_json).expect("external comparison fixture should be valid JSON");
     for comparison in comparisons
         .as_array_mut()
         .expect("external comparison fixture should be an array")
     {
+        let implementation = comparison["implementation"]
+            .as_str()
+            .expect("comparison implementation should be present")
+            .to_owned();
+        let behavior = comparison["behavior"]
+            .as_str()
+            .expect("comparison behavior should be present")
+            .to_owned();
         comparison["modeled_facts"] = Value::from(vec![
             "event_kind",
             "path_filter",
             "child_lifecycle",
             "timer_order",
         ]);
-        comparison["parity_fixtures"] = Value::from(vec![format!(
-            "{}::{}",
-            comparison["implementation"].as_str().unwrap_or("unknown"),
-            comparison["behavior"]
-                .as_str()
-                .unwrap_or("unknown")
-                .replace(' ', "_")
-        )]);
-        comparison["mutation_checks"] = Value::from(vec![
-            "event-order-swap",
-            "path-filter-flip",
-            "child-exit-drop",
-        ]);
+        comparison["parity_fixtures"] =
+            Value::from(vec![test_parity_fixture(&implementation, &behavior)]);
+        comparison["mutation_checks"] =
+            Value::from(test_mutation_checks(&implementation, &behavior));
     }
     serde_json::to_string(&comparisons).expect("external comparison fixture should serialize")
+}
+
+fn test_parity_fixture(implementation: &str, behavior: &str) -> Value {
+    let fixture_name = format!("{}::{}", implementation, behavior.replace(' ', "_"));
+    let artifact = json!({
+        "implementation": implementation,
+        "behavior": behavior,
+        "assertions": [
+            "fixture keeps the modeled behavior visible",
+            "fixture changes replay evidence when the behavior is removed"
+        ],
+        "observed_facts": ["event_kind", "path_filter", "child_lifecycle", "timer_order"],
+        "fixture_id": fixture_name,
+    });
+    test_comparison_artifact(&fixture_name, "parity_fixture", artifact)
+}
+
+fn test_mutation_checks(implementation: &str, behavior: &str) -> Vec<Value> {
+    ["event-order-swap", "path-filter-flip", "child-exit-drop"]
+        .iter()
+        .map(|mutation| {
+            let artifact = json!({
+                "implementation": implementation,
+                "behavior": behavior,
+                "mutation": mutation,
+                "expected_detection": "watch trace import or replay hash changes",
+                "assertions": [
+                    "mutation targets a modeled fact",
+                    "mutation is not accepted as silent parity"
+                ],
+            });
+            test_comparison_artifact(mutation, "mutation_check", artifact)
+        })
+        .collect()
+}
+
+fn test_comparison_artifact(name: &str, artifact_kind: &str, artifact_json: Value) -> Value {
+    let artifact_hash = kobo_sim_core::digest::stable_hash(
+        &serde_json::to_string(&artifact_json).expect("artifact should serialize"),
+    );
+    json!({
+        "name": name,
+        "artifact_kind": artifact_kind,
+        "artifact_hash": artifact_hash,
+        "artifact_json": artifact_json,
+    })
 }
 
 fn required_external_comparisons_base_json() -> &'static str {
@@ -1428,6 +1473,43 @@ fn watch_trace_import_requires_modeled_external_comparison_details() {
         &output.combined(),
         "missing external comparison modeled_facts",
         "trace import should require modeled comparison facts",
+    );
+}
+
+#[test]
+fn watch_trace_import_rejects_forged_external_comparison_artifacts() {
+    let project = TestProject::new("watchexec-trace-forged-comparison-artifact");
+    let mut comparisons: Value = serde_json::from_str(&required_external_comparisons_json())
+        .expect("comparison fixture should parse");
+    comparisons[0]["parity_fixtures"][0]["artifact_hash"] = Value::from("forged");
+    let trace = project.write(
+        "traces/forged_comparison_artifact.json",
+        &format!(
+            r#"{{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": {adapter_summaries},
+  "external_comparisons": {comparisons},
+  "events": {events}
+}}"#,
+            adapter_summaries = required_adapter_summaries_json(),
+            comparisons =
+                serde_json::to_string(&comparisons).expect("comparison fixture should serialize"),
+            events = valid_watchexec_events(),
+        ),
+    );
+    let output = run_kobo(
+        &[s("watch"), s("--import-trace"), path_arg(&trace)],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "forged external comparison artifact should fail import",
+    );
+    assert_contains(
+        &output.combined(),
+        "external comparison parity_fixtures artifact_hash mismatch",
+        "trace import should bind comparison artifacts to their hashes",
     );
 }
 

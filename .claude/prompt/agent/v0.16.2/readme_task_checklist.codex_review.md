@@ -65,6 +65,9 @@ This is a copied status file for the Codex reviewer loop. The original
 - [x] Cargo-backed adapter summaries are checked against declared project dependencies and enabled features, with stale-check evidence bound to transcript artifacts.
 - [x] External implementation comparisons require modeled facts, parity fixture identities, and mutation checks, not only implementation/behavior strings.
 - [x] The supervisor-slice CI fixture covers burst debounce, multi-window restart, child-exit race, shutdown cleanup, signal/process-group handling, and env/stdin changed-path delivery.
+- [x] `ec94a02` makes project-support command evidence rerun from argv, compare stdout/stderr/exit code against transcript artifacts, and reject small invented upstream inventories with minimum full-project surface counts.
+- [x] `57a5649` makes external implementation comparisons artifact-backed: parity fixtures and mutation checks now carry typed `artifact_json` plus stable hashes, and forged hashes fail import.
+- [x] `4923baf` expands future-section gates for shell parsing, terminal helpers, install behavior, watch-tree and event-burst scaling, ignore-rule mutation tests, async scheduling mutation tests, generated-backend mutation tests, and proof/debt report agreement across debt summary, proof report, replay report, and inspect output.
 
 # README Task Checklist
 

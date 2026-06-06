@@ -192,10 +192,41 @@ pub(crate) enum KoboCommand {
     },
     /// Advisory project dependency and profile report.
     Doctor {
-        #[arg(long, help = "Inspect Cargo dependency shape")]
+        #[arg(
+            long,
+            conflicts_with_all = ["project_support", "supervisor_slice"],
+            help = "Inspect Cargo dependency shape"
+        )]
         deps: bool,
-        #[arg(long, help = "Report self-host compatibility readiness")]
+        #[arg(
+            long,
+            conflicts_with_all = ["project_support", "supervisor_slice"],
+            help = "Report self-host compatibility readiness"
+        )]
         self_host: bool,
+        #[arg(
+            long,
+            conflicts_with = "supervisor_slice",
+            help = "Report general project support readiness evidence"
+        )]
+        project_support: bool,
+        #[arg(
+            long,
+            help = "Gate only the Kobo-owned watcher/supervisor slice evidence"
+        )]
+        supervisor_slice: bool,
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "supervisor_slice",
+            help = "Read supervisor slice evidence from FILE instead of .kobo/watch/source-watch.json"
+        )]
+        supervisor_slice_state: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Exit non-zero when selected readiness evidence is blocked"
+        )]
+        require_ready: bool,
         #[arg(long, help = "Emit JSON")]
         json: bool,
     },

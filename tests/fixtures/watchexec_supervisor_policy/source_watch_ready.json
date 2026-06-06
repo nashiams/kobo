@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "mode": "source_watch_state",
+  "watcher_evidence": "modeled",
+  "event_batches": [
+    {
+      "id": "watch-batch-1",
+      "replay_grade": "modeled",
+      "events": [
+        {
+          "kind": "modify",
+          "paths": [
+            {
+              "role": "source_path",
+              "path": "src/main.kobo"
+            }
+          ],
+          "evidence_grade": "modeled"
+        }
+      ]
+    }
+  ],
+  "debounce_windows": [
+    {
+      "id": "watch-window-1",
+      "timer_evidence": "modeled",
+      "replay_grade": "modeled",
+      "event_batch_ids": [
+        "watch-batch-1"
+      ],
+      "fired": true
+    }
+  ],
+  "restart_decisions": [
+    {
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "rerun",
+      "selected_by": [
+        "src/main.kobo"
+      ]
+    }
+  ],
+  "child_lifecycle_obligations": [
+    {
+      "command_kind": "in_process_check",
+      "resolution": "in_process_rerun_finished",
+      "evidence_grade": "modeled"
+    }
+  ]
+}

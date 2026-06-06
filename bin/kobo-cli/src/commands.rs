@@ -154,6 +154,10 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         KoboCommand::Doctor {
             deps,
             self_host,
+            project_support,
+            supervisor_slice,
+            supervisor_slice_state,
+            require_ready,
             json,
         } => {
             let output_format = if json {
@@ -166,7 +170,18 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             } else {
                 doctor::DependencyInspection::Default
             };
-            let mode = if self_host {
+            let mode = if project_support {
+                doctor::DoctorMode::ProjectSupport { require_ready }
+            } else if supervisor_slice {
+                doctor::DoctorMode::SupervisorSlice {
+                    require_ready,
+                    state_path: supervisor_slice_state,
+                }
+            } else if require_ready {
+                anyhow::bail!(
+                    "doctor --require-ready needs --project-support or --supervisor-slice"
+                )
+            } else if self_host {
                 doctor::DoctorMode::SelfHost
             } else {
                 doctor::DoctorMode::Dependencies(dependency_inspection)

@@ -39,8 +39,18 @@ struct ProjectSupportEvidence {
     manifest: Option<Value>,
 }
 
+struct UpstreamProjectEvidence {
+    root: PathBuf,
+    cargo_metadata: Value,
+}
+
 struct ProjectSupportBlocker {
     message: String,
+}
+
+#[derive(Default)]
+struct AdapterDependencyIndex {
+    features_by_name: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Clone)]
@@ -183,6 +193,14 @@ const REQUIRED_UPSTREAM_INVENTORY_FIELDS: &[&str] = &[
     "examples",
     "build_scripts",
     "release_artifacts",
+];
+
+const REQUIRED_UPSTREAM_PACKAGE_NAMES: &[&str] = &[
+    "watchexec",
+    "watchexec-cli",
+    "watchexec-events",
+    "watchexec-signals",
+    "watchexec-supervisor",
 ];
 
 const MIN_UPSTREAM_CRATE_PATHS: usize = 8;
@@ -343,6 +361,41 @@ impl ProjectSupportStatus {
     }
 }
 
+impl AdapterDependencyIndex {
+    fn from_cargo_metadata(metadata: Option<&Value>) -> Self {
+        let mut index = Self::default();
+        let Some(metadata) = metadata else {
+            return index;
+        };
+        for package in metadata["packages"].as_array().into_iter().flatten() {
+            if let Some(name) = package["name"].as_str() {
+                index.insert_features(name, package_feature_names(package));
+            }
+            for dependency in package["dependencies"].as_array().into_iter().flatten() {
+                let features = metadata_dependency_features(dependency);
+                if let Some(name) = dependency["name"].as_str() {
+                    index.insert_features(name, features.clone());
+                }
+                if let Some(rename) = dependency["rename"].as_str() {
+                    index.insert_features(rename, features);
+                }
+            }
+        }
+        index
+    }
+
+    fn features_for(&self, name: &str) -> Option<&BTreeSet<String>> {
+        self.features_by_name.get(name)
+    }
+
+    fn insert_features(&mut self, name: &str, features: BTreeSet<String>) {
+        self.features_by_name
+            .entry(name.to_owned())
+            .or_default()
+            .extend(features);
+    }
+}
+
 fn emit_project_support_report(
     report: &ProjectSupportReport,
     output_format: DoctorOutputFormat,
@@ -388,13 +441,23 @@ fn validate_manifest_exists(
 
 fn validate_manifest(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSupportBlocker>) {
     validate_schema(manifest, blockers);
-    validate_upstream_inventory(root, manifest, blockers);
+    let upstream = validate_upstream_inventory(root, manifest, blockers);
     validate_language_surface(root, manifest, blockers);
     validate_platform_models(root, manifest, blockers);
-    validate_adapters(root, manifest, blockers);
+    validate_adapters(
+        root,
+        manifest,
+        upstream.as_ref().map(|evidence| &evidence.cargo_metadata),
+        blockers,
+    );
     validate_async_runtime(root, manifest, blockers);
     validate_generated_backend(root, manifest, blockers);
-    validate_test_release_parity(root, manifest, blockers);
+    validate_test_release_parity(
+        root,
+        manifest,
+        upstream.as_ref().map(|evidence| evidence.root.as_path()),
+        blockers,
+    );
     validate_proof_debt_map(root, manifest, blockers);
     validate_independent_equivalence(root, manifest, blockers);
 }
@@ -472,28 +535,29 @@ fn validate_upstream_inventory(
     root: &Path,
     manifest: &Value,
     blockers: &mut Vec<ProjectSupportBlocker>,
-) {
+) -> Option<UpstreamProjectEvidence> {
     let inventory = &manifest["upstream_inventory"];
     if !inventory.is_object() {
         blockers.push(ProjectSupportBlocker::new(
             "missing upstream inventory evidence",
         ));
-        return;
+        return None;
     }
 
     let Some(upstream_root) = inventory["root"].as_str() else {
         blockers.push(ProjectSupportBlocker::new(
             "missing upstream inventory root",
         ));
-        return;
+        return None;
     };
     let upstream_root_path = project_path(root, upstream_root);
     if !upstream_root_path.is_dir() {
         blockers.push(ProjectSupportBlocker::new(format!(
             "upstream inventory root does not exist: {upstream_root}"
         )));
-        return;
+        return None;
     }
+    validate_upstream_identity(root, &upstream_root_path, inventory, blockers);
 
     require_evidence_document(
         root,
@@ -510,7 +574,7 @@ fn validate_upstream_inventory(
         "upstream workspace manifest",
         blockers,
     );
-    validate_upstream_cargo_metadata(&upstream_root_path, inventory, blockers);
+    let cargo_metadata = validate_upstream_cargo_metadata(&upstream_root_path, inventory, blockers);
     for field in REQUIRED_UPSTREAM_INVENTORY_FIELDS {
         require_non_empty_array(
             inventory,
@@ -615,21 +679,58 @@ fn validate_upstream_inventory(
             )));
         }
     }
+    cargo_metadata.map(|cargo_metadata| UpstreamProjectEvidence {
+        root: upstream_root_path,
+        cargo_metadata,
+    })
+}
+
+fn validate_upstream_identity(
+    root: &Path,
+    upstream_root: &Path,
+    inventory: &Value,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if inventory["project_name"].as_str() != Some("watchexec") {
+        blockers.push(ProjectSupportBlocker::new(
+            "upstream inventory project_name must be watchexec",
+        ));
+    }
+    if inventory["source_revision"]
+        .as_str()
+        .map_or(true, |revision| revision.trim().is_empty())
+    {
+        blockers.push(ProjectSupportBlocker::new(
+            "upstream inventory source_revision is missing",
+        ));
+    }
+    let Ok(project_root) = root.canonicalize() else {
+        return;
+    };
+    let Ok(upstream_root) = upstream_root.canonicalize() else {
+        return;
+    };
+    if upstream_root == project_root {
+        blockers.push(ProjectSupportBlocker::new(
+            "upstream inventory root must not be the Kobo project root",
+        ));
+    }
 }
 
 fn validate_upstream_cargo_metadata(
     upstream_root: &Path,
     inventory: &Value,
     blockers: &mut Vec<ProjectSupportBlocker>,
-) {
+) -> Option<Value> {
     let workspace_manifest = inventory["workspace_manifest"]
         .as_str()
         .unwrap_or("Cargo.toml");
     let manifest_path = upstream_root.join(workspace_manifest);
     let Some(metadata) = read_cargo_metadata(&manifest_path, blockers) else {
-        return;
+        return None;
     };
 
+    validate_upstream_package_names(&metadata, blockers);
     let target_paths = metadata_workspace_target_paths(upstream_root, &metadata, blockers);
     if target_paths.is_empty() {
         blockers.push(ProjectSupportBlocker::new(
@@ -649,6 +750,18 @@ fn validate_upstream_cargo_metadata(
         if !feature_matrix_contains_feature(&observed_feature_matrix, &feature) {
             blockers.push(ProjectSupportBlocker::new(format!(
                 "upstream feature combination missing Cargo feature {feature}"
+            )));
+        }
+    }
+    Some(metadata)
+}
+
+fn validate_upstream_package_names(metadata: &Value, blockers: &mut Vec<ProjectSupportBlocker>) {
+    let package_names = metadata_package_names(metadata);
+    for required in REQUIRED_UPSTREAM_PACKAGE_NAMES {
+        if !package_names.contains(*required) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "upstream Cargo metadata missing package {required}"
             )));
         }
     }
@@ -692,6 +805,36 @@ fn read_cargo_metadata(
             None
         }
     }
+}
+
+fn metadata_package_names(metadata: &Value) -> BTreeSet<&str> {
+    metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|package| package["name"].as_str())
+        .collect()
+}
+
+fn package_feature_names(package: &Value) -> BTreeSet<String> {
+    package["features"]
+        .as_object()
+        .map(|features| features.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn metadata_dependency_features(dependency: &Value) -> BTreeSet<String> {
+    let mut features = dependency["features"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    if dependency["uses_default_features"].as_bool() == Some(true) {
+        features.insert("default".to_owned());
+    }
+    features
 }
 
 fn metadata_workspace_target_paths(
@@ -828,9 +971,15 @@ fn validate_platform_models(
     }
 }
 
-fn validate_adapters(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSupportBlocker>) {
+fn validate_adapters(
+    root: &Path,
+    manifest: &Value,
+    upstream_metadata: Option<&Value>,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
     let adapters = manifest["adapters"].as_array().cloned().unwrap_or_default();
     let cargo = read_project_cargo(root);
+    let upstream_dependencies = AdapterDependencyIndex::from_cargo_metadata(upstream_metadata);
     for required_kind in REQUIRED_ADAPTERS {
         let Some(adapter) = find_object_by_kind(&adapters, required_kind) else {
             blockers.push(ProjectSupportBlocker::new(format!(
@@ -884,7 +1033,14 @@ fn validate_adapters(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSu
                 "adapter {required_kind} lacks stale summary detection"
             )));
         }
-        validate_adapter_source(root, cargo.as_ref(), adapter, required_kind, blockers);
+        validate_adapter_source(
+            root,
+            cargo.as_ref(),
+            &upstream_dependencies,
+            adapter,
+            required_kind,
+            blockers,
+        );
         if let Some(evidence) = require_evidence_document(
             root,
             adapter,
@@ -917,6 +1073,7 @@ fn validate_adapters(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSu
 fn validate_adapter_source(
     root: &Path,
     cargo: Option<&TomlValue>,
+    upstream_dependencies: &AdapterDependencyIndex,
     adapter: &Value,
     required_kind: &str,
     blockers: &mut Vec<ProjectSupportBlocker>,
@@ -924,9 +1081,14 @@ fn validate_adapter_source(
     let source = &adapter["crate_source"];
     let source_kind = source["kind"].as_str().unwrap_or("missing");
     match source_kind {
-        "cargo_dependency" => {
-            validate_cargo_adapter_source(cargo, adapter, source, required_kind, blockers)
-        }
+        "cargo_dependency" => validate_cargo_adapter_source(
+            cargo,
+            upstream_dependencies,
+            adapter,
+            source,
+            required_kind,
+            blockers,
+        ),
         "std" => {
             if source["name"].as_str().unwrap_or("").trim().is_empty() {
                 blockers.push(ProjectSupportBlocker::new(format!(
@@ -955,6 +1117,7 @@ fn validate_adapter_source(
 
 fn validate_cargo_adapter_source(
     cargo: Option<&TomlValue>,
+    upstream_dependencies: &AdapterDependencyIndex,
     adapter: &Value,
     source: &Value,
     required_kind: &str,
@@ -964,13 +1127,14 @@ fn validate_cargo_adapter_source(
         .as_str()
         .or_else(|| adapter["name"].as_str())
         .unwrap_or("");
-    let Some(dependency) = cargo.and_then(|cargo| find_dependency(cargo, dependency_name)) else {
+    let Some(declared_features) =
+        adapter_dependency_features(cargo, upstream_dependencies, dependency_name)
+    else {
         blockers.push(ProjectSupportBlocker::new(format!(
             "adapter {required_kind} cargo dependency is not declared: {dependency_name}"
         )));
         return;
     };
-    let declared_features = dependency_features(dependency);
     for feature in adapter["cargo_features"].as_array().into_iter().flatten() {
         let Some(feature) = feature.as_str() else {
             continue;
@@ -1075,6 +1239,7 @@ fn validate_generated_backend(
 fn validate_test_release_parity(
     root: &Path,
     manifest: &Value,
+    upstream_root: Option<&Path>,
     blockers: &mut Vec<ProjectSupportBlocker>,
 ) {
     let parity = &manifest["test_release_parity"];
@@ -1109,7 +1274,7 @@ fn validate_test_release_parity(
         ));
     }
     for artifact in artifacts {
-        require_non_empty_path_value(root, &artifact, "release artifact", blockers);
+        require_release_artifact_path(root, upstream_root, &artifact, blockers);
     }
 }
 
@@ -1856,20 +2021,52 @@ fn feature_combination_signature(value: &Value) -> Option<String> {
     }
 }
 
-fn require_non_empty_path_value(
+fn require_release_artifact_path(
     root: &Path,
+    upstream_root: Option<&Path>,
     value: &Value,
-    label: &str,
     blockers: &mut Vec<ProjectSupportBlocker>,
 ) {
-    if let Some(path) = value.as_str() {
-        require_non_empty_file(root, path, label, blockers);
-    } else {
-        blockers.push(ProjectSupportBlocker::new(format!(
-            "{label} must be a path string"
-        )));
+    let Some(path) = value.as_str() else {
+        blockers.push(ProjectSupportBlocker::new(
+            "release artifact must be a path string",
+        ));
+        return;
+    };
+    if path.trim().is_empty() {
+        blockers.push(ProjectSupportBlocker::new(
+            "release artifact path is empty",
+        ));
+        return;
     }
+    if is_project_evidence_path(path) && path_is_non_empty_file(&project_path(root, path)) {
+        return;
+    }
+    if let Some(upstream_root) = upstream_root {
+        if path_is_non_empty_file(&project_path(upstream_root, path)) {
+            return;
+        }
+    }
+    if path_is_non_empty_file(&project_path(root, path)) {
+        return;
+    }
+    blockers.push(ProjectSupportBlocker::new(format!(
+        "release artifact evidence path does not exist: {path}"
+    )));
 }
+
+fn is_project_evidence_path(path: &str) -> bool {
+    path.replace('\\', "/").starts_with(".kobo/")
+}
+
+fn path_is_non_empty_file(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .metadata()
+            .map(|metadata| metadata.len() > 0)
+            .unwrap_or(false)
+}
+
 fn require_non_empty_file(
     root: &Path,
     path: &str,
@@ -2072,6 +2269,31 @@ fn find_dependency<'a>(cargo: &'a TomlValue, name: &str) -> Option<&'a TomlValue
                 .and_then(|workspace| workspace.get("dependencies"))
                 .and_then(|table| table.get(name))
         })
+}
+
+fn adapter_dependency_features(
+    cargo: Option<&TomlValue>,
+    upstream_dependencies: &AdapterDependencyIndex,
+    dependency_name: &str,
+) -> Option<BTreeSet<String>> {
+    let mut features = BTreeSet::new();
+    let mut is_declared = false;
+    if let Some(dependency) = cargo.and_then(|cargo| find_dependency(cargo, dependency_name)) {
+        is_declared = true;
+        features.extend(dependency_feature_names(dependency));
+    }
+    if let Some(upstream_features) = upstream_dependencies.features_for(dependency_name) {
+        is_declared = true;
+        features.extend(upstream_features.iter().cloned());
+    }
+    is_declared.then_some(features)
+}
+
+fn dependency_feature_names(dependency: &TomlValue) -> BTreeSet<String> {
+    dependency_features(dependency)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn dependency_features(dependency: &TomlValue) -> BTreeSet<&str> {

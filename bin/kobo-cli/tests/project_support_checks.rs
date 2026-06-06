@@ -196,6 +196,8 @@ fn write_upstream_inventory_files(project: &TestProject) {
         "upstream/watchexec/Cargo.toml",
         r#"[workspace]
 members = [
+  "crates/lib",
+  "crates/events",
   "crates/cli",
   "crates/supervisor",
   "crates/platform",
@@ -209,6 +211,35 @@ resolver = "2"
 
 [workspace.package]
 version = "1.0.0"
+"#,
+    );
+    project.write(
+        "upstream/watchexec/crates/lib/Cargo.toml",
+        r#"[package]
+name = "watchexec"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+"#,
+    );
+    project.write(
+        "upstream/watchexec/crates/events/Cargo.toml",
+        r#"[package]
+name = "watchexec-events"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+serde = []
 "#,
     );
     project.write(
@@ -279,6 +310,14 @@ default = []
         );
     }
     project.write("upstream/watchexec/build.rs", "fn main() {}\n");
+    project.write(
+        "upstream/watchexec/crates/lib/src/lib.rs",
+        "pub struct Watchexec;\npub fn configure() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/events/src/lib.rs",
+        "pub struct Event;\npub fn normalize_event() {}\n",
+    );
     project.write(
         "upstream/watchexec/crates/cli/src/main.rs",
         "pub fn cli() {}\n",
@@ -376,6 +415,8 @@ default = []
 
 fn upstream_module_paths() -> &'static [&'static str] {
     &[
+        "crates/lib/src/lib.rs",
+        "crates/events/src/lib.rs",
         "crates/cli/src/main.rs",
         "crates/cli/src/lib.rs",
         "crates/supervisor/src/lib.rs",
@@ -500,9 +541,13 @@ fn write_complete_support_manifest(project: &TestProject) {
   "schema_version": 1,
   "claim": "project_support",
   "upstream_inventory": {
+    "project_name": "watchexec",
+    "source_revision": "test-upstream-fixture",
     "root": "upstream/watchexec",
     "workspace_manifest": "Cargo.toml",
     "crate_tree": [
+      "crates/lib/src/lib.rs",
+      "crates/events/src/lib.rs",
       "crates/cli/src/main.rs",
       "crates/cli/src/lib.rs",
       "crates/supervisor/src/lib.rs",
@@ -520,6 +565,8 @@ fn write_complete_support_manifest(project: &TestProject) {
       "crates/errors/src/lib.rs"
     ],
     "modules": [
+      "crates/lib/src/lib.rs",
+      "crates/events/src/lib.rs",
       "crates/cli/src/main.rs",
       "crates/cli/src/lib.rs",
       "crates/supervisor/src/lib.rs",
@@ -536,7 +583,7 @@ fn write_complete_support_manifest(project: &TestProject) {
       "crates/logging/src/lib.rs",
       "crates/errors/src/lib.rs"
     ],
-    "public_types": ["CliSurface", "Supervisor", "RestartPolicy", "WatchEvent", "DebounceWindow", "PlatformModel", "SignalPlan", "IgnoreMatcher", "ConfigSource", "LogEvent", "ErrorReport"],
+    "public_types": ["Watchexec", "Event", "CliSurface", "Supervisor", "RestartPolicy", "WatchEvent", "DebounceWindow", "PlatformModel", "SignalPlan", "IgnoreMatcher", "ConfigSource", "LogEvent", "ErrorReport"],
     "cli_surfaces": ["watchexec --restart", "watchexec --watch", "watchexec --signal", "watchexec --on-busy-update", "watchexec --debounce", "watchexec --print-events"],
     "test_fixtures": [
       "crates/cli/tests/cli_flags.rs",
@@ -558,7 +605,7 @@ fn write_complete_support_manifest(project: &TestProject) {
       {"path": "crates/platform/src/macos.rs", "disposition": "formal_adapter", "correctness_relevant": true, "source_preserved": true},
       {"path": "crates/platform/src/polling.rs", "disposition": "formal_adapter", "correctness_relevant": true, "source_preserved": true}
     ],
-    "feature_combinations": [["default"], ["default", "polling"], ["default", "signals"]],
+    "feature_combinations": [["default"], ["default", "polling"], ["default", "signals"], ["serde"]],
     "examples": ["examples/restart.rs", "examples/debounce.rs"],
     "build_scripts": ["build.rs"],
     "release_artifacts": ["target/release/watchexec"],
@@ -586,7 +633,7 @@ fn write_complete_support_manifest(project: &TestProject) {
     "lower": true,
     "source_map": true,
     "rare_diagnostics": true,
-    "feature_matrix": [["default"], ["default", "polling"], ["default", "signals"]],
+    "feature_matrix": [["default"], ["default", "polling"], ["default", "signals"], ["serde"]],
     "evidence_path": ".kobo/evidence/language.json"
   },
   "platform_models": [
@@ -1155,7 +1202,7 @@ fn doctor_project_support_rejects_missing_feature_combinations() {
     fs::write(
         &manifest_path,
         manifest.replace(
-            r#""feature_matrix": [["default"], ["default", "polling"], ["default", "signals"]]"#,
+            r#""feature_matrix": [["default"], ["default", "polling"], ["default", "signals"], ["serde"]]"#,
             r#""feature_matrix": [["default"]]"#,
         ),
     )
@@ -1371,5 +1418,104 @@ fn doctor_project_support_rejects_adapter_source_not_declared_in_cargo() {
         &value["project_support"]["blockers"].to_string(),
         "adapter async_runtime cargo dependency is not declared: tokio-missing",
         "project support gate should verify cargo-backed adapter sources",
+    );
+}
+
+#[test]
+fn doctor_project_support_accepts_adapter_source_declared_by_upstream_metadata() {
+    let project = TestProject::new("doctor-project-support-upstream-adapter-source");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            r#""kind": "terminal_helpers", "name": "kobo-terminal-boundary", "crate_source": {"kind": "std", "name": "std::io"}, "version_range": "std""#,
+            r#""kind": "terminal_helpers", "name": "watchexec-cli", "crate_source": {"kind": "cargo_dependency", "name": "watchexec-cli"}, "version_range": "workspace""#,
+        ),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "upstream cargo-backed adapter source should be accepted",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(
+        value["project_support"]["status"], "ready",
+        "adapter sources may be proved by the upstream workspace metadata"
+    );
+}
+
+#[test]
+fn doctor_project_support_accepts_upstream_release_artifacts() {
+    let project = TestProject::new("doctor-project-support-upstream-release-artifact");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            r#""release_artifacts": [".kobo/evidence/release.zip"]"#,
+            r#""release_artifacts": ["target/release/watchexec"]"#,
+        ),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "upstream release artifact should keep the report inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(
+        value["project_support"]["status"], "ready",
+        "release parity artifacts are relative to the upstream inventory root"
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_self_inventory() {
+    let project = TestProject::new("doctor-project-support-self-inventory");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest
+            .replace(r#""root": "upstream/watchexec""#, r#""root": ".""#)
+            .replace(
+                r#""project_name": "watchexec""#,
+                r#""project_name": "support-case""#,
+            ),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "self-inventory report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "upstream inventory project_name must be watchexec",
+        "project support should reject evidence pointed at the current Kobo project",
+    );
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "upstream inventory root must not be the Kobo project root",
+        "project support should require separate upstream source evidence",
     );
 }

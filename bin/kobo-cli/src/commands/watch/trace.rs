@@ -8,11 +8,124 @@ use crate::ErrorFormat;
 
 const WATCH_TRACE_WITNESS_MODE: &str = "watch_trace_witness";
 
+const REQUIRED_EXTERNAL_COMPARISON_COVERAGE: &[(&str, &str)] = &[
+    ("watchexec", "coalesced filesystem events"),
+    ("watchexec", ".gitignore and .ignore loading"),
+    ("watchexec", "process group behavior"),
+    (
+        "watchexec",
+        "changed-path delivery through environment variables or stdin",
+    ),
+    (
+        "watchexec",
+        "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
+    ),
+    (
+        "nodemon",
+        "extension watch lists and executed-script extension inference",
+    ),
+    (
+        "nodemon",
+        "absolute-path ignore rules and default ignore directories",
+    ),
+    (
+        "nodemon",
+        "legacy polling fallback for mounted or unreliable filesystems",
+    ),
+    ("nodemon", "delayed restart after bursty writes"),
+    (
+        "nodemon",
+        "custom stop or reload signals and process-tree signal delivery",
+    ),
+    (
+        "nodemon",
+        "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
+    ),
+    (
+        "chokidar",
+        "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
+    ),
+    ("chokidar", "atomic write delete-plus-add normalization"),
+    ("chokidar", "chunked-write stability before emitting change"),
+    (
+        "chokidar",
+        "recursion depth symlink cwd relative dynamic add unwatch close",
+    ),
+    (
+        "chokidar",
+        "polling intervals permission errors and handle exhaustion diagnostics",
+    ),
+    ("chokidar", "raw event details as boundary evidence"),
+    ("watchdog", "immutable filesystem event facts"),
+    (
+        "watchdog",
+        "moved modified created closed deleted and directory events",
+    ),
+    (
+        "watchdog",
+        "pattern regex ignore directory and case-sensitive matching",
+    ),
+    ("watchdog", "skip repeated identical consecutive events"),
+    (
+        "watchdog",
+        "observer lifecycle schedule start dispatch unschedule stop",
+    ),
+    (
+        "watchdog",
+        "platform observer choices for Linux macOS BSD Windows and polling",
+    ),
+    ("watchfiles", "debounced sets of file changes"),
+    (
+        "watchfiles",
+        "synchronous watch and async watch thread handoff cancellation",
+    ),
+    (
+        "watchfiles",
+        "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
+    ),
+    ("watchfiles", "Windows-specific async timeout behavior"),
+    (
+        "Watchman",
+        "recursive watched roots and root-settle before command execution",
+    ),
+    ("Watchman", "conservative uncertain-file startup behavior"),
+    (
+        "Watchman",
+        "project-root discovery through root files and root enforcement",
+    ),
+    (
+        "Watchman",
+        "case-insensitive filesystem behavior canonical recovery and case-only rename",
+    ),
+    ("Watchman", "unsupported or illegal filesystem types"),
+    ("Watchman", "symlink policy"),
+    (
+        "go-air",
+        "build command entrypoint full command binary args pre-build and post-exit",
+    ),
+    (
+        "go-air",
+        "include exclude regex unchanged dangerous-root and symlink following",
+    ),
+    (
+        "go-air",
+        "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
+    ),
+    ("go-air", "platform-specific build overrides"),
+    ("go-air", "environment file loading and app environment inheritance"),
+    (
+        "go-air",
+        "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
+    ),
+];
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum AdapterKind {
     Watcher,
     Process,
     Time,
+    PathFilter,
+    AsyncRuntime,
 }
 
 #[derive(Clone, Copy)]
@@ -25,6 +138,8 @@ enum TraceEventKind {
     ChildSignal,
     ChildKill,
     ChildDetach,
+    ChildTimeout,
+    ChildCancel,
     Shutdown,
 }
 
@@ -49,9 +164,12 @@ struct ExternalComparison {
 struct WatcherTraceEvent {
     event_kind: String,
     path: String,
+    paths: Vec<Value>,
     window: u64,
     evidence_grade: String,
     duplicate_marker: String,
+    filter_decision: Option<Value>,
+    platform: Option<Value>,
     raw: Value,
 }
 
@@ -60,10 +178,15 @@ struct ChildState {
     child_id: String,
     policy: String,
     command: String,
+    process_group: Value,
+    stdio: Value,
+    terminal: Value,
+    environment: Value,
 }
 
 struct WindowTrace {
     watcher_events: Vec<WatcherTraceEvent>,
+    timer_events: Vec<Value>,
     has_timer_fired: bool,
     shutdown_resolved: bool,
 }
@@ -220,61 +343,97 @@ fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "source_map_anchor": "debounce_windows[]",
             "cargo_features": ["default"],
         }),
+        json!({
+            "kind": "path_filter",
+            "name": "kobo-path-filter-summary",
+            "schema_version": 1,
+            "version_range": "^1",
+            "operations": ["match_path", "reload_config", "root_discovery"],
+            "modeled_facts": ["pure_path_match", "absolute_path_match", "case_mode", "config_generation", "filesystem_boundary"],
+            "unsupported_guarantees": ["remote_filesystem_canonicalization"],
+            "replay_confidence": "modelled",
+            "source_map_anchor": "event_batches[].events[].filter_decision",
+            "cargo_features": ["default"],
+        }),
+        json!({
+            "kind": "async_runtime",
+            "name": "kobo-watch-runtime-summary",
+            "schema_version": 1,
+            "version_range": "^1",
+            "operations": ["spawn", "join", "cancel", "select", "timer", "channel", "backpressure", "shutdown", "blocking"],
+            "modeled_facts": ["task_order", "timer_order", "cancel_order", "channel_delivery", "wake_order"],
+            "unsupported_guarantees": ["arbitrary_scheduler_equivalence"],
+            "replay_confidence": "partial",
+            "source_map_anchor": "event_batches[].events[].async_step",
+            "cargo_features": ["rt", "time", "sync"],
+        }),
     ]
 }
 
 fn source_watch_state_external_comparisons() -> Vec<Value> {
-    vec![
-        json!({
-            "implementation": "watchexec",
-            "behavior": "coalesced filesystem events",
-            "disposition": "replay_fixture",
-            "reason": "source-watch state imports normalized event batches and duplicate markers from the live watch loop",
-            "evidence_anchor": "event_batches[]",
-        }),
-        json!({
-            "implementation": "watchfiles",
-            "behavior": "debounced sets of file changes",
-            "disposition": "semantic_rule",
-            "reason": "each imported debounce window preserves event membership before restart decisions replay",
-            "evidence_anchor": "debounce_windows[]",
-        }),
-        json!({
-            "implementation": "nodemon",
-            "behavior": "delayed restart after bursty writes",
-            "disposition": "semantic_rule",
-            "reason": "the live watch state records one restart decision per logical debounce window",
-            "evidence_anchor": "restart_decisions[]",
-        }),
-        json!({
-            "implementation": "chokidar",
-            "behavior": "atomic write delete-plus-add normalization",
-            "disposition": "debt_item",
-            "reason": "source-watch state preserves raw changed paths and duplicate/coalesced markers, while atomic delete-plus-add folding remains explicit debt",
-            "evidence_anchor": "event_batches[]",
-        }),
-        json!({
-            "implementation": "watchdog",
-            "behavior": "immutable filesystem event facts",
-            "disposition": "formal_adapter_contract",
-            "reason": "imported watcher summaries require event kind, path facts, ordering limits, duplicate markers, unsupported guarantees, and Cargo feature evidence",
-            "evidence_anchor": "adapter_summaries[0]",
-        }),
-        json!({
-            "implementation": "Watchman",
-            "behavior": "conservative uncertain-file startup behavior",
-            "disposition": "explicit_non_goal",
-            "reason": "source-watch imports start after Kobo's project scope is established and do not claim root-settle or startup recrawl parity",
-            "evidence_anchor": "source_scope",
-        }),
-        json!({
-            "implementation": "go-air",
-            "behavior": "build command and run command separation",
-            "disposition": "debt_item",
-            "reason": "source-watch records rerun lifecycle facts, while pre-build and post-exit command phases remain outside this dogfood slice",
-            "evidence_anchor": "child_lifecycle_obligations[]",
-        }),
-    ]
+    REQUIRED_EXTERNAL_COMPARISON_COVERAGE
+        .iter()
+        .map(|(implementation, behavior)| {
+            json!({
+                "implementation": implementation,
+                "behavior": behavior,
+                "disposition": source_watch_comparison_disposition(behavior),
+                "reason": source_watch_comparison_reason(implementation, behavior),
+                "evidence_anchor": source_watch_comparison_anchor(behavior),
+            })
+        })
+        .collect()
+}
+
+fn source_watch_comparison_disposition(behavior: &str) -> &'static str {
+    if behavior.contains("unsupported")
+        || behavior.contains("Windows-specific")
+        || behavior.contains("pre-build")
+        || behavior.contains("polling intervals")
+    {
+        "debt_item"
+    } else if behavior.contains("conservative uncertain-file startup") {
+        "explicit_non_goal"
+    } else if behavior.contains("fixture")
+        || behavior.contains("coalesced filesystem events")
+        || behavior.contains("debounced sets")
+    {
+        "replay_fixture"
+    } else {
+        "formal_adapter_contract"
+    }
+}
+
+fn source_watch_comparison_reason(implementation: &str, behavior: &str) -> String {
+    format!(
+        "source-watch import keeps {implementation} `{behavior}` as explicit comparison evidence rather than claiming hidden parity"
+    )
+}
+
+fn source_watch_comparison_anchor(behavior: &str) -> &'static str {
+    if behavior.contains("async") || behavior.contains("scheduler") || behavior.contains("timeout")
+    {
+        "adapter_summaries[async_runtime]"
+    } else if behavior.contains("ignore")
+        || behavior.contains("path")
+        || behavior.contains("root")
+        || behavior.contains("symlink")
+        || behavior.contains("case")
+        || behavior.contains("extension")
+        || behavior.contains("include")
+        || behavior.contains("exclude")
+    {
+        "adapter_summaries[path_filter]"
+    } else if behavior.contains("signal")
+        || behavior.contains("process")
+        || behavior.contains("command")
+        || behavior.contains("environment")
+        || behavior.contains("kill")
+    {
+        "adapter_summaries[process]"
+    } else {
+        "event_batches[]"
+    }
 }
 
 fn source_watch_state_events(value: &Value) -> anyhow::Result<Vec<Value>> {
@@ -414,6 +573,8 @@ fn parse_adapter_summaries(value: &Value) -> anyhow::Result<Vec<AdapterSummary>>
     require_adapter_kind(&parsed, AdapterKind::Watcher)?;
     require_adapter_kind(&parsed, AdapterKind::Process)?;
     require_adapter_kind(&parsed, AdapterKind::Time)?;
+    require_adapter_kind(&parsed, AdapterKind::PathFilter)?;
+    require_adapter_kind(&parsed, AdapterKind::AsyncRuntime)?;
     Ok(parsed)
 }
 
@@ -479,7 +640,12 @@ fn parse_external_comparisons(value: &Value) -> anyhow::Result<Vec<ExternalCompa
     if comparisons.is_empty() {
         anyhow::bail!("empty external_comparisons");
     }
-    comparisons.iter().map(parse_external_comparison).collect()
+    let parsed = comparisons
+        .iter()
+        .map(parse_external_comparison)
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    require_external_comparison_coverage(&parsed)?;
+    Ok(parsed)
 }
 
 fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison> {
@@ -494,6 +660,28 @@ fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison
     Ok(ExternalComparison {
         json: value.clone(),
     })
+}
+
+fn require_external_comparison_coverage(comparisons: &[ExternalComparison]) -> anyhow::Result<()> {
+    let observed = comparisons
+        .iter()
+        .filter_map(|comparison| {
+            Some((
+                comparison.json["implementation"].as_str()?,
+                comparison.json["behavior"].as_str()?,
+            ))
+        })
+        .collect::<BTreeSet<_>>();
+    for required in REQUIRED_EXTERNAL_COMPARISON_COVERAGE {
+        if !observed.contains(required) {
+            anyhow::bail!(
+                "missing external comparison coverage: {} - {}",
+                required.0,
+                required.1
+            );
+        }
+    }
+    Ok(())
 }
 
 fn require_comparison_str<'a>(value: &'a Value, field: &str) -> anyhow::Result<&'a str> {
@@ -545,7 +733,9 @@ fn normalize_trace(raw_events: &[Value]) -> anyhow::Result<NormalizedTrace> {
             TraceEventKind::ChildExit
             | TraceEventKind::ChildSignal
             | TraceEventKind::ChildKill
-            | TraceEventKind::ChildDetach => {
+            | TraceEventKind::ChildDetach
+            | TraceEventKind::ChildTimeout
+            | TraceEventKind::ChildCancel => {
                 record_child_resolution(&mut active_children, &mut child_lifecycle, event)?
             }
             TraceEventKind::Shutdown => record_shutdown(
@@ -579,6 +769,7 @@ fn record_watcher_event(
     let trace_event = WatcherTraceEvent {
         event_kind: required_str(event, "event_kind")?.to_owned(),
         path: required_str(event, "path")?.to_owned(),
+        paths: watcher_event_paths(event)?,
         window: required_u64(event, "window")?,
         evidence_grade: event["evidence_grade"]
             .as_str()
@@ -588,6 +779,8 @@ fn record_watcher_event(
             .as_str()
             .unwrap_or("unique")
             .to_owned(),
+        filter_decision: object_or_null(&event["filter_decision"]),
+        platform: object_or_null(&event["platform"]),
         raw: event.clone(),
     };
     windows
@@ -607,12 +800,17 @@ fn record_timer_fired(
         .entry(window)
         .or_insert_with(WindowTrace::default)
         .has_timer_fired = true;
+    windows
+        .entry(window)
+        .or_insert_with(WindowTrace::default)
+        .timer_events
+        .push(event.clone());
     Ok(())
 }
 
 fn record_child_start(
     active_children: &mut BTreeMap<String, ChildState>,
-    _child_lifecycle: &mut Vec<Value>,
+    child_lifecycle: &mut Vec<Value>,
     event: &Value,
 ) -> anyhow::Result<()> {
     let child_id = required_str(event, "child_id")?.to_owned();
@@ -622,7 +820,12 @@ fn record_child_start(
             .values()
             .any(|child| child.policy == "exclusive")
     {
-        anyhow::bail!("double-running child: exclusive restart started `{child_id}` before the active child resolved");
+        resolve_previous_child_before_replacement(
+            active_children,
+            child_lifecycle,
+            event,
+            &child_id,
+        )?;
     }
     if active_children.contains_key(&child_id) {
         anyhow::bail!("double-running child: `{child_id}` started twice without resolution");
@@ -634,8 +837,40 @@ fn record_child_start(
             child_id: child_id.clone(),
             policy: policy.clone(),
             command: command.clone(),
+            process_group: event["process_group"].clone(),
+            stdio: event["stdio"].clone(),
+            terminal: event["terminal"].clone(),
+            environment: event["environment"].clone(),
         },
     );
+    Ok(())
+}
+
+fn resolve_previous_child_before_replacement(
+    active_children: &mut BTreeMap<String, ChildState>,
+    child_lifecycle: &mut Vec<Value>,
+    event: &Value,
+    replacing_child_id: &str,
+) -> anyhow::Result<()> {
+    let Some(previous_child_id) = event["previous_child_id"].as_str() else {
+        anyhow::bail!("double-running child: exclusive restart started `{replacing_child_id}` before the active child resolved");
+    };
+    let Some(started_child) = active_children.remove(previous_child_id) else {
+        anyhow::bail!("replacement references missing active child: `{previous_child_id}`");
+    };
+    let previous_resolution = event["previous_resolution"].as_str().unwrap_or("signaled");
+    if !is_child_resolution_label(previous_resolution) {
+        anyhow::bail!("unsupported previous child resolution: {previous_resolution}");
+    }
+    child_lifecycle.push(child_lifecycle_json(
+        started_child,
+        previous_resolution.to_owned(),
+        event,
+        json!({
+            "replacement_child_id": replacing_child_id,
+            "signal": event["previous_signal"].clone(),
+        }),
+    ));
     Ok(())
 }
 
@@ -648,16 +883,38 @@ fn record_child_resolution(
     let Some(started_child) = active_children.remove(child_id) else {
         anyhow::bail!("child lifecycle resolution for `{child_id}` has no matching start");
     };
-    child_lifecycle.push(json!({
+    child_lifecycle.push(child_lifecycle_json(
+        started_child,
+        resolution_label(event)?,
+        event,
+        Value::Null,
+    ));
+    Ok(())
+}
+
+fn child_lifecycle_json(
+    started_child: ChildState,
+    resolution: String,
+    event: &Value,
+    extra: Value,
+) -> Value {
+    json!({
         "child_id": started_child.child_id,
         "policy": started_child.policy,
         "command": started_child.command,
         "obligation": "started child must be waited, signaled, killed, or detached",
-        "resolution": resolution_label(event)?,
+        "resolution": resolution,
         "exit_code": event["exit_code"].clone(),
+        "signal": event["signal"].clone(),
+        "timeout_ms": event["timeout_ms"].clone(),
+        "reason": event["reason"].clone(),
+        "process_group": started_child.process_group,
+        "stdio": started_child.stdio,
+        "terminal": started_child.terminal,
+        "environment": started_child.environment,
+        "extra": extra,
         "source_event": event,
-    }));
-    Ok(())
+    })
 }
 
 fn record_shutdown(
@@ -692,15 +949,12 @@ fn record_shutdown(
                 continue;
             };
             resolved_children.push(started_child.child_id.clone());
-            child_lifecycle.push(json!({
-                "child_id": started_child.child_id,
-                "policy": started_child.policy,
-                "command": started_child.command,
-                "obligation": "started child must be waited, signaled, killed, or detached",
-                "resolution": child_resolution,
-                "exit_code": event["exit_code"].clone(),
-                "source_event": event,
-            }));
+            child_lifecycle.push(child_lifecycle_json(
+                started_child,
+                child_resolution.to_owned(),
+                event,
+                Value::Null,
+            ));
         }
     }
 
@@ -753,6 +1007,10 @@ fn restart_decision_json(event: &Value) -> anyhow::Result<Value> {
         "policy_branch": required_str(event, "policy_branch")?,
         "selected_by": [required_str(event, "path")?],
         "source_scope": event["source_scope"].as_str().unwrap_or("watch_trace"),
+        "changed_paths": event["changed_paths"].clone(),
+        "environment": event["environment"].clone(),
+        "stdin_paths": event["stdin_paths"].clone(),
+        "async_step": event["async_step"].clone(),
         "reason": "watch trace restart policy branch selected this action",
         "source_event": event,
     }))
@@ -765,6 +1023,10 @@ fn normalized_json(
     shutdown_resolutions: Vec<Value>,
     replay_grade: TraceReplayGrade,
 ) -> Value {
+    let path_filter_evidence = path_filter_evidence(&windows);
+    let platform_evidence = platform_evidence(&windows);
+    let async_runtime_evidence =
+        async_runtime_evidence(&windows, &restart_decisions, &child_lifecycle);
     let event_batches = windows
         .iter()
         .enumerate()
@@ -783,6 +1045,9 @@ fn normalized_json(
         "restart_decisions": restart_decisions,
         "child_lifecycle_obligations": child_lifecycle,
         "shutdown_resolutions": shutdown_resolutions,
+        "path_filter_evidence": path_filter_evidence,
+        "platform_evidence": platform_evidence,
+        "async_runtime_evidence": async_runtime_evidence,
     })
 }
 
@@ -864,14 +1129,124 @@ fn coalesced_watcher_event_json(
         .unwrap_or_else(|| "metadata_only".to_owned());
     json!({
         "kind": event_kind,
-        "paths": [{
-            "role": "source_path",
-            "path": path,
-        }],
+        "paths": merged_event_paths(&events, &path),
         "duplicate_or_coalesced": if has_duplicate { "coalesced" } else { "unique" },
         "evidence_grade": evidence_grade,
+        "filter_decisions": events.iter().filter_map(|event| event.filter_decision.clone()).collect::<Vec<_>>(),
+        "platforms": events.iter().filter_map(|event| event.platform.clone()).collect::<Vec<_>>(),
         "raw_events": events.into_iter().map(|event| event.raw.clone()).collect::<Vec<_>>(),
     })
+}
+
+fn merged_event_paths(events: &[&WatcherTraceEvent], fallback_path: &str) -> Vec<Value> {
+    let mut paths = Vec::new();
+    let mut seen = BTreeSet::new();
+    for event in events {
+        for path in &event.paths {
+            let key = format!(
+                "{}\u{1f}{}",
+                path["role"].as_str().unwrap_or("source_path"),
+                path["path"].as_str().unwrap_or(fallback_path)
+            );
+            if seen.insert(key) {
+                paths.push(path.clone());
+            }
+        }
+    }
+    if paths.is_empty() {
+        paths.push(json!({
+            "role": "source_path",
+            "path": fallback_path,
+        }));
+    }
+    paths
+}
+
+fn path_filter_evidence(windows: &BTreeMap<u64, WindowTrace>) -> Vec<Value> {
+    windows
+        .iter()
+        .flat_map(|(window, trace)| {
+            trace.watcher_events.iter().filter_map(move |event| {
+                event.filter_decision.as_ref().map(|filter| {
+                    json!({
+                        "window": window,
+                        "path": event.path,
+                        "decision": filter,
+                        "source_event": event.raw,
+                    })
+                })
+            })
+        })
+        .collect()
+}
+
+fn platform_evidence(windows: &BTreeMap<u64, WindowTrace>) -> Vec<Value> {
+    windows
+        .iter()
+        .flat_map(|(window, trace)| {
+            trace.watcher_events.iter().filter_map(move |event| {
+                event.platform.as_ref().map(|platform| {
+                    json!({
+                        "window": window,
+                        "path": event.path,
+                        "platform": platform,
+                        "source_event": event.raw,
+                    })
+                })
+            })
+        })
+        .collect()
+}
+
+fn async_runtime_evidence(
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+) -> Vec<Value> {
+    let mut evidence = Vec::new();
+    for (window, trace) in windows {
+        for event in &trace.timer_events {
+            if !event["async_step"].is_null() {
+                evidence.push(json!({
+                    "window": window,
+                    "kind": "timer",
+                    "async_step": event["async_step"].clone(),
+                    "source_event": event,
+                }));
+            }
+        }
+        for event in &trace.watcher_events {
+            if !event.raw["async_step"].is_null() {
+                evidence.push(json!({
+                    "window": window,
+                    "kind": "watcher",
+                    "async_step": event.raw["async_step"].clone(),
+                    "source_event": event.raw,
+                }));
+            }
+        }
+    }
+    for decision in restart_decisions {
+        let source_event = &decision["source_event"];
+        if !source_event["async_step"].is_null() {
+            evidence.push(json!({
+                "kind": "restart_decision",
+                "async_step": source_event["async_step"].clone(),
+                "source_event": source_event,
+            }));
+        }
+    }
+    for lifecycle in child_lifecycle {
+        let source_event = &lifecycle["source_event"];
+        if !source_event["async_step"].is_null() {
+            evidence.push(json!({
+                "kind": "child_lifecycle",
+                "async_step": source_event["async_step"].clone(),
+                "source_event": source_event,
+            }));
+        }
+    }
+    evidence
 }
 
 fn replay_grade_for_windows(windows: &BTreeMap<u64, WindowTrace>) -> TraceReplayGrade {
@@ -1008,6 +1383,30 @@ fn emit_watch_trace_issue(payload: &Value, error_format: ErrorFormat) -> anyhow:
     Ok(())
 }
 
+fn object_or_null(value: &Value) -> Option<Value> {
+    value.is_object().then(|| value.clone())
+}
+
+fn watcher_event_paths(event: &Value) -> anyhow::Result<Vec<Value>> {
+    if let Some(paths) = event["paths"].as_array() {
+        let mut parsed = Vec::new();
+        for path in paths {
+            parsed.push(json!({
+                "role": required_str(path, "role")?,
+                "path": required_str(path, "path")?,
+            }));
+        }
+        if parsed.is_empty() {
+            anyhow::bail!("watch trace paths must not be empty");
+        }
+        return Ok(parsed);
+    }
+    Ok(vec![json!({
+        "role": "source_path",
+        "path": required_str(event, "path")?,
+    })])
+}
+
 fn required_str<'a>(value: &'a Value, field: &str) -> anyhow::Result<&'a str> {
     value[field]
         .as_str()
@@ -1020,18 +1419,34 @@ fn required_u64(value: &Value, field: &str) -> anyhow::Result<u64> {
         .ok_or_else(|| anyhow::anyhow!("missing numeric watch trace field `{field}`"))
 }
 
-fn resolution_label(event: &Value) -> anyhow::Result<&'static str> {
+fn resolution_label(event: &Value) -> anyhow::Result<String> {
     match TraceEventKind::from_value(event)? {
-        TraceEventKind::ChildExit => Ok("exited"),
-        TraceEventKind::ChildSignal => Ok("signaled"),
-        TraceEventKind::ChildKill => Ok("killed"),
-        TraceEventKind::ChildDetach => Ok("detached"),
+        TraceEventKind::ChildExit => Ok("exited".to_owned()),
+        TraceEventKind::ChildSignal => Ok(event["resolution"]
+            .as_str()
+            .unwrap_or("signaled")
+            .to_owned()),
+        TraceEventKind::ChildKill => Ok("killed".to_owned()),
+        TraceEventKind::ChildDetach => Ok("detached".to_owned()),
+        TraceEventKind::ChildTimeout => Ok("kill_timeout".to_owned()),
+        TraceEventKind::ChildCancel => Ok("cancelled".to_owned()),
         _ => anyhow::bail!("event is not a child lifecycle resolution"),
     }
 }
 
 fn is_child_resolution_label(label: &str) -> bool {
-    matches!(label, "exited" | "signaled" | "killed" | "detached")
+    matches!(
+        label,
+        "exited"
+            | "signaled"
+            | "killed"
+            | "detached"
+            | "graceful_stop"
+            | "kill_timeout"
+            | "restart"
+            | "final_shutdown"
+            | "cancelled"
+    )
 }
 
 impl AdapterKind {
@@ -1040,6 +1455,8 @@ impl AdapterKind {
             "watcher" => Ok(Self::Watcher),
             "process" => Ok(Self::Process),
             "time" => Ok(Self::Time),
+            "path_filter" => Ok(Self::PathFilter),
+            "async_runtime" => Ok(Self::AsyncRuntime),
             _ => anyhow::bail!("unknown adapter summary kind: {value}"),
         }
     }
@@ -1049,6 +1466,8 @@ impl AdapterKind {
             Self::Watcher => "watcher",
             Self::Process => "process",
             Self::Time => "time",
+            Self::PathFilter => "path_filter",
+            Self::AsyncRuntime => "async_runtime",
         }
     }
 }
@@ -1064,6 +1483,8 @@ impl TraceEventKind {
             "child_signal" => Ok(Self::ChildSignal),
             "child_kill" => Ok(Self::ChildKill),
             "child_detach" => Ok(Self::ChildDetach),
+            "child_timeout" => Ok(Self::ChildTimeout),
+            "child_cancel" => Ok(Self::ChildCancel),
             "shutdown" => Ok(Self::Shutdown),
             kind => anyhow::bail!("unknown watch trace event kind: {kind}"),
         }
@@ -1083,6 +1504,7 @@ impl Default for WindowTrace {
     fn default() -> Self {
         Self {
             watcher_events: Vec::new(),
+            timer_events: Vec::new(),
             has_timer_fired: false,
             shutdown_resolved: false,
         }

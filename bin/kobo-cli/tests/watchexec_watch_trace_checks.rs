@@ -75,14 +75,26 @@ fn trace_with_events(events: &str) -> String {
         r#"{{
   "schema_version": 1,
   "mode": "watch_trace_input",
-  "adapter_summaries": [
+  "adapter_summaries": {adapter_summaries},
+  "external_comparisons": {external_comparisons},
+  "events": {events}
+}}"#,
+        adapter_summaries = required_adapter_summaries_json(),
+        external_comparisons = required_external_comparisons_json(),
+        events = events
+    )
+}
+
+fn required_adapter_summaries_json() -> String {
+    format!(
+        r#"[
     {{
       "kind": "watcher",
       "name": "notify-like",
       "schema_version": 1,
       "version_range": "^1",
       "operations": ["raw_event"],
-      "modeled_facts": ["event_kind", "paths", "ordering", "duplicates"],
+      "modeled_facts": ["event_kind", "paths", "ordering", "duplicates", "platform_backend", "raw_boundary"],
       "unsupported_guarantees": ["global_total_order"],
       "replay_confidence": "metadata-only",
       "source_map_anchor": "events[]",
@@ -93,8 +105,8 @@ fn trace_with_events(events: &str) -> String {
       "name": "process-supervisor",
       "schema_version": 1,
       "version_range": "^1",
-      "operations": ["spawn", "exit", "signal", "kill", "detach"],
-      "modeled_facts": ["child_id", "policy", "exit_code", "resolution"],
+      "operations": ["spawn", "exit", "signal", "kill", "detach", "timeout", "cancel"],
+      "modeled_facts": ["child_id", "policy", "exit_code", "resolution", "process_group", "stdio", "terminal", "environment"],
       "unsupported_guarantees": ["platform_signal_equivalence"],
       "replay_confidence": "modelled",
       "source_map_anchor": "events[]",
@@ -111,19 +123,312 @@ fn trace_with_events(events: &str) -> String {
       "replay_confidence": "partial",
       "source_map_anchor": "events[]",
       "cargo_features": ["default"]
+    }},
+    {{
+      "kind": "path_filter",
+      "name": "ignore-path-filter",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["match_path", "reload_config", "root_discovery"],
+      "modeled_facts": ["pure_path_match", "absolute_path_match", "case_mode", "config_generation", "filesystem_boundary"],
+      "unsupported_guarantees": ["remote_filesystem_canonicalization"],
+      "replay_confidence": "modelled",
+      "source_map_anchor": "events[].filter_decision",
+      "cargo_features": ["default"]
+    }},
+    {{
+      "kind": "async_runtime",
+      "name": "tokio-like-watch-runtime",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["spawn", "join", "cancel", "select", "timer", "channel", "backpressure", "shutdown", "blocking"],
+      "modeled_facts": ["task_order", "timer_order", "cancel_order", "channel_delivery", "wake_order"],
+      "unsupported_guarantees": ["arbitrary_scheduler_equivalence"],
+      "replay_confidence": "partial",
+      "source_map_anchor": "events[].async_step",
+      "cargo_features": ["rt", "time", "sync"]
     }}
-  ],
-  "external_comparisons": [
+  ]"#
+    )
+}
+
+fn required_external_comparisons_json() -> String {
+    format!(
+        r#"[
     {{
       "implementation": "watchexec",
       "behavior": "coalesced filesystem events",
       "disposition": "replay_fixture",
       "reason": "normalized debounce batches preserve duplicate raw events",
       "evidence_anchor": "events[]"
+    }},
+    {{
+      "implementation": "watchexec",
+      "behavior": ".gitignore and .ignore loading",
+      "disposition": "formal_adapter_contract",
+      "reason": "path filter summaries distinguish pure path matching from external ignore and filesystem facts",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "watchexec",
+      "behavior": "process group behavior",
+      "disposition": "formal_adapter_contract",
+      "reason": "process summaries expose process groups, child trees, termination, and timeout facts",
+      "evidence_anchor": "adapter_summaries[process]"
+    }},
+    {{
+      "implementation": "watchexec",
+      "behavior": "changed-path delivery through environment variables or stdin",
+      "disposition": "semantic_rule",
+      "reason": "restart decisions and child starts preserve changed path delivery facts",
+      "evidence_anchor": "events[].changed_paths"
+    }},
+    {{
+      "implementation": "watchexec",
+      "behavior": "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
+      "disposition": "formal_adapter_contract",
+      "reason": "watcher, process, time, path filter, and async summaries divide replacement coverage from boundaries",
+      "evidence_anchor": "adapter_summaries[]"
+    }},
+    {{
+      "implementation": "nodemon",
+      "behavior": "extension watch lists and executed-script extension inference",
+      "disposition": "semantic_rule",
+      "reason": "path filter evidence records extension filters and selected source spans",
+      "evidence_anchor": "events[].filter_decision"
+    }},
+    {{
+      "implementation": "nodemon",
+      "behavior": "absolute-path ignore rules and default ignore directories",
+      "disposition": "formal_adapter_contract",
+      "reason": "path filter summaries preserve absolute path matching and default ignore boundaries",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "nodemon",
+      "behavior": "legacy polling fallback for mounted or unreliable filesystems",
+      "disposition": "debt_item",
+      "reason": "watcher summaries name polling fallback as modeled platform evidence, not exact native behavior",
+      "evidence_anchor": "adapter_summaries[watcher]"
+    }},
+    {{
+      "implementation": "nodemon",
+      "behavior": "delayed restart after bursty writes",
+      "disposition": "semantic_rule",
+      "reason": "one restart is emitted after each logical debounce window",
+      "evidence_anchor": "normalized.debounce_windows"
+    }},
+    {{
+      "implementation": "nodemon",
+      "behavior": "custom stop or reload signals and process-tree signal delivery",
+      "disposition": "formal_adapter_contract",
+      "reason": "process summaries and child signal events preserve signal and process tree facts",
+      "evidence_anchor": "events[].child_signal"
+    }},
+    {{
+      "implementation": "nodemon",
+      "behavior": "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
+      "disposition": "replay_fixture",
+      "reason": "watch trace witnesses preserve those fixture dimensions as comparison evidence",
+      "evidence_anchor": "external_comparisons[]"
+    }},
+    {{
+      "implementation": "chokidar",
+      "behavior": "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
+      "disposition": "formal_adapter_contract",
+      "reason": "watcher summaries keep raw backend events as boundary facts before normalization",
+      "evidence_anchor": "adapter_summaries[watcher]"
+    }},
+    {{
+      "implementation": "chokidar",
+      "behavior": "atomic write delete-plus-add normalization",
+      "disposition": "semantic_rule",
+      "reason": "renamed temp-file save patterns can be modeled as rename or change within a debounce window",
+      "evidence_anchor": "events[].paths"
+    }},
+    {{
+      "implementation": "chokidar",
+      "behavior": "chunked-write stability before emitting change",
+      "disposition": "semantic_rule",
+      "reason": "debounce windows preserve membership until timer firing evidence",
+      "evidence_anchor": "normalized.debounce_windows"
+    }},
+    {{
+      "implementation": "chokidar",
+      "behavior": "recursion depth symlink cwd relative dynamic add unwatch close",
+      "disposition": "formal_adapter_contract",
+      "reason": "path filter summaries name root scope, symlink, recursion, and dynamic config facts",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "chokidar",
+      "behavior": "polling intervals permission errors and handle exhaustion diagnostics",
+      "disposition": "debt_item",
+      "reason": "watcher summaries separate sampled platform diagnostics from exact replay",
+      "evidence_anchor": "adapter_summaries[watcher]"
+    }},
+    {{
+      "implementation": "chokidar",
+      "behavior": "raw event details as boundary evidence",
+      "disposition": "semantic_rule",
+      "reason": "raw events remain hashed and embedded without becoming stable high-level semantics",
+      "evidence_anchor": "raw_events"
+    }},
+    {{
+      "implementation": "watchdog",
+      "behavior": "immutable filesystem event facts",
+      "disposition": "formal_adapter_contract",
+      "reason": "watcher summaries require event kind, path facts, ordering limits, duplicate markers, unsupported guarantees, and Cargo feature evidence",
+      "evidence_anchor": "adapter_summaries[watcher]"
+    }},
+    {{
+      "implementation": "watchdog",
+      "behavior": "moved modified created closed deleted and directory events",
+      "disposition": "semantic_rule",
+      "reason": "watcher events preserve explicit event variants and path roles",
+      "evidence_anchor": "events[].event_kind"
+    }},
+    {{
+      "implementation": "watchdog",
+      "behavior": "pattern regex ignore directory and case-sensitive matching",
+      "disposition": "formal_adapter_contract",
+      "reason": "path filter summaries preserve matching semantics and case-mode evidence",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "watchdog",
+      "behavior": "skip repeated identical consecutive events",
+      "disposition": "semantic_rule",
+      "reason": "duplicate markers and coalesced batches make repeated events replay-visible",
+      "evidence_anchor": "normalized.event_batches"
+    }},
+    {{
+      "implementation": "watchdog",
+      "behavior": "observer lifecycle schedule start dispatch unschedule stop",
+      "disposition": "formal_adapter_contract",
+      "reason": "watcher and async summaries name observer lifecycle boundaries and scheduler assumptions",
+      "evidence_anchor": "adapter_summaries[]"
+    }},
+    {{
+      "implementation": "watchdog",
+      "behavior": "platform observer choices for Linux macOS BSD Windows and polling",
+      "disposition": "formal_adapter_contract",
+      "reason": "watcher summaries expose platform backend identity and replay confidence",
+      "evidence_anchor": "adapter_summaries[watcher]"
+    }},
+    {{
+      "implementation": "watchfiles",
+      "behavior": "debounced sets of file changes",
+      "disposition": "replay_fixture",
+      "reason": "window membership is replayed as a set of modeled paths for each debounce window",
+      "evidence_anchor": "normalized.debounce_windows"
+    }},
+    {{
+      "implementation": "watchfiles",
+      "behavior": "synchronous watch and async watch thread handoff cancellation",
+      "disposition": "formal_adapter_contract",
+      "reason": "async summaries expose task handoff, cancellation, and shutdown facts",
+      "evidence_anchor": "adapter_summaries[async_runtime]"
+    }},
+    {{
+      "implementation": "watchfiles",
+      "behavior": "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
+      "disposition": "formal_adapter_contract",
+      "reason": "time and watcher summaries separate timer evidence, recursion, permission, and polling boundaries",
+      "evidence_anchor": "adapter_summaries[]"
+    }},
+    {{
+      "implementation": "watchfiles",
+      "behavior": "Windows-specific async timeout behavior",
+      "disposition": "debt_item",
+      "reason": "async summaries keep platform-specific timeout defaults source-visible instead of exact by default",
+      "evidence_anchor": "adapter_summaries[async_runtime]"
+    }},
+    {{
+      "implementation": "Watchman",
+      "behavior": "recursive watched roots and root-settle before command execution",
+      "disposition": "formal_adapter_contract",
+      "reason": "path filter summaries expose root discovery and recursive scope facts",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "Watchman",
+      "behavior": "conservative uncertain-file startup behavior",
+      "disposition": "explicit_non_goal",
+      "reason": "startup recrawl is visible as a boundary when trace evidence starts after scope setup",
+      "evidence_anchor": "trace_import"
+    }},
+    {{
+      "implementation": "Watchman",
+      "behavior": "project-root discovery through root files and root enforcement",
+      "disposition": "formal_adapter_contract",
+      "reason": "path filter summaries model root discovery and enforcement separately from watcher events",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "Watchman",
+      "behavior": "case-insensitive filesystem behavior canonical recovery and case-only rename",
+      "disposition": "formal_adapter_contract",
+      "reason": "platform/path summaries keep case mode and canonicalization as explicit evidence",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "Watchman",
+      "behavior": "unsupported or illegal filesystem types",
+      "disposition": "debt_item",
+      "reason": "unsupported filesystem facts become boundary diagnostics instead of exact replay",
+      "evidence_anchor": "adapter_summaries[watcher]"
+    }},
+    {{
+      "implementation": "Watchman",
+      "behavior": "symlink policy",
+      "disposition": "formal_adapter_contract",
+      "reason": "path summaries expose symlink policy instead of inheriting watcher defaults silently",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "go-air",
+      "behavior": "build command entrypoint full command binary args pre-build and post-exit",
+      "disposition": "debt_item",
+      "reason": "process summaries model command identity and child lifecycle while build phases remain declared boundaries",
+      "evidence_anchor": "adapter_summaries[process]"
+    }},
+    {{
+      "implementation": "go-air",
+      "behavior": "include exclude regex unchanged dangerous-root and symlink following",
+      "disposition": "formal_adapter_contract",
+      "reason": "path filter summaries preserve include/exclude and dangerous-root evidence as source-visible facts",
+      "evidence_anchor": "adapter_summaries[path_filter]"
+    }},
+    {{
+      "implementation": "go-air",
+      "behavior": "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
+      "disposition": "formal_adapter_contract",
+      "reason": "watcher, time, and process summaries cover polling, restart, signal, and cleanup facts",
+      "evidence_anchor": "adapter_summaries[]"
+    }},
+    {{
+      "implementation": "go-air",
+      "behavior": "platform-specific build overrides",
+      "disposition": "formal_adapter_contract",
+      "reason": "process and generated-backend evidence keep platform-specific command choices visible",
+      "evidence_anchor": "adapter_summaries[process]"
+    }},
+    {{
+      "implementation": "go-air",
+      "behavior": "environment file loading and app environment inheritance",
+      "disposition": "semantic_rule",
+      "reason": "child start events preserve environment and changed-path delivery facts",
+      "evidence_anchor": "events[].environment"
+    }},
+    {{
+      "implementation": "go-air",
+      "behavior": "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
+      "disposition": "replay_fixture",
+      "reason": "comparison evidence names fixture dimensions that must remain replay-visible or debt",
+      "evidence_anchor": "external_comparisons[]"
     }}
-  ],
-  "events": {events}
-}}"#
+  ]"#
     )
 }
 
@@ -359,7 +664,7 @@ fn watch_trace_import_emits_replayable_witness_with_adapter_contracts() {
     assert_eq!(witness_json["replay_grade"], "partial");
     assert_eq!(
         witness_json["adapter_summaries"].as_array().map(Vec::len),
-        Some(3)
+        Some(5)
     );
     assert_contains(
         &witness_json["external_comparisons"].to_string(),
@@ -762,6 +1067,194 @@ fn watch_trace_import_records_shutdown_resolution_for_timer_and_child() {
 }
 
 #[test]
+fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_boundaries() {
+    let project = TestProject::new("watchexec-trace-boundary-rich");
+    let trace = project.write(
+        "traces/boundary-rich.json",
+        &trace_with_events(
+            r#"[
+    {
+      "kind": "watcher_event",
+      "event_kind": "rename",
+      "path": "src/main.kobo",
+      "paths": [
+        {"role": "source_path", "path": "src/.main.kobo.swp"},
+        {"role": "destination_path", "path": "src/main.kobo"}
+      ],
+      "window": 1,
+      "timestamp_ms": 10,
+      "duplicate_marker": "coalesced",
+      "evidence_grade": "modeled",
+      "platform": {"os": "linux", "backend": "inotify", "case_sensitive": true, "symlink_policy": "preserve"},
+      "filter_decision": {"status": "accepted", "source_span": "src/supervisor_policy.kobo:7", "generation": 1, "rules": ["**/*.kobo"]}
+    },
+    {
+      "kind": "timer_fired",
+      "window": 1,
+      "timestamp_ms": 210,
+      "async_step": {"task_order": 1, "timer_order": 1}
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "changed_paths": ["src/main.kobo"],
+      "environment": {"WATCHEXEC_CHANGED_PATH": "src/main.kobo"},
+      "stdin_paths": ["src/main.kobo"],
+      "timestamp_ms": 211,
+      "async_step": {"task_order": 2}
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-1",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "process_group": "pg-1",
+      "stdio": {"stdin": "changed_paths", "stdout": "forward", "stderr": "forward"},
+      "terminal": {"tty": true, "inherited_handles": ["stdout", "stderr"], "log_forwarding": "line"},
+      "environment": {"WATCHEXEC_CHANGED_PATH": "src/main.kobo"},
+      "timestamp_ms": 212
+    },
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "target/debug/app",
+      "window": 2,
+      "timestamp_ms": 250,
+      "duplicate_marker": "unique",
+      "evidence_grade": "modeled",
+      "filter_decision": {"status": "ignored", "source_span": ".gitignore:1", "generation": 1, "rules": ["target/**"], "external_facts": ["gitignore"]}
+    },
+    {
+      "kind": "timer_fired",
+      "window": 2,
+      "timestamp_ms": 300
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.ignored_path",
+      "action": "noop",
+      "path": "target/debug/app",
+      "timestamp_ms": 301
+    },
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "Kobo.toml",
+      "window": 3,
+      "timestamp_ms": 350,
+      "duplicate_marker": "unique",
+      "evidence_grade": "modeled",
+      "filter_decision": {"status": "config_reload", "source_span": "Kobo.toml:1", "generation": 2, "rules": ["reload"]}
+    },
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 3,
+      "timestamp_ms": 360,
+      "duplicate_marker": "unique",
+      "evidence_grade": "modeled",
+      "filter_decision": {"status": "accepted", "source_span": "Kobo.toml:3", "generation": 2, "rules": ["src/**/*.kobo"], "relevant_after_config_change": true}
+    },
+    {
+      "kind": "timer_fired",
+      "window": 3,
+      "timestamp_ms": 560,
+      "async_step": {"task_order": 3, "timer_order": 2}
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.config_changed_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "changed_paths": ["src/main.kobo"],
+      "timestamp_ms": 561,
+      "async_step": {"task_order": 4}
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-2",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "previous_child_id": "cmd-1",
+      "previous_resolution": "graceful_stop",
+      "previous_signal": "interrupt",
+      "process_group": "pg-1",
+      "timestamp_ms": 562
+    },
+    {
+      "kind": "child_timeout",
+      "child_id": "cmd-2",
+      "timeout_ms": 1000,
+      "timestamp_ms": 1562
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-3",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 1563
+    },
+    {
+      "kind": "child_cancel",
+      "child_id": "cmd-3",
+      "reason": "final_shutdown",
+      "timestamp_ms": 1600
+    }
+  ]"#,
+        ),
+    );
+    let witness = project.root.join(".kobo/witnesses/boundary-rich.kwit");
+
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&trace),
+            s("--witness-out"),
+            path_arg(&witness),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "rich boundary trace should import with modeled path, signal, stdio, terminal, and async facts",
+    );
+    let witness_json: Value = serde_json::from_str(
+        &fs::read_to_string(&witness).expect("rich boundary witness should read"),
+    )
+    .expect("rich boundary witness should parse");
+    let witness_text = witness_json.to_string();
+    for expected in [
+        "path_filter",
+        "async_runtime",
+        ".gitignore and .ignore loading",
+        "Windows-specific async timeout behavior",
+        "destination_path",
+        "ignored",
+        "relevant_after_config_change",
+        "graceful_stop",
+        "kill_timeout",
+        "cancelled",
+        "WATCHEXEC_CHANGED_PATH",
+        "stdout",
+        "tty",
+        "task_order",
+    ] {
+        assert_contains(
+            &witness_text,
+            expected,
+            "rich boundary witness should preserve required v0.16.2 boundary evidence",
+        );
+    }
+
+    let replay = run_kobo(&[s("replay"), path_arg(&witness)], &project.root);
+    assert_success(&replay, "rich boundary witness should replay");
+}
+
+#[test]
 fn watch_trace_import_requires_fresh_watcher_process_and_time_summaries() {
     let project = TestProject::new("watchexec-trace-summary");
     let missing_time = project.write(
@@ -837,18 +1330,15 @@ fn watch_trace_import_requires_external_comparison_evidence() {
     let project = TestProject::new("watchexec-trace-external-comparison");
     let missing_comparisons = project.write(
         "traces/missing_comparisons.json",
-        &trace_with_events(valid_watchexec_events()).replace(
-            r#",
-  "external_comparisons": [
-    {
-      "implementation": "watchexec",
-      "behavior": "coalesced filesystem events",
-      "disposition": "replay_fixture",
-      "reason": "normalized debounce batches preserve duplicate raw events",
-      "evidence_anchor": "events[]"
-    }
-  ]"#,
-            "",
+        &format!(
+            r#"{{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": {adapter_summaries},
+  "events": {events}
+}}"#,
+            adapter_summaries = required_adapter_summaries_json(),
+            events = valid_watchexec_events(),
         ),
     );
     let output = run_kobo(

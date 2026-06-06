@@ -1,181 +1,511 @@
 {
-  "schema_version": 1,
-  "mode": "watch_trace_input",
-  "adapter_summaries": [
-    {
-      "kind": "watcher",
-      "name": "notify-like",
-      "schema_version": 1,
-      "version_range": "^1",
-      "operations": ["raw_event"],
-      "modeled_facts": ["event_kind", "paths", "ordering", "duplicates"],
-      "unsupported_guarantees": ["global_total_order"],
-      "replay_confidence": "metadata-only",
-      "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
-    },
-    {
-      "kind": "process",
-      "name": "process-supervisor",
-      "schema_version": 1,
-      "version_range": "^1",
-      "operations": ["spawn", "exit", "signal", "kill", "detach"],
-      "modeled_facts": ["child_id", "policy", "exit_code", "resolution"],
-      "unsupported_guarantees": ["platform_signal_equivalence"],
-      "replay_confidence": "modelled",
-      "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
-    },
-    {
-      "kind": "time",
-      "name": "logical-debounce",
-      "schema_version": 1,
-      "version_range": "^1",
-      "operations": ["timer_create", "timer_cancel", "timer_fire"],
-      "modeled_facts": ["window", "membership", "fire_order"],
-      "unsupported_guarantees": ["real_os_time_determinism"],
-      "replay_confidence": "partial",
-      "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
-    }
-  ],
-  "external_comparisons": [
-    {
-      "implementation": "watchexec",
-      "behavior": "coalesced filesystem events",
-      "disposition": "replay_fixture",
-      "reason": "normalized debounce batches preserve duplicate raw events before restart",
-      "evidence_anchor": "events[]"
-    },
-    {
-      "implementation": "nodemon",
-      "behavior": "delayed restart after bursty writes",
-      "disposition": "semantic_rule",
-      "reason": "one restart is emitted after each logical debounce window",
-      "evidence_anchor": "normalized.debounce_windows"
-    },
-    {
-      "implementation": "chokidar",
-      "behavior": "atomic write delete-plus-add normalization",
-      "disposition": "debt_item",
-      "reason": "this trace records duplicate/coalesced modify events, while delete-plus-add atomic write normalization remains a named follow-up",
-      "evidence_anchor": "external_comparisons[]"
-    },
-    {
-      "implementation": "watchdog",
-      "behavior": "immutable filesystem event facts",
-      "disposition": "formal_adapter_contract",
-      "reason": "watcher summaries require event kind, paths, ordering, duplicates, unsupported guarantees, and Cargo feature evidence",
-      "evidence_anchor": "adapter_summaries[0]"
-    },
-    {
-      "implementation": "watchfiles",
-      "behavior": "debounced sets of file changes",
-      "disposition": "replay_fixture",
-      "reason": "window membership is replayed as a set of modeled paths for each debounce window",
-      "evidence_anchor": "normalized.debounce_windows"
-    },
-    {
-      "implementation": "Watchman",
-      "behavior": "conservative uncertain-file startup behavior",
-      "disposition": "explicit_non_goal",
-      "reason": "this dogfood trace starts after watcher setup and does not claim root-settle or startup recrawl parity",
-      "evidence_anchor": "trace_import"
-    },
-    {
-      "implementation": "go-air",
-      "behavior": "build command and run command separation",
-      "disposition": "debt_item",
-      "reason": "process summaries model command identity and child lifecycle, while pre-build and post-exit command phases remain outside this slice",
-      "evidence_anchor": "adapter_summaries[1]"
-    }
-  ],
-  "events": [
-    {
-      "kind": "watcher_event",
-      "event_kind": "modify",
-      "path": "src/main.kobo",
-      "window": 1,
-      "timestamp_ms": 10,
-      "duplicate_marker": "unique",
-      "evidence_grade": "metadata_only"
-    },
-    {
-      "kind": "watcher_event",
-      "event_kind": "modify",
-      "path": "src/main.kobo",
-      "window": 1,
-      "timestamp_ms": 11,
-      "duplicate_marker": "duplicate",
-      "evidence_grade": "metadata_only"
-    },
-    {
-      "kind": "watcher_event",
-      "event_kind": "modify",
-      "path": "src/main.kobo",
-      "window": 1,
-      "timestamp_ms": 12,
-      "duplicate_marker": "duplicate",
-      "evidence_grade": "metadata_only"
-    },
-    {
-      "kind": "timer_fired",
-      "window": 1,
-      "timestamp_ms": 210
-    },
-    {
-      "kind": "restart_decision",
-      "policy_branch": "watchexec.restart.changed_in_scope",
-      "action": "restart",
-      "path": "src/main.kobo",
-      "timestamp_ms": 211
-    },
-    {
-      "kind": "child_start",
-      "child_id": "cmd-1",
-      "policy": "exclusive",
-      "command": "cargo test",
-      "timestamp_ms": 212
-    },
-    {
-      "kind": "watcher_event",
-      "event_kind": "modify",
-      "path": "src/main.kobo",
-      "window": 2,
-      "timestamp_ms": 250,
-      "duplicate_marker": "unique",
-      "evidence_grade": "metadata_only"
-    },
-    {
-      "kind": "child_exit",
-      "child_id": "cmd-1",
-      "exit_code": 0,
-      "timestamp_ms": 260
-    },
-    {
-      "kind": "timer_fired",
-      "window": 2,
-      "timestamp_ms": 450
-    },
-    {
-      "kind": "restart_decision",
-      "policy_branch": "watchexec.restart.changed_in_scope",
-      "action": "restart",
-      "path": "src/main.kobo",
-      "timestamp_ms": 451
-    },
-    {
-      "kind": "child_start",
-      "child_id": "cmd-2",
-      "policy": "exclusive",
-      "command": "cargo test",
-      "timestamp_ms": 452
-    },
-    {
-      "kind": "child_exit",
-      "child_id": "cmd-2",
-      "exit_code": 0,
-      "timestamp_ms": 500
-    }
-  ]
+    "schema_version":  1,
+    "mode":  "watch_trace_input",
+    "adapter_summaries":  [
+                              {
+                                  "kind":  "watcher",
+                                  "name":  "notify-like",
+                                  "schema_version":  1,
+                                  "version_range":  "^1",
+                                  "operations":  [
+                                                     "raw_event"
+                                                 ],
+                                  "modeled_facts":  [
+                                                        "event_kind",
+                                                        "paths",
+                                                        "ordering",
+                                                        "duplicates",
+                                                        "platform_backend",
+                                                        "raw_boundary"
+                                                    ],
+                                  "unsupported_guarantees":  [
+                                                                 "global_total_order"
+                                                             ],
+                                  "replay_confidence":  "metadata-only",
+                                  "source_map_anchor":  "events[]",
+                                  "cargo_features":  [
+                                                         "default"
+                                                     ]
+                              },
+                              {
+                                  "kind":  "process",
+                                  "name":  "process-supervisor",
+                                  "schema_version":  1,
+                                  "version_range":  "^1",
+                                  "operations":  [
+                                                     "spawn",
+                                                     "exit",
+                                                     "signal",
+                                                     "kill",
+                                                     "detach",
+                                                     "timeout",
+                                                     "cancel"
+                                                 ],
+                                  "modeled_facts":  [
+                                                        "child_id",
+                                                        "policy",
+                                                        "exit_code",
+                                                        "resolution",
+                                                        "process_group",
+                                                        "stdio",
+                                                        "terminal",
+                                                        "environment"
+                                                    ],
+                                  "unsupported_guarantees":  [
+                                                                 "platform_signal_equivalence"
+                                                             ],
+                                  "replay_confidence":  "modelled",
+                                  "source_map_anchor":  "events[]",
+                                  "cargo_features":  [
+                                                         "default"
+                                                     ]
+                              },
+                              {
+                                  "kind":  "time",
+                                  "name":  "logical-debounce",
+                                  "schema_version":  1,
+                                  "version_range":  "^1",
+                                  "operations":  [
+                                                     "timer_create",
+                                                     "timer_cancel",
+                                                     "timer_fire"
+                                                 ],
+                                  "modeled_facts":  [
+                                                        "window",
+                                                        "membership",
+                                                        "fire_order"
+                                                    ],
+                                  "unsupported_guarantees":  [
+                                                                 "real_os_time_determinism"
+                                                             ],
+                                  "replay_confidence":  "partial",
+                                  "source_map_anchor":  "events[]",
+                                  "cargo_features":  [
+                                                         "default"
+                                                     ]
+                              },
+                              {
+                                  "kind":  "path_filter",
+                                  "name":  "ignore-path-filter",
+                                  "schema_version":  1,
+                                  "version_range":  "^1",
+                                  "operations":  [
+                                                     "match_path",
+                                                     "reload_config",
+                                                     "root_discovery"
+                                                 ],
+                                  "modeled_facts":  [
+                                                        "pure_path_match",
+                                                        "absolute_path_match",
+                                                        "case_mode",
+                                                        "config_generation",
+                                                        "filesystem_boundary"
+                                                    ],
+                                  "unsupported_guarantees":  [
+                                                                 "remote_filesystem_canonicalization"
+                                                             ],
+                                  "replay_confidence":  "modelled",
+                                  "source_map_anchor":  "events[].filter_decision",
+                                  "cargo_features":  [
+                                                         "default"
+                                                     ]
+                              },
+                              {
+                                  "kind":  "async_runtime",
+                                  "name":  "tokio-like-watch-runtime",
+                                  "schema_version":  1,
+                                  "version_range":  "^1",
+                                  "operations":  [
+                                                     "spawn",
+                                                     "join",
+                                                     "cancel",
+                                                     "select",
+                                                     "timer",
+                                                     "channel",
+                                                     "backpressure",
+                                                     "shutdown",
+                                                     "blocking"
+                                                 ],
+                                  "modeled_facts":  [
+                                                        "task_order",
+                                                        "timer_order",
+                                                        "cancel_order",
+                                                        "channel_delivery",
+                                                        "wake_order"
+                                                    ],
+                                  "unsupported_guarantees":  [
+                                                                 "arbitrary_scheduler_equivalence"
+                                                             ],
+                                  "replay_confidence":  "partial",
+                                  "source_map_anchor":  "events[].async_step",
+                                  "cargo_features":  [
+                                                         "rt",
+                                                         "time",
+                                                         "sync"
+                                                     ]
+                              }
+                          ],
+    "external_comparisons":  [
+                                 {
+                                     "implementation":  "watchexec",
+                                     "behavior":  "coalesced filesystem events",
+                                     "disposition":  "replay_fixture",
+                                     "reason":  "fixture preserves watchexec \u0027coalesced filesystem events\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "events[]"
+                                 },
+                                 {
+                                     "implementation":  "watchexec",
+                                     "behavior":  ".gitignore and .ignore loading",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchexec \u0027.gitignore and .ignore loading\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "watchexec",
+                                     "behavior":  "process group behavior",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchexec \u0027process group behavior\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[process]"
+                                 },
+                                 {
+                                     "implementation":  "watchexec",
+                                     "behavior":  "changed-path delivery through environment variables or stdin",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves watchexec \u0027changed-path delivery through environment variables or stdin\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "events[].changed_paths"
+                                 },
+                                 {
+                                     "implementation":  "watchexec",
+                                     "behavior":  "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchexec \u0027watchexec event signal supervisor process wrapping ignore project origin notify coverage\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[]"
+                                 },
+                                 {
+                                     "implementation":  "nodemon",
+                                     "behavior":  "extension watch lists and executed-script extension inference",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves nodemon \u0027extension watch lists and executed-script extension inference\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "events[].filter_decision"
+                                 },
+                                 {
+                                     "implementation":  "nodemon",
+                                     "behavior":  "absolute-path ignore rules and default ignore directories",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves nodemon \u0027absolute-path ignore rules and default ignore directories\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "nodemon",
+                                     "behavior":  "legacy polling fallback for mounted or unreliable filesystems",
+                                     "disposition":  "debt_item",
+                                     "reason":  "fixture preserves nodemon \u0027legacy polling fallback for mounted or unreliable filesystems\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                 },
+                                 {
+                                     "implementation":  "nodemon",
+                                     "behavior":  "delayed restart after bursty writes",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves nodemon \u0027delayed restart after bursty writes\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "normalized.debounce_windows"
+                                 },
+                                 {
+                                     "implementation":  "nodemon",
+                                     "behavior":  "custom stop or reload signals and process-tree signal delivery",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves nodemon \u0027custom stop or reload signals and process-tree signal delivery\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "events[].child_signal"
+                                 },
+                                 {
+                                     "implementation":  "nodemon",
+                                     "behavior":  "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
+                                     "disposition":  "replay_fixture",
+                                     "reason":  "fixture preserves nodemon \u0027equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "external_comparisons[]"
+                                 },
+                                 {
+                                     "implementation":  "chokidar",
+                                     "behavior":  "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves chokidar \u0027raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                 },
+                                 {
+                                     "implementation":  "chokidar",
+                                     "behavior":  "atomic write delete-plus-add normalization",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves chokidar \u0027atomic write delete-plus-add normalization\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "events[].paths"
+                                 },
+                                 {
+                                     "implementation":  "chokidar",
+                                     "behavior":  "chunked-write stability before emitting change",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves chokidar \u0027chunked-write stability before emitting change\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "normalized.debounce_windows"
+                                 },
+                                 {
+                                     "implementation":  "chokidar",
+                                     "behavior":  "recursion depth symlink cwd relative dynamic add unwatch close",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves chokidar \u0027recursion depth symlink cwd relative dynamic add unwatch close\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "chokidar",
+                                     "behavior":  "polling intervals permission errors and handle exhaustion diagnostics",
+                                     "disposition":  "debt_item",
+                                     "reason":  "fixture preserves chokidar \u0027polling intervals permission errors and handle exhaustion diagnostics\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                 },
+                                 {
+                                     "implementation":  "chokidar",
+                                     "behavior":  "raw event details as boundary evidence",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves chokidar \u0027raw event details as boundary evidence\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "raw_events"
+                                 },
+                                 {
+                                     "implementation":  "watchdog",
+                                     "behavior":  "immutable filesystem event facts",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchdog \u0027immutable filesystem event facts\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                 },
+                                 {
+                                     "implementation":  "watchdog",
+                                     "behavior":  "moved modified created closed deleted and directory events",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves watchdog \u0027moved modified created closed deleted and directory events\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "events[].event_kind"
+                                 },
+                                 {
+                                     "implementation":  "watchdog",
+                                     "behavior":  "pattern regex ignore directory and case-sensitive matching",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchdog \u0027pattern regex ignore directory and case-sensitive matching\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "watchdog",
+                                     "behavior":  "skip repeated identical consecutive events",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves watchdog \u0027skip repeated identical consecutive events\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "normalized.event_batches"
+                                 },
+                                 {
+                                     "implementation":  "watchdog",
+                                     "behavior":  "observer lifecycle schedule start dispatch unschedule stop",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchdog \u0027observer lifecycle schedule start dispatch unschedule stop\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[]"
+                                 },
+                                 {
+                                     "implementation":  "watchdog",
+                                     "behavior":  "platform observer choices for Linux macOS BSD Windows and polling",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchdog \u0027platform observer choices for Linux macOS BSD Windows and polling\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                 },
+                                 {
+                                     "implementation":  "watchfiles",
+                                     "behavior":  "debounced sets of file changes",
+                                     "disposition":  "replay_fixture",
+                                     "reason":  "fixture preserves watchfiles \u0027debounced sets of file changes\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "normalized.debounce_windows"
+                                 },
+                                 {
+                                     "implementation":  "watchfiles",
+                                     "behavior":  "synchronous watch and async watch thread handoff cancellation",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchfiles \u0027synchronous watch and async watch thread handoff cancellation\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[async_runtime]"
+                                 },
+                                 {
+                                     "implementation":  "watchfiles",
+                                     "behavior":  "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves watchfiles \u0027debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[]"
+                                 },
+                                 {
+                                     "implementation":  "watchfiles",
+                                     "behavior":  "Windows-specific async timeout behavior",
+                                     "disposition":  "debt_item",
+                                     "reason":  "fixture preserves watchfiles \u0027Windows-specific async timeout behavior\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[async_runtime]"
+                                 },
+                                 {
+                                     "implementation":  "Watchman",
+                                     "behavior":  "recursive watched roots and root-settle before command execution",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves Watchman \u0027recursive watched roots and root-settle before command execution\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "Watchman",
+                                     "behavior":  "conservative uncertain-file startup behavior",
+                                     "disposition":  "explicit_non_goal",
+                                     "reason":  "fixture preserves Watchman \u0027conservative uncertain-file startup behavior\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "trace_import"
+                                 },
+                                 {
+                                     "implementation":  "Watchman",
+                                     "behavior":  "project-root discovery through root files and root enforcement",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves Watchman \u0027project-root discovery through root files and root enforcement\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "Watchman",
+                                     "behavior":  "case-insensitive filesystem behavior canonical recovery and case-only rename",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves Watchman \u0027case-insensitive filesystem behavior canonical recovery and case-only rename\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "Watchman",
+                                     "behavior":  "unsupported or illegal filesystem types",
+                                     "disposition":  "debt_item",
+                                     "reason":  "fixture preserves Watchman \u0027unsupported or illegal filesystem types\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[watcher]"
+                                 },
+                                 {
+                                     "implementation":  "Watchman",
+                                     "behavior":  "symlink policy",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves Watchman \u0027symlink policy\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "go-air",
+                                     "behavior":  "build command entrypoint full command binary args pre-build and post-exit",
+                                     "disposition":  "debt_item",
+                                     "reason":  "fixture preserves go-air \u0027build command entrypoint full command binary args pre-build and post-exit\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[process]"
+                                 },
+                                 {
+                                     "implementation":  "go-air",
+                                     "behavior":  "include exclude regex unchanged dangerous-root and symlink following",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves go-air \u0027include exclude regex unchanged dangerous-root and symlink following\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[path_filter]"
+                                 },
+                                 {
+                                     "implementation":  "go-air",
+                                     "behavior":  "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves go-air \u0027polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[]"
+                                 },
+                                 {
+                                     "implementation":  "go-air",
+                                     "behavior":  "platform-specific build overrides",
+                                     "disposition":  "formal_adapter_contract",
+                                     "reason":  "fixture preserves go-air \u0027platform-specific build overrides\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "adapter_summaries[process]"
+                                 },
+                                 {
+                                     "implementation":  "go-air",
+                                     "behavior":  "environment file loading and app environment inheritance",
+                                     "disposition":  "semantic_rule",
+                                     "reason":  "fixture preserves go-air \u0027environment file loading and app environment inheritance\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "events[].environment"
+                                 },
+                                 {
+                                     "implementation":  "go-air",
+                                     "behavior":  "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
+                                     "disposition":  "replay_fixture",
+                                     "reason":  "fixture preserves go-air \u0027parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths\u0027 as explicit v0.16.2 comparison evidence",
+                                     "evidence_anchor":  "external_comparisons[]"
+                                 }
+                             ],
+    "events":  [
+                   {
+                       "kind":  "watcher_event",
+                       "event_kind":  "modify",
+                       "path":  "src/main.kobo",
+                       "window":  1,
+                       "timestamp_ms":  10,
+                       "duplicate_marker":  "unique",
+                       "evidence_grade":  "metadata_only"
+                   },
+                   {
+                       "kind":  "watcher_event",
+                       "event_kind":  "modify",
+                       "path":  "src/main.kobo",
+                       "window":  1,
+                       "timestamp_ms":  11,
+                       "duplicate_marker":  "duplicate",
+                       "evidence_grade":  "metadata_only"
+                   },
+                   {
+                       "kind":  "watcher_event",
+                       "event_kind":  "modify",
+                       "path":  "src/main.kobo",
+                       "window":  1,
+                       "timestamp_ms":  12,
+                       "duplicate_marker":  "duplicate",
+                       "evidence_grade":  "metadata_only"
+                   },
+                   {
+                       "kind":  "timer_fired",
+                       "window":  1,
+                       "timestamp_ms":  210
+                   },
+                   {
+                       "kind":  "restart_decision",
+                       "policy_branch":  "watchexec.restart.changed_in_scope",
+                       "action":  "restart",
+                       "path":  "src/main.kobo",
+                       "timestamp_ms":  211
+                   },
+                   {
+                       "kind":  "child_start",
+                       "child_id":  "cmd-1",
+                       "policy":  "exclusive",
+                       "command":  "cargo test",
+                       "timestamp_ms":  212
+                   },
+                   {
+                       "kind":  "watcher_event",
+                       "event_kind":  "modify",
+                       "path":  "src/main.kobo",
+                       "window":  2,
+                       "timestamp_ms":  250,
+                       "duplicate_marker":  "unique",
+                       "evidence_grade":  "metadata_only"
+                   },
+                   {
+                       "kind":  "child_exit",
+                       "child_id":  "cmd-1",
+                       "exit_code":  0,
+                       "timestamp_ms":  260
+                   },
+                   {
+                       "kind":  "timer_fired",
+                       "window":  2,
+                       "timestamp_ms":  450
+                   },
+                   {
+                       "kind":  "restart_decision",
+                       "policy_branch":  "watchexec.restart.changed_in_scope",
+                       "action":  "restart",
+                       "path":  "src/main.kobo",
+                       "timestamp_ms":  451
+                   },
+                   {
+                       "kind":  "child_start",
+                       "child_id":  "cmd-2",
+                       "policy":  "exclusive",
+                       "command":  "cargo test",
+                       "timestamp_ms":  452
+                   },
+                   {
+                       "kind":  "child_exit",
+                       "child_id":  "cmd-2",
+                       "exit_code":  0,
+                       "timestamp_ms":  500
+                   }
+               ]
 }

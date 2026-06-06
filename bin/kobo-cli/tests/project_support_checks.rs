@@ -79,7 +79,14 @@ insta = "1"
     );
     let behavior_command = build_evidence_command_transcript(
         project,
-        &["cargo", "test", "--workspace", "--all-targets"],
+        &[
+            "cargo",
+            "test",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "--nocapture",
+        ],
         Some("upstream/watchexec"),
     );
     write_evidence(
@@ -499,6 +506,94 @@ default = []
         "Write-Output watchexec\n",
     );
     project.write("upstream/watchexec/target/release/watchexec", "binary\n");
+    write_project_support_proof_marker_test(project);
+}
+
+fn write_project_support_proof_marker_test(project: &TestProject) {
+    let markers = all_fixture_proof_markers();
+    let marker_lines = markers
+        .iter()
+        .map(|marker| format!("        {marker:?},"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    project.write(
+        "upstream/watchexec/crates/supervisor/tests/project_support_proof_markers.rs",
+        &format!(
+            r#"#[test]
+fn project_support_future_proof_markers() {{
+    for marker in [
+{marker_lines}
+    ] {{
+        println!("{{marker}}");
+    }}
+}}
+"#
+        ),
+    );
+}
+
+fn all_fixture_proof_markers() -> Vec<String> {
+    let mut markers = std::collections::BTreeSet::new();
+    for subject in [
+        "filesystem_events",
+        "watcher_backend",
+        "paths",
+        "process_execution",
+        "signals",
+        "process_groups",
+        "environment_variables",
+        "terminal_io",
+        "stdio",
+        "timers",
+    ] {
+        markers.extend(command_proof_markers("platform_model", subject));
+    }
+    for subject in [
+        "watcher_backend",
+        "async_runtime",
+        "process_handling",
+        "signal_handling",
+        "ignore_path",
+        "config",
+        "cli",
+        "shell_parsing",
+        "serialization",
+        "logging_tracing",
+        "terminal_helpers",
+        "errors",
+    ] {
+        markers.extend(command_proof_markers("adapter_summary", subject));
+    }
+    for subject in [
+        "upstream_tests",
+        "kobo_replay_tests",
+        "kobo_liveness_tests",
+        "cli_behavior",
+        "config_behavior",
+        "exit_behavior",
+        "logging_behavior",
+        "package_behavior",
+        "platform_behavior",
+        "install_behavior",
+    ] {
+        markers.extend(command_proof_markers("test_release_parity", subject));
+    }
+    for subject in [
+        "startup",
+        "steady_state",
+        "restart",
+        "memory",
+        "binary",
+        "watch_tree_scaling",
+        "event_burst_scaling",
+    ] {
+        markers.extend(command_proof_markers("performance", subject));
+    }
+    markers.extend(command_proof_markers("async_runtime", "async_runtime"));
+    markers.extend(command_proof_markers("upstream_tests", "upstream"));
+    markers.extend(command_proof_markers("reviewer_report", "reviewer-a"));
+    markers.extend(command_proof_markers("reviewer_report", "reviewer-b"));
+    markers.into_iter().collect()
 }
 
 fn upstream_module_paths() -> &'static [&'static str] {
@@ -524,6 +619,7 @@ fn upstream_module_paths() -> &'static [&'static str] {
         "crates/supervisor/src/job/state.rs",
         "crates/supervisor/src/policy.rs",
         "crates/supervisor/src/debounce.rs",
+        "crates/supervisor/tests/project_support_proof_markers.rs",
         "crates/platform/src/lib.rs",
         "crates/platform/src/windows.rs",
         "crates/platform/src/linux.rs",
@@ -591,6 +687,14 @@ fn build_evidence_command_transcript(
 }
 
 fn json_string_array(values: &[&str]) -> String {
+    values
+        .iter()
+        .map(|value| serde_json::to_string(value).expect("test string should serialize"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn owned_json_string_array(values: &[String]) -> String {
     values
         .iter()
         .map(|value| serde_json::to_string(value).expect("test string should serialize"))
@@ -686,6 +790,82 @@ fn command_proves_target(evidence_kind: &str, subject: &str) -> String {
     }
 }
 
+fn command_proof_markers(evidence_kind: &str, subject: &str) -> Vec<String> {
+    match (evidence_kind, subject) {
+        ("async_runtime", "async_runtime") => string_vec(&[
+            "kobo-proof:async_runtime:spawn",
+            "kobo-proof:async_runtime:join",
+            "kobo-proof:async_runtime:cancel",
+            "kobo-proof:async_runtime:select",
+            "kobo-proof:async_runtime:timer",
+            "kobo-proof:async_runtime:channel",
+            "kobo-proof:async_runtime:backpressure",
+            "kobo-proof:async_runtime:shutdown",
+            "kobo-proof:async_runtime:blocking",
+        ]),
+        ("upstream_tests", _) => string_vec(&["kobo-proof:upstream_tests:original-suite"]),
+        ("test_release_parity", "upstream_tests") => {
+            string_vec(&["kobo-proof:upstream_tests:original-suite"])
+        }
+        ("test_release_parity", "kobo_replay_tests") => {
+            string_vec(&["kobo-proof:kobo_replay_tests:replay"])
+        }
+        ("test_release_parity", "kobo_liveness_tests") => {
+            string_vec(&["kobo-proof:kobo_liveness_tests:liveness"])
+        }
+        ("test_release_parity", "cli_behavior") => string_vec(&["kobo-proof:cli_behavior:cli"]),
+        ("test_release_parity", "config_behavior") => {
+            string_vec(&["kobo-proof:config_behavior:config"])
+        }
+        ("test_release_parity", "exit_behavior") => string_vec(&["kobo-proof:exit_behavior:exit"]),
+        ("test_release_parity", "logging_behavior") => {
+            string_vec(&["kobo-proof:logging_behavior:logging"])
+        }
+        ("test_release_parity", "package_behavior") => {
+            string_vec(&["kobo-proof:package_behavior:package"])
+        }
+        ("test_release_parity", "platform_behavior") => {
+            string_vec(&["kobo-proof:platform_behavior:platform"])
+        }
+        ("test_release_parity", "install_behavior") => {
+            string_vec(&["kobo-proof:install_behavior:install"])
+        }
+        ("performance", "startup") => string_vec(&["kobo-proof:startup:measurement"]),
+        ("performance", "steady_state") => string_vec(&["kobo-proof:steady_state:measurement"]),
+        ("performance", "restart") => string_vec(&["kobo-proof:restart:measurement"]),
+        ("performance", "memory") => string_vec(&["kobo-proof:memory:measurement"]),
+        ("performance", "binary") => string_vec(&["kobo-proof:binary:measurement"]),
+        ("performance", "watch_tree_scaling") => {
+            string_vec(&["kobo-proof:watch_tree_scaling:measurement"])
+        }
+        ("performance", "event_burst_scaling") => {
+            string_vec(&["kobo-proof:event_burst_scaling:measurement"])
+        }
+        ("reviewer_report", "reviewer-a") => {
+            string_vec(&["kobo-proof:reviewer-a:independent-review"])
+        }
+        ("reviewer_report", "reviewer-b") => {
+            string_vec(&["kobo-proof:reviewer-b:independent-review"])
+        }
+        ("adapter_summary", "async_runtime") => string_vec(&[
+            "kobo-proof:adapter_summary:async_runtime",
+            "kobo-proof:async_runtime:cancel",
+            "kobo-proof:async_runtime:timer",
+        ]),
+        ("adapter_summary", subject) => {
+            string_vec(&[&format!("kobo-proof:adapter_summary:{subject}")])
+        }
+        ("platform_model", subject) => {
+            string_vec(&[&format!("kobo-proof:platform_model:{subject}")])
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn string_vec(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
 fn measurements_json(evidence_kind: &str, subject: &str) -> String {
     let measurement = if evidence_kind == "performance" {
         serde_json::json!([{
@@ -763,6 +943,8 @@ fn write_evidence(
         serde_json::to_string(evidence_command.output_match).unwrap()
     );
     let proves_target = command_proves_target(evidence_kind, subject);
+    let proof_markers = command_proof_markers(evidence_kind, subject);
+    let proof_markers_json = owned_json_string_array(&proof_markers);
     let covered_paths = json_string_array(subject_covered_paths(evidence_kind, subject));
     let covered_modules = json_string_array(proof_debt_modules());
     let measurements_json = measurements_json(evidence_kind, subject);
@@ -783,7 +965,7 @@ fn write_evidence(
   "covered_modules": [{covered_modules}],
   "tested_platforms": ["windows", "macos", "linux"],
   "commands": [
-    {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}", "proves": ["{proves_target}"]{cwd_json}{output_match_json}}}
+    {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}", "proves": ["{proves_target}"], "proof_markers": [{proof_markers_json}]{cwd_json}{output_match_json}}}
   ],
   "behavior_tests": ["watcher", "restart", "signal", "stdin", "path_filter"],
   "conformance_results": [
@@ -821,6 +1003,7 @@ fn write_complete_support_manifest(project: &TestProject) {
       "crates/supervisor/src/lib.rs",
       "crates/supervisor/src/policy.rs",
       "crates/supervisor/src/debounce.rs",
+      "crates/supervisor/tests/project_support_proof_markers.rs",
       "crates/platform/src/lib.rs",
       "crates/platform/src/windows.rs",
       "crates/platform/src/linux.rs",
@@ -840,6 +1023,7 @@ fn write_complete_support_manifest(project: &TestProject) {
       "crates/supervisor/src/lib.rs",
       "crates/supervisor/src/policy.rs",
       "crates/supervisor/src/debounce.rs",
+      "crates/supervisor/tests/project_support_proof_markers.rs",
       "crates/platform/src/lib.rs",
       "crates/platform/src/windows.rs",
       "crates/platform/src/linux.rs",
@@ -856,6 +1040,7 @@ fn write_complete_support_manifest(project: &TestProject) {
     "test_fixtures": [
       "crates/cli/tests/cli_flags.rs",
       "crates/supervisor/tests/restart.rs",
+      "crates/supervisor/tests/project_support_proof_markers.rs",
       "crates/platform/tests/platform.rs",
       "crates/signals/tests/signals.rs",
       "crates/config/tests/config.rs",
@@ -1625,6 +1810,53 @@ fn doctor_project_support_rejects_command_without_subject_proof_marker() {
         &value["project_support"]["blockers"].to_string(),
         "conformance_evidence evidence command missing proves entry for async_runtime",
         "evidence command must declare the exact subject it proves",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_unbound_transcript_proof_marker() {
+    let project = TestProject::new("doctor-project-support-unbound-transcript-proof");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let async_evidence_path = project.root.join(".kobo/evidence/async.json");
+    let mut async_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&async_evidence_path).expect("async evidence should read"),
+    )
+    .expect("async evidence should parse");
+    let transcript_path = project.root.join(
+        async_evidence["commands"][0]["transcript_path"]
+            .as_str()
+            .unwrap(),
+    );
+    let transcript_source =
+        fs::read_to_string(&transcript_path).expect("async transcript should read");
+    let edited_transcript = transcript_source.replace(
+        "kobo-proof:async_runtime:channel",
+        "removed-proof:async_runtime:channel",
+    );
+    fs::write(&transcript_path, &edited_transcript).expect("async transcript should write");
+    async_evidence["commands"][0]["output_hash"] =
+        serde_json::json!(stable_hash(&edited_transcript));
+    fs::write(
+        &async_evidence_path,
+        serde_json::to_string_pretty(&async_evidence).expect("async evidence should serialize"),
+    )
+    .expect("async evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "unbound transcript proof report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "conformance_evidence evidence transcript missing proof marker kobo-proof:async_runtime:channel",
+        "evidence proof markers must be present in the transcript artifact",
     );
 }
 

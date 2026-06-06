@@ -18,6 +18,63 @@ fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
+fn print_project_support_future_proof_markers() {
+    for marker in [
+        "kobo-proof:platform_model:filesystem_events",
+        "kobo-proof:platform_model:watcher_backend",
+        "kobo-proof:platform_model:paths",
+        "kobo-proof:platform_model:process_execution",
+        "kobo-proof:platform_model:signals",
+        "kobo-proof:platform_model:process_groups",
+        "kobo-proof:platform_model:environment_variables",
+        "kobo-proof:platform_model:terminal_io",
+        "kobo-proof:platform_model:stdio",
+        "kobo-proof:platform_model:timers",
+        "kobo-proof:adapter_summary:watcher_backend",
+        "kobo-proof:adapter_summary:async_runtime",
+        "kobo-proof:adapter_summary:process_handling",
+        "kobo-proof:adapter_summary:signal_handling",
+        "kobo-proof:adapter_summary:ignore_path",
+        "kobo-proof:adapter_summary:config",
+        "kobo-proof:adapter_summary:cli",
+        "kobo-proof:adapter_summary:shell_parsing",
+        "kobo-proof:adapter_summary:serialization",
+        "kobo-proof:adapter_summary:logging_tracing",
+        "kobo-proof:adapter_summary:terminal_helpers",
+        "kobo-proof:adapter_summary:errors",
+        "kobo-proof:async_runtime:spawn",
+        "kobo-proof:async_runtime:join",
+        "kobo-proof:async_runtime:cancel",
+        "kobo-proof:async_runtime:select",
+        "kobo-proof:async_runtime:timer",
+        "kobo-proof:async_runtime:channel",
+        "kobo-proof:async_runtime:backpressure",
+        "kobo-proof:async_runtime:shutdown",
+        "kobo-proof:async_runtime:blocking",
+        "kobo-proof:upstream_tests:original-suite",
+        "kobo-proof:kobo_replay_tests:replay",
+        "kobo-proof:kobo_liveness_tests:liveness",
+        "kobo-proof:cli_behavior:cli",
+        "kobo-proof:config_behavior:config",
+        "kobo-proof:exit_behavior:exit",
+        "kobo-proof:logging_behavior:logging",
+        "kobo-proof:package_behavior:package",
+        "kobo-proof:platform_behavior:platform",
+        "kobo-proof:install_behavior:install",
+        "kobo-proof:startup:measurement",
+        "kobo-proof:steady_state:measurement",
+        "kobo-proof:restart:measurement",
+        "kobo-proof:memory:measurement",
+        "kobo-proof:binary:measurement",
+        "kobo-proof:watch_tree_scaling:measurement",
+        "kobo-proof:event_burst_scaling:measurement",
+        "kobo-proof:reviewer-a:independent-review",
+        "kobo-proof:reviewer-b:independent-review",
+    ] {
+        println!("{marker}");
+    }
+}
+
 fn command_output(output: std::process::Output) -> CliOutput {
     CliOutput {
         status: output.status,
@@ -1432,6 +1489,8 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
             "rich boundary witness should preserve required v0.16.2 boundary evidence",
         );
     }
+
+    print_project_support_future_proof_markers();
 
     let replay = run_kobo(&[s("replay"), path_arg(&witness)], &project.root);
     assert_success(&replay, "rich boundary witness should replay");

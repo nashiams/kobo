@@ -60,6 +60,11 @@ struct ObservedCommand {
     stderr: String,
 }
 
+struct CommandTranscriptEvidence {
+    transcript: Value,
+    observed: Option<ObservedCommand>,
+}
+
 type CommandStreamHandle = thread::JoinHandle<std::io::Result<Vec<u8>>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1569,13 +1574,28 @@ fn validate_evidence_document(
     let mut has_kind_command = false;
     let mut has_subject_command = false;
     for command in commands.into_iter().flatten() {
+        let command_text = command["command"].as_str().unwrap_or("").trim();
+        let output_hash = command["output_hash"].as_str().unwrap_or("").trim();
+        let transcript_evidence =
+            validate_command_transcript(root, command, command_text, output_hash, label, blockers);
         if let Some(argv) = command_argv(command, label, blockers) {
             if evidence_command_proves_kind(expected_kind, &argv) {
                 has_kind_command = true;
-                has_subject_command |= evidence_command_declares_target(command, &target_name);
+                if evidence_command_declares_target(command, &target_name) {
+                    has_subject_command = true;
+                    if let Some(transcript_evidence) = transcript_evidence.as_ref() {
+                        validate_command_proof_markers(
+                            command,
+                            transcript_evidence,
+                            expected_kind,
+                            &target_name,
+                            label,
+                            blockers,
+                        );
+                    }
+                }
             }
         }
-        let command_text = command["command"].as_str().unwrap_or("").trim();
         if command_text.is_empty() {
             blockers.push(ProjectSupportBlocker::new(format!(
                 "{label} evidence command is empty"
@@ -1586,13 +1606,11 @@ fn validate_evidence_document(
                 "{label} evidence command did not pass"
             )));
         }
-        let output_hash = command["output_hash"].as_str().unwrap_or("").trim();
         if output_hash.is_empty() {
             blockers.push(ProjectSupportBlocker::new(format!(
                 "{label} evidence command missing output_hash"
             )));
         }
-        validate_command_transcript(root, command, command_text, output_hash, label, blockers);
     }
     if !has_kind_command {
         blockers.push(ProjectSupportBlocker::new(format!(
@@ -1624,15 +1642,15 @@ fn require_subject_coverage(
         return;
     };
     let covered_paths = string_set(&document["covered_paths"]);
-    let has_subject_path = required_paths.iter().any(|required_path| {
-        covered_paths
+    for required_path in required_paths {
+        let has_subject_path = covered_paths
             .iter()
-            .any(|path| path.contains(required_path))
-    });
-    if !has_subject_path {
-        blockers.push(ProjectSupportBlocker::new(format!(
-            "{label} evidence does not cover {expected_subject} subject path"
-        )));
+            .any(|path| path.contains(required_path));
+        if !has_subject_path {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence does not cover {expected_subject} subject path {required_path}"
+            )));
+        }
     }
 }
 
@@ -1656,35 +1674,33 @@ fn required_subject_paths(
         ("platform_model", "signals") => {
             Some(&["crates/signals/src", "crates/lib/src/sources/signal.rs"])
         }
-        ("platform_model", "process_groups") => Some(&["crates/supervisor/src", "process"]),
-        ("platform_model", "environment_variables") => Some(&["crates/cli/src", "env"]),
-        ("platform_model", "terminal_io") => Some(&["crates/cli/src", "terminal"]),
-        ("platform_model", "stdio") => Some(&["crates/cli/src", "stdio"]),
-        ("platform_model", "timers") => Some(&["crates/supervisor/src/debounce.rs", "timer"]),
-        ("adapter_summary", "watcher_backend") => Some(&["crates/lib/src/sources/fs.rs", "notify"]),
-        ("adapter_summary", "async_runtime") => Some(&["crates/lib/src/late_join_set.rs", "tokio"]),
-        ("adapter_summary", "process_handling") => Some(&["crates/supervisor/src", "process"]),
+        ("platform_model", "process_groups") => Some(&["crates/supervisor/src/command.rs"]),
+        ("platform_model", "environment_variables") => Some(&["crates/cli/src/config.rs"]),
+        ("platform_model", "terminal_io") => Some(&["crates/cli/src/lib.rs"]),
+        ("platform_model", "stdio") => Some(&["crates/cli/src/lib.rs"]),
+        ("platform_model", "timers") => Some(&["crates/supervisor/src/debounce.rs"]),
+        ("adapter_summary", "watcher_backend") => Some(&["crates/lib/src/sources/fs.rs"]),
+        ("adapter_summary", "async_runtime") => Some(&["crates/lib/src/late_join_set.rs"]),
+        ("adapter_summary", "process_handling") => Some(&["crates/supervisor/src/command.rs"]),
         ("adapter_summary", "signal_handling") => Some(&["crates/signals/src"]),
-        ("adapter_summary", "ignore_path") => Some(&["crates/ignore", "ignore-files"]),
+        ("adapter_summary", "ignore_path") => Some(&["crates/ignore"]),
         ("adapter_summary", "config") => Some(&["crates/cli/src/config.rs"]),
         ("adapter_summary", "cli") => Some(&["crates/cli/src/args"]),
         ("adapter_summary", "shell_parsing") => Some(&["crates/supervisor/src/command"]),
         ("adapter_summary", "serialization") => Some(&["crates/events/src/serde_formats.rs"]),
         ("adapter_summary", "logging_tracing") => Some(&["crates/cli/src/args/logging.rs"]),
         ("adapter_summary", "terminal_helpers") => Some(&["crates/cli/src"]),
-        ("adapter_summary", "errors") => {
-            Some(&["crates/lib/src/error", "crates/supervisor/src/errors.rs"])
-        }
+        ("adapter_summary", "errors") => Some(&["crates/supervisor/src/errors.rs"]),
         ("async_runtime", "async_runtime") | ("async_runtime", "async") => Some(&[
             "crates/lib/src/late_join_set.rs",
             "crates/lib/src/action/worker.rs",
         ]),
-        ("test_release_parity", "upstream_tests") | ("upstream_tests", "upstream") => {
-            Some(&["crates/events/tests", "crates/cli/tests", "tests"])
-        }
-        ("test_release_parity", "kobo_replay_tests") => Some(&["fixtures", "replay"]),
+        ("test_release_parity", "upstream_tests")
+        | ("upstream_tests", "upstream_tests")
+        | ("upstream_tests", "upstream") => Some(&["crates/cli/tests", "crates/supervisor/tests"]),
+        ("test_release_parity", "kobo_replay_tests") => Some(&["fixtures/save.json"]),
         ("test_release_parity", "kobo_liveness_tests") => {
-            Some(&["crates/supervisor/src/job", "liveness"])
+            Some(&["crates/supervisor/src/job/state.rs"])
         }
         ("test_release_parity", "cli_behavior") => Some(&["crates/cli/src"]),
         ("test_release_parity", "config_behavior") => Some(&["crates/cli/src/config.rs"]),
@@ -1695,14 +1711,12 @@ fn required_subject_paths(
         ("test_release_parity", "install_behavior") => Some(&["release.toml", "install"]),
         ("performance", "startup")
         | ("performance", "steady_state")
-        | ("performance", "restart") => {
-            Some(&["crates/lib/src/watchexec.rs", "crates/supervisor/src"])
-        }
+        | ("performance", "restart") => Some(&["crates/lib/src/watchexec.rs"]),
         ("performance", "memory") | ("performance", "binary") => {
             Some(&["Cargo.toml", "release.toml"])
         }
         ("performance", "watch_tree_scaling") | ("performance", "event_burst_scaling") => {
-            Some(&["crates/lib/src/sources/fs.rs", "crates/events/src"])
+            Some(&["crates/lib/src/sources/fs.rs"])
         }
         _ => None,
     }
@@ -1818,6 +1832,153 @@ fn evidence_command_declares_target(command: &Value, target_name: &str) -> bool 
     string_set(&command["proves"]).contains(target_name)
 }
 
+fn validate_command_proof_markers(
+    command: &Value,
+    transcript_evidence: &CommandTranscriptEvidence,
+    expected_kind: &str,
+    target_name: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let Some(required_markers) = required_subject_proof_markers(expected_kind, target_name) else {
+        return;
+    };
+    let declared_markers = string_set(&command["proof_markers"]);
+    for marker in required_markers {
+        if !declared_markers.contains(marker) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence command missing proof marker declaration {marker}"
+            )));
+            continue;
+        }
+        if !transcript_contains_marker(&transcript_evidence.transcript, marker) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence transcript missing proof marker {marker}"
+            )));
+        }
+        if !observed_contains_marker(transcript_evidence.observed.as_ref(), marker) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence command output missing proof marker {marker}"
+            )));
+        }
+    }
+}
+
+fn required_subject_proof_markers(
+    expected_kind: &str,
+    target_name: &str,
+) -> Option<&'static [&'static str]> {
+    match (expected_kind, target_name) {
+        ("async_runtime", "async_runtime") => Some(&[
+            "kobo-proof:async_runtime:spawn",
+            "kobo-proof:async_runtime:join",
+            "kobo-proof:async_runtime:cancel",
+            "kobo-proof:async_runtime:select",
+            "kobo-proof:async_runtime:timer",
+            "kobo-proof:async_runtime:channel",
+            "kobo-proof:async_runtime:backpressure",
+            "kobo-proof:async_runtime:shutdown",
+            "kobo-proof:async_runtime:blocking",
+        ]),
+        ("upstream_tests", "upstream_tests") | ("upstream_tests", "upstream") => {
+            Some(&["kobo-proof:upstream_tests:original-suite"])
+        }
+        ("test_release_parity", "upstream_tests") => {
+            Some(&["kobo-proof:upstream_tests:original-suite"])
+        }
+        ("test_release_parity", "kobo_replay_tests") => {
+            Some(&["kobo-proof:kobo_replay_tests:replay"])
+        }
+        ("test_release_parity", "kobo_liveness_tests") => {
+            Some(&["kobo-proof:kobo_liveness_tests:liveness"])
+        }
+        ("test_release_parity", "cli_behavior") => Some(&["kobo-proof:cli_behavior:cli"]),
+        ("test_release_parity", "config_behavior") => Some(&["kobo-proof:config_behavior:config"]),
+        ("test_release_parity", "exit_behavior") => Some(&["kobo-proof:exit_behavior:exit"]),
+        ("test_release_parity", "logging_behavior") => {
+            Some(&["kobo-proof:logging_behavior:logging"])
+        }
+        ("test_release_parity", "package_behavior") => {
+            Some(&["kobo-proof:package_behavior:package"])
+        }
+        ("test_release_parity", "platform_behavior") => {
+            Some(&["kobo-proof:platform_behavior:platform"])
+        }
+        ("test_release_parity", "install_behavior") => {
+            Some(&["kobo-proof:install_behavior:install"])
+        }
+        ("performance", "startup") => Some(&["kobo-proof:startup:measurement"]),
+        ("performance", "steady_state") => Some(&["kobo-proof:steady_state:measurement"]),
+        ("performance", "restart") => Some(&["kobo-proof:restart:measurement"]),
+        ("performance", "memory") => Some(&["kobo-proof:memory:measurement"]),
+        ("performance", "binary") => Some(&["kobo-proof:binary:measurement"]),
+        ("performance", "watch_tree_scaling") => {
+            Some(&["kobo-proof:watch_tree_scaling:measurement"])
+        }
+        ("performance", "event_burst_scaling") => {
+            Some(&["kobo-proof:event_burst_scaling:measurement"])
+        }
+        ("reviewer_report", "reviewer-a") => Some(&["kobo-proof:reviewer-a:independent-review"]),
+        ("reviewer_report", "reviewer-b") => Some(&["kobo-proof:reviewer-b:independent-review"]),
+        ("adapter_summary", "async_runtime") => Some(&[
+            "kobo-proof:adapter_summary:async_runtime",
+            "kobo-proof:async_runtime:cancel",
+            "kobo-proof:async_runtime:timer",
+        ]),
+        ("adapter_summary", target) => adapter_proof_marker(target),
+        ("platform_model", target) => platform_proof_marker(target),
+        _ => None,
+    }
+}
+
+fn adapter_proof_marker(target_name: &str) -> Option<&'static [&'static str]> {
+    match target_name {
+        "watcher_backend" => Some(&["kobo-proof:adapter_summary:watcher_backend"]),
+        "process_handling" => Some(&["kobo-proof:adapter_summary:process_handling"]),
+        "signal_handling" => Some(&["kobo-proof:adapter_summary:signal_handling"]),
+        "ignore_path" => Some(&["kobo-proof:adapter_summary:ignore_path"]),
+        "config" => Some(&["kobo-proof:adapter_summary:config"]),
+        "cli" => Some(&["kobo-proof:adapter_summary:cli"]),
+        "shell_parsing" => Some(&["kobo-proof:adapter_summary:shell_parsing"]),
+        "serialization" => Some(&["kobo-proof:adapter_summary:serialization"]),
+        "logging_tracing" => Some(&["kobo-proof:adapter_summary:logging_tracing"]),
+        "terminal_helpers" => Some(&["kobo-proof:adapter_summary:terminal_helpers"]),
+        "errors" => Some(&["kobo-proof:adapter_summary:errors"]),
+        _ => None,
+    }
+}
+
+fn platform_proof_marker(target_name: &str) -> Option<&'static [&'static str]> {
+    match target_name {
+        "filesystem_events" => Some(&["kobo-proof:platform_model:filesystem_events"]),
+        "watcher_backend" => Some(&["kobo-proof:platform_model:watcher_backend"]),
+        "paths" => Some(&["kobo-proof:platform_model:paths"]),
+        "process_execution" => Some(&["kobo-proof:platform_model:process_execution"]),
+        "signals" => Some(&["kobo-proof:platform_model:signals"]),
+        "process_groups" => Some(&["kobo-proof:platform_model:process_groups"]),
+        "environment_variables" => Some(&["kobo-proof:platform_model:environment_variables"]),
+        "terminal_io" => Some(&["kobo-proof:platform_model:terminal_io"]),
+        "stdio" => Some(&["kobo-proof:platform_model:stdio"]),
+        "timers" => Some(&["kobo-proof:platform_model:timers"]),
+        _ => None,
+    }
+}
+
+fn transcript_contains_marker(transcript: &Value, marker: &str) -> bool {
+    transcript["stdout"]
+        .as_str()
+        .is_some_and(|stdout| stdout.contains(marker))
+        || transcript["stderr"]
+            .as_str()
+            .is_some_and(|stderr| stderr.contains(marker))
+}
+
+fn observed_contains_marker(observed: Option<&ObservedCommand>, marker: &str) -> bool {
+    observed.is_some_and(|observed| {
+        observed.stdout.contains(marker) || observed.stderr.contains(marker)
+    })
+}
+
 fn is_cargo_subcommand(argv: &[String], subcommand: &str) -> bool {
     argv.first()
         .is_some_and(|program| is_program_named(program, "cargo"))
@@ -1857,12 +2018,12 @@ fn validate_command_transcript(
     expected_hash: &str,
     label: &str,
     blockers: &mut Vec<ProjectSupportBlocker>,
-) {
+) -> Option<CommandTranscriptEvidence> {
     let Some(transcript_path) = command["transcript_path"].as_str() else {
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence command missing transcript_path"
         )));
-        return;
+        return None;
     };
     let transcript_path = project_path(root, transcript_path);
     if !transcript_path.is_file() {
@@ -1870,21 +2031,21 @@ fn validate_command_transcript(
             "{label} evidence transcript does not exist: {}",
             transcript_path.display()
         )));
-        return;
+        return None;
     }
     let Ok(transcript_source) = std::fs::read_to_string(&transcript_path) else {
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence transcript is not readable: {}",
             transcript_path.display()
         )));
-        return;
+        return None;
     };
     if transcript_source.trim().is_empty() {
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence transcript is empty: {}",
             transcript_path.display()
         )));
-        return;
+        return None;
     }
     if stable_hash(&transcript_source) != expected_hash {
         blockers.push(ProjectSupportBlocker::new(format!(
@@ -1902,11 +2063,18 @@ fn validate_command_transcript(
                 output_match,
                 label,
                 blockers,
-            )
+            );
+            Some(CommandTranscriptEvidence {
+                transcript,
+                observed,
+            })
         }
-        Err(error) => blockers.push(ProjectSupportBlocker::new(format!(
-            "{label} evidence transcript is not valid JSON: {error}"
-        ))),
+        Err(error) => {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence transcript is not valid JSON: {error}"
+            )));
+            None
+        }
     }
 }
 

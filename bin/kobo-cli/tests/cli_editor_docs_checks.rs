@@ -1173,3 +1173,36 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
         );
     }
 }
+
+#[test]
+fn public_docs_use_supported_sim_command_shapes() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).expect("README should read");
+    let migration = std::fs::read_to_string(repo_root.join("docs/migration-guide.md"))
+        .expect("migration guide should read");
+    let combined = format!("{readme}\n{migration}");
+
+    for invalid in [
+        "kobo test --sim quick\n",
+        "kobo test --sim quick --witness-dir .kobo/witnesses",
+        "kobo test --sim deep --profile async\n",
+        "kobo inspect --sim --harness\n",
+    ] {
+        assert_not_contains(
+            &combined,
+            invalid,
+            "public docs should include the required FILE argument in command examples",
+        );
+    }
+    for expected in [
+        "kobo test --sim quick src/main.kobo --witness-dir .kobo/witnesses",
+        "kobo test --sim deep --profile async src/main.kobo",
+        "kobo inspect --sim --harness src/main.kobo",
+    ] {
+        assert_contains(
+            &combined,
+            expected,
+            "public docs should show copy-paste valid scoped command examples",
+        );
+    }
+}

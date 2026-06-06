@@ -61,10 +61,10 @@ Pin backend-native controls only when the adapter can represent the requested
 knob:
 
 ```text
-kobo test --sim quick
-kobo test --sim deep --profile async
-kobo test --sim exhaustive --profile sync --backend loom --scheduler exhaustive
-kobo inspect --sim --harness
+kobo test --sim quick src/main.kobo
+kobo test --sim deep --profile async src/main.kobo
+kobo test --sim exhaustive --profile sync --backend loom --scheduler exhaustive src/main.kobo
+kobo inspect --sim --harness src/main.kobo
 ```
 
 Unsupported backend-native knobs such as Shuttle PCT scheduling remain visible
@@ -76,7 +76,7 @@ Recommended migration path:
 1. run `kobo check` and fix high-signal lifecycle diagnostics first;
 2. declare or infer lifecycle obligations around one ward-sized risk area;
 3. add ports and recordings for external boundaries;
-4. run `kobo test --sim quick --witness-dir .kobo/witnesses`;
+4. run `kobo test --sim quick src/main.kobo --witness-dir .kobo/witnesses`;
 5. replay any `.kwit` witness before relying on it;
 6. inspect migration debt with `kobo debt --summary` or `kobo debt --json`;
 7. use `kobo debt --watch` while tightening a scoped area;

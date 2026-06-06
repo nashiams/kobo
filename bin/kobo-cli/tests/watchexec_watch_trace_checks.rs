@@ -2,6 +2,8 @@ mod cli_test_support;
 
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::thread;
 use std::time::Duration;
 
 use cli_test_support::{
@@ -14,6 +16,43 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
+}
+
+fn command_output(output: std::process::Output) -> CliOutput {
+    CliOutput {
+        status: output.status,
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+fn wait_child_output(mut child: std::process::Child, timeout: Duration) -> CliOutput {
+    let started = std::time::Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .expect("watch process status should be readable")
+            .is_some()
+        {
+            return command_output(
+                child
+                    .wait_with_output()
+                    .expect("watch process output should read"),
+            );
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .expect("timed-out watch process output should read");
+            panic!(
+                "watch process did not exit before timeout\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn copy_watchexec_trace(project: &TestProject) -> std::path::PathBuf {
@@ -72,6 +111,15 @@ fn trace_with_events(events: &str) -> String {
       "replay_confidence": "partial",
       "source_map_anchor": "events[]",
       "cargo_features": ["default"]
+    }}
+  ],
+  "external_comparisons": [
+    {{
+      "implementation": "watchexec",
+      "behavior": "coalesced filesystem events",
+      "disposition": "replay_fixture",
+      "reason": "normalized debounce batches preserve duplicate raw events",
+      "evidence_anchor": "events[]"
     }}
   ],
   "events": {events}
@@ -162,6 +210,125 @@ fn valid_watchexec_events() -> &'static str {
 }
 
 #[test]
+fn live_watch_state_imports_to_replayable_trace_witness() {
+    let project = TestProject::new("watchexec-live-watch-state");
+    let main = project.main_file("mod service;\nfn main() {}\n");
+    let service = project.write("src/service.kobo", "fn helper() {}\n");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_kobo"))
+        .arg("watch")
+        .arg("--simple")
+        .arg(&main)
+        .env("KOBO_WATCH_ONCE", "1")
+        .current_dir(&project.root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("watch process should launch");
+
+    thread::sleep(Duration::from_millis(500));
+    fs::write(&service, "fn helper() { let value = 1; }\n")
+        .expect("watched service module should be writable");
+    let watch = wait_child_output(child, Duration::from_secs(8));
+    assert_success(&watch, "live watch should produce source watch state");
+
+    let state_path = project.root.join(".kobo/watch/source-watch.json");
+    assert!(
+        state_path.is_file(),
+        "live watch should persist source-watch.json"
+    );
+    let witness = project.root.join(".kobo/witnesses/live-watch.kwit");
+    let import = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&state_path),
+            s("--witness-out"),
+            path_arg(&witness),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &import,
+        "live source watch state should import into a replayable witness",
+    );
+    let witness_json: Value = serde_json::from_str(
+        &fs::read_to_string(&witness).expect("live watch witness should read"),
+    )
+    .expect("live watch witness should parse");
+    assert_eq!(witness_json["source"]["kind"], "source_watch_state");
+    assert_contains(
+        &witness_json["normalized"]["event_batches"].to_string(),
+        "src/service.kobo",
+        "live watch witness should preserve observed changed path",
+    );
+    assert_contains(
+        &witness_json["external_comparisons"].to_string(),
+        "watchfiles",
+        "live watch witness should carry external comparison evidence",
+    );
+    assert_contains(
+        &witness_json["external_comparisons"].to_string(),
+        "go-air",
+        "live watch witness should not drop selected external boundary classifications",
+    );
+
+    let replay = run_kobo(&[s("replay"), path_arg(&witness)], &project.root);
+    assert_success(&replay, "live watch witness should replay");
+}
+
+#[test]
+fn watchexec_policy_slice_checks_and_exports_as_mixed_cargo_project() {
+    let project = TestProject::new("watchexec-policy-slice");
+    let fixture = TestProject::repo_root()
+        .join("tests")
+        .join("fixtures")
+        .join("watchexec_supervisor_policy")
+        .join("supervisor_policy.kobo");
+    let source = fs::read_to_string(&fixture).unwrap_or_else(|error| {
+        panic!(
+            "fixture `{}` should be readable: {error}",
+            fixture.display()
+        )
+    });
+    let policy = project.write("src/supervisor_policy.kobo", &source);
+
+    let check = run_kobo(&[s("check"), path_arg(&policy)], &project.root);
+    assert_success(&check, "Kobo-owned supervisor policy slice should check");
+
+    let cargo_dir = project.root.join("target/policy-clean");
+    let inspect = run_kobo(
+        &[
+            s("inspect"),
+            s("--clean"),
+            s("--cargo"),
+            path_arg(&cargo_dir),
+            path_arg(&policy),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &inspect,
+        "Kobo-owned policy slice should export a mixed Cargo project",
+    );
+    let generated = fs::read_to_string(cargo_dir.join("src/main.rs"))
+        .expect("generated Rust policy slice should read");
+    for expected in [
+        "RawEvent",
+        "RestartPolicy",
+        "SupervisorState",
+        "rust_notify_adapter_emit",
+        "rust_process_adapter_apply",
+    ] {
+        assert_contains(
+            &generated,
+            expected,
+            "generated Rust should preserve reviewable policy and adapter names",
+        );
+    }
+}
+
+#[test]
 fn watch_trace_import_emits_replayable_witness_with_adapter_contracts() {
     let project = TestProject::new("watchexec-trace-import");
     let trace = copy_watchexec_trace(&project);
@@ -193,6 +360,16 @@ fn watch_trace_import_emits_replayable_witness_with_adapter_contracts() {
     assert_eq!(
         witness_json["adapter_summaries"].as_array().map(Vec::len),
         Some(3)
+    );
+    assert_contains(
+        &witness_json["external_comparisons"].to_string(),
+        "chokidar",
+        "trace witness should preserve selected external comparison evidence",
+    );
+    assert_contains(
+        &witness_json["external_comparisons"].to_string(),
+        "atomic write",
+        "comparison evidence should name mature watcher behavior",
     );
     assert_eq!(
         witness_json["normalized"]["event_batches"]
@@ -320,7 +497,8 @@ fn watch_trace_import_requires_fresh_watcher_process_and_time_summaries() {
       "modeled_facts": ["event_kind"],
       "unsupported_guarantees": ["global_total_order"],
       "replay_confidence": "metadata-only",
-      "source_map_anchor": "events[]"
+      "source_map_anchor": "events[]",
+      "cargo_features": ["default"]
     },
     {
       "kind": "process",
@@ -331,7 +509,8 @@ fn watch_trace_import_requires_fresh_watcher_process_and_time_summaries() {
       "modeled_facts": ["child_id"],
       "unsupported_guarantees": ["platform_signal_equivalence"],
       "replay_confidence": "modelled",
-      "source_map_anchor": "events[]"
+      "source_map_anchor": "events[]",
+      "cargo_features": ["default"]
     }
   ],
   "events": []
@@ -368,6 +547,107 @@ fn watch_trace_import_requires_fresh_watcher_process_and_time_summaries() {
         &stale.combined(),
         "stale adapter summary: watcher",
         "stale summaries should name the stale contract kind",
+    );
+}
+
+#[test]
+fn watch_trace_import_requires_external_comparison_evidence() {
+    let project = TestProject::new("watchexec-trace-external-comparison");
+    let missing_comparisons = project.write(
+        "traces/missing_comparisons.json",
+        &trace_with_events(valid_watchexec_events()).replace(
+            r#",
+  "external_comparisons": [
+    {
+      "implementation": "watchexec",
+      "behavior": "coalesced filesystem events",
+      "disposition": "replay_fixture",
+      "reason": "normalized debounce batches preserve duplicate raw events",
+      "evidence_anchor": "events[]"
+    }
+  ]"#,
+            "",
+        ),
+    );
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&missing_comparisons),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "missing external implementation comparison evidence should fail import",
+    );
+    assert_contains(
+        &output.combined(),
+        "missing external_comparisons",
+        "trace import should require explicit external comparison evidence",
+    );
+}
+
+#[test]
+fn watch_trace_import_requires_adapter_cargo_feature_evidence() {
+    let project = TestProject::new("watchexec-trace-feature-evidence");
+    let missing_features = project.write(
+        "traces/missing_features.json",
+        r#"{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": [
+    {
+      "kind": "watcher",
+      "name": "notify-like",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["raw_event"],
+      "modeled_facts": ["event_kind"],
+      "unsupported_guarantees": ["global_total_order"],
+      "replay_confidence": "metadata-only",
+      "source_map_anchor": "events[]"
+    },
+    {
+      "kind": "process",
+      "name": "process-supervisor",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["spawn"],
+      "modeled_facts": ["child_id"],
+      "unsupported_guarantees": ["platform_signal_equivalence"],
+      "replay_confidence": "modelled",
+      "source_map_anchor": "events[]",
+      "cargo_features": ["default"]
+    },
+    {
+      "kind": "time",
+      "name": "logical-debounce",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["timer_fire"],
+      "modeled_facts": ["window"],
+      "unsupported_guarantees": ["real_os_time_determinism"],
+      "replay_confidence": "partial",
+      "source_map_anchor": "events[]",
+      "cargo_features": ["default"]
+    }
+  ],
+  "events": []
+}"#,
+    );
+    let output = run_kobo(
+        &[s("watch"), s("--import-trace"), path_arg(&missing_features)],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "missing adapter Cargo feature evidence should fail import",
+    );
+    assert_contains(
+        &output.combined(),
+        "missing adapter cargo_features: watcher",
+        "adapter summaries should require feature compatibility evidence",
     );
 }
 

@@ -308,8 +308,10 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 );
                 return debt::cmd_debt_cargo(&cargo_root, json, summary);
             }
-            let Some(file) = file else {
-                anyhow::bail!("kobo debt requires FILE or --cargo DIR");
+            let file = if let Some(file) = file {
+                file
+            } else {
+                debt::default_debt_file()?
             };
             if casts {
                 anyhow::ensure!(

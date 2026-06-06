@@ -39,6 +39,57 @@
       "cargo_features": ["default"]
     }
   ],
+  "external_comparisons": [
+    {
+      "implementation": "watchexec",
+      "behavior": "coalesced filesystem events",
+      "disposition": "replay_fixture",
+      "reason": "normalized debounce batches preserve duplicate raw events before restart",
+      "evidence_anchor": "events[]"
+    },
+    {
+      "implementation": "nodemon",
+      "behavior": "delayed restart after bursty writes",
+      "disposition": "semantic_rule",
+      "reason": "one restart is emitted after each logical debounce window",
+      "evidence_anchor": "normalized.debounce_windows"
+    },
+    {
+      "implementation": "chokidar",
+      "behavior": "atomic write delete-plus-add normalization",
+      "disposition": "debt_item",
+      "reason": "this trace records duplicate/coalesced modify events, while delete-plus-add atomic write normalization remains a named follow-up",
+      "evidence_anchor": "external_comparisons[]"
+    },
+    {
+      "implementation": "watchdog",
+      "behavior": "immutable filesystem event facts",
+      "disposition": "formal_adapter_contract",
+      "reason": "watcher summaries require event kind, paths, ordering, duplicates, unsupported guarantees, and Cargo feature evidence",
+      "evidence_anchor": "adapter_summaries[0]"
+    },
+    {
+      "implementation": "watchfiles",
+      "behavior": "debounced sets of file changes",
+      "disposition": "replay_fixture",
+      "reason": "window membership is replayed as a set of modeled paths for each debounce window",
+      "evidence_anchor": "normalized.debounce_windows"
+    },
+    {
+      "implementation": "Watchman",
+      "behavior": "conservative uncertain-file startup behavior",
+      "disposition": "explicit_non_goal",
+      "reason": "this dogfood trace starts after watcher setup and does not claim root-settle or startup recrawl parity",
+      "evidence_anchor": "trace_import"
+    },
+    {
+      "implementation": "go-air",
+      "behavior": "build command and run command separation",
+      "disposition": "debt_item",
+      "reason": "process summaries model command identity and child lifecycle, while pre-build and post-exit command phases remain outside this slice",
+      "evidence_anchor": "adapter_summaries[1]"
+    }
+  ],
   "events": [
     {
       "kind": "watcher_event",

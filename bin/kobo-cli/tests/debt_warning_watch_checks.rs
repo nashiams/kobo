@@ -126,6 +126,107 @@ fn debt_outputs_tiered_summary_migration_estimate_json_and_summary() {
 }
 
 #[test]
+fn bare_debt_commands_use_project_default_source() {
+    let project = TestProject::new("model-bare-debt-default-source");
+    project.main_file("fn main() {}\n");
+
+    let summary = run_kobo(&[s("debt"), s("--summary")], &project.root);
+    assert_success(
+        &summary,
+        "bare debt --summary should use the project default source",
+    );
+    assert_eq!(
+        summary.stdout.lines().count(),
+        1,
+        "bare debt summary should stay copy-paste friendly",
+    );
+    assert_contains(
+        &summary.stdout,
+        "migration estimate",
+        "bare debt summary should run the same report as file-scoped debt",
+    );
+
+    let json = run_kobo(&[s("debt"), s("--json")], &project.root);
+    assert_success(
+        &json,
+        "bare debt --json should use the project default source",
+    );
+    let value: Value = serde_json::from_str(&json.stdout).expect("bare debt JSON should parse");
+    assert_eq!(value["schema_version"], 1);
+
+    let watch = run_kobo(&[s("debt"), s("--watch"), s("--summary")], &project.root);
+    assert_success(
+        &watch,
+        "bare debt --watch should use the project default source",
+    );
+    assert_contains(
+        &watch.stdout,
+        "debt watch scoped-persist-reload",
+        "bare debt watch should keep the scoped watch evidence shape",
+    );
+
+    let watch_dir = project.root.join(".kobo/watch");
+    std::fs::create_dir_all(&watch_dir).expect("watch state directory should create");
+    std::fs::write(
+        watch_dir.join("source-watch.json"),
+        r#"{
+  "schema_version": 1,
+  "mode": "source_watch_state",
+  "watcher_evidence": "metadata-only",
+  "event_batches": [
+    {
+      "replay_grade": "partial",
+      "events": [
+        {
+          "evidence_grade": "metadata_only"
+        }
+      ]
+    }
+  ],
+  "debounce_windows": [
+    {
+      "timer_evidence": "metadata-only",
+      "replay_grade": "partial"
+    }
+  ],
+  "child_lifecycle_obligations": [
+    {
+      "command_kind": "in_process_check",
+      "resolution": "in_process_rerun_finished"
+    }
+  ]
+}"#,
+    )
+    .expect("watch state should write");
+
+    let adapter_summary = run_kobo(&[s("debt"), s("--summary")], &project.root);
+    assert_success(
+        &adapter_summary,
+        "debt --summary should include adapter debt for persisted watch evidence",
+    );
+    assert_contains(
+        &adapter_summary.stdout,
+        "adapter debt:",
+        "summary should include adapter debt by subsystem",
+    );
+    assert_contains(
+        &adapter_summary.stdout,
+        "watcher=acceptable",
+        "watcher metadata-only evidence should be visible as acceptable adapter debt",
+    );
+    assert_contains(
+        &adapter_summary.stdout,
+        "process=acceptable",
+        "in-process supervisor evidence should be visible by subsystem",
+    );
+    assert_contains(
+        &adapter_summary.stdout,
+        "time=acceptable",
+        "debounce timer evidence should be visible by subsystem",
+    );
+}
+
+#[test]
 fn debt_watch_mode_reports_precursor_warning_changes() {
     let root = workspace_root();
     let file = fixture("tests/ui/K0080_P1_node.kobo");

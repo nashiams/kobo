@@ -40,6 +40,11 @@ struct AdapterSummary {
 }
 
 #[derive(Clone)]
+struct ExternalComparison {
+    json: Value,
+}
+
+#[derive(Clone)]
 struct WatcherTraceEvent {
     event_kind: String,
     path: String,
@@ -66,25 +71,36 @@ struct NormalizedTrace {
     json: Value,
 }
 
+struct TraceImportInput {
+    source_kind: &'static str,
+    json: Value,
+}
+
 pub(super) fn cmd_import_trace(
     trace_path: &Path,
     witness_out: Option<&Path>,
 ) -> anyhow::Result<()> {
-    let trace = read_trace(trace_path)?;
-    let adapter_summaries = parse_adapter_summaries(&trace)?;
-    let raw_events = raw_events(&trace)?;
+    let trace = trace_import_input(read_trace(trace_path)?)?;
+    let adapter_summaries = parse_adapter_summaries(&trace.json)?;
+    let external_comparisons = parse_external_comparisons(&trace.json)?;
+    let raw_events = raw_events(&trace.json)?;
     let normalized = normalize_trace(&raw_events)?;
     let raw_event_hash = stable_values_hash(&raw_events)?;
     let normalized_hash = stable_value_hash(&normalized.json)?;
     let adapter_summary_hash = stable_values_hash(&adapter_summary_json(&adapter_summaries))?;
+    let external_comparison_hash =
+        stable_values_hash(&external_comparison_json(&external_comparisons))?;
     let witness = witness_json(
         trace_path,
+        trace.source_kind,
         &adapter_summaries,
+        &external_comparisons,
         raw_events,
         &normalized,
         &raw_event_hash,
         &normalized_hash,
         &adapter_summary_hash,
+        &external_comparison_hash,
     );
     let output_path = witness_output_path(trace_path, witness_out)?;
     write_witness(&output_path, &witness)?;
@@ -102,18 +118,21 @@ pub(super) fn replay_watch_trace_witness(
     error_format: ErrorFormat,
 ) -> anyhow::Result<()> {
     let adapter_summaries = parse_adapter_summaries(witness)?;
+    let external_comparisons = parse_external_comparisons(witness)?;
     let raw_events = raw_events(witness)?;
     let normalized = normalize_trace(&raw_events)?;
     let expected = json!({
         "raw_event_hash": stable_values_hash(&raw_events)?,
         "normalized_hash": stable_value_hash(&normalized.json)?,
         "adapter_summary_hash": stable_values_hash(&adapter_summary_json(&adapter_summaries))?,
+        "external_comparison_hash": stable_values_hash(&external_comparison_json(&external_comparisons))?,
         "normalized": normalized.json,
     });
     let observed = json!({
         "raw_event_hash": witness["raw_event_hash"].clone(),
         "normalized_hash": witness["normalized_hash"].clone(),
         "adapter_summary_hash": witness["adapter_summary_hash"].clone(),
+        "external_comparison_hash": witness["external_comparison_hash"].clone(),
         "normalized": witness["normalized"].clone(),
     });
     if expected != observed {
@@ -136,6 +155,250 @@ fn read_trace(trace_path: &Path) -> anyhow::Result<Value> {
         .with_context(|| format!("failed to read watch trace {}", trace_path.display()))?;
     serde_json::from_str(&source)
         .with_context(|| format!("failed to parse watch trace {}", trace_path.display()))
+}
+
+fn trace_import_input(value: Value) -> anyhow::Result<TraceImportInput> {
+    if value["mode"].as_str() == Some("source_watch_state") {
+        return Ok(TraceImportInput {
+            source_kind: "source_watch_state",
+            json: source_watch_state_trace(value)?,
+        });
+    }
+    Ok(TraceImportInput {
+        source_kind: "watch_trace",
+        json: value,
+    })
+}
+
+fn source_watch_state_trace(value: Value) -> anyhow::Result<Value> {
+    Ok(json!({
+        "schema_version": 1,
+        "mode": "watch_trace_input",
+        "adapter_summaries": source_watch_state_adapter_summaries(),
+        "external_comparisons": source_watch_state_external_comparisons(),
+        "events": source_watch_state_events(&value)?,
+    }))
+}
+
+fn source_watch_state_adapter_summaries() -> Vec<Value> {
+    vec![
+        json!({
+            "kind": "watcher",
+            "name": "kobo-source-watch-state",
+            "schema_version": 1,
+            "version_range": "^1",
+            "operations": ["poll_snapshot", "normalize_event_batch"],
+            "modeled_facts": ["event_kind", "paths", "ordering", "duplicates", "evidence_grade"],
+            "unsupported_guarantees": ["native_backend_order", "platform_specific_raw_event_identity"],
+            "replay_confidence": "metadata-only",
+            "source_map_anchor": "event_batches[]",
+            "cargo_features": ["default"],
+        }),
+        json!({
+            "kind": "process",
+            "name": "kobo-in-process-supervisor",
+            "schema_version": 1,
+            "version_range": "^1",
+            "operations": ["rerun_start", "rerun_finish"],
+            "modeled_facts": ["command_kind", "resolution", "diagnostic_count"],
+            "unsupported_guarantees": ["os_process_group_signal_equivalence"],
+            "replay_confidence": "modelled",
+            "source_map_anchor": "child_lifecycle_obligations[]",
+            "cargo_features": ["default"],
+        }),
+        json!({
+            "kind": "time",
+            "name": "kobo-logical-debounce-window",
+            "schema_version": 1,
+            "version_range": "^1",
+            "operations": ["timer_create", "timer_cancel", "timer_fire"],
+            "modeled_facts": ["window", "membership", "fire_order"],
+            "unsupported_guarantees": ["real_os_time_determinism"],
+            "replay_confidence": "partial",
+            "source_map_anchor": "debounce_windows[]",
+            "cargo_features": ["default"],
+        }),
+    ]
+}
+
+fn source_watch_state_external_comparisons() -> Vec<Value> {
+    vec![
+        json!({
+            "implementation": "watchexec",
+            "behavior": "coalesced filesystem events",
+            "disposition": "replay_fixture",
+            "reason": "source-watch state imports normalized event batches and duplicate markers from the live watch loop",
+            "evidence_anchor": "event_batches[]",
+        }),
+        json!({
+            "implementation": "watchfiles",
+            "behavior": "debounced sets of file changes",
+            "disposition": "semantic_rule",
+            "reason": "each imported debounce window preserves event membership before restart decisions replay",
+            "evidence_anchor": "debounce_windows[]",
+        }),
+        json!({
+            "implementation": "nodemon",
+            "behavior": "delayed restart after bursty writes",
+            "disposition": "semantic_rule",
+            "reason": "the live watch state records one restart decision per logical debounce window",
+            "evidence_anchor": "restart_decisions[]",
+        }),
+        json!({
+            "implementation": "chokidar",
+            "behavior": "atomic write delete-plus-add normalization",
+            "disposition": "debt_item",
+            "reason": "source-watch state preserves raw changed paths and duplicate/coalesced markers, while atomic delete-plus-add folding remains explicit debt",
+            "evidence_anchor": "event_batches[]",
+        }),
+        json!({
+            "implementation": "watchdog",
+            "behavior": "immutable filesystem event facts",
+            "disposition": "formal_adapter_contract",
+            "reason": "imported watcher summaries require event kind, path facts, ordering limits, duplicate markers, unsupported guarantees, and Cargo feature evidence",
+            "evidence_anchor": "adapter_summaries[0]",
+        }),
+        json!({
+            "implementation": "Watchman",
+            "behavior": "conservative uncertain-file startup behavior",
+            "disposition": "explicit_non_goal",
+            "reason": "source-watch imports start after Kobo's project scope is established and do not claim root-settle or startup recrawl parity",
+            "evidence_anchor": "source_scope",
+        }),
+        json!({
+            "implementation": "go-air",
+            "behavior": "build command and run command separation",
+            "disposition": "debt_item",
+            "reason": "source-watch records rerun lifecycle facts, while pre-build and post-exit command phases remain outside this dogfood slice",
+            "evidence_anchor": "child_lifecycle_obligations[]",
+        }),
+    ]
+}
+
+fn source_watch_state_events(value: &Value) -> anyhow::Result<Vec<Value>> {
+    let mut events = Vec::new();
+    append_source_watch_events(value, &mut events)?;
+    append_source_watch_timers(value, &mut events);
+    append_source_watch_restart_decisions(value, &mut events)?;
+    append_source_watch_child_lifecycle(value, &mut events)?;
+    Ok(events)
+}
+
+fn append_source_watch_events(value: &Value, events: &mut Vec<Value>) -> anyhow::Result<()> {
+    let batches = value["event_batches"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing source watch event_batches"))?;
+    for (window_index, batch) in batches.iter().enumerate() {
+        let window = (window_index + 1) as u64;
+        for event in batch["events"].as_array().into_iter().flatten() {
+            events.push(json!({
+                "kind": "watcher_event",
+                "event_kind": required_str(event, "kind")?,
+                "path": source_watch_event_path(event)?,
+                "window": window,
+                "duplicate_marker": event["duplicate_or_coalesced"].as_str().unwrap_or("unique"),
+                "evidence_grade": event["evidence_grade"].as_str().unwrap_or("metadata_only"),
+                "source_batch": batch["id"].clone(),
+                "source_event": event,
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn append_source_watch_timers(value: &Value, events: &mut Vec<Value>) {
+    for (window_index, window) in value["debounce_windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if window["fired"].as_bool().unwrap_or(true) {
+            events.push(json!({
+                "kind": "timer_fired",
+                "window": (window_index + 1) as u64,
+                "timer_evidence": window["timer_evidence"].clone(),
+                "source_window": window,
+            }));
+        }
+    }
+}
+
+fn append_source_watch_restart_decisions(
+    value: &Value,
+    events: &mut Vec<Value>,
+) -> anyhow::Result<()> {
+    for decision in value["restart_decisions"].as_array().into_iter().flatten() {
+        events.push(json!({
+            "kind": "restart_decision",
+            "policy_branch": required_str(decision, "policy_branch")?,
+            "action": required_str(decision, "action")?,
+            "path": restart_decision_path(decision),
+            "source_scope": decision["source_scope"].as_str().unwrap_or("source_watch_state"),
+            "outcome": decision["outcome"].clone(),
+            "diagnostic_count": decision["diagnostic_count"].clone(),
+            "source_event": decision,
+        }));
+    }
+    Ok(())
+}
+
+fn append_source_watch_child_lifecycle(
+    value: &Value,
+    events: &mut Vec<Value>,
+) -> anyhow::Result<()> {
+    for (index, lifecycle) in value["child_lifecycle_obligations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if lifecycle["resolution"].as_str() != Some("in_process_rerun_finished") {
+            continue;
+        }
+        let child_id = format!("in-process-rerun-{}", index + 1);
+        let command = lifecycle["command_kind"]
+            .as_str()
+            .unwrap_or("in_process_rerun");
+        events.push(json!({
+            "kind": "child_start",
+            "child_id": child_id,
+            "policy": "exclusive",
+            "command": command,
+            "execution_mode": "in_process",
+            "source_event": lifecycle,
+        }));
+        events.push(json!({
+            "kind": "child_exit",
+            "child_id": format!("in-process-rerun-{}", index + 1),
+            "exit_code": 0,
+            "execution_mode": "in_process",
+            "source_event": lifecycle,
+        }));
+    }
+    Ok(())
+}
+
+fn source_watch_event_path(event: &Value) -> anyhow::Result<String> {
+    let paths = event["paths"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing source watch event paths"))?;
+    let selected = paths
+        .iter()
+        .find(|path| path["role"].as_str() == Some("source_path"))
+        .or_else(|| paths.first())
+        .ok_or_else(|| anyhow::anyhow!("empty source watch event paths"))?;
+    Ok(required_str(selected, "path")?.to_owned())
+}
+
+fn restart_decision_path(decision: &Value) -> String {
+    decision["selected_by"]
+        .as_array()
+        .and_then(|paths| paths.first())
+        .and_then(Value::as_str)
+        .or_else(|| decision["source_scope"].as_str())
+        .unwrap_or("source_watch_state")
+        .to_owned()
 }
 
 fn parse_adapter_summaries(value: &Value) -> anyhow::Result<Vec<AdapterSummary>> {
@@ -167,6 +430,7 @@ fn parse_adapter_summary(summary: &Value) -> anyhow::Result<AdapterSummary> {
     require_non_empty_array(summary, "unsupported_guarantees", kind)?;
     require_non_empty_str(summary, "replay_confidence", kind)?;
     require_non_empty_str(summary, "source_map_anchor", kind)?;
+    require_non_empty_array(summary, "cargo_features", kind)?;
     Ok(AdapterSummary {
         kind,
         json: summary.clone(),
@@ -204,6 +468,51 @@ fn require_non_empty_array(value: &Value, field: &str, kind: AdapterKind) -> any
         anyhow::bail!("empty adapter {field}: {}", kind.as_str());
     }
     Ok(())
+}
+
+fn parse_external_comparisons(value: &Value) -> anyhow::Result<Vec<ExternalComparison>> {
+    let comparisons = value["external_comparisons"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing external_comparisons"))?;
+    if comparisons.is_empty() {
+        anyhow::bail!("empty external_comparisons");
+    }
+    comparisons.iter().map(parse_external_comparison).collect()
+}
+
+fn parse_external_comparison(value: &Value) -> anyhow::Result<ExternalComparison> {
+    require_comparison_str(value, "implementation")?;
+    require_comparison_str(value, "behavior")?;
+    let disposition = require_comparison_str(value, "disposition")?;
+    if !is_known_comparison_disposition(disposition) {
+        anyhow::bail!("unknown external comparison disposition: {disposition}");
+    }
+    require_comparison_str(value, "reason")?;
+    require_comparison_str(value, "evidence_anchor")?;
+    Ok(ExternalComparison {
+        json: value.clone(),
+    })
+}
+
+fn require_comparison_str<'a>(value: &'a Value, field: &str) -> anyhow::Result<&'a str> {
+    let text = value[field]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing external comparison {field}"))?;
+    if text.trim().is_empty() {
+        anyhow::bail!("empty external comparison {field}");
+    }
+    Ok(text)
+}
+
+fn is_known_comparison_disposition(disposition: &str) -> bool {
+    matches!(
+        disposition,
+        "semantic_rule"
+            | "formal_adapter_contract"
+            | "replay_fixture"
+            | "debt_item"
+            | "explicit_non_goal"
+    )
 }
 
 fn raw_events(value: &Value) -> anyhow::Result<Vec<Value>> {
@@ -473,18 +782,21 @@ fn replay_grade_for_windows(windows: &BTreeMap<u64, WindowTrace>) -> TraceReplay
 
 fn witness_json(
     trace_path: &Path,
+    source_kind: &str,
     adapter_summaries: &[AdapterSummary],
+    external_comparisons: &[ExternalComparison],
     raw_events: Vec<Value>,
     normalized: &NormalizedTrace,
     raw_event_hash: &str,
     normalized_hash: &str,
     adapter_summary_hash: &str,
+    external_comparison_hash: &str,
 ) -> Value {
     json!({
         "schema_version": 1,
         "mode": WATCH_TRACE_WITNESS_MODE,
         "source": {
-            "kind": "watch_trace",
+            "kind": source_kind,
             "path": trace_path.display().to_string(),
         },
         "replay_grade": normalized.replay_grade.as_str(),
@@ -498,6 +810,8 @@ fn witness_json(
         },
         "adapter_summaries": adapter_summary_json(adapter_summaries),
         "adapter_summary_hash": adapter_summary_hash,
+        "external_comparisons": external_comparison_json(external_comparisons),
+        "external_comparison_hash": external_comparison_hash,
         "raw_event_hash": raw_event_hash,
         "normalized_hash": normalized_hash,
         "raw_events": raw_events,
@@ -509,6 +823,13 @@ fn adapter_summary_json(adapter_summaries: &[AdapterSummary]) -> Vec<Value> {
     adapter_summaries
         .iter()
         .map(|summary| summary.json.clone())
+        .collect()
+}
+
+fn external_comparison_json(external_comparisons: &[ExternalComparison]) -> Vec<Value> {
+    external_comparisons
+        .iter()
+        .map(|comparison| comparison.json.clone())
         .collect()
 }
 

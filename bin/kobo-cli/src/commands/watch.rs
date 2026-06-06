@@ -1,4 +1,5 @@
 mod evidence;
+mod trace;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,12 @@ pub(super) fn cmd_watch(
     build: bool,
     plan: bool,
     changed: Option<&Path>,
+    import_trace: Option<&Path>,
+    witness_out: Option<&Path>,
 ) -> anyhow::Result<()> {
+    if let Some(trace_path) = import_trace {
+        return trace::cmd_import_trace(trace_path, witness_out);
+    }
     if plan {
         return cmd_watch_plan(file, changed);
     }
@@ -113,6 +119,17 @@ pub(super) fn cmd_watch(
     }
 
     Ok(())
+}
+
+pub(super) fn is_watch_trace_witness(witness: &serde_json::Value) -> bool {
+    trace::is_watch_trace_witness(witness)
+}
+
+pub(super) fn replay_watch_trace_witness(
+    witness: &serde_json::Value,
+    error_format: crate::ErrorFormat,
+) -> anyhow::Result<()> {
+    trace::replay_watch_trace_witness(witness, error_format)
 }
 
 fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result<()> {

@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": [
+    {
+      "kind": "watcher",
+      "name": "notify-like",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["raw_event"],
+      "modeled_facts": ["event_kind", "paths", "ordering", "duplicates"],
+      "unsupported_guarantees": ["global_total_order"],
+      "replay_confidence": "metadata-only",
+      "source_map_anchor": "events[]",
+      "cargo_features": ["default"]
+    },
+    {
+      "kind": "process",
+      "name": "process-supervisor",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["spawn", "exit", "signal", "kill", "detach"],
+      "modeled_facts": ["child_id", "policy", "exit_code", "resolution"],
+      "unsupported_guarantees": ["platform_signal_equivalence"],
+      "replay_confidence": "modelled",
+      "source_map_anchor": "events[]",
+      "cargo_features": ["default"]
+    },
+    {
+      "kind": "time",
+      "name": "logical-debounce",
+      "schema_version": 1,
+      "version_range": "^1",
+      "operations": ["timer_create", "timer_cancel", "timer_fire"],
+      "modeled_facts": ["window", "membership", "fire_order"],
+      "unsupported_guarantees": ["real_os_time_determinism"],
+      "replay_confidence": "partial",
+      "source_map_anchor": "events[]",
+      "cargo_features": ["default"]
+    }
+  ],
+  "events": [
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 10,
+      "duplicate_marker": "unique",
+      "evidence_grade": "metadata_only"
+    },
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 11,
+      "duplicate_marker": "duplicate",
+      "evidence_grade": "metadata_only"
+    },
+    {
+      "kind": "timer_fired",
+      "window": 1,
+      "timestamp_ms": 210
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "timestamp_ms": 211
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-1",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 212
+    },
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 2,
+      "timestamp_ms": 250,
+      "duplicate_marker": "unique",
+      "evidence_grade": "metadata_only"
+    },
+    {
+      "kind": "child_exit",
+      "child_id": "cmd-1",
+      "exit_code": 0,
+      "timestamp_ms": 260
+    },
+    {
+      "kind": "timer_fired",
+      "window": 2,
+      "timestamp_ms": 450
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "timestamp_ms": 451
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-2",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 452
+    },
+    {
+      "kind": "child_exit",
+      "child_id": "cmd-2",
+      "exit_code": 0,
+      "timestamp_ms": 500
+    }
+  ]
+}

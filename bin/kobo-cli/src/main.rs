@@ -465,6 +465,12 @@ pub(crate) enum KoboCommand {
         /// File to treat as changed when rendering a watch plan.
         #[arg(long, value_name = "FILE")]
         changed: Option<PathBuf>,
+        /// Import an observed watcher/process trace into a replayable witness.
+        #[arg(long = "import-trace", value_name = "FILE")]
+        import_trace: Option<PathBuf>,
+        /// Output path for --import-trace witness.
+        #[arg(long = "witness-out", value_name = "FILE")]
+        witness_out: Option<PathBuf>,
     },
     /// Explain a Kobo diagnostic code.
     Explain {

@@ -387,7 +387,17 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             build,
             plan,
             changed,
-        } => watch::cmd_watch(file.as_deref(), simple, build, plan, changed.as_deref()),
+            import_trace,
+            witness_out,
+        } => watch::cmd_watch(
+            file.as_deref(),
+            simple,
+            build,
+            plan,
+            changed.as_deref(),
+            import_trace.as_deref(),
+            witness_out.as_deref(),
+        ),
         KoboCommand::Explain {
             code,
             location,

@@ -23,6 +23,9 @@ pub(super) fn cmd_replay(
         .with_context(|| format!("failed to read {}", file.display()))?;
     let witness: Value = serde_json::from_str(&source)
         .with_context(|| format!("failed to parse witness {}", file.display()))?;
+    if super::watch::is_watch_trace_witness(&witness) {
+        return super::watch::replay_watch_trace_witness(&witness, error_format);
+    }
     validate_witness(&witness)?;
     if backend_native {
         validate_backend_native_replay(&witness)?;
@@ -1596,12 +1599,12 @@ fn validate_exact_witness_scope(witness: &Value, error_format: ErrorFormat) -> a
     let agreement = digest["agreement"].as_str();
     let has_generated_harness =
         harness_engine.is_some_and(|engine| engine.starts_with("generated-rust"));
-    let has_replayable_agreement = agreement
-        .is_some_and(|agreement| agreement == "semantic-only" || agreement.starts_with("matched"));
-    if semantic_engine != Some("driver-kir-scenario")
-        || (!has_generated_harness && agreement != Some("semantic-only"))
-        || !has_replayable_agreement
-    {
+    let has_replayable_agreement = if has_generated_harness {
+        agreement.is_some_and(|agreement| agreement.starts_with("matched"))
+    } else {
+        agreement == Some("semantic-only")
+    };
+    if semantic_engine != Some("driver-kir-scenario") || !has_replayable_agreement {
         let payload = serde_json::json!({
             "code": "K0117",
             "message": "semantic trace and harness trace diverged or are missing",

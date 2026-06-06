@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::Context;
+use kobo_proof::stable_hash;
 use serde_json::Value;
 use toml::Value as TomlValue;
 
@@ -457,6 +459,7 @@ fn validate_upstream_inventory(
         "upstream workspace manifest",
         blockers,
     );
+    validate_upstream_cargo_metadata(&upstream_root_path, inventory, blockers);
     for field in REQUIRED_UPSTREAM_INVENTORY_FIELDS {
         require_non_empty_array(
             inventory,
@@ -505,6 +508,144 @@ fn validate_upstream_inventory(
             )));
         }
     }
+}
+
+fn validate_upstream_cargo_metadata(
+    upstream_root: &Path,
+    inventory: &Value,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let workspace_manifest = inventory["workspace_manifest"]
+        .as_str()
+        .unwrap_or("Cargo.toml");
+    let manifest_path = upstream_root.join(workspace_manifest);
+    let Some(metadata) = read_cargo_metadata(&manifest_path, blockers) else {
+        return;
+    };
+
+    let target_paths = metadata_workspace_target_paths(upstream_root, &metadata, blockers);
+    if target_paths.is_empty() {
+        blockers.push(ProjectSupportBlocker::new(
+            "upstream cargo metadata did not expose workspace targets",
+        ));
+    }
+    for path in target_paths {
+        if !inventory_declares_path(inventory, &path) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "upstream inventory missing Cargo metadata target {path}"
+            )));
+        }
+    }
+
+    let observed_feature_matrix = feature_matrix_signatures(&inventory["feature_combinations"]);
+    for feature in metadata_workspace_features(&metadata) {
+        if !feature_matrix_contains_feature(&observed_feature_matrix, &feature) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "upstream feature combination missing Cargo feature {feature}"
+            )));
+        }
+    }
+}
+
+fn read_cargo_metadata(
+    manifest_path: &Path,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> Option<Value> {
+    let output = match Command::new("cargo")
+        .arg("metadata")
+        .arg("--no-deps")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) => {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "failed to run cargo metadata for upstream inventory: {error}"
+            )));
+            return None;
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "upstream cargo metadata failed: {}",
+            stderr.trim()
+        )));
+        return None;
+    }
+    match serde_json::from_slice(&output.stdout) {
+        Ok(metadata) => Some(metadata),
+        Err(error) => {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "upstream cargo metadata was not valid JSON: {error}"
+            )));
+            None
+        }
+    }
+}
+
+fn metadata_workspace_target_paths(
+    upstream_root: &Path,
+    metadata: &Value,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> BTreeSet<String> {
+    let workspace_members = string_set(&metadata["workspace_members"]);
+    let mut paths = BTreeSet::new();
+    let Some(packages) = metadata["packages"].as_array() else {
+        blockers.push(ProjectSupportBlocker::new(
+            "upstream cargo metadata missing packages",
+        ));
+        return paths;
+    };
+    for package in packages {
+        let package_id = package["id"].as_str().unwrap_or("");
+        if !workspace_members.is_empty() && !workspace_members.contains(package_id) {
+            continue;
+        }
+        for target in package["targets"].as_array().into_iter().flatten() {
+            let Some(src_path) = target["src_path"].as_str() else {
+                continue;
+            };
+            if let Some(relative) = metadata_relative_path(upstream_root, src_path) {
+                paths.insert(relative);
+            }
+        }
+    }
+    paths
+}
+
+fn metadata_workspace_features(metadata: &Value) -> BTreeSet<String> {
+    let workspace_members = string_set(&metadata["workspace_members"]);
+    let mut features = BTreeSet::new();
+    for package in metadata["packages"].as_array().into_iter().flatten() {
+        let package_id = package["id"].as_str().unwrap_or("");
+        if !workspace_members.is_empty() && !workspace_members.contains(package_id) {
+            continue;
+        }
+        if let Some(table) = package["features"].as_object() {
+            features.extend(table.keys().cloned());
+        }
+    }
+    features
+}
+
+fn metadata_relative_path(root: &Path, source_path: &str) -> Option<String> {
+    let root = root.canonicalize().ok()?;
+    let source_path = Path::new(source_path).canonicalize().ok()?;
+    Some(relative_path(&root, &source_path))
+}
+
+fn inventory_declares_path(inventory: &Value, path: &str) -> bool {
+    ["crate_tree", "modules", "test_fixtures", "examples", "build_scripts"].iter().any(|field| {
+        inventory[*field]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|value| value.as_str() == Some(path))
+    })
 }
 
 fn validate_platform_models(
@@ -574,6 +715,7 @@ fn validate_platform_models(
 
 fn validate_adapters(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSupportBlocker>) {
     let adapters = manifest["adapters"].as_array().cloned().unwrap_or_default();
+    let cargo = read_project_cargo(root);
     for required_kind in REQUIRED_ADAPTERS {
         let Some(adapter) = find_object_by_kind(&adapters, required_kind) else {
             blockers.push(ProjectSupportBlocker::new(format!(
@@ -627,6 +769,7 @@ fn validate_adapters(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSu
                 "adapter {required_kind} lacks stale summary detection"
             )));
         }
+        validate_adapter_source(root, cargo.as_ref(), adapter, required_kind, blockers);
         if let Some(evidence) = require_evidence_document(
             root,
             adapter,
@@ -652,6 +795,78 @@ fn validate_adapters(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSu
                 &format!("adapter {required_kind}"),
                 blockers,
             );
+        }
+    }
+}
+
+fn validate_adapter_source(
+    root: &Path,
+    cargo: Option<&TomlValue>,
+    adapter: &Value,
+    required_kind: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let source = &adapter["crate_source"];
+    let source_kind = source["kind"].as_str().unwrap_or("missing");
+    match source_kind {
+        "cargo_dependency" => {
+            validate_cargo_adapter_source(cargo, adapter, source, required_kind, blockers)
+        }
+        "std" => {
+            if source["name"].as_str().unwrap_or("").trim().is_empty() {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "adapter {required_kind} std source missing name"
+                )));
+            }
+        }
+        "project_module" => {
+            let Some(path) = source["path"].as_str() else {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "adapter {required_kind} project_module source missing path"
+                )));
+                return;
+            };
+            if !project_path(root, path).is_file() {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "adapter {required_kind} project_module source does not exist: {path}"
+                )));
+            }
+        }
+        _ => blockers.push(ProjectSupportBlocker::new(format!(
+            "adapter {required_kind} source kind is unsupported: {source_kind}"
+        ))),
+    }
+}
+
+fn validate_cargo_adapter_source(
+    cargo: Option<&TomlValue>,
+    adapter: &Value,
+    source: &Value,
+    required_kind: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let dependency_name = source["name"]
+        .as_str()
+        .or_else(|| adapter["name"].as_str())
+        .unwrap_or("");
+    let Some(dependency) = cargo.and_then(|cargo| find_dependency(cargo, dependency_name)) else {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "adapter {required_kind} cargo dependency is not declared: {dependency_name}"
+        )));
+        return;
+    };
+    let declared_features = dependency_features(dependency);
+    for feature in adapter["cargo_features"].as_array().into_iter().flatten() {
+        let Some(feature) = feature.as_str() else {
+            continue;
+        };
+        if feature == "default" {
+            continue;
+        }
+        if !declared_features.contains(feature) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "adapter {required_kind} feature {feature} is not enabled on {dependency_name}"
+            )));
         }
     }
 }
@@ -956,11 +1171,19 @@ fn require_evidence_document(
             return None;
         }
     };
-    validate_evidence_document(&document, expected_kind, expected_subject, field, blockers);
+    validate_evidence_document(
+        root,
+        &document,
+        expected_kind,
+        expected_subject,
+        field,
+        blockers,
+    );
     Some(document)
 }
 
 fn validate_evidence_document(
+    root: &Path,
     document: &Value,
     expected_kind: &str,
     expected_subject: Option<&str>,
@@ -1000,7 +1223,8 @@ fn validate_evidence_document(
         )));
     }
     for command in commands.into_iter().flatten() {
-        if command["command"].as_str().unwrap_or("").trim().is_empty() {
+        let command_text = command["command"].as_str().unwrap_or("").trim();
+        if command_text.is_empty() {
             blockers.push(ProjectSupportBlocker::new(format!(
                 "{label} evidence command is empty"
             )));
@@ -1010,16 +1234,92 @@ fn validate_evidence_document(
                 "{label} evidence command did not pass"
             )));
         }
-        if command["output_hash"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
+        let output_hash = command["output_hash"].as_str().unwrap_or("").trim();
+        if output_hash.is_empty() {
             blockers.push(ProjectSupportBlocker::new(format!(
                 "{label} evidence command missing output_hash"
             )));
         }
+        validate_command_transcript(root, command, command_text, output_hash, label, blockers);
+    }
+}
+
+fn validate_command_transcript(
+    root: &Path,
+    command: &Value,
+    expected_command: &str,
+    expected_hash: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let Some(transcript_path) = command["transcript_path"].as_str() else {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command missing transcript_path"
+        )));
+        return;
+    };
+    let transcript_path = project_path(root, transcript_path);
+    if !transcript_path.is_file() {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript does not exist: {}",
+            transcript_path.display()
+        )));
+        return;
+    }
+    let Ok(transcript_source) = std::fs::read_to_string(&transcript_path) else {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript is not readable: {}",
+            transcript_path.display()
+        )));
+        return;
+    };
+    if transcript_source.trim().is_empty() {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript is empty: {}",
+            transcript_path.display()
+        )));
+        return;
+    }
+    if stable_hash(&transcript_source) != expected_hash {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript hash mismatch"
+        )));
+    }
+    match serde_json::from_str::<Value>(&transcript_source) {
+        Ok(transcript) => {
+            validate_command_transcript_json(&transcript, expected_command, label, blockers)
+        }
+        Err(error) => blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript is not valid JSON: {error}"
+        ))),
+    }
+}
+
+fn validate_command_transcript_json(
+    transcript: &Value,
+    expected_command: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if transcript["schema_version"].as_u64() != Some(1) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript schema_version must be 1"
+        )));
+    }
+    if transcript["command"].as_str() != Some(expected_command) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript command mismatch"
+        )));
+    }
+    if transcript["exit_code"].as_i64() != Some(0) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript exit_code must be 0"
+        )));
+    }
+    if transcript["status"].as_str() != Some("passed") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence transcript status must be passed"
+        )));
     }
 }
 
@@ -1092,6 +1392,12 @@ fn require_feature_matrix_coverage(
             )));
         }
     }
+}
+
+fn feature_matrix_contains_feature(signatures: &BTreeSet<String>, feature: &str) -> bool {
+    signatures
+        .iter()
+        .any(|signature| signature.split('+').any(|part| part == feature))
 }
 
 fn feature_matrix_signatures(value: &Value) -> BTreeSet<String> {
@@ -1318,6 +1624,29 @@ fn collect_release_artifacts_into(root: &Path, directory: &Path, artifacts: &mut
 
 fn feature_flags(cargo: &TomlValue) -> Vec<String> {
     table_keys(cargo.get("features"))
+}
+
+fn read_project_cargo(root: &Path) -> Option<TomlValue> {
+    std::fs::read_to_string(root.join("Cargo.toml"))
+        .ok()?
+        .parse::<TomlValue>()
+        .ok()
+}
+
+fn find_dependency<'a>(cargo: &'a TomlValue, name: &str) -> Option<&'a TomlValue> {
+    ["dependencies", "dev-dependencies", "build-dependencies"]
+        .iter()
+        .find_map(|section| cargo.get(*section).and_then(|table| table.get(name)))
+}
+
+fn dependency_features(dependency: &TomlValue) -> BTreeSet<&str> {
+    dependency
+        .get("features")
+        .and_then(TomlValue::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(TomlValue::as_str)
+        .collect()
 }
 
 fn workspace_members(cargo: &TomlValue) -> Vec<String> {

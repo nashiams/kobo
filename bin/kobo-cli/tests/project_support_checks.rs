@@ -8,6 +8,7 @@ use cli_test_support::{
     assert_contains, assert_failure, assert_success, path_arg, run_kobo_with_timeout, s,
     TestProject,
 };
+use kobo_proof::stable_hash;
 use serde_json::Value;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -31,7 +32,11 @@ polling = []
 
 [dependencies]
 notify = "6"
+tokio = { version = "1", features = ["rt", "time"] }
+ignore = "0.4"
+clap = "4"
 serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
 
 [dev-dependencies]
 insta = "1"
@@ -154,6 +159,50 @@ members = ["crates/cli", "crates/supervisor", "crates/platform"]
 version = "1.0.0"
 "#,
     );
+    project.write(
+        "upstream/watchexec/crates/cli/Cargo.toml",
+        r#"[package]
+name = "watchexec-cli"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "watchexec"
+path = "src/main.rs"
+
+[features]
+default = []
+"#,
+    );
+    project.write(
+        "upstream/watchexec/crates/supervisor/Cargo.toml",
+        r#"[package]
+name = "watchexec-supervisor"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+polling = []
+"#,
+    );
+    project.write(
+        "upstream/watchexec/crates/platform/Cargo.toml",
+        r#"[package]
+name = "watchexec-platform"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+path = "src/windows.rs"
+
+[features]
+default = []
+"#,
+    );
     project.write("upstream/watchexec/build.rs", "fn main() {}\n");
     project.write(
         "upstream/watchexec/crates/cli/src/main.rs",
@@ -181,6 +230,20 @@ version = "1.0.0"
 }
 
 fn write_evidence(project: &TestProject, path: &str, evidence_kind: &str, subject: &str) {
+    let command = format!("kobo check {subject}");
+    let transcript_path = path.replace(".json", ".transcript.json");
+    let transcript = format!(
+        r#"{{
+  "schema_version": 1,
+  "command": "{command}",
+  "status": "passed",
+  "exit_code": 0,
+  "stdout": "{subject} ok",
+  "stderr": ""
+}}"#
+    );
+    project.write(&transcript_path, &transcript);
+    let transcript_hash = stable_hash(&transcript);
     project.write(
         path,
         &format!(
@@ -192,7 +255,7 @@ fn write_evidence(project: &TestProject, path: &str, evidence_kind: &str, subjec
   "covered_paths": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
   "tested_platforms": ["windows", "macos", "linux"],
   "commands": [
-    {{"command": "kobo check {subject}", "status": "passed", "output_hash": "hash-{subject}"}}
+    {{"command": "{command}", "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}"}}
   ],
   "behavior_tests": ["watcher", "restart", "signal", "stdin", "path_filter"],
   "conformance_results": [
@@ -269,16 +332,16 @@ fn write_complete_support_manifest(project: &TestProject) {
     {"kind": "timers", "platforms": ["windows", "macos", "linux"], "replay_grade": "modeled", "behaviors": ["debounce", "delay-run", "stop-timeout", "poll-interval", "cancellation", "timeout-firing"], "evidence_path": ".kobo/evidence/timers.json"}
   ],
   "adapters": [
-    {"kind": "watcher_backend", "name": "notify", "version_range": "^6", "cargo_features": ["default", "polling"], "summary_version": 1, "modeled_facts": ["event-kind", "backend"], "unsupported_guarantees": ["global-total-order"], "conformance_tests": ["duplicate-events"], "replay_evidence": ".kobo/evidence/adapter-watcher.json", "stale_summary_detection": true},
-    {"kind": "async_runtime", "name": "tokio", "version_range": "^1", "cargo_features": ["rt", "time"], "summary_version": 1, "modeled_facts": ["task-order"], "unsupported_guarantees": ["arbitrary-scheduler-equivalence"], "conformance_tests": ["cancel-order"], "replay_evidence": ".kobo/evidence/adapter-async.json", "stale_summary_detection": true},
-    {"kind": "process_handling", "name": "process", "version_range": "^1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["spawn", "wait"], "unsupported_guarantees": ["platform-signal-equivalence"], "conformance_tests": ["exclusive-child"], "replay_evidence": ".kobo/evidence/adapter-process.json", "stale_summary_detection": true},
-    {"kind": "signal_handling", "name": "signals", "version_range": "^1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["interrupt", "kill"], "unsupported_guarantees": ["windows-posix-equivalence"], "conformance_tests": ["interrupt-before-kill"], "replay_evidence": ".kobo/evidence/adapter-signals.json", "stale_summary_detection": true},
-    {"kind": "ignore_path", "name": "ignore", "version_range": "^1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["gitignore", "case"], "unsupported_guarantees": ["remote-fs-canonicalization"], "conformance_tests": ["absolute-ignore"], "replay_evidence": ".kobo/evidence/adapter-ignore-path.json", "stale_summary_detection": true},
-    {"kind": "config", "name": "config", "version_range": "^1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["reload"], "unsupported_guarantees": ["external-editor-atomicity"], "conformance_tests": ["reload"], "replay_evidence": ".kobo/evidence/adapter-config.json", "stale_summary_detection": true},
-    {"kind": "cli", "name": "cli", "version_range": "^1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["parse"], "unsupported_guarantees": ["shell-quoting-equivalence"], "conformance_tests": ["flags"], "replay_evidence": ".kobo/evidence/adapter-cli.json", "stale_summary_detection": true},
-    {"kind": "serialization", "name": "serde", "version_range": "^1", "cargo_features": ["derive"], "summary_version": 1, "modeled_facts": ["json"], "unsupported_guarantees": ["format-autodetect"], "conformance_tests": ["witness-json"], "replay_evidence": ".kobo/evidence/adapter-serialization.json", "stale_summary_detection": true},
-    {"kind": "logging_tracing", "name": "tracing", "version_range": "^1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["events"], "unsupported_guarantees": ["terminal-color-equivalence"], "conformance_tests": ["log-routing"], "replay_evidence": ".kobo/evidence/adapter-logging.json", "stale_summary_detection": true},
-    {"kind": "errors", "name": "errors", "version_range": "^1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["source-mapped"], "unsupported_guarantees": ["foreign-panic-shape"], "conformance_tests": ["diagnostics"], "replay_evidence": ".kobo/evidence/adapter-errors.json", "stale_summary_detection": true}
+    {"kind": "watcher_backend", "name": "notify", "crate_source": {"kind": "cargo_dependency", "name": "notify"}, "version_range": "^6", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["event-kind", "backend"], "unsupported_guarantees": ["global-total-order"], "conformance_tests": ["duplicate-events"], "replay_evidence": ".kobo/evidence/adapter-watcher.json", "stale_summary_detection": true},
+    {"kind": "async_runtime", "name": "tokio", "crate_source": {"kind": "cargo_dependency", "name": "tokio"}, "version_range": "^1", "cargo_features": ["rt", "time"], "summary_version": 1, "modeled_facts": ["task-order"], "unsupported_guarantees": ["arbitrary-scheduler-equivalence"], "conformance_tests": ["cancel-order"], "replay_evidence": ".kobo/evidence/adapter-async.json", "stale_summary_detection": true},
+    {"kind": "process_handling", "name": "std::process", "crate_source": {"kind": "std", "name": "std::process"}, "version_range": "std", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["spawn", "wait"], "unsupported_guarantees": ["platform-signal-equivalence"], "conformance_tests": ["exclusive-child"], "replay_evidence": ".kobo/evidence/adapter-process.json", "stale_summary_detection": true},
+    {"kind": "signal_handling", "name": "process-adapter", "crate_source": {"kind": "project_module", "path": "src/adapters/process.rs"}, "version_range": "project", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["interrupt", "kill"], "unsupported_guarantees": ["windows-posix-equivalence"], "conformance_tests": ["interrupt-before-kill"], "replay_evidence": ".kobo/evidence/adapter-signals.json", "stale_summary_detection": true},
+    {"kind": "ignore_path", "name": "ignore", "crate_source": {"kind": "cargo_dependency", "name": "ignore"}, "version_range": "^0.4", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["gitignore", "case"], "unsupported_guarantees": ["remote-fs-canonicalization"], "conformance_tests": ["absolute-ignore"], "replay_evidence": ".kobo/evidence/adapter-ignore-path.json", "stale_summary_detection": true},
+    {"kind": "config", "name": "kobo-config", "crate_source": {"kind": "project_module", "path": "Kobo.toml"}, "version_range": "project", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["reload"], "unsupported_guarantees": ["external-editor-atomicity"], "conformance_tests": ["reload"], "replay_evidence": ".kobo/evidence/adapter-config.json", "stale_summary_detection": true},
+    {"kind": "cli", "name": "clap", "crate_source": {"kind": "cargo_dependency", "name": "clap"}, "version_range": "^4", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["parse"], "unsupported_guarantees": ["shell-quoting-equivalence"], "conformance_tests": ["flags"], "replay_evidence": ".kobo/evidence/adapter-cli.json", "stale_summary_detection": true},
+    {"kind": "serialization", "name": "serde", "crate_source": {"kind": "cargo_dependency", "name": "serde"}, "version_range": "^1", "cargo_features": ["derive"], "summary_version": 1, "modeled_facts": ["json"], "unsupported_guarantees": ["format-autodetect"], "conformance_tests": ["witness-json"], "replay_evidence": ".kobo/evidence/adapter-serialization.json", "stale_summary_detection": true},
+    {"kind": "logging_tracing", "name": "tracing", "crate_source": {"kind": "cargo_dependency", "name": "tracing"}, "version_range": "^0.1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["events"], "unsupported_guarantees": ["terminal-color-equivalence"], "conformance_tests": ["log-routing"], "replay_evidence": ".kobo/evidence/adapter-logging.json", "stale_summary_detection": true},
+    {"kind": "errors", "name": "kobo-errors", "crate_source": {"kind": "project_module", "path": "src/main.kobo"}, "version_range": "project", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["source-mapped"], "unsupported_guarantees": ["foreign-panic-shape"], "conformance_tests": ["diagnostics"], "replay_evidence": ".kobo/evidence/adapter-errors.json", "stale_summary_detection": true}
   ],
   "async_runtime": {
     "model": "versioned_tokio_adapter",
@@ -346,6 +409,14 @@ fn write_ready_supervisor_slice_state(project: &TestProject) {
         r#"{
   "schema_version": 1,
   "mode": "source_watch_state",
+  "scenarios": [
+    "save_burst",
+    "multi_window",
+    "child_exit_race",
+    "shutdown_pending_timer",
+    "signal_process_group",
+    "changed_path_delivery"
+  ],
   "watcher_evidence": "modeled",
   "event_batches": [
     {
@@ -355,6 +426,34 @@ fn write_ready_supervisor_slice_state(project: &TestProject) {
         {
           "kind": "modify",
           "paths": [{"role": "source_path", "path": "src/main.kobo"}],
+          "duplicate_or_coalesced": "unique",
+          "evidence_grade": "modeled"
+        },
+        {
+          "kind": "modify",
+          "paths": [{"role": "source_path", "path": "src/main.kobo"}],
+          "duplicate_or_coalesced": "duplicate",
+          "evidence_grade": "modeled"
+        },
+        {
+          "kind": "rename",
+          "paths": [
+            {"role": "source_path", "path": "src/.main.kobo.tmp"},
+            {"role": "destination_path", "path": "src/main.kobo"}
+          ],
+          "duplicate_or_coalesced": "coalesced",
+          "evidence_grade": "modeled"
+        }
+      ]
+    },
+    {
+      "id": "watch-batch-2",
+      "replay_grade": "modeled",
+      "events": [
+        {
+          "kind": "modify",
+          "paths": [{"role": "source_path", "path": "src/supervisor.kobo"}],
+          "duplicate_or_coalesced": "unique",
           "evidence_grade": "modeled"
         }
       ]
@@ -367,13 +466,27 @@ fn write_ready_supervisor_slice_state(project: &TestProject) {
       "replay_grade": "modeled",
       "event_batch_ids": ["watch-batch-1"],
       "fired": true
+    },
+    {
+      "id": "watch-window-2",
+      "timer_evidence": "modeled",
+      "replay_grade": "modeled",
+      "event_batch_ids": ["watch-batch-2"],
+      "fired": true
     }
   ],
   "restart_decisions": [
     {
       "policy_branch": "watchexec.restart.changed_in_scope",
       "action": "rerun",
-      "selected_by": ["src/main.kobo"]
+      "selected_by": ["src/main.kobo"],
+      "changed_path_delivery": ["env", "stdin"]
+    },
+    {
+      "policy_branch": "watchexec.restart.child_exit_race",
+      "action": "rerun_after_exit",
+      "selected_by": ["src/supervisor.kobo"],
+      "changed_path_delivery": ["env", "stdin"]
     }
   ],
   "child_lifecycle_obligations": [
@@ -381,8 +494,33 @@ fn write_ready_supervisor_slice_state(project: &TestProject) {
       "command_kind": "in_process_check",
       "resolution": "in_process_rerun_finished",
       "evidence_grade": "modeled"
+    },
+    {
+      "command_kind": "external_child",
+      "resolution": "child_exit_observed",
+      "evidence_grade": "modeled"
+    },
+    {
+      "command_kind": "external_child",
+      "resolution": "process_group_signaled",
+      "evidence_grade": "modeled"
+    },
+    {
+      "command_kind": "external_child",
+      "resolution": "shutdown_child_waited",
+      "evidence_grade": "modeled"
     }
-  ]
+  ],
+  "shutdown_resolutions": [
+    {"kind": "pending_timer", "resolution": "cancelled_before_exit", "evidence_grade": "modeled"},
+    {"kind": "active_child", "resolution": "waited_before_exit", "evidence_grade": "modeled"}
+  ],
+  "signal_process_group": {
+    "signal": "interrupt",
+    "process_group": true,
+    "fallback": "kill_timeout",
+    "evidence_grade": "modeled"
+  }
 }"#,
     );
 }
@@ -400,7 +538,12 @@ fn doctor_project_support_reports_complete_general_project_support() {
     assert_success(&output, "project support report should succeed");
     let value = parse_stdout_json(&output);
     assert_eq!(value["command"], "doctor --project-support");
-    assert_eq!(value["project_support"]["status"], "ready");
+    assert_eq!(
+        value["project_support"]["status"],
+        "ready",
+        "ready project blockers: {}",
+        value["project_support"]["blockers"]
+    );
     assert_eq!(value["project_support"]["claim"], "project_support");
     assert_contains(
         &value["project_support"]["inventory"].to_string(),
@@ -456,7 +599,7 @@ fn doctor_supervisor_slice_ci_gate_only_requires_kobo_owned_slice_evidence() {
     assert_eq!(value["supervisor_slice"]["status"], "ready");
     assert_eq!(
         value["supervisor_slice"]["surfaces"]["watcher_events"],
-        Value::from(1)
+        Value::from(4)
     );
     assert_contains(
         &value.to_string(),
@@ -666,8 +809,8 @@ fn doctor_project_support_names_missing_required_surfaces() {
 "#,
             )
             .replace(
-                r#"{"kind": "async_runtime", "name": "tokio", "version_range": "^1""#,
-                r#"{"kind": "async_runtime", "name": "tokio", "version_range": """#,
+                r#"{"kind": "async_runtime", "name": "tokio", "crate_source": {"kind": "cargo_dependency", "name": "tokio"}, "version_range": "^1""#,
+                r#"{"kind": "async_runtime", "name": "tokio", "crate_source": {"kind": "cargo_dependency", "name": "tokio"}, "version_range": """#,
             )
             .replace(
                 r#""release_artifacts": [".kobo/evidence/release.zip"]"#,
@@ -753,6 +896,69 @@ fn doctor_project_support_rejects_missing_feature_combinations() {
 }
 
 #[test]
+fn doctor_project_support_rejects_forged_command_transcript_hashes() {
+    let project = TestProject::new("doctor-project-support-forged-transcript");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    project.write(
+        ".kobo/evidence/language.transcript.json",
+        r#"{
+  "schema_version": 1,
+  "command": "kobo check language",
+  "status": "passed",
+  "exit_code": 0,
+  "stdout": "tampered",
+  "stderr": ""
+}"#,
+    );
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "forged-transcript report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "evidence transcript hash mismatch",
+        "project support gate should bind command evidence to transcript hashes",
+    );
+}
+
+#[test]
+fn doctor_project_support_derives_upstream_targets_from_cargo_metadata() {
+    let project = TestProject::new("doctor-project-support-cargo-metadata");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            r#""crate_tree": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
+    "modules": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],"#,
+            r#""crate_tree": ["crates/cli/src/main.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
+    "modules": ["crates/cli/src/main.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],"#,
+        ),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "cargo-metadata report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "upstream inventory missing Cargo metadata target crates/supervisor/src/lib.rs",
+        "project support gate should derive workspace target coverage from Cargo metadata",
+    );
+}
+
+#[test]
 fn doctor_project_support_rejects_duplicate_reviewer_evidence_paths() {
     let project = TestProject::new("doctor-project-support-duplicate-reviewer");
     write_project_files(&project);
@@ -824,5 +1030,35 @@ fn doctor_project_support_rejects_stale_adapter_and_metadata_only_platform() {
         &value["project_support"]["blockers"].to_string(),
         "adapter watcher_backend stale check did not pass",
         "project support gate should reject stale adapter evidence",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_adapter_source_not_declared_in_cargo() {
+    let project = TestProject::new("doctor-project-support-adapter-source");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            r#""kind": "async_runtime", "name": "tokio", "crate_source": {"kind": "cargo_dependency", "name": "tokio"}"#,
+            r#""kind": "async_runtime", "name": "tokio", "crate_source": {"kind": "cargo_dependency", "name": "tokio-missing"}"#,
+        ),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "adapter-source report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "adapter async_runtime cargo dependency is not declared: tokio-missing",
+        "project support gate should verify cargo-backed adapter sources",
     );
 }

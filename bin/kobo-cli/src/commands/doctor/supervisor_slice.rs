@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -24,6 +25,15 @@ enum SupervisorSliceStatus {
     Ready,
     Blocked,
 }
+
+const REQUIRED_SCENARIOS: &[&str] = &[
+    "save_burst",
+    "multi_window",
+    "child_exit_race",
+    "shutdown_pending_timer",
+    "signal_process_group",
+    "changed_path_delivery",
+];
 
 pub(super) fn cmd_supervisor_slice(
     root: &Path,
@@ -110,10 +120,22 @@ fn validate_source_watch_state(
     if state["mode"].as_str() != Some("source_watch_state") {
         blockers.push("watch evidence mode must be source_watch_state".to_owned());
     }
+    validate_required_scenarios(state, blockers);
     validate_watcher_evidence(state, surfaces, blockers);
     validate_debounce_windows(state, surfaces, blockers);
     validate_restart_decisions(state, surfaces, blockers);
     validate_child_lifecycle(state, surfaces, blockers);
+    validate_shutdown_resolution(state, blockers);
+    validate_signal_process_group(state, blockers);
+}
+
+fn validate_required_scenarios(state: &Value, blockers: &mut Vec<String>) {
+    let observed = string_set(&state["scenarios"]);
+    for scenario in REQUIRED_SCENARIOS {
+        if !observed.contains(*scenario) {
+            blockers.push(format!("missing supervisor scenario {scenario}"));
+        }
+    }
 }
 
 fn validate_watcher_evidence(
@@ -155,6 +177,9 @@ fn validate_watcher_evidence(
     if surfaces.watcher_events == 0 {
         blockers.push("missing watcher event evidence".to_owned());
     }
+    if surfaces.watcher_events < 4 {
+        blockers.push("supervisor slice must cover at least four watcher events".to_owned());
+    }
 }
 
 fn validate_debounce_windows(
@@ -169,6 +194,9 @@ fn validate_debounce_windows(
     surfaces.debounce_windows = windows.len();
     if windows.is_empty() {
         blockers.push("empty debounce windows".to_owned());
+    }
+    if windows.len() < 2 {
+        blockers.push("supervisor slice must cover multiple debounce windows".to_owned());
     }
     for window in windows {
         let timer_evidence = window["timer_evidence"].as_str().unwrap_or("missing");
@@ -200,6 +228,10 @@ fn validate_restart_decisions(
     if decisions.is_empty() {
         blockers.push("empty restart decisions".to_owned());
     }
+    if decisions.len() < 2 {
+        blockers.push("supervisor slice must cover multiple restart decisions".to_owned());
+    }
+    let mut has_changed_path_delivery = false;
     for decision in decisions {
         if decision["policy_branch"]
             .as_str()
@@ -218,6 +250,13 @@ fn validate_restart_decisions(
         {
             blockers.push("restart decision missing selected paths".to_owned());
         }
+        let delivery = string_set(&decision["changed_path_delivery"]);
+        if delivery.contains("env") && delivery.contains("stdin") {
+            has_changed_path_delivery = true;
+        }
+    }
+    if !has_changed_path_delivery {
+        blockers.push("restart decisions missing env/stdin changed-path delivery".to_owned());
     }
 }
 
@@ -234,8 +273,16 @@ fn validate_child_lifecycle(
     if lifecycle.is_empty() {
         blockers.push("empty child lifecycle obligations".to_owned());
     }
+    if lifecycle.len() < 4 {
+        blockers.push(
+            "supervisor slice must cover child exit, signal, shutdown, and rerun lifecycle evidence"
+                .to_owned(),
+        );
+    }
+    let mut resolutions = BTreeSet::new();
     for entry in lifecycle {
         let resolution = entry["resolution"].as_str().unwrap_or("missing");
+        resolutions.insert(resolution);
         if resolution.contains("unresolved") || resolution == "missing" {
             blockers.push(format!(
                 "unresolved child lifecycle obligation: {resolution}"
@@ -248,10 +295,72 @@ fn validate_child_lifecycle(
             ));
         }
     }
+    for required in [
+        "in_process_rerun_finished",
+        "child_exit_observed",
+        "process_group_signaled",
+        "shutdown_child_waited",
+    ] {
+        if !resolutions.contains(required) {
+            blockers.push(format!("missing child lifecycle resolution {required}"));
+        }
+    }
 }
 
 fn is_ready_grade(value: &str) -> bool {
     matches!(value, "exact" | "modeled")
+}
+
+fn validate_shutdown_resolution(state: &Value, blockers: &mut Vec<String>) {
+    let Some(resolutions) = state["shutdown_resolutions"].as_array() else {
+        blockers.push("missing shutdown resolutions".to_owned());
+        return;
+    };
+    let mut kinds = BTreeSet::new();
+    for resolution in resolutions {
+        let kind = resolution["kind"].as_str().unwrap_or("missing");
+        kinds.insert(kind);
+        let evidence_grade = resolution["evidence_grade"].as_str().unwrap_or("missing");
+        if !is_ready_grade(evidence_grade) {
+            blockers.push(format!(
+                "shutdown resolution evidence grade is {evidence_grade}"
+            ));
+        }
+    }
+    for required in ["pending_timer", "active_child"] {
+        if !kinds.contains(required) {
+            blockers.push(format!("missing shutdown resolution {required}"));
+        }
+    }
+}
+
+fn validate_signal_process_group(state: &Value, blockers: &mut Vec<String>) {
+    let signal = &state["signal_process_group"];
+    if !signal.is_object() {
+        blockers.push("missing signal process-group evidence".to_owned());
+        return;
+    }
+    if signal["signal"].as_str().unwrap_or("").trim().is_empty() {
+        blockers.push("signal process-group evidence missing signal".to_owned());
+    }
+    if signal["process_group"].as_bool() != Some(true) {
+        blockers.push("signal process-group evidence must cover process group".to_owned());
+    }
+    let evidence_grade = signal["evidence_grade"].as_str().unwrap_or("missing");
+    if !is_ready_grade(evidence_grade) {
+        blockers.push(format!(
+            "signal process-group evidence grade is {evidence_grade}"
+        ));
+    }
+}
+
+fn string_set<'a>(value: &'a Value) -> BTreeSet<&'a str> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 fn emit_supervisor_slice_report(

@@ -110,6 +110,15 @@
       "evidence_grade": "metadata_only"
     },
     {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 12,
+      "duplicate_marker": "duplicate",
+      "evidence_grade": "metadata_only"
+    },
+    {
       "kind": "timer_fired",
       "window": 1,
       "timestamp_ms": 210

@@ -384,6 +384,13 @@ fn watch_trace_import_emits_replayable_witness_with_adapter_contracts() {
         "duplicate raw watcher events should be minimized into one modeled event"
     );
     assert_eq!(
+        witness_json["normalized"]["event_batches"][0]["events"][0]["raw_events"]
+            .as_array()
+            .map(Vec::len),
+        Some(3),
+        "three save events inside one debounce window should stay visible as one coalesced batch"
+    );
+    assert_eq!(
         witness_json["normalized"]["child_lifecycle_obligations"][0]["resolution"],
         "exited"
     );
@@ -425,7 +432,7 @@ fn watch_trace_replay_rejects_mutated_event_order_or_child_exit() {
         &fs::read_to_string(&witness).expect("trace witness should be readable"),
     )
     .expect("trace witness should parse");
-    mutated_exit["raw_events"][6]["exit_code"] = Value::from(9);
+    mutated_exit["raw_events"][7]["exit_code"] = Value::from(9);
     let mutated_exit_path = project.root.join(".kobo/witnesses/mutated-exit.kwit");
     fs::write(
         &mutated_exit_path,
@@ -476,6 +483,204 @@ fn watch_trace_replay_rejects_mutated_event_order_or_child_exit() {
         &order_replay.stdout,
         "watch trace witness diverged",
         "mutated event order should report trace divergence",
+    );
+}
+
+#[test]
+fn watch_trace_import_rejects_orphan_child_lifecycle() {
+    let project = TestProject::new("watchexec-trace-orphan-child");
+    let trace = project.write(
+        "traces/orphan-child.json",
+        &trace_with_events(
+            r#"[
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 10,
+      "duplicate_marker": "unique",
+      "evidence_grade": "metadata_only"
+    },
+    {
+      "kind": "timer_fired",
+      "window": 1,
+      "timestamp_ms": 210
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "timestamp_ms": 211
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-1",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 212
+    }
+  ]"#,
+        ),
+    );
+    let witness = project.root.join(".kobo/witnesses/orphan-child.kwit");
+
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&trace),
+            s("--witness-out"),
+            path_arg(&witness),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "watch trace import should reject a started child without lifecycle resolution",
+    );
+    assert_contains(
+        &output.combined(),
+        "orphan child",
+        "orphan child diagnostics should be actionable",
+    );
+}
+
+#[test]
+fn watch_trace_import_rejects_double_running_exclusive_child() {
+    let project = TestProject::new("watchexec-trace-double-running");
+    let trace = project.write(
+        "traces/double-running.json",
+        &trace_with_events(
+            r#"[
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 10,
+      "duplicate_marker": "unique",
+      "evidence_grade": "metadata_only"
+    },
+    {
+      "kind": "timer_fired",
+      "window": 1,
+      "timestamp_ms": 210
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "timestamp_ms": 211
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-1",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 212
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-2",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 213
+    }
+  ]"#,
+        ),
+    );
+    let witness = project.root.join(".kobo/witnesses/double-running.kwit");
+
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&trace),
+            s("--witness-out"),
+            path_arg(&witness),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &output,
+        "watch trace import should reject exclusive double-running children",
+    );
+    assert_contains(
+        &output.combined(),
+        "double-running child",
+        "double-running diagnostics should be actionable",
+    );
+}
+
+#[test]
+fn watch_trace_import_records_kill_resolution_as_lifecycle_boundary() {
+    let project = TestProject::new("watchexec-trace-kill-resolution");
+    let trace = project.write(
+        "traces/kill-resolution.json",
+        &trace_with_events(
+            r#"[
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/main.kobo",
+      "window": 1,
+      "timestamp_ms": 10,
+      "duplicate_marker": "unique",
+      "evidence_grade": "metadata_only"
+    },
+    {
+      "kind": "timer_fired",
+      "window": 1,
+      "timestamp_ms": 210
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "restart",
+      "path": "src/main.kobo",
+      "timestamp_ms": 211
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-1",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 212
+    },
+    {
+      "kind": "child_kill",
+      "child_id": "cmd-1",
+      "timestamp_ms": 300
+    }
+  ]"#,
+        ),
+    );
+    let witness = project.root.join(".kobo/witnesses/kill-resolution.kwit");
+
+    let output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&trace),
+            s("--witness-out"),
+            path_arg(&witness),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "watch trace import should accept kill as an explicit lifecycle resolution",
+    );
+    let witness_json: Value = serde_json::from_str(
+        &fs::read_to_string(&witness).expect("kill-resolution witness should read"),
+    )
+    .expect("kill-resolution witness should parse");
+    assert_eq!(
+        witness_json["normalized"]["child_lifecycle_obligations"][0]["resolution"],
+        "killed"
     );
 }
 

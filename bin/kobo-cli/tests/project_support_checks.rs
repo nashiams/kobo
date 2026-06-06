@@ -13,6 +13,13 @@ use serde_json::Value;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+struct EvidenceCommandTranscript {
+    command: String,
+    argv_json: String,
+    source: String,
+    hash: String,
+}
+
 fn run_kobo(args: &[String], cwd: &Path) -> cli_test_support::CliOutput {
     run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
@@ -50,17 +57,20 @@ insta = "1"
     project.write("examples/restart.kobo", "fn main() {}\n");
     project.write("tests/restart_behavior.kobo", "fn main() {}\n");
     write_upstream_inventory_files(project);
+    let evidence_command = build_evidence_command_transcript(project);
     write_evidence(
         project,
         ".kobo/evidence/upstream-inventory.json",
         "upstream_inventory",
         "inventory",
+        &evidence_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/language.json",
         "language_surface",
         "language",
+        &evidence_command,
     );
     for (path, subject) in [
         (".kobo/evidence/filesystem-events.json", "filesystem_events"),
@@ -74,7 +84,7 @@ insta = "1"
         (".kobo/evidence/stdio.json", "stdio"),
         (".kobo/evidence/timers.json", "timers"),
     ] {
-        write_evidence(project, path, "platform_model", subject);
+        write_evidence(project, path, "platform_model", subject, &evidence_command);
     }
     for (path, subject) in [
         (".kobo/evidence/adapter-watcher.json", "watcher_backend"),
@@ -88,19 +98,21 @@ insta = "1"
         (".kobo/evidence/adapter-logging.json", "logging_tracing"),
         (".kobo/evidence/adapter-errors.json", "errors"),
     ] {
-        write_evidence(project, path, "adapter_summary", subject);
+        write_evidence(project, path, "adapter_summary", subject, &evidence_command);
     }
     write_evidence(
         project,
         ".kobo/evidence/async.json",
         "async_runtime",
         "async",
+        &evidence_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/generated-backend.json",
         "generated_backend",
         "backend",
+        &evidence_command,
     );
     for subject in [
         "upstream_tests",
@@ -118,6 +130,7 @@ insta = "1"
             &format!(".kobo/evidence/parity-{subject}.json"),
             "test_release_parity",
             subject,
+            &evidence_command,
         );
     }
     for subject in ["startup", "steady_state", "restart", "memory", "binary"] {
@@ -126,6 +139,7 @@ insta = "1"
             &format!(".kobo/evidence/perf-{subject}.json"),
             "performance",
             subject,
+            &evidence_command,
         );
     }
     write_evidence(
@@ -133,18 +147,21 @@ insta = "1"
         ".kobo/evidence/upstream-tests.json",
         "upstream_tests",
         "upstream",
+        &evidence_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/reviewer-a.json",
         "reviewer_report",
         "reviewer-a",
+        &evidence_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/reviewer-b.json",
         "reviewer_report",
         "reviewer-b",
+        &evidence_command,
     );
     project.write(".kobo/evidence/release.zip", "release artifact bytes\n");
 }
@@ -153,7 +170,17 @@ fn write_upstream_inventory_files(project: &TestProject) {
     project.write(
         "upstream/watchexec/Cargo.toml",
         r#"[workspace]
-members = ["crates/cli", "crates/supervisor", "crates/platform"]
+members = [
+  "crates/cli",
+  "crates/supervisor",
+  "crates/platform",
+  "crates/signals",
+  "crates/ignore",
+  "crates/config",
+  "crates/logging",
+  "crates/errors",
+]
+resolver = "2"
 
 [workspace.package]
 version = "1.0.0"
@@ -169,6 +196,9 @@ edition = "2021"
 [[bin]]
 name = "watchexec"
 path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
 
 [features]
 default = []
@@ -187,6 +217,7 @@ path = "src/lib.rs"
 [features]
 default = []
 polling = []
+signals = []
 "#,
     );
     project.write(
@@ -197,53 +228,201 @@ version = "1.0.0"
 edition = "2021"
 
 [lib]
-path = "src/windows.rs"
+path = "src/lib.rs"
 
 [features]
 default = []
+polling = []
 "#,
     );
+    for crate_name in ["signals", "ignore", "config", "logging", "errors"] {
+        project.write(
+            &format!("upstream/watchexec/crates/{crate_name}/Cargo.toml"),
+            &format!(
+                r#"[package]
+name = "watchexec-{crate_name}"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+"#
+            ),
+        );
+    }
     project.write("upstream/watchexec/build.rs", "fn main() {}\n");
     project.write(
         "upstream/watchexec/crates/cli/src/main.rs",
         "pub fn cli() {}\n",
     );
     project.write(
+        "upstream/watchexec/crates/cli/src/lib.rs",
+        "pub struct CliSurface;\npub fn parse_restart_flag() {}\n",
+    );
+    project.write(
         "upstream/watchexec/crates/supervisor/src/lib.rs",
-        "pub struct Supervisor;\npub fn restart_policy() {}\n",
+        "pub mod debounce;\npub mod policy;\npub struct Supervisor;\npub struct RestartPolicy;\npub fn restart_policy() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/supervisor/src/policy.rs",
+        "pub struct WatchEvent;\npub fn decide_restart() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/supervisor/src/debounce.rs",
+        "pub struct DebounceWindow;\npub fn coalesce() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/platform/src/lib.rs",
+        "pub mod linux;\npub mod macos;\npub mod polling;\npub mod windows;\npub struct PlatformModel;\n",
     );
     project.write(
         "upstream/watchexec/crates/platform/src/windows.rs",
         "pub fn windows_watch() {}\n",
     );
     project.write(
-        "upstream/watchexec/crates/platform/src/unix.rs",
-        "pub fn unix_watch() {}\n",
+        "upstream/watchexec/crates/platform/src/linux.rs",
+        "pub fn linux_watch() {}\n",
     );
     project.write(
-        "upstream/watchexec/crates/cli/tests/cli.rs",
+        "upstream/watchexec/crates/platform/src/macos.rs",
+        "pub fn macos_watch() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/platform/src/polling.rs",
+        "pub fn polling_watch() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/signals/src/lib.rs",
+        "pub struct SignalPlan;\npub fn interrupt_group() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/ignore/src/lib.rs",
+        "pub struct IgnoreMatcher;\npub fn matches_path() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/config/src/lib.rs",
+        "pub struct ConfigSource;\npub fn reload_config() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/logging/src/lib.rs",
+        "pub struct LogEvent;\npub fn forward_log() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/errors/src/lib.rs",
+        "pub struct ErrorReport;\npub fn report_error() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/cli/tests/cli_flags.rs",
         "#[test]\nfn cli_flags() {}\n",
     );
+    project.write(
+        "upstream/watchexec/crates/supervisor/tests/restart.rs",
+        "#[test]\nfn restart_policy() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/platform/tests/platform.rs",
+        "#[test]\nfn platform_model() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/signals/tests/signals.rs",
+        "#[test]\nfn signal_plan() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/config/tests/config.rs",
+        "#[test]\nfn config_reload() {}\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/ignore/tests/ignore.rs",
+        "#[test]\nfn ignore_match() {}\n",
+    );
     project.write("upstream/watchexec/examples/restart.rs", "fn main() {}\n");
+    project.write("upstream/watchexec/examples/debounce.rs", "fn main() {}\n");
     project.write("upstream/watchexec/fixtures/save.json", "{}\n");
+    project.write("upstream/watchexec/fixtures/rename.json", "{}\n");
+    project.write("upstream/watchexec/fixtures/delete.json", "{}\n");
+    project.write("upstream/watchexec/fixtures/signals.json", "{}\n");
+    project.write("upstream/watchexec/fixtures/config.toml", "debounce = 50\n");
+    project.write("upstream/watchexec/fixtures/logging.json", "{}\n");
     project.write("upstream/watchexec/target/release/watchexec", "binary\n");
 }
 
-fn write_evidence(project: &TestProject, path: &str, evidence_kind: &str, subject: &str) {
-    let command = format!("kobo check {subject}");
+fn upstream_module_paths() -> &'static [&'static str] {
+    &[
+        "crates/cli/src/main.rs",
+        "crates/cli/src/lib.rs",
+        "crates/supervisor/src/lib.rs",
+        "crates/supervisor/src/policy.rs",
+        "crates/supervisor/src/debounce.rs",
+        "crates/platform/src/lib.rs",
+        "crates/platform/src/windows.rs",
+        "crates/platform/src/linux.rs",
+        "crates/platform/src/macos.rs",
+        "crates/platform/src/polling.rs",
+        "crates/signals/src/lib.rs",
+        "crates/ignore/src/lib.rs",
+        "crates/config/src/lib.rs",
+        "crates/logging/src/lib.rs",
+        "crates/errors/src/lib.rs",
+    ]
+}
+
+fn build_evidence_command_transcript(project: &TestProject) -> EvidenceCommandTranscript {
+    let argv = [
+        "cargo",
+        "metadata",
+        "--no-deps",
+        "--format-version",
+        "1",
+        "--manifest-path",
+        "upstream/watchexec/Cargo.toml",
+    ];
+    let output = std::process::Command::new(argv[0])
+        .args(&argv[1..])
+        .current_dir(&project.root)
+        .output()
+        .expect("cargo metadata evidence command should run");
+    let command = argv.join(" ");
+    let source = serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": 1,
+        "command": command,
+        "status": if output.status.success() { "passed" } else { "failed" },
+        "exit_code": output.status.code(),
+        "stdout": String::from_utf8_lossy(&output.stdout),
+        "stderr": String::from_utf8_lossy(&output.stderr),
+    }))
+    .expect("transcript should serialize");
+    let hash = stable_hash(&source);
+    EvidenceCommandTranscript {
+        command,
+        argv_json: json_string_array(&argv),
+        source,
+        hash,
+    }
+}
+
+fn json_string_array(values: &[&str]) -> String {
+    values
+        .iter()
+        .map(|value| serde_json::to_string(value).expect("test string should serialize"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn write_evidence(
+    project: &TestProject,
+    path: &str,
+    evidence_kind: &str,
+    subject: &str,
+    evidence_command: &EvidenceCommandTranscript,
+) {
     let transcript_path = path.replace(".json", ".transcript.json");
-    let transcript = format!(
-        r#"{{
-  "schema_version": 1,
-  "command": "{command}",
-  "status": "passed",
-  "exit_code": 0,
-  "stdout": "{subject} ok",
-  "stderr": ""
-}}"#
-    );
-    project.write(&transcript_path, &transcript);
-    let transcript_hash = stable_hash(&transcript);
+    project.write(&transcript_path, &evidence_command.source);
+    let command_json =
+        serde_json::to_string(&evidence_command.command).expect("test command should serialize");
+    let covered_paths = json_string_array(upstream_module_paths());
     project.write(
         path,
         &format!(
@@ -252,10 +431,10 @@ fn write_evidence(project: &TestProject, path: &str, evidence_kind: &str, subjec
   "evidence_kind": "{evidence_kind}",
   "subject": "{subject}",
   "checks": ["parse", "check", "lower", "source_map", "rare_diagnostics"],
-  "covered_paths": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
+  "covered_paths": [{covered_paths}],
   "tested_platforms": ["windows", "macos", "linux"],
   "commands": [
-    {{"command": "{command}", "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}"}}
+    {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}"}}
   ],
   "behavior_tests": ["watcher", "restart", "signal", "stdin", "path_filter"],
   "conformance_results": [
@@ -266,6 +445,9 @@ fn write_evidence(project: &TestProject, path: &str, evidence_kind: &str, subjec
   "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"],
   "decision": "equivalent_or_stronger"
 }}"#
+            ,
+            argv_json = evidence_command.argv_json.as_str(),
+            transcript_hash = evidence_command.hash.as_str(),
         ),
     );
 }
@@ -279,17 +461,64 @@ fn write_complete_support_manifest(project: &TestProject) {
   "upstream_inventory": {
     "root": "upstream/watchexec",
     "workspace_manifest": "Cargo.toml",
-    "crate_tree": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
-    "modules": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
-    "public_types": ["Supervisor", "RestartPolicy", "WatchEvent"],
-    "cli_surfaces": ["watchexec --restart", "watchexec --watch", "watchexec --signal"],
-    "test_fixtures": ["crates/cli/tests/cli.rs", "fixtures/save.json"],
+    "crate_tree": [
+      "crates/cli/src/main.rs",
+      "crates/cli/src/lib.rs",
+      "crates/supervisor/src/lib.rs",
+      "crates/supervisor/src/policy.rs",
+      "crates/supervisor/src/debounce.rs",
+      "crates/platform/src/lib.rs",
+      "crates/platform/src/windows.rs",
+      "crates/platform/src/linux.rs",
+      "crates/platform/src/macos.rs",
+      "crates/platform/src/polling.rs",
+      "crates/signals/src/lib.rs",
+      "crates/ignore/src/lib.rs",
+      "crates/config/src/lib.rs",
+      "crates/logging/src/lib.rs",
+      "crates/errors/src/lib.rs"
+    ],
+    "modules": [
+      "crates/cli/src/main.rs",
+      "crates/cli/src/lib.rs",
+      "crates/supervisor/src/lib.rs",
+      "crates/supervisor/src/policy.rs",
+      "crates/supervisor/src/debounce.rs",
+      "crates/platform/src/lib.rs",
+      "crates/platform/src/windows.rs",
+      "crates/platform/src/linux.rs",
+      "crates/platform/src/macos.rs",
+      "crates/platform/src/polling.rs",
+      "crates/signals/src/lib.rs",
+      "crates/ignore/src/lib.rs",
+      "crates/config/src/lib.rs",
+      "crates/logging/src/lib.rs",
+      "crates/errors/src/lib.rs"
+    ],
+    "public_types": ["CliSurface", "Supervisor", "RestartPolicy", "WatchEvent", "DebounceWindow", "PlatformModel", "SignalPlan", "IgnoreMatcher", "ConfigSource", "LogEvent", "ErrorReport"],
+    "cli_surfaces": ["watchexec --restart", "watchexec --watch", "watchexec --signal", "watchexec --on-busy-update", "watchexec --debounce", "watchexec --print-events"],
+    "test_fixtures": [
+      "crates/cli/tests/cli_flags.rs",
+      "crates/supervisor/tests/restart.rs",
+      "crates/platform/tests/platform.rs",
+      "crates/signals/tests/signals.rs",
+      "crates/config/tests/config.rs",
+      "crates/ignore/tests/ignore.rs",
+      "fixtures/save.json",
+      "fixtures/rename.json",
+      "fixtures/delete.json",
+      "fixtures/signals.json",
+      "fixtures/config.toml",
+      "fixtures/logging.json"
+    ],
     "platform_paths": [
       {"path": "crates/platform/src/windows.rs", "disposition": "formal_adapter", "correctness_relevant": true, "source_preserved": true},
-      {"path": "crates/platform/src/unix.rs", "disposition": "formal_adapter", "correctness_relevant": true, "source_preserved": true}
+      {"path": "crates/platform/src/linux.rs", "disposition": "formal_adapter", "correctness_relevant": true, "source_preserved": true},
+      {"path": "crates/platform/src/macos.rs", "disposition": "formal_adapter", "correctness_relevant": true, "source_preserved": true},
+      {"path": "crates/platform/src/polling.rs", "disposition": "formal_adapter", "correctness_relevant": true, "source_preserved": true}
     ],
-    "feature_combinations": [["default"], ["default", "polling"]],
-    "examples": ["examples/restart.rs"],
+    "feature_combinations": [["default"], ["default", "polling"], ["default", "signals"]],
+    "examples": ["examples/restart.rs", "examples/debounce.rs"],
     "build_scripts": ["build.rs"],
     "release_artifacts": ["target/release/watchexec"],
     "evidence_path": ".kobo/evidence/upstream-inventory.json"
@@ -316,7 +545,7 @@ fn write_complete_support_manifest(project: &TestProject) {
     "lower": true,
     "source_map": true,
     "rare_diagnostics": true,
-    "feature_matrix": [["default"], ["default", "polling"]],
+    "feature_matrix": [["default"], ["default", "polling"], ["default", "signals"]],
     "evidence_path": ".kobo/evidence/language.json"
   },
   "platform_models": [
@@ -539,8 +768,7 @@ fn doctor_project_support_reports_complete_general_project_support() {
     let value = parse_stdout_json(&output);
     assert_eq!(value["command"], "doctor --project-support");
     assert_eq!(
-        value["project_support"]["status"],
-        "ready",
+        value["project_support"]["status"], "ready",
         "ready project blockers: {}",
         value["project_support"]["blockers"]
     );
@@ -875,7 +1103,7 @@ fn doctor_project_support_rejects_missing_feature_combinations() {
     fs::write(
         &manifest_path,
         manifest.replace(
-            r#""feature_matrix": [["default"], ["default", "polling"]]"#,
+            r#""feature_matrix": [["default"], ["default", "polling"], ["default", "signals"]]"#,
             r#""feature_matrix": [["default"]]"#,
         ),
     )
@@ -935,12 +1163,7 @@ fn doctor_project_support_derives_upstream_targets_from_cargo_metadata() {
     let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
     fs::write(
         &manifest_path,
-        manifest.replace(
-            r#""crate_tree": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
-    "modules": ["crates/cli/src/main.rs", "crates/supervisor/src/lib.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],"#,
-            r#""crate_tree": ["crates/cli/src/main.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],
-    "modules": ["crates/cli/src/main.rs", "crates/platform/src/windows.rs", "crates/platform/src/unix.rs"],"#,
-        ),
+        manifest.replace("      \"crates/supervisor/src/lib.rs\",\n", ""),
     )
     .expect("support manifest should write");
 

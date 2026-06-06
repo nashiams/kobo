@@ -1,6 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::{Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use kobo_proof::stable_hash;
@@ -38,6 +42,15 @@ struct ProjectSupportEvidence {
 struct ProjectSupportBlocker {
     message: String,
 }
+
+#[derive(Clone)]
+struct ObservedCommand {
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+type CommandStreamHandle = thread::JoinHandle<std::io::Result<Vec<u8>>>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProjectSupportStatus {
@@ -154,12 +167,25 @@ const REQUIRED_UPSTREAM_INVENTORY_FIELDS: &[&str] = &[
     "release_artifacts",
 ];
 
+const MIN_UPSTREAM_CRATE_PATHS: usize = 8;
+const MIN_UPSTREAM_MODULES: usize = 10;
+const MIN_UPSTREAM_PUBLIC_TYPES: usize = 8;
+const MIN_UPSTREAM_CLI_SURFACES: usize = 5;
+const MIN_UPSTREAM_TEST_FIXTURES: usize = 6;
+const MIN_UPSTREAM_PLATFORM_PATHS: usize = 4;
+const MIN_UPSTREAM_FEATURE_COMBINATIONS: usize = 3;
+const MIN_UPSTREAM_EXAMPLES: usize = 2;
+
 const SUPPORTED_PROJECT_DISPOSITIONS: &[&str] = &[
     "kobo-owned",
     "formal_adapter",
     "generated_backend",
     "foreign_boundary",
 ];
+
+const EVIDENCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+
+static EVIDENCE_COMMAND_CACHE: OnceLock<Mutex<BTreeMap<String, ObservedCommand>>> = OnceLock::new();
 
 pub(super) fn cmd_project_support(
     root: &Path,
@@ -468,6 +494,62 @@ fn validate_upstream_inventory(
             blockers,
         );
     }
+    require_min_array(
+        inventory,
+        "crate_tree",
+        MIN_UPSTREAM_CRATE_PATHS,
+        "upstream inventory crate_tree",
+        blockers,
+    );
+    require_min_array(
+        inventory,
+        "modules",
+        MIN_UPSTREAM_MODULES,
+        "upstream inventory modules",
+        blockers,
+    );
+    require_min_array(
+        inventory,
+        "public_types",
+        MIN_UPSTREAM_PUBLIC_TYPES,
+        "upstream inventory public_types",
+        blockers,
+    );
+    require_min_array(
+        inventory,
+        "cli_surfaces",
+        MIN_UPSTREAM_CLI_SURFACES,
+        "upstream inventory cli_surfaces",
+        blockers,
+    );
+    require_min_array(
+        inventory,
+        "test_fixtures",
+        MIN_UPSTREAM_TEST_FIXTURES,
+        "upstream inventory test_fixtures",
+        blockers,
+    );
+    require_min_array(
+        inventory,
+        "platform_paths",
+        MIN_UPSTREAM_PLATFORM_PATHS,
+        "upstream inventory platform_paths",
+        blockers,
+    );
+    require_min_array(
+        inventory,
+        "feature_combinations",
+        MIN_UPSTREAM_FEATURE_COMBINATIONS,
+        "upstream inventory feature_combinations",
+        blockers,
+    );
+    require_min_array(
+        inventory,
+        "examples",
+        MIN_UPSTREAM_EXAMPLES,
+        "upstream inventory examples",
+        blockers,
+    );
     for field in [
         "crate_tree",
         "modules",
@@ -639,7 +721,15 @@ fn metadata_relative_path(root: &Path, source_path: &str) -> Option<String> {
 }
 
 fn inventory_declares_path(inventory: &Value, path: &str) -> bool {
-    ["crate_tree", "modules", "test_fixtures", "examples", "build_scripts"].iter().any(|field| {
+    [
+        "crate_tree",
+        "modules",
+        "test_fixtures",
+        "examples",
+        "build_scripts",
+    ]
+    .iter()
+    .any(|field| {
         inventory[*field]
             .as_array()
             .into_iter()
@@ -1147,6 +1237,21 @@ fn require_non_empty_array(
     }
 }
 
+fn require_min_array(
+    value: &Value,
+    field: &str,
+    minimum: usize,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let count = value[field].as_array().map_or(0, Vec::len);
+    if count < minimum {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} needs at least {minimum} entries, found {count}"
+        )));
+    }
+}
+
 fn require_evidence_document(
     root: &Path,
     value: &Value,
@@ -1287,7 +1392,14 @@ fn validate_command_transcript(
     }
     match serde_json::from_str::<Value>(&transcript_source) {
         Ok(transcript) => {
-            validate_command_transcript_json(&transcript, expected_command, label, blockers)
+            let observed = rerun_evidence_command(root, command, label, blockers);
+            validate_command_transcript_json(
+                &transcript,
+                expected_command,
+                observed.as_ref(),
+                label,
+                blockers,
+            )
         }
         Err(error) => blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence transcript is not valid JSON: {error}"
@@ -1298,6 +1410,7 @@ fn validate_command_transcript(
 fn validate_command_transcript_json(
     transcript: &Value,
     expected_command: &str,
+    observed: Option<&ObservedCommand>,
     label: &str,
     blockers: &mut Vec<ProjectSupportBlocker>,
 ) {
@@ -1320,6 +1433,250 @@ fn validate_command_transcript_json(
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence transcript status must be passed"
         )));
+    }
+    if let Some(observed) = observed {
+        if transcript["exit_code"].as_i64() != observed.exit_code.map(i64::from) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence transcript exit_code does not match rerun command"
+            )));
+        }
+        if transcript["stdout"].as_str().unwrap_or("") != observed.stdout.as_str() {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence transcript stdout does not match rerun command"
+            )));
+        }
+        if transcript["stderr"].as_str().unwrap_or("") != observed.stderr.as_str() {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence transcript stderr does not match rerun command"
+            )));
+        }
+    }
+}
+
+fn rerun_evidence_command(
+    root: &Path,
+    command: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> Option<ObservedCommand> {
+    let argv = command_argv(command, label, blockers)?;
+    if !is_allowed_evidence_program(&argv[0]) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command program is not allowed: {}",
+            argv[0]
+        )));
+        return None;
+    }
+    let cwd = command["cwd"]
+        .as_str()
+        .map(|path| project_path(root, path))
+        .unwrap_or_else(|| root.to_path_buf());
+    if !cwd.is_dir() {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command cwd does not exist: {}",
+            cwd.display()
+        )));
+        return None;
+    }
+    let key = command_cache_key(&cwd, &argv);
+    if let Some(observed) = cached_evidence_command(&key) {
+        return Some(observed);
+    }
+    let observed = run_evidence_command(&cwd, &argv, label, blockers)?;
+    cache_evidence_command(key, observed.clone());
+    Some(observed)
+}
+
+fn command_argv(
+    command: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> Option<Vec<String>> {
+    let Some(values) = command["argv"].as_array() else {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command missing argv"
+        )));
+        return None;
+    };
+    let argv = values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if argv.is_empty() || argv.iter().any(|value| value.trim().is_empty()) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command argv is empty"
+        )));
+        return None;
+    }
+    if command["command"].as_str() != Some(argv.join(" ").as_str()) {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command text does not match argv"
+        )));
+        return None;
+    }
+    Some(argv)
+}
+
+fn is_allowed_evidence_program(program: &str) -> bool {
+    let normalized = program.replace('\\', "/").to_ascii_lowercase();
+    normalized == "cargo"
+        || normalized.ends_with("/cargo")
+        || normalized.ends_with("/cargo.exe")
+        || normalized == "kobo"
+        || normalized.ends_with("/kobo")
+        || normalized.ends_with("/kobo.exe")
+}
+
+fn run_evidence_command(
+    cwd: &Path,
+    argv: &[String],
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> Option<ObservedCommand> {
+    let mut child = match Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence command failed to start: {error}"
+            )));
+            return None;
+        }
+    };
+    let mut stdout_reader = child.stdout.take().map(spawn_command_stream_reader);
+    let mut stderr_reader = child.stderr.take().map(spawn_command_stream_reader);
+    let started_at = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                return Some(finish_observed_command(
+                    _status,
+                    stdout_reader.take(),
+                    stderr_reader.take(),
+                    label,
+                    blockers,
+                ));
+            }
+            Ok(None) if started_at.elapsed() < EVIDENCE_COMMAND_TIMEOUT => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                drop(join_command_stream(
+                    stdout_reader.take(),
+                    label,
+                    "stdout",
+                    blockers,
+                ));
+                drop(join_command_stream(
+                    stderr_reader.take(),
+                    label,
+                    "stderr",
+                    blockers,
+                ));
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "{label} evidence command timed out"
+                )));
+                return None;
+            }
+            Err(error) => {
+                let _ = child.kill();
+                drop(join_command_stream(
+                    stdout_reader.take(),
+                    label,
+                    "stdout",
+                    blockers,
+                ));
+                drop(join_command_stream(
+                    stderr_reader.take(),
+                    label,
+                    "stderr",
+                    blockers,
+                ));
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "{label} evidence command status failed: {error}"
+                )));
+                return None;
+            }
+        }
+    }
+}
+
+fn spawn_command_stream_reader<TStream>(mut stream: TStream) -> CommandStreamHandle
+where
+    TStream: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).map(|_| bytes)
+    })
+}
+
+fn finish_observed_command(
+    status: ExitStatus,
+    stdout_reader: Option<CommandStreamHandle>,
+    stderr_reader: Option<CommandStreamHandle>,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> ObservedCommand {
+    ObservedCommand {
+        exit_code: status.code(),
+        stdout: join_command_stream(stdout_reader, label, "stdout", blockers),
+        stderr: join_command_stream(stderr_reader, label, "stderr", blockers),
+    }
+}
+
+fn join_command_stream(
+    reader: Option<CommandStreamHandle>,
+    label: &str,
+    stream_name: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) -> String {
+    let Some(reader) = reader else {
+        return String::new();
+    };
+    match reader.join() {
+        Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).to_string(),
+        Ok(Err(error)) => {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence command {stream_name} read failed: {error}"
+            )));
+            String::new()
+        }
+        Err(_) => {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence command {stream_name} reader failed"
+            )));
+            String::new()
+        }
+    }
+}
+
+fn command_cache_key(cwd: &Path, argv: &[String]) -> String {
+    format!("{}|{}", cwd.display(), argv.join("\u{1f}"))
+}
+
+fn cached_evidence_command(key: &str) -> Option<ObservedCommand> {
+    EVIDENCE_COMMAND_CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(key).cloned())
+}
+
+fn cache_evidence_command(key: String, observed: ObservedCommand) {
+    if let Ok(mut cache) = EVIDENCE_COMMAND_CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+    {
+        cache.insert(key, observed);
     }
 }
 

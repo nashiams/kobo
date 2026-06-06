@@ -228,6 +228,83 @@ fn bare_debt_commands_use_project_default_source() {
 }
 
 #[test]
+fn debt_report_explains_kobo_rust_and_boundary_modules() {
+    let project = TestProject::new("debt-module-ownership-report");
+    project.main_file("fn main() {}\n");
+    project.write("src/adapter.rs", "pub fn run_adapter() {}\n");
+    let watch_dir = project.root.join(".kobo/watch");
+    std::fs::create_dir_all(&watch_dir).expect("watch state directory should create");
+    std::fs::write(
+        watch_dir.join("source-watch.json"),
+        r#"{
+  "schema_version": 1,
+  "mode": "source_watch_state",
+  "watcher_evidence": "metadata-only",
+  "event_batches": [
+    {
+      "replay_grade": "partial",
+      "events": [
+        {
+          "evidence_grade": "metadata_only"
+        }
+      ]
+    }
+  ],
+  "debounce_windows": [
+    {
+      "timer_evidence": "metadata-only",
+      "replay_grade": "partial"
+    }
+  ],
+  "child_lifecycle_obligations": [
+    {
+      "command_kind": "in_process_check",
+      "resolution": "in_process_rerun_finished"
+    }
+  ]
+}"#,
+    )
+    .expect("watch state should write");
+
+    let summary = run_kobo(&[s("debt"), s("--summary")], &project.root);
+    assert_success(&summary, "debt summary should explain module ownership");
+    for expected in [
+        "modules:",
+        "kobo-owned=1",
+        "rust-owned=1",
+        "boundary-debt=3",
+    ] {
+        assert_contains(
+            &summary.stdout,
+            expected,
+            "summary should explain Kobo/Rust/boundary module ownership",
+        );
+    }
+
+    let json = run_kobo(&[s("debt"), s("--json")], &project.root);
+    assert_success(&json, "debt JSON should explain module ownership");
+    let value: Value = serde_json::from_str(&json.stdout).expect("debt JSON should parse");
+    assert_eq!(
+        value["module_ownership"]["kobo_owned"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        value["module_ownership"]["rust_owned"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        value["module_ownership"]["boundary_debt"]
+            .as_array()
+            .map(Vec::len),
+        Some(3)
+    );
+}
+
+#[test]
 fn release_profile_blocks_unresolved_watch_lifecycle_debt() {
     let project = TestProject::new("release-watch-lifecycle-gate");
     let main = project.main_file("fn main() {}\n");

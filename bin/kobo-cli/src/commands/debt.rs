@@ -73,6 +73,12 @@ struct AdapterDebtStatus {
     reason: String,
 }
 
+struct ModuleOwnershipSummary {
+    kobo_owned: Vec<String>,
+    rust_owned: Vec<String>,
+    boundary_debt: Vec<String>,
+}
+
 impl AdapterDebtSummary {
     fn none() -> Self {
         Self {
@@ -130,6 +136,25 @@ impl AdapterDebtStatus {
         serde_json::json!({
             "status": self.status,
             "reason": self.reason,
+        })
+    }
+}
+
+impl ModuleOwnershipSummary {
+    fn human_label(&self) -> String {
+        format!(
+            "modules: kobo-owned={}, rust-owned={}, boundary-debt={}",
+            self.kobo_owned.len(),
+            self.rust_owned.len(),
+            self.boundary_debt.len()
+        )
+    }
+
+    fn to_json_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kobo_owned": self.kobo_owned,
+            "rust_owned": self.rust_owned,
+            "boundary_debt": self.boundary_debt,
         })
     }
 }
@@ -204,6 +229,84 @@ fn time_adapter_debt(state: &serde_json::Value) -> AdapterDebtStatus {
     AdapterDebtStatus::acceptable("debounce evidence")
 }
 
+fn module_ownership_summary_for_file(
+    file: &Path,
+    adapter_debt: &AdapterDebtSummary,
+) -> anyhow::Result<ModuleOwnershipSummary> {
+    let source_root = source_tree_root(file);
+    let mut summary = ModuleOwnershipSummary {
+        kobo_owned: Vec::new(),
+        rust_owned: Vec::new(),
+        boundary_debt: adapter_boundary_debt_modules(adapter_debt),
+    };
+    collect_module_ownership_files(&source_root, &source_root, &mut summary)?;
+    summary.kobo_owned.sort();
+    summary.rust_owned.sort();
+    summary.boundary_debt.sort();
+    Ok(summary)
+}
+
+fn source_tree_root(file: &Path) -> PathBuf {
+    for ancestor in file.ancestors() {
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some("src") {
+            return ancestor.to_path_buf();
+        }
+    }
+    file.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn collect_module_ownership_files(
+    root: &Path,
+    directory: &Path,
+    summary: &mut ModuleOwnershipSummary,
+) -> anyhow::Result<()> {
+    if !directory.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(directory)
+        .with_context(|| format!("failed to read module directory {}", directory.display()))?
+    {
+        let entry = entry.context("failed to read module directory entry")?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_module_ownership_files(root, &path, summary)?;
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let module_path = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .display()
+            .to_string();
+        match extension {
+            "kobo" => summary.kobo_owned.push(module_path),
+            "rs" => summary.rust_owned.push(module_path),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn adapter_boundary_debt_modules(adapter_debt: &AdapterDebtSummary) -> Vec<String> {
+    [
+        ("watcher adapter", &adapter_debt.watcher),
+        ("process adapter", &adapter_debt.process),
+        ("time adapter", &adapter_debt.time),
+    ]
+    .into_iter()
+    .filter_map(|(name, status)| {
+        (status.status != "none").then(|| format!("{name}: {}", status.human_label()))
+    })
+    .collect()
+}
+
 pub(super) fn cmd_debt(
     file: &Path,
     json: bool,
@@ -220,6 +323,7 @@ pub(super) fn cmd_debt(
     let report = build_debt_report(&kir, file_count, line_count, ownership_debt);
     let boundary_policies = boundary_projection::projections_for_file(file, &session.config)?;
     let adapter_debt = adapter_debt_summary_for_file(file);
+    let module_ownership = module_ownership_summary_for_file(file, &adapter_debt)?;
 
     if json {
         let mut value =
@@ -256,6 +360,10 @@ pub(super) fn cmd_debt(
                 ),
             );
             object.insert("adapter_debt".to_owned(), adapter_debt.to_json_value());
+            object.insert(
+                "module_ownership".to_owned(),
+                module_ownership.to_json_value(),
+            );
         }
         let json_str = serde_json::to_string_pretty(&value)
             .context("failed to serialize debt report to JSON")?;
@@ -265,7 +373,7 @@ pub(super) fn cmd_debt(
 
     if summary {
         println!(
-            "{} file(s), {} line(s) - {} RcMutShared site(s) [T1:{} T2:{} T3:{}] - {} warning(s) - migration estimate: {} - {}",
+            "{} file(s), {} line(s) - {} RcMutShared site(s) [T1:{} T2:{} T3:{}] - {} warning(s) - migration estimate: {} - {} - {}",
             report.file_count,
             report.line_count,
             report.inventory.rc_mut_shared,
@@ -275,6 +383,7 @@ pub(super) fn cmd_debt(
             report.warn_early.len() + report.ownership_debt.len(),
             migration_estimate_label(&report),
             adapter_debt.human_label(),
+            module_ownership.human_label(),
         );
         return Ok(());
     }

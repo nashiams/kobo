@@ -101,8 +101,10 @@ const REQUIRED_ADAPTERS: &[&str] = &[
     "ignore_path",
     "config",
     "cli",
+    "shell_parsing",
     "serialization",
     "logging_tracing",
+    "terminal_helpers",
     "errors",
 ];
 
@@ -146,13 +148,29 @@ const REQUIRED_PARITY_PATHS: &[&str] = &[
     "logging_behavior",
     "package_behavior",
     "platform_behavior",
+    "install_behavior",
 ];
 
-const REQUIRED_PERFORMANCE_FIELDS: &[&str] =
-    &["startup", "steady_state", "restart", "memory", "binary"];
+const REQUIRED_PERFORMANCE_FIELDS: &[&str] = &[
+    "startup",
+    "steady_state",
+    "restart",
+    "memory",
+    "binary",
+    "watch_tree_scaling",
+    "event_burst_scaling",
+];
 
-const REQUIRED_MUTATION_TESTS: &[&str] =
-    &["watcher", "child", "cancellation", "config", "platform"];
+const REQUIRED_MUTATION_TESTS: &[&str] = &[
+    "watcher",
+    "child",
+    "cancellation",
+    "config",
+    "ignore_rules",
+    "async_scheduling",
+    "platform",
+    "generated_backend_output",
+];
 
 const REQUIRED_UPSTREAM_INVENTORY_FIELDS: &[&str] = &[
     "crate_tree",
@@ -181,6 +199,13 @@ const SUPPORTED_PROJECT_DISPOSITIONS: &[&str] = &[
     "formal_adapter",
     "generated_backend",
     "foreign_boundary",
+];
+
+const REQUIRED_PROOF_DEBT_REPORTS: &[&str] = &[
+    "debt_summary",
+    "proof_report",
+    "replay_report",
+    "inspect_output",
 ];
 
 const EVIDENCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -370,7 +395,7 @@ fn validate_manifest(root: &Path, manifest: &Value, blockers: &mut Vec<ProjectSu
     validate_async_runtime(root, manifest, blockers);
     validate_generated_backend(root, manifest, blockers);
     validate_test_release_parity(root, manifest, blockers);
-    validate_proof_debt_map(manifest, blockers);
+    validate_proof_debt_map(root, manifest, blockers);
     validate_independent_equivalence(root, manifest, blockers);
 }
 
@@ -1088,7 +1113,11 @@ fn validate_test_release_parity(
     }
 }
 
-fn validate_proof_debt_map(manifest: &Value, blockers: &mut Vec<ProjectSupportBlocker>) {
+fn validate_proof_debt_map(
+    root: &Path,
+    manifest: &Value,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
     let entries = manifest["proof_debt_map"]
         .as_array()
         .cloned()
@@ -1121,6 +1150,49 @@ fn validate_proof_debt_map(manifest: &Value, blockers: &mut Vec<ProjectSupportBl
         {
             blockers.push(ProjectSupportBlocker::new(format!(
                 "non-critical debt {module} lacks justification"
+            )));
+        }
+    }
+    let reports = &manifest["proof_debt_map_reports"];
+    if !reports.is_object() {
+        blockers.push(ProjectSupportBlocker::new(
+            "missing proof debt report agreement evidence",
+        ));
+        return;
+    }
+    for report in REQUIRED_PROOF_DEBT_REPORTS {
+        if let Some(evidence) = require_evidence_document(
+            root,
+            reports,
+            report,
+            "proof_debt_report",
+            Some(report),
+            blockers,
+        ) {
+            require_evidence_covers_debt_modules(&evidence, &entries, report, blockers);
+            if evidence["decision"].as_str() != Some("same_project_map") {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "{report} does not agree with the proof debt map"
+                )));
+            }
+        }
+    }
+}
+
+fn require_evidence_covers_debt_modules(
+    evidence: &Value,
+    entries: &[Value],
+    report: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let covered_modules = string_set(&evidence["covered_modules"]);
+    for entry in entries {
+        let Some(module) = entry["module"].as_str() else {
+            continue;
+        };
+        if !covered_modules.contains(module) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{report} evidence does not cover proof debt module {module}"
             )));
         }
     }

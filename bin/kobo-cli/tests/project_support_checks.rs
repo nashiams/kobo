@@ -94,8 +94,10 @@ insta = "1"
         (".kobo/evidence/adapter-ignore-path.json", "ignore_path"),
         (".kobo/evidence/adapter-config.json", "config"),
         (".kobo/evidence/adapter-cli.json", "cli"),
+        (".kobo/evidence/adapter-shell.json", "shell_parsing"),
         (".kobo/evidence/adapter-serialization.json", "serialization"),
         (".kobo/evidence/adapter-logging.json", "logging_tracing"),
+        (".kobo/evidence/adapter-terminal.json", "terminal_helpers"),
         (".kobo/evidence/adapter-errors.json", "errors"),
     ] {
         write_evidence(project, path, "adapter_summary", subject, &evidence_command);
@@ -124,6 +126,7 @@ insta = "1"
         "logging_behavior",
         "package_behavior",
         "platform_behavior",
+        "install_behavior",
     ] {
         write_evidence(
             project,
@@ -133,7 +136,15 @@ insta = "1"
             &evidence_command,
         );
     }
-    for subject in ["startup", "steady_state", "restart", "memory", "binary"] {
+    for subject in [
+        "startup",
+        "steady_state",
+        "restart",
+        "memory",
+        "binary",
+        "watch_tree_scaling",
+        "event_burst_scaling",
+    ] {
         write_evidence(
             project,
             &format!(".kobo/evidence/perf-{subject}.json"),
@@ -163,6 +174,20 @@ insta = "1"
         "reviewer-b",
         &evidence_command,
     );
+    for subject in [
+        "debt_summary",
+        "proof_report",
+        "replay_report",
+        "inspect_output",
+    ] {
+        write_evidence(
+            project,
+            &format!(".kobo/evidence/proof-debt-{subject}.json"),
+            "proof_debt_report",
+            subject,
+            &evidence_command,
+        );
+    }
     project.write(".kobo/evidence/release.zip", "release artifact bytes\n");
 }
 
@@ -369,6 +394,15 @@ fn upstream_module_paths() -> &'static [&'static str] {
     ]
 }
 
+fn proof_debt_modules() -> &'static [&'static str] {
+    &[
+        "src/supervisor.kobo",
+        "src/adapters/notify.rs",
+        "src/adapters/process.rs",
+        "examples/restart.kobo",
+    ]
+}
+
 fn build_evidence_command_transcript(project: &TestProject) -> EvidenceCommandTranscript {
     let argv = [
         "cargo",
@@ -423,6 +457,12 @@ fn write_evidence(
     let command_json =
         serde_json::to_string(&evidence_command.command).expect("test command should serialize");
     let covered_paths = json_string_array(upstream_module_paths());
+    let covered_modules = json_string_array(proof_debt_modules());
+    let decision = if evidence_kind == "proof_debt_report" {
+        "same_project_map"
+    } else {
+        "equivalent_or_stronger"
+    };
     project.write(
         path,
         &format!(
@@ -432,6 +472,7 @@ fn write_evidence(
   "subject": "{subject}",
   "checks": ["parse", "check", "lower", "source_map", "rare_diagnostics"],
   "covered_paths": [{covered_paths}],
+  "covered_modules": [{covered_modules}],
   "tested_platforms": ["windows", "macos", "linux"],
   "commands": [
     {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}"}}
@@ -443,7 +484,7 @@ fn write_evidence(
   "stale_check": {{"status": "passed", "crate_version": "1.0.0", "features": ["default", "polling", "rt", "time", "derive"]}},
   "mutation_results": ["task-order", "timer-order", "cancel-order", "channel-delivery"],
   "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"],
-  "decision": "equivalent_or_stronger"
+  "decision": "{decision}"
 }}"#
             ,
             argv_json = evidence_command.argv_json.as_str(),
@@ -568,8 +609,10 @@ fn write_complete_support_manifest(project: &TestProject) {
     {"kind": "ignore_path", "name": "ignore", "crate_source": {"kind": "cargo_dependency", "name": "ignore"}, "version_range": "^0.4", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["gitignore", "case"], "unsupported_guarantees": ["remote-fs-canonicalization"], "conformance_tests": ["absolute-ignore"], "replay_evidence": ".kobo/evidence/adapter-ignore-path.json", "stale_summary_detection": true},
     {"kind": "config", "name": "kobo-config", "crate_source": {"kind": "project_module", "path": "Kobo.toml"}, "version_range": "project", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["reload"], "unsupported_guarantees": ["external-editor-atomicity"], "conformance_tests": ["reload"], "replay_evidence": ".kobo/evidence/adapter-config.json", "stale_summary_detection": true},
     {"kind": "cli", "name": "clap", "crate_source": {"kind": "cargo_dependency", "name": "clap"}, "version_range": "^4", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["parse"], "unsupported_guarantees": ["shell-quoting-equivalence"], "conformance_tests": ["flags"], "replay_evidence": ".kobo/evidence/adapter-cli.json", "stale_summary_detection": true},
+    {"kind": "shell_parsing", "name": "kobo-shell-boundary", "crate_source": {"kind": "project_module", "path": "src/adapters/process.rs"}, "version_range": "project", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["shell-wrap", "no-shell"], "unsupported_guarantees": ["host-shell-parser-equivalence"], "conformance_tests": ["quoted-command"], "replay_evidence": ".kobo/evidence/adapter-shell.json", "stale_summary_detection": true},
     {"kind": "serialization", "name": "serde", "crate_source": {"kind": "cargo_dependency", "name": "serde"}, "version_range": "^1", "cargo_features": ["derive"], "summary_version": 1, "modeled_facts": ["json"], "unsupported_guarantees": ["format-autodetect"], "conformance_tests": ["witness-json"], "replay_evidence": ".kobo/evidence/adapter-serialization.json", "stale_summary_detection": true},
     {"kind": "logging_tracing", "name": "tracing", "crate_source": {"kind": "cargo_dependency", "name": "tracing"}, "version_range": "^0.1", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["events"], "unsupported_guarantees": ["terminal-color-equivalence"], "conformance_tests": ["log-routing"], "replay_evidence": ".kobo/evidence/adapter-logging.json", "stale_summary_detection": true},
+    {"kind": "terminal_helpers", "name": "kobo-terminal-boundary", "crate_source": {"kind": "std", "name": "std::io"}, "version_range": "std", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["tty", "inherited-handles"], "unsupported_guarantees": ["terminal-emulator-equivalence"], "conformance_tests": ["stdio-forwarding"], "replay_evidence": ".kobo/evidence/adapter-terminal.json", "stale_summary_detection": true},
     {"kind": "errors", "name": "kobo-errors", "crate_source": {"kind": "project_module", "path": "src/main.kobo"}, "version_range": "project", "cargo_features": ["default"], "summary_version": 1, "modeled_facts": ["source-mapped"], "unsupported_guarantees": ["foreign-panic-shape"], "conformance_tests": ["diagnostics"], "replay_evidence": ".kobo/evidence/adapter-errors.json", "stale_summary_detection": true}
   ],
   "async_runtime": {
@@ -601,12 +644,15 @@ fn write_complete_support_manifest(project: &TestProject) {
     "logging_behavior": ".kobo/evidence/parity-logging_behavior.json",
     "package_behavior": ".kobo/evidence/parity-package_behavior.json",
     "platform_behavior": ".kobo/evidence/parity-platform_behavior.json",
+    "install_behavior": ".kobo/evidence/parity-install_behavior.json",
     "performance": {
       "startup": ".kobo/evidence/perf-startup.json",
       "steady_state": ".kobo/evidence/perf-steady_state.json",
       "restart": ".kobo/evidence/perf-restart.json",
       "memory": ".kobo/evidence/perf-memory.json",
-      "binary": ".kobo/evidence/perf-binary.json"
+      "binary": ".kobo/evidence/perf-binary.json",
+      "watch_tree_scaling": ".kobo/evidence/perf-watch_tree_scaling.json",
+      "event_burst_scaling": ".kobo/evidence/perf-event_burst_scaling.json"
     },
     "release_artifacts": [".kobo/evidence/release.zip"]
   },
@@ -616,9 +662,15 @@ fn write_complete_support_manifest(project: &TestProject) {
     {"module": "src/adapters/process.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
     {"module": "examples/restart.kobo", "classification": "debt", "criticality": "non-critical", "release_blocking": false, "justification": "example-only trace parity is not release blocking"}
   ],
+  "proof_debt_map_reports": {
+    "debt_summary": ".kobo/evidence/proof-debt-debt_summary.json",
+    "proof_report": ".kobo/evidence/proof-debt-proof_report.json",
+    "replay_report": ".kobo/evidence/proof-debt-replay_report.json",
+    "inspect_output": ".kobo/evidence/proof-debt-inspect_output.json"
+  },
   "independent_equivalence": {
     "original_upstream_tests": ".kobo/evidence/upstream-tests.json",
-    "mutation_tests": ["watcher", "child", "cancellation", "config", "platform"],
+    "mutation_tests": ["watcher", "child", "cancellation", "config", "ignore_rules", "async_scheduling", "platform", "generated_backend_output"],
     "reviewer_reports": [
       {"reviewer": "reviewer-a", "evidence_path": ".kobo/evidence/reviewer-a.json"},
       {"reviewer": "reviewer-b", "evidence_path": ".kobo/evidence/reviewer-b.json"}
@@ -1208,6 +1260,42 @@ fn doctor_project_support_rejects_duplicate_reviewer_evidence_paths() {
         &value["project_support"]["blockers"].to_string(),
         "reviewer reports must use distinct evidence paths",
         "project support gate should reject duplicate reviewer evidence files",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_incomplete_future_release_evidence() {
+    let project = TestProject::new("doctor-project-support-future-gates");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    let mut manifest: Value =
+        serde_json::from_str(&manifest).expect("support manifest should parse");
+    manifest["proof_debt_map_reports"] = Value::Null;
+    manifest["independent_equivalence"]["mutation_tests"] = serde_json::json!(["watcher", "child"]);
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).expect("support manifest should serialize"),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "future-gate report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "missing proof debt report agreement evidence",
+        "project support gate should require proof/debt report agreement",
+    );
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "missing equivalence mutation test generated_backend_output",
+        "project support gate should require generated backend mutation evidence",
     );
 }
 

@@ -226,7 +226,7 @@ const REQUIRED_PROOF_DEBT_REPORTS: &[&str] = &[
     "inspect_output",
 ];
 
-const EVIDENCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+const EVIDENCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 
 static EVIDENCE_COMMAND_CACHE: OnceLock<Mutex<BTreeMap<String, ObservedCommand>>> = OnceLock::new();
 
@@ -1564,7 +1564,11 @@ fn validate_evidence_document(
             "{label} evidence must include command results"
         )));
     }
+    let mut has_subject_command = false;
     for command in commands.into_iter().flatten() {
+        if let Some(argv) = command_argv(command, label, blockers) {
+            has_subject_command |= evidence_command_proves(expected_kind, &argv);
+        }
         let command_text = command["command"].as_str().unwrap_or("").trim();
         if command_text.is_empty() {
             blockers.push(ProjectSupportBlocker::new(format!(
@@ -1584,6 +1588,80 @@ fn validate_evidence_document(
         }
         validate_command_transcript(root, command, command_text, output_hash, label, blockers);
     }
+    if !has_subject_command {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence command does not prove {}",
+            evidence_target_name(expected_kind, expected_subject)
+        )));
+    }
+    if expected_kind == "performance" {
+        require_non_empty_array(document, "measurements", label, blockers);
+    }
+}
+
+fn evidence_target_name(expected_kind: &str, expected_subject: Option<&str>) -> String {
+    expected_subject.unwrap_or(expected_kind).to_owned()
+}
+
+fn evidence_command_proves(expected_kind: &str, argv: &[String]) -> bool {
+    match expected_kind {
+        "upstream_inventory" => is_cargo_subcommand(argv, "metadata"),
+        "language_surface" => {
+            is_cargo_subcommand(argv, "check")
+                || is_kobo_subcommand(argv, "check")
+                || is_kobo_subcommand(argv, "inspect")
+        }
+        "generated_backend" => {
+            is_cargo_subcommand(argv, "check")
+                || is_cargo_subcommand(argv, "test")
+                || is_kobo_subcommand(argv, "inspect")
+        }
+        "platform_model"
+        | "adapter_summary"
+        | "async_runtime"
+        | "test_release_parity"
+        | "performance"
+        | "upstream_tests"
+        | "proof_debt_report"
+        | "reviewer_report" => {
+            is_cargo_subcommand(argv, "test")
+                || is_kobo_subcommand(argv, "watch")
+                || is_kobo_subcommand(argv, "doctor")
+        }
+        _ => false,
+    }
+}
+
+fn is_cargo_subcommand(argv: &[String], subcommand: &str) -> bool {
+    argv.first()
+        .is_some_and(|program| is_program_named(program, "cargo"))
+        && argv.get(1).map(String::as_str) == Some(subcommand)
+}
+
+fn is_kobo_subcommand(argv: &[String], subcommand: &str) -> bool {
+    if argv
+        .first()
+        .is_some_and(|program| is_program_named(program, "kobo"))
+    {
+        return argv.get(1).map(String::as_str) == Some(subcommand);
+    }
+    if !argv
+        .first()
+        .is_some_and(|program| is_program_named(program, "cargo"))
+    {
+        return false;
+    }
+    let Some(separator) = argv.iter().position(|argument| argument == "--") else {
+        return false;
+    };
+    argv.get(separator + 1).map(String::as_str) == Some(subcommand)
+}
+
+fn is_program_named(program: &str, expected: &str) -> bool {
+    let normalized = program.replace('\\', "/").to_ascii_lowercase();
+    normalized == expected
+        || normalized.ends_with(&format!("/{expected}"))
+        || normalized.ends_with(&format!("/{expected}.exe"))
 }
 
 fn validate_command_transcript(
@@ -1630,10 +1708,12 @@ fn validate_command_transcript(
     match serde_json::from_str::<Value>(&transcript_source) {
         Ok(transcript) => {
             let observed = rerun_evidence_command(root, command, label, blockers);
+            let output_match = command["output_match"].as_str().unwrap_or("exact");
             validate_command_transcript_json(
                 &transcript,
                 expected_command,
                 observed.as_ref(),
+                output_match,
                 label,
                 blockers,
             )
@@ -1648,9 +1728,15 @@ fn validate_command_transcript_json(
     transcript: &Value,
     expected_command: &str,
     observed: Option<&ObservedCommand>,
+    output_match: &str,
     label: &str,
     blockers: &mut Vec<ProjectSupportBlocker>,
 ) {
+    if !matches!(output_match, "exact" | "exit_code") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence output_match is unsupported: {output_match}"
+        )));
+    }
     if transcript["schema_version"].as_u64() != Some(1) {
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} evidence transcript schema_version must be 1"
@@ -1677,15 +1763,17 @@ fn validate_command_transcript_json(
                 "{label} evidence transcript exit_code does not match rerun command"
             )));
         }
-        if transcript["stdout"].as_str().unwrap_or("") != observed.stdout.as_str() {
-            blockers.push(ProjectSupportBlocker::new(format!(
-                "{label} evidence transcript stdout does not match rerun command"
-            )));
-        }
-        if transcript["stderr"].as_str().unwrap_or("") != observed.stderr.as_str() {
-            blockers.push(ProjectSupportBlocker::new(format!(
-                "{label} evidence transcript stderr does not match rerun command"
-            )));
+        if output_match == "exact" {
+            if transcript["stdout"].as_str().unwrap_or("") != observed.stdout.as_str() {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "{label} evidence transcript stdout does not match rerun command"
+                )));
+            }
+            if transcript["stderr"].as_str().unwrap_or("") != observed.stderr.as_str() {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "{label} evidence transcript stderr does not match rerun command"
+                )));
+            }
         }
     }
 }
@@ -2034,9 +2122,7 @@ fn require_release_artifact_path(
         return;
     };
     if path.trim().is_empty() {
-        blockers.push(ProjectSupportBlocker::new(
-            "release artifact path is empty",
-        ));
+        blockers.push(ProjectSupportBlocker::new("release artifact path is empty"));
         return;
     }
     if is_project_evidence_path(path) && path_is_non_empty_file(&project_path(root, path)) {

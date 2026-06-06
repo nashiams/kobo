@@ -16,6 +16,8 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 struct EvidenceCommandTranscript {
     command: String,
     argv_json: String,
+    cwd: Option<String>,
+    output_match: &'static str,
     source: String,
     hash: String,
 }
@@ -57,20 +59,42 @@ insta = "1"
     project.write("examples/restart.kobo", "fn main() {}\n");
     project.write("tests/restart_behavior.kobo", "fn main() {}\n");
     write_upstream_inventory_files(project);
-    let evidence_command = build_evidence_command_transcript(project);
+    let inventory_command = build_evidence_command_transcript(
+        project,
+        &[
+            "cargo",
+            "metadata",
+            "--no-deps",
+            "--format-version",
+            "1",
+            "--manifest-path",
+            "upstream/watchexec/Cargo.toml",
+        ],
+        None,
+    );
+    let language_command = build_evidence_command_transcript(
+        project,
+        &["cargo", "check", "--workspace", "--all-targets"],
+        Some("upstream/watchexec"),
+    );
+    let behavior_command = build_evidence_command_transcript(
+        project,
+        &["cargo", "test", "--workspace", "--all-targets"],
+        Some("upstream/watchexec"),
+    );
     write_evidence(
         project,
         ".kobo/evidence/upstream-inventory.json",
         "upstream_inventory",
         "inventory",
-        &evidence_command,
+        &inventory_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/language.json",
         "language_surface",
         "language",
-        &evidence_command,
+        &language_command,
     );
     for (path, subject) in [
         (".kobo/evidence/filesystem-events.json", "filesystem_events"),
@@ -84,7 +108,7 @@ insta = "1"
         (".kobo/evidence/stdio.json", "stdio"),
         (".kobo/evidence/timers.json", "timers"),
     ] {
-        write_evidence(project, path, "platform_model", subject, &evidence_command);
+        write_evidence(project, path, "platform_model", subject, &behavior_command);
     }
     for (path, subject) in [
         (".kobo/evidence/adapter-watcher.json", "watcher_backend"),
@@ -100,21 +124,21 @@ insta = "1"
         (".kobo/evidence/adapter-terminal.json", "terminal_helpers"),
         (".kobo/evidence/adapter-errors.json", "errors"),
     ] {
-        write_evidence(project, path, "adapter_summary", subject, &evidence_command);
+        write_evidence(project, path, "adapter_summary", subject, &behavior_command);
     }
     write_evidence(
         project,
         ".kobo/evidence/async.json",
         "async_runtime",
         "async",
-        &evidence_command,
+        &behavior_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/generated-backend.json",
         "generated_backend",
         "backend",
-        &evidence_command,
+        &language_command,
     );
     for subject in [
         "upstream_tests",
@@ -133,7 +157,7 @@ insta = "1"
             &format!(".kobo/evidence/parity-{subject}.json"),
             "test_release_parity",
             subject,
-            &evidence_command,
+            &behavior_command,
         );
     }
     for subject in [
@@ -150,7 +174,7 @@ insta = "1"
             &format!(".kobo/evidence/perf-{subject}.json"),
             "performance",
             subject,
-            &evidence_command,
+            &behavior_command,
         );
     }
     write_evidence(
@@ -158,21 +182,21 @@ insta = "1"
         ".kobo/evidence/upstream-tests.json",
         "upstream_tests",
         "upstream",
-        &evidence_command,
+        &behavior_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/reviewer-a.json",
         "reviewer_report",
         "reviewer-a",
-        &evidence_command,
+        &behavior_command,
     );
     write_evidence(
         project,
         ".kobo/evidence/reviewer-b.json",
         "reviewer_report",
         "reviewer-b",
-        &evidence_command,
+        &behavior_command,
     );
     for subject in [
         "debt_summary",
@@ -185,7 +209,7 @@ insta = "1"
             &format!(".kobo/evidence/proof-debt-{subject}.json"),
             "proof_debt_report",
             subject,
-            &evidence_command,
+            &behavior_command,
         );
     }
     project.write(".kobo/evidence/release.zip", "release artifact bytes\n");
@@ -320,7 +344,7 @@ default = []
     );
     project.write(
         "upstream/watchexec/crates/cli/src/main.rs",
-        "pub fn cli() {}\n",
+        "fn main() {}\n",
     );
     project.write(
         "upstream/watchexec/crates/cli/src/lib.rs",
@@ -444,21 +468,25 @@ fn proof_debt_modules() -> &'static [&'static str] {
     ]
 }
 
-fn build_evidence_command_transcript(project: &TestProject) -> EvidenceCommandTranscript {
-    let argv = [
-        "cargo",
-        "metadata",
-        "--no-deps",
-        "--format-version",
-        "1",
-        "--manifest-path",
-        "upstream/watchexec/Cargo.toml",
-    ];
+fn build_evidence_command_transcript(
+    project: &TestProject,
+    argv: &[&str],
+    cwd: Option<&str>,
+) -> EvidenceCommandTranscript {
+    let command_cwd = cwd
+        .map(|path| project.root.join(path))
+        .unwrap_or_else(|| project.root.clone());
     let output = std::process::Command::new(argv[0])
         .args(&argv[1..])
-        .current_dir(&project.root)
+        .current_dir(command_cwd)
         .output()
-        .expect("cargo metadata evidence command should run");
+        .expect("evidence command should run");
+    assert!(
+        output.status.success(),
+        "evidence command failed: {}\n{}",
+        argv.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
     let command = argv.join(" ");
     let source = serde_json::to_string_pretty(&serde_json::json!({
         "schema_version": 1,
@@ -472,7 +500,13 @@ fn build_evidence_command_transcript(project: &TestProject) -> EvidenceCommandTr
     let hash = stable_hash(&source);
     EvidenceCommandTranscript {
         command,
-        argv_json: json_string_array(&argv),
+        argv_json: json_string_array(argv),
+        cwd: cwd.map(str::to_owned),
+        output_match: if argv.get(1) == Some(&"metadata") {
+            "exact"
+        } else {
+            "exit_code"
+        },
         source,
         hash,
     }
@@ -497,6 +531,15 @@ fn write_evidence(
     project.write(&transcript_path, &evidence_command.source);
     let command_json =
         serde_json::to_string(&evidence_command.command).expect("test command should serialize");
+    let cwd_json = evidence_command
+        .cwd
+        .as_ref()
+        .map(|cwd| format!(r#", "cwd": {}"#, serde_json::to_string(cwd).unwrap()))
+        .unwrap_or_default();
+    let output_match_json = format!(
+        r#", "output_match": {}"#,
+        serde_json::to_string(evidence_command.output_match).unwrap()
+    );
     let covered_paths = json_string_array(upstream_module_paths());
     let covered_modules = json_string_array(proof_debt_modules());
     let decision = if evidence_kind == "proof_debt_report" {
@@ -516,13 +559,16 @@ fn write_evidence(
   "covered_modules": [{covered_modules}],
   "tested_platforms": ["windows", "macos", "linux"],
   "commands": [
-    {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}"}}
+    {{"command": {command_json}, "argv": [{argv_json}], "status": "passed", "transcript_path": "{transcript_path}", "output_hash": "{transcript_hash}"{cwd_json}{output_match_json}}}
   ],
   "behavior_tests": ["watcher", "restart", "signal", "stdin", "path_filter"],
   "conformance_results": [
     {{"name": "{subject}-conformance", "status": "passed"}}
   ],
   "stale_check": {{"status": "passed", "crate_version": "1.0.0", "features": ["default", "polling", "rt", "time", "derive"]}},
+  "measurements": [
+    {{"name": "{subject}", "value": 1.0, "unit": "sample"}}
+  ],
   "mutation_results": ["task-order", "timer-order", "cancel-order", "channel-delivery"],
   "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"],
   "decision": "{decision}"
@@ -1250,6 +1296,45 @@ fn doctor_project_support_rejects_forged_command_transcript_hashes() {
         &value["project_support"]["blockers"].to_string(),
         "evidence transcript hash mismatch",
         "project support gate should bind command evidence to transcript hashes",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_metadata_only_future_evidence() {
+    let project = TestProject::new("doctor-project-support-metadata-only-future");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let inventory_evidence_path = project.root.join(".kobo/evidence/upstream-inventory.json");
+    let async_evidence_path = project.root.join(".kobo/evidence/async.json");
+    let inventory_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&inventory_evidence_path).expect("inventory evidence should read"),
+    )
+    .expect("inventory evidence should parse");
+    let mut async_evidence: Value = serde_json::from_str(
+        &fs::read_to_string(&async_evidence_path).expect("async evidence should read"),
+    )
+    .expect("async evidence should parse");
+    async_evidence["commands"] = inventory_evidence["commands"].clone();
+    fs::write(
+        &async_evidence_path,
+        serde_json::to_string_pretty(&async_evidence).expect("async evidence should serialize"),
+    )
+    .expect("async evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "metadata-only future evidence report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "conformance_evidence evidence command does not prove async_runtime",
+        "future evidence must be backed by a subject-specific command",
     );
 }
 

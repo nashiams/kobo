@@ -132,6 +132,103 @@ pub(super) fn replay_watch_trace_witness(
     trace::replay_watch_trace_witness(witness, error_format)
 }
 
+pub(super) fn enforce_release_lifecycle_gate(
+    file: &Path,
+    error_format: crate::ErrorFormat,
+) -> anyhow::Result<()> {
+    let Some(state) = source_watch_state_for_file(file)? else {
+        return Ok(());
+    };
+    let Some(reason) = release_lifecycle_gate_reason(&state) else {
+        return Ok(());
+    };
+    emit_release_lifecycle_gate(&reason, error_format)?;
+    anyhow::bail!("release watch lifecycle gate blocked {reason}")
+}
+
+fn source_watch_state_for_file(file: &Path) -> anyhow::Result<Option<serde_json::Value>> {
+    for directory in file.parent().into_iter().flat_map(Path::ancestors) {
+        let state_path = directory
+            .join(".kobo")
+            .join("watch")
+            .join("source-watch.json");
+        if !state_path.is_file() {
+            continue;
+        }
+        let source = std::fs::read_to_string(&state_path)
+            .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", state_path.display()))?;
+        let value = serde_json::from_str::<serde_json::Value>(&source).map_err(|error| {
+            anyhow::anyhow!("failed to parse {}: {error}", state_path.display())
+        })?;
+        if value["mode"].as_str() == Some("source_watch_state") {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+fn release_lifecycle_gate_reason(state: &serde_json::Value) -> Option<String> {
+    let Some(lifecycle) = state["child_lifecycle_obligations"].as_array() else {
+        return Some("missing child lifecycle evidence".to_owned());
+    };
+    if lifecycle.is_empty() {
+        return Some("empty child lifecycle evidence".to_owned());
+    }
+    for entry in lifecycle {
+        let resolution = entry["resolution"].as_str().unwrap_or("missing");
+        if !is_release_lifecycle_resolution(resolution) {
+            return Some(format!(
+                "unresolved child lifecycle obligation: {resolution}"
+            ));
+        }
+    }
+
+    let Some(debounce_windows) = state["debounce_windows"].as_array() else {
+        return Some("missing debounce evidence".to_owned());
+    };
+    if debounce_windows.is_empty() {
+        return Some("empty debounce evidence".to_owned());
+    }
+    if debounce_windows.iter().any(|window| {
+        window["timer_evidence"].as_str() == Some("missing")
+            || window["replay_grade"].as_str() == Some("debt")
+    }) {
+        return Some("incomplete debounce shutdown evidence".to_owned());
+    }
+    None
+}
+
+fn is_release_lifecycle_resolution(resolution: &str) -> bool {
+    matches!(
+        resolution,
+        "no_child_started"
+            | "in_process_rerun_finished"
+            | "exited"
+            | "signaled"
+            | "killed"
+            | "detached"
+    )
+}
+
+fn emit_release_lifecycle_gate(
+    reason: &str,
+    error_format: crate::ErrorFormat,
+) -> anyhow::Result<()> {
+    let message = format!("release watch lifecycle gate blocked {reason}");
+    match error_format {
+        crate::ErrorFormat::Human => eprintln!("error: {message}"),
+        crate::ErrorFormat::Json => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "kind": "ci_release_gate",
+                "gate": "watch_lifecycle",
+                "message": message,
+            }))?
+        ),
+    }
+    Ok(())
+}
+
 fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result<()> {
     let Some(file) = file else {
         anyhow::bail!(

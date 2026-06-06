@@ -173,6 +173,9 @@ fn cmd_build_file(
         }
         return Err(super::diagnostics_emitted());
     }
+    if session.guarantee_policy().is_release() {
+        super::watch::enforce_release_lifecycle_gate(file, error_format)?;
+    }
 
     if emit_rust {
         println!("generated: {}", artifacts.rs_path.display());

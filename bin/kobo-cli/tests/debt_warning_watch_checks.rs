@@ -6,7 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use cli_test_support::{
-    assert_contains, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput, TestProject,
+    assert_contains, assert_failure, assert_success, path_arg, run_kobo_with_timeout, s, CliOutput,
+    TestProject,
 };
 use serde_json::Value;
 
@@ -223,6 +224,73 @@ fn bare_debt_commands_use_project_default_source() {
         &adapter_summary.stdout,
         "time=acceptable",
         "debounce timer evidence should be visible by subsystem",
+    );
+}
+
+#[test]
+fn release_profile_blocks_unresolved_watch_lifecycle_debt() {
+    let project = TestProject::new("release-watch-lifecycle-gate");
+    let main = project.main_file("fn main() {}\n");
+    let watch_dir = project.root.join(".kobo/watch");
+    std::fs::create_dir_all(&watch_dir).expect("watch state directory should create");
+    std::fs::write(
+        watch_dir.join("source-watch.json"),
+        r#"{
+  "schema_version": 1,
+  "mode": "source_watch_state",
+  "watcher_evidence": "metadata-only",
+  "event_batches": [
+    {
+      "replay_grade": "partial",
+      "events": [
+        {
+          "evidence_grade": "metadata_only"
+        }
+      ]
+    }
+  ],
+  "debounce_windows": [
+    {
+      "timer_evidence": "metadata-only",
+      "replay_grade": "partial"
+    }
+  ],
+  "child_lifecycle_obligations": [
+    {
+      "command_kind": "in_process_check",
+      "resolution": "unresolved_started_child"
+    }
+  ]
+}"#,
+    )
+    .expect("watch state should write");
+
+    let check = run_kobo(
+        &[s("check"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &check,
+        "release check should block unresolved watch lifecycle debt",
+    );
+    assert_contains(
+        &check.combined(),
+        "release watch lifecycle gate",
+        "release check should name the watch lifecycle gate",
+    );
+
+    let build = run_kobo(
+        &[s("build"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &build,
+        "release build should block unresolved watch lifecycle debt",
+    );
+    assert_contains(
+        &build.combined(),
+        "release watch lifecycle gate",
+        "release build should name the watch lifecycle gate",
     );
 }
 

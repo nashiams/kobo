@@ -121,6 +121,47 @@ fn inspect_clean_and_inspect_cargo_preserve_clean_rust_exit_ramp() {
         &command_output(check),
         "clean Rust Cargo output should build",
     );
+    let backend_manifest_path = out_dir.join(".kobo/generated-backend.json");
+    assert!(
+        backend_manifest_path.is_file(),
+        "inspect --clean --cargo should write a backend manifest"
+    );
+    let backend_manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&backend_manifest_path)
+            .expect("backend manifest should be readable"),
+    )
+    .expect("backend manifest should parse");
+    assert_eq!(backend_manifest["source_of_truth"], "kobo");
+    let backend_manifest_text = backend_manifest.to_string();
+    for expected in [
+        "diagnostics",
+        "replay",
+        "debt",
+        "proof",
+        "lsp",
+        "source_map_diagnostics",
+        "generated Rust is a backend",
+    ] {
+        assert_contains(
+            &backend_manifest_text,
+            expected,
+            "backend manifest should keep project debugging anchored to Kobo source",
+        );
+    }
+    let source_map_path = out_dir.join("src/main.kobo.map");
+    assert!(
+        source_map_path.is_file(),
+        "inspect --clean --cargo should write a source map beside generated Rust"
+    );
+    let source_map: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&source_map_path).expect("source map should be readable"),
+    )
+    .expect("source map should parse");
+    assert_contains(
+        &source_map["sources"].to_string(),
+        "main.kobo",
+        "clean Cargo source map should point back to Kobo source",
+    );
 
     let clippy = Command::new("cargo")
         .arg("clippy")

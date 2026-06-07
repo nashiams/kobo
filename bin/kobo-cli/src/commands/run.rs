@@ -137,8 +137,12 @@ pub(super) fn cmd_inspect(
             main_output,
         } = build_inspect_cargo_output(file, cli_policy.clone(), erase_lifetimes)?;
 
-        kobo_codegen::cargo_gen::generate_cargo_project(&project_config, &source_files, dir)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        kobo_codegen::cargo_gen::generate_cargo_project_with_maps(
+            &project_config,
+            &source_files,
+            dir,
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
         eprintln!("cargo project generated at {}", dir.display());
         eprintln!(
             "// effective guarantee profile: {}",
@@ -896,7 +900,7 @@ fn inspect_ident_suffix(input: &str) -> Option<String> {
 
 struct InspectCargoOutput {
     project_config: kobo_codegen::cargo_gen::KoboProjectConfig,
-    source_files: Vec<(PathBuf, String)>,
+    source_files: Vec<kobo_codegen::cargo_gen::CargoSourceFile>,
     main_output: String,
 }
 
@@ -928,11 +932,14 @@ fn build_inspect_cargo_output(
 
     for kobo_file in kobo_files {
         let mut session = build_session(&kobo_file, cli_policy.clone())?;
-        let CodegenArtifacts { rs_source, .. } = run_codegen_pipeline(&mut session, &kobo_file)
-            .map_err(|()| {
-                render_diagnostics(&session);
-                anyhow::anyhow!("compilation failed")
-            })?;
+        let CodegenArtifacts {
+            rs_source,
+            source_map,
+            ..
+        } = run_codegen_pipeline(&mut session, &kobo_file).map_err(|()| {
+            render_diagnostics(&session);
+            anyhow::anyhow!("compilation failed")
+        })?;
         render_diagnostics(&session);
 
         let rs_source = if erase_lifetimes {
@@ -954,7 +961,11 @@ fn build_inspect_cargo_output(
         if kobo_file.canonicalize().unwrap_or(kobo_file.clone()) == canonical_input {
             main_output = Some(clean_source.clone());
         }
-        source_files.push((rel, clean_source));
+        source_files.push(kobo_codegen::cargo_gen::CargoSourceFile {
+            kobo_path: rel,
+            clean_source,
+            source_map: Some(source_map),
+        });
     }
 
     Ok(InspectCargoOutput {
@@ -970,11 +981,14 @@ fn build_single_file_inspect_cargo_output(
     erase_lifetimes: bool,
 ) -> anyhow::Result<InspectCargoOutput> {
     let mut session = build_session(file, cli_policy)?;
-    let CodegenArtifacts { rs_source, .. } =
-        run_codegen_pipeline(&mut session, file).map_err(|()| {
-            render_diagnostics(&session);
-            anyhow::anyhow!("compilation failed")
-        })?;
+    let CodegenArtifacts {
+        rs_source,
+        source_map,
+        ..
+    } = run_codegen_pipeline(&mut session, file).map_err(|()| {
+        render_diagnostics(&session);
+        anyhow::anyhow!("compilation failed")
+    })?;
     render_diagnostics(&session);
 
     let rs_source = if erase_lifetimes {
@@ -987,7 +1001,11 @@ fn build_single_file_inspect_cargo_output(
 
     Ok(InspectCargoOutput {
         project_config,
-        source_files: vec![(file.to_path_buf(), output.clone())],
+        source_files: vec![kobo_codegen::cargo_gen::CargoSourceFile {
+            kobo_path: file.to_path_buf(),
+            clean_source: output.clone(),
+            source_map: Some(source_map),
+        }],
         main_output: output,
     })
 }

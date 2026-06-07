@@ -215,7 +215,7 @@ pub fn generate_cargo_project_with_maps(
         write_source_map_if_present(source_file, source_files.len(), &src_dir)?;
     }
 
-    write_backend_manifest(output_dir, source_files)?;
+    write_backend_manifest(output_dir, &config, source_files)?;
     Ok(())
 }
 
@@ -240,24 +240,30 @@ fn write_source_map_if_present(
 
 fn write_backend_manifest(
     output_dir: &Path,
+    config: &KoboProjectConfig,
     source_files: &[CargoSourceFile],
 ) -> Result<(), CargoGenError> {
     let manifest_dir = output_dir.join(".kobo");
     fs::create_dir_all(&manifest_dir)?;
     fs::write(
         manifest_dir.join("generated-backend.json"),
-        serde_json::to_vec_pretty(&backend_manifest_json(source_files))?,
+        serde_json::to_vec_pretty(&backend_manifest_json(config, source_files))?,
     )?;
     Ok(())
 }
 
-fn backend_manifest_json(source_files: &[CargoSourceFile]) -> serde_json::Value {
+fn backend_manifest_json(
+    config: &KoboProjectConfig,
+    source_files: &[CargoSourceFile],
+) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "backend": "generated-rust",
         "source_of_truth": "kobo",
         "role": "generated Rust is a backend, not the source of truth",
         "debug_workflows": ["inspect_clean_cargo", "cargo_check", "source_map_diagnostics", "replay_debug"],
+        "release_workflows": ["cargo_check", "cargo_clippy", "cargo_test", "source_map_diagnostics", "replay_debug"],
+        "target_matrix": target_matrix_json(config),
         "project_concepts": ["diagnostics", "replay", "debt", "proof", "lsp"],
         "files": source_files
             .iter()
@@ -281,6 +287,56 @@ fn backend_manifest_json(source_files: &[CargoSourceFile]) -> serde_json::Value 
             })
             .collect::<Vec<_>>(),
     })
+}
+
+fn target_matrix_json(config: &KoboProjectConfig) -> serde_json::Value {
+    serde_json::json!({
+        "status": target_matrix_status(config),
+        "package": {
+            "name": config.name,
+            "version": config.version,
+            "edition": config.edition,
+        },
+        "host": {
+            "dependencies": dependency_entries(&config.dependencies),
+            "dev_dependencies": dependency_entries(&config.dev_dependencies),
+            "build_dependencies": dependency_entries(&config.build_dependencies),
+        },
+        "targets": config.target_dependencies
+            .iter()
+            .map(target_dependency_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn target_matrix_status(config: &KoboProjectConfig) -> &'static str {
+    if config.target_dependencies.is_empty() {
+        "host_only"
+    } else {
+        "preserved"
+    }
+}
+
+fn target_dependency_json(target: &TargetDependencyConfig) -> serde_json::Value {
+    serde_json::json!({
+        "target": target.target,
+        "dependencies": dependency_entries(&target.dependencies),
+        "dev_dependencies": dependency_entries(&target.dev_dependencies),
+        "build_dependencies": dependency_entries(&target.build_dependencies),
+        "release_workflows": ["cargo_check", "cargo_clippy", "cargo_test"],
+    })
+}
+
+fn dependency_entries(dependencies: &[(String, String)]) -> Vec<serde_json::Value> {
+    dependencies
+        .iter()
+        .map(|(name, version)| {
+            serde_json::json!({
+                "name": name,
+                "version": version,
+            })
+        })
+        .collect()
 }
 
 fn dependency_manifest_spec(dep_val: &toml::Value) -> String {

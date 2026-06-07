@@ -179,6 +179,73 @@ fn inspect_clean_and_inspect_cargo_preserve_clean_rust_exit_ramp() {
     );
 }
 
+#[test]
+fn inspect_clean_cargo_records_generated_backend_target_parity() {
+    let project = TestProject::new("model-clean-cargo-target-parity");
+    project.write(
+        "Kobo.toml",
+        r#"
+[package]
+name = "target-parity"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = "0.59"
+
+[target.'cfg(unix)'.dev-dependencies]
+tempfile = "3"
+"#,
+    );
+    let file = project.main_file(clean_exit_source());
+    let out_dir = project.root.join("target/target-parity-cargo");
+
+    let cargo_export = run_kobo(
+        &[
+            s("inspect"),
+            s("--clean"),
+            s("--cargo"),
+            path_arg(&out_dir),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &cargo_export,
+        "inspect --clean --cargo should export Cargo project with target metadata",
+    );
+
+    let cargo_toml = std::fs::read_to_string(out_dir.join("Cargo.toml"))
+        .expect("generated Cargo.toml should be readable");
+    assert_contains(
+        &cargo_toml,
+        "target.\"cfg(windows)\".dependencies",
+        "generated Cargo.toml should preserve target-specific dependencies",
+    );
+    let backend_manifest_path = out_dir.join(".kobo/generated-backend.json");
+    let backend_manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&backend_manifest_path)
+            .expect("backend manifest should be readable"),
+    )
+    .expect("backend manifest should parse");
+    assert_eq!(backend_manifest["target_matrix"]["status"], "preserved");
+    let backend_manifest_text = backend_manifest.to_string();
+    for expected in [
+        "cfg(windows)",
+        "windows-sys",
+        "cfg(unix)",
+        "tempfile",
+        "release_workflows",
+        "cargo_check",
+    ] {
+        assert_contains(
+            &backend_manifest_text,
+            expected,
+            "backend manifest should expose target and release workflow parity",
+        );
+    }
+}
+
 fn command_output(output: std::process::Output) -> CliOutput {
     CliOutput {
         status: output.status,

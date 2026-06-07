@@ -191,6 +191,16 @@ struct ExternalComparison {
     json: Value,
 }
 
+struct ComparisonFactCoverage {
+    behavior: &'static str,
+    facts: &'static [&'static str],
+}
+
+struct ComparisonMutationCase {
+    name: String,
+    target_fact: &'static str,
+}
+
 #[derive(Clone)]
 struct WatcherTraceEvent {
     event_kind: String,
@@ -230,6 +240,305 @@ struct NormalizedTrace {
 struct TraceImportInput {
     source_kind: &'static str,
     json: Value,
+}
+
+const COMPARISON_FACT_COVERAGE: &[ComparisonFactCoverage] = &[
+    ComparisonFactCoverage {
+        behavior: "coalesced filesystem events",
+        facts: &[
+            "filesystem_event_kind",
+            "duplicate_event",
+            "coalesced_event",
+            "debounce_window",
+            "raw_boundary",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: ".gitignore and .ignore loading",
+        facts: &[
+            "gitignore_loading",
+            "dotignore_loading",
+            "ignore_precedence",
+            "path_filter",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "process group behavior",
+        facts: &[
+            "process_group",
+            "session_boundary",
+            "child_tree",
+            "signal_delivery",
+            "kill_fallback",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "changed-path delivery through environment variables or stdin",
+        facts: &[
+            "environment_changed_path",
+            "stdin_changed_path",
+            "command_execution_replay",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "watchexec event signal supervisor process wrapping ignore project origin notify coverage",
+        facts: &[
+            "watchexec_events",
+            "watchexec_signals",
+            "watchexec_supervisor",
+            "process_wrapping",
+            "ignore_files",
+            "project_origins",
+            "notify_backend",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "extension watch lists and executed-script extension inference",
+        facts: &["extension_watch_list", "executed_script_extension_inference"],
+    },
+    ComparisonFactCoverage {
+        behavior: "absolute-path ignore rules and default ignore directories",
+        facts: &["absolute_path_ignore_rules", "default_ignore_directories"],
+    },
+    ComparisonFactCoverage {
+        behavior: "legacy polling fallback for mounted or unreliable filesystems",
+        facts: &[
+            "polling_fallback_unreliable_filesystem",
+            "mounted_volume_polling",
+            "network_filesystem_polling",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "delayed restart after bursty writes",
+        facts: &["delay_restart", "debounce_window", "burst_write_coalescing"],
+    },
+    ComparisonFactCoverage {
+        behavior: "custom stop or reload signals and process-tree signal delivery",
+        facts: &[
+            "custom_stop_signal",
+            "reload_signal",
+            "process_tree_signal_delivery",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "equivalence fixtures for extension filtering ignored paths polling fallback delay restart and signal restart",
+        facts: &[
+            "extension_filtering_fixture",
+            "ignored_paths_fixture",
+            "polling_fallback_fixture",
+            "delay_restart_fixture",
+            "signal_restart_fixture",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "raw watcher events normalize into add change unlink addDir unlinkDir ready raw and error",
+        facts: &[
+            "raw_add_change_unlink_ready_error",
+            "addDir_unlinkDir",
+            "raw_event_boundary",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "atomic write delete-plus-add normalization",
+        facts: &["atomic_write_delete_plus_add_change"],
+    },
+    ComparisonFactCoverage {
+        behavior: "chunked-write stability before emitting change",
+        facts: &["chunked_write_stability"],
+    },
+    ComparisonFactCoverage {
+        behavior: "recursion depth symlink cwd relative dynamic add unwatch close",
+        facts: &[
+            "recursion_depth",
+            "symlink_following",
+            "cwd_relative_paths",
+            "dynamic_add_unwatch_close",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "polling intervals permission errors and handle exhaustion diagnostics",
+        facts: &[
+            "polling_interval",
+            "binary_polling_interval",
+            "permission_error",
+            "handle_exhaustion_diagnostic",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "raw event details as boundary evidence",
+        facts: &["raw_backend_event_details"],
+    },
+    ComparisonFactCoverage {
+        behavior: "immutable filesystem event facts",
+        facts: &["immutable_event_facts"],
+    },
+    ComparisonFactCoverage {
+        behavior: "moved modified created closed deleted and directory events",
+        facts: &[
+            "moved_event",
+            "modified_event",
+            "created_event",
+            "closed_event",
+            "deleted_event",
+            "directory_event",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "pattern regex ignore directory and case-sensitive matching",
+        facts: &[
+            "pattern_matching",
+            "regex_matching",
+            "directory_ignore",
+            "case_sensitive_matching",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "skip repeated identical consecutive events",
+        facts: &["skip_identical_consecutive_events"],
+    },
+    ComparisonFactCoverage {
+        behavior: "observer lifecycle schedule start dispatch unschedule stop",
+        facts: &[
+            "observer_schedule_start_dispatch_stop",
+            "observer_unschedule_all",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "platform observer choices for Linux macOS BSD Windows and polling",
+        facts: &[
+            "linux_observer",
+            "macos_observer",
+            "bsd_observer",
+            "windows_observer",
+            "polling_observer",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "debounced sets of file changes",
+        facts: &["debounced_change_sets"],
+    },
+    ComparisonFactCoverage {
+        behavior: "synchronous watch and async watch thread handoff cancellation",
+        facts: &["sync_watch", "async_watch", "thread_handoff", "cancellation"],
+    },
+    ComparisonFactCoverage {
+        behavior: "debounce step timeout yield-on-timeout stop recursive permission forced polling polling delay",
+        facts: &[
+            "debounce_step_timeout",
+            "yield_on_timeout",
+            "stop_event",
+            "recursive_mode",
+            "permission_behavior",
+            "forced_polling",
+            "polling_delay",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "Windows-specific async timeout behavior",
+        facts: &["windows_async_timeout_defaults"],
+    },
+    ComparisonFactCoverage {
+        behavior: "recursive watched roots and root-settle before command execution",
+        facts: &["recursive_watched_roots", "root_settle"],
+    },
+    ComparisonFactCoverage {
+        behavior: "conservative uncertain-file startup behavior",
+        facts: &["conservative_uncertain_file_startup"],
+    },
+    ComparisonFactCoverage {
+        behavior: "project-root discovery through root files and root enforcement",
+        facts: &["project_root_discovery", "root_files", "root_enforcement"],
+    },
+    ComparisonFactCoverage {
+        behavior: "case-insensitive filesystem behavior canonical recovery and case-only rename",
+        facts: &[
+            "case_insensitive_filesystem",
+            "canonical_path_recovery",
+            "case_only_rename",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "unsupported or illegal filesystem types",
+        facts: &[
+            "unsupported_filesystem_boundary_diagnostic",
+            "illegal_filesystem_boundary_diagnostic",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "symlink policy",
+        facts: &["explicit_symlink_policy"],
+    },
+    ComparisonFactCoverage {
+        behavior: "build command entrypoint full command binary args pre-build and post-exit",
+        facts: &[
+            "build_command",
+            "entrypoint_command",
+            "full_command",
+            "binary_args",
+            "pre_build_command",
+            "post_exit_command",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "include exclude regex unchanged dangerous-root and symlink following",
+        facts: &[
+            "include_extensions",
+            "include_dirs",
+            "include_files",
+            "exclude_dirs",
+            "exclude_files",
+            "exclude_regex",
+            "unchanged_file_exclusion",
+            "dangerous_root_handling",
+            "symlink_following",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "polling stop-on-error interrupt-before-kill kill delay rerun clean-on-exit",
+        facts: &[
+            "polling_mode",
+            "poll_interval",
+            "rebuild_delay",
+            "stop_on_error",
+            "interrupt_before_kill",
+            "kill_delay",
+            "rerun",
+            "rerun_delay",
+            "clean_on_exit",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "platform-specific build overrides",
+        facts: &[
+            "windows_build_override",
+            "macos_build_override",
+            "linux_build_override",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "environment file loading and app environment inheritance",
+        facts: &[
+            "environment_file_loading",
+            "app_environment_inheritance",
+            "build_environment",
+            "run_environment",
+        ],
+    },
+    ComparisonFactCoverage {
+        behavior: "parity fixtures for config defaults cli overrides Docker mounted volumes and platform executable paths",
+        facts: &[
+            "config_default_fixture",
+            "cli_override_fixture",
+            "docker_mounted_volume_watch_fixture",
+            "platform_executable_paths",
+        ],
+    },
+];
+
+impl ComparisonMutationCase {
+    fn new(name: String, target_fact: &'static str) -> Self {
+        Self { name, target_fact }
+    }
 }
 
 pub(super) fn cmd_import_trace(
@@ -481,7 +790,24 @@ fn source_watch_comparison_reason(implementation: &str, behavior: &str) -> Strin
 }
 
 fn source_watch_comparison_anchor(behavior: &str) -> &'static str {
-    if behavior.contains("async") || behavior.contains("scheduler") || behavior.contains("timeout")
+    if behavior.contains("changed-path")
+        || behavior.contains("process")
+        || behavior.contains("signal")
+        || behavior.contains("command")
+        || behavior.contains("environment")
+        || behavior.contains("kill")
+        || behavior.contains("entrypoint")
+    {
+        "adapter_summaries[process]"
+    } else if behavior.contains("watchexec event signal supervisor")
+        || behavior.contains("observer lifecycle")
+        || behavior.contains("debounce step timeout")
+        || behavior.contains("polling stop-on-error")
+    {
+        "adapter_summaries[]"
+    } else if behavior.contains("async")
+        || behavior.contains("scheduler")
+        || behavior.contains("timeout")
     {
         "adapter_summaries[async_runtime]"
     } else if behavior.contains("ignore")
@@ -492,46 +818,20 @@ fn source_watch_comparison_anchor(behavior: &str) -> &'static str {
         || behavior.contains("extension")
         || behavior.contains("include")
         || behavior.contains("exclude")
+        || behavior.contains("dangerous-root")
     {
         "adapter_summaries[path_filter]"
-    } else if behavior.contains("signal")
-        || behavior.contains("process")
-        || behavior.contains("command")
-        || behavior.contains("environment")
-        || behavior.contains("kill")
-    {
-        "adapter_summaries[process]"
     } else {
         "event_batches[]"
     }
 }
 
 fn source_watch_comparison_facts(behavior: &str) -> Vec<&'static str> {
-    if behavior.contains("ignore")
-        || behavior.contains("path")
-        || behavior.contains("root")
-        || behavior.contains("symlink")
-        || behavior.contains("case")
-        || behavior.contains("extension")
-        || behavior.contains("include")
-        || behavior.contains("exclude")
-    {
-        vec!["path_filter", "root_scope", "case_policy"]
-    } else if behavior.contains("signal")
-        || behavior.contains("process")
-        || behavior.contains("command")
-        || behavior.contains("environment")
-        || behavior.contains("kill")
-    {
-        vec!["child_lifecycle", "process_group", "changed_path_delivery"]
-    } else if behavior.contains("async")
-        || behavior.contains("scheduler")
-        || behavior.contains("timeout")
-    {
-        vec!["task_order", "timer_order", "cancellation"]
-    } else {
-        vec!["event_kind", "debounce_window", "raw_boundary"]
-    }
+    COMPARISON_FACT_COVERAGE
+        .iter()
+        .find(|coverage| coverage.behavior == behavior)
+        .map(|coverage| coverage.facts.to_vec())
+        .unwrap_or_else(|| vec!["event_kind", "debounce_window", "raw_boundary"])
 }
 
 fn source_watch_comparison_fixtures(
@@ -566,7 +866,48 @@ fn source_watch_comparison_mutations(
     behavior: &str,
 ) -> anyhow::Result<Vec<Value>> {
     let disposition = source_watch_comparison_disposition(behavior);
-    let mutations = if behavior.contains("ignore")
+    let modeled_facts = source_watch_comparison_facts(behavior);
+    source_watch_comparison_mutation_cases(behavior, &modeled_facts)
+        .into_iter()
+        .map(|mutation| {
+            let artifact_name = mutation.name.clone();
+            let mut artifact = json!({
+                "implementation": implementation,
+                "behavior": behavior,
+                "disposition": disposition,
+                "model_binding": comparison_model_binding(disposition, behavior),
+                "source_visible_facts": ["implementation", "behavior", "disposition", "evidence_anchor", "modeled_facts"],
+                "modeled_facts": modeled_facts,
+                "mutation": artifact_name,
+                "target_fact": mutation.target_fact,
+                "expected_detection": "watch trace import or replay hash changes",
+                "assertions": [
+                    "mutation targets a modeled fact",
+                    "mutation is not accepted as silent parity"
+                ],
+            });
+            add_comparison_boundary_reason(&mut artifact, disposition);
+            comparison_artifact_entry(&mutation.name, "mutation_check", artifact)
+        })
+        .collect()
+}
+
+fn source_watch_comparison_mutation_cases(
+    behavior: &str,
+    modeled_facts: &[&'static str],
+) -> Vec<ComparisonMutationCase> {
+    let mut mutation_cases: Vec<_> = source_watch_comparison_base_mutations(behavior)
+        .iter()
+        .map(|mutation| ComparisonMutationCase::new((*mutation).to_owned(), "behavior_boundary"))
+        .collect();
+    mutation_cases.extend(modeled_facts.iter().map(|fact| {
+        ComparisonMutationCase::new(format!("{fact}-changed"), fact)
+    }));
+    mutation_cases
+}
+
+fn source_watch_comparison_base_mutations(behavior: &str) -> &'static [&'static str] {
+    if behavior.contains("ignore")
         || behavior.contains("path")
         || behavior.contains("root")
         || behavior.contains("symlink")
@@ -575,42 +916,22 @@ fn source_watch_comparison_mutations(
         || behavior.contains("include")
         || behavior.contains("exclude")
     {
-        vec!["path-filter-flip", "root-scope-shift"]
+        &["path-filter-flip", "root-scope-shift"]
     } else if behavior.contains("signal")
         || behavior.contains("process")
         || behavior.contains("command")
         || behavior.contains("environment")
         || behavior.contains("kill")
     {
-        vec!["child-exit-drop", "signal-order-swap"]
+        &["child-exit-drop", "signal-order-swap"]
     } else if behavior.contains("async")
         || behavior.contains("scheduler")
         || behavior.contains("timeout")
     {
-        vec!["timer-order-swap", "cancel-drop"]
+        &["timer-order-swap", "cancel-drop"]
     } else {
-        vec!["event-order-swap", "duplicate-drop"]
-    };
-    mutations
-        .into_iter()
-        .map(|mutation| {
-            let mut artifact = json!({
-                "implementation": implementation,
-                "behavior": behavior,
-                "disposition": disposition,
-                "model_binding": comparison_model_binding(disposition, behavior),
-                "source_visible_facts": ["implementation", "behavior", "disposition", "evidence_anchor"],
-                "mutation": mutation,
-                "expected_detection": "watch trace import or replay hash changes",
-                "assertions": [
-                    "mutation targets a modeled fact",
-                    "mutation is not accepted as silent parity"
-                ],
-            });
-            add_comparison_boundary_reason(&mut artifact, disposition);
-            comparison_artifact_entry(mutation, "mutation_check", artifact)
-        })
-        .collect()
+        &["event-order-swap", "duplicate-drop"]
+    }
 }
 
 fn comparison_model_binding(disposition: &str, behavior: &str) -> Value {

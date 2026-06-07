@@ -785,6 +785,25 @@ fn live_watch_state_imports_to_replayable_trace_witness() {
         "go-air",
         "live watch witness should not drop selected external boundary classifications",
     );
+    let comparison_text = witness_json["external_comparisons"].to_string();
+    for expected in [
+        "executed_script_extension_inference",
+        "absolute_path_ignore_rules",
+        "polling_fallback_unreliable_filesystem",
+        "raw_add_change_unlink_ready_error",
+        "atomic_write_delete_plus_add_change",
+        "chunked_write_stability",
+        "observer_schedule_start_dispatch_stop",
+        "windows_async_timeout_defaults",
+        "case_only_rename",
+        "platform_executable_paths",
+    ] {
+        assert_contains(
+            &comparison_text,
+            expected,
+            "generated external comparisons should expose behavior-specific modeled facts",
+        );
+    }
 
     let replay = run_kobo(&[s("replay"), path_arg(&witness)], &project.root);
     assert_success(&replay, "live watch witness should replay");

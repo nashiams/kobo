@@ -28,3 +28,4 @@ nul
 *.swn
 docs
 .skill-staging
+.claude/prompt/agent/v0.16.2/readme_task_checklist.codex_review.md

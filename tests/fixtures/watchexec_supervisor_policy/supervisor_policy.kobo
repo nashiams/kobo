@@ -1,0 +1,108 @@
+struct RawEvent {
+    path: String,
+    ignored: bool,
+    duplicate: bool,
+}
+
+struct FilteredEvent {
+    path: String,
+    changed: bool,
+    duplicate: bool,
+}
+
+struct DebounceBatch {
+    path: String,
+    should_restart: bool,
+    coalesced: bool,
+}
+
+enum Action {
+    Restart(String),
+    Ignore,
+}
+
+enum RestartPolicy {
+    Exclusive,
+}
+
+struct SupervisorState {
+    running: bool,
+    restart_count: i32,
+    orphan_count: i32,
+}
+
+fn rust_notify_adapter_emit(path: String, ignored: bool, duplicate: bool) -> RawEvent {
+    RawEvent {
+        path,
+        ignored,
+        duplicate,
+    }
+}
+
+fn filter_paths(event: RawEvent) -> FilteredEvent {
+    FilteredEvent {
+        path: event.path,
+        changed: !event.ignored,
+        duplicate: event.duplicate,
+    }
+}
+
+fn debounce_coalesce(event: FilteredEvent) -> DebounceBatch {
+    DebounceBatch {
+        path: event.path,
+        should_restart: event.changed,
+        coalesced: event.duplicate,
+    }
+}
+
+fn build_action(batch: DebounceBatch) -> Action {
+    if batch.should_restart {
+        Action::Restart(batch.path)
+    } else {
+        Action::Ignore
+    }
+}
+
+fn apply_restart_policy(
+    policy: RestartPolicy,
+    state: SupervisorState,
+    action: Action,
+) -> SupervisorState {
+    match policy {
+        RestartPolicy::Exclusive => update_supervisor_state(state, action),
+    }
+}
+
+fn update_supervisor_state(state: SupervisorState, action: Action) -> SupervisorState {
+    match action {
+        Action::Restart(_path) => SupervisorState {
+            running: true,
+            restart_count: state.restart_count + 1,
+            orphan_count: state.orphan_count,
+        },
+        Action::Ignore => state,
+    }
+}
+
+fn rust_process_adapter_apply(state: SupervisorState) -> i32 {
+    if state.running {
+        state.restart_count
+    } else {
+        0
+    }
+}
+
+fn main() {
+    let raw_event = rust_notify_adapter_emit("src/main.kobo".to_string(), false, true);
+    let filtered_event = filter_paths(raw_event);
+    let batch = debounce_coalesce(filtered_event);
+    let action = build_action(batch);
+    let state = SupervisorState {
+        running: false,
+        restart_count: 0,
+        orphan_count: 0,
+    };
+    let next_state = apply_restart_policy(RestartPolicy::Exclusive, state, action);
+    let restarts = rust_process_adapter_apply(next_state);
+    println!("{}", restarts);
+}

@@ -112,6 +112,9 @@ pub(super) fn cmd_check(
                 return Err(super::diagnostics_emitted());
             }
             enforce_configured_new_debt_gate(&session, effective_policy.as_ref(), error_format)?;
+            if session.guarantee_policy().is_release() {
+                super::watch::enforce_release_lifecycle_gate(file, error_format)?;
+            }
 
             if print_policy.is_none() {
                 if let Some(policy) = effective_policy.as_ref() {

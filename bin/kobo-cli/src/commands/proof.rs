@@ -9,7 +9,10 @@ use kobo_proof::{
 
 use crate::ProofReplayGradeArg;
 
-use super::session::{build_session, render_diagnostics};
+use super::{
+    project_map::ProjectMapReport,
+    session::{build_session, render_diagnostics},
+};
 
 pub(super) fn cmd_emit(
     file: &Path,
@@ -21,6 +24,7 @@ pub(super) fn cmd_emit(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| file.with_extension("kproof"));
     let artifact_kind = artifact_kind_for_path(&artifact_path)?;
+    let project_map = ProjectMapReport::for_file(file)?;
     let (certificate, source, source_map) =
         emit_certificate(file, target, replay_grade, artifact_kind)?;
     verify_before_write(&certificate, &source, Some(&source_map))?;
@@ -29,6 +33,7 @@ pub(super) fn cmd_emit(
         "proof emitted: {} (claim: modeled Core obligation flow)",
         artifact_path.display()
     );
+    println!("{}", project_map.human_label());
     Ok(())
 }
 
@@ -60,7 +65,9 @@ pub(super) fn cmd_verify(artifact: &Path, json: bool) -> anyhow::Result<()> {
         },
     ) {
         Ok(report) => {
-            emit_verified(artifact, &certificate, &report, json)?;
+            let source_path = certificate_source_path(artifact, &certificate);
+            let project_map = ProjectMapReport::for_file(&source_path)?;
+            emit_verified(artifact, &certificate, &report, &project_map, json)?;
             Ok(())
         }
         Err(error) => {
@@ -89,11 +96,13 @@ pub(super) fn emit_check_proof(
     replay_grade: ProofReplayGradeArg,
 ) -> anyhow::Result<()> {
     let artifact_path = file.with_extension("kproof");
+    let project_map = ProjectMapReport::for_file(file)?;
     let (certificate, source, source_map) =
         emit_certificate(file, None, replay_grade, ArtifactKind::Kproof)?;
     verify_before_write(&certificate, &source, Some(&source_map))?;
     write_certificate(&artifact_path, &certificate)?;
     eprintln!("proof emitted: {}", artifact_path.display());
+    eprintln!("{}", project_map.human_label());
     Ok(())
 }
 
@@ -180,19 +189,22 @@ fn read_certificate_source_and_map(
     artifact: &Path,
     certificate: &ProofCertificate,
 ) -> anyhow::Result<(String, Option<String>)> {
-    let source_path = PathBuf::from(&certificate.source.path);
-    let resolved = if source_path.is_absolute() {
-        source_path
-    } else {
-        artifact
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(source_path)
-    };
+    let resolved = certificate_source_path(artifact, certificate);
     let source = std::fs::read_to_string(&resolved)
         .with_context(|| format!("failed to read certificate source {}", resolved.display()))?;
     let source_map = read_source_map_for_source(&resolved);
     Ok((source, source_map))
+}
+
+fn certificate_source_path(artifact: &Path, certificate: &ProofCertificate) -> PathBuf {
+    let source_path = PathBuf::from(&certificate.source.path);
+    if source_path.is_absolute() {
+        return source_path;
+    }
+    artifact
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(source_path)
 }
 
 fn read_source_map_for_source(source_path: &Path) -> Option<String> {
@@ -204,6 +216,7 @@ fn emit_verified(
     artifact: &Path,
     certificate: &ProofCertificate,
     report: &VerificationReport,
+    project_map: &ProjectMapReport,
     json: bool,
 ) -> anyhow::Result<()> {
     if json {
@@ -221,6 +234,7 @@ fn emit_verified(
                 "certificate_material_hash": report.certificate_material_hash,
                 "translation_validation_status": &report.translation_validation_status,
                 "bounded_wording": &report.bounded_wording,
+                "project_map": project_map.to_json_value(),
             }))?
         );
     } else {
@@ -236,6 +250,7 @@ fn emit_verified(
             artifact.display(),
             report.checked_obligation_events
         );
+        println!("{}", project_map.human_label());
         for wording in &report.bounded_wording {
             println!("{wording}");
         }

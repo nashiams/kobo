@@ -192,10 +192,41 @@ pub(crate) enum KoboCommand {
     },
     /// Advisory project dependency and profile report.
     Doctor {
-        #[arg(long, help = "Inspect Cargo dependency shape")]
+        #[arg(
+            long,
+            conflicts_with_all = ["project_support", "supervisor_slice"],
+            help = "Inspect Cargo dependency shape"
+        )]
         deps: bool,
-        #[arg(long, help = "Report self-host compatibility readiness")]
+        #[arg(
+            long,
+            conflicts_with_all = ["project_support", "supervisor_slice"],
+            help = "Report self-host compatibility readiness"
+        )]
         self_host: bool,
+        #[arg(
+            long,
+            conflicts_with = "supervisor_slice",
+            help = "Report general project support readiness evidence"
+        )]
+        project_support: bool,
+        #[arg(
+            long,
+            help = "Gate only the Kobo-owned watcher/supervisor slice evidence"
+        )]
+        supervisor_slice: bool,
+        #[arg(
+            long,
+            value_name = "FILE",
+            requires = "supervisor_slice",
+            help = "Read supervisor slice evidence from FILE instead of .kobo/watch/source-watch.json"
+        )]
+        supervisor_slice_state: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Exit non-zero when selected readiness evidence is blocked"
+        )]
+        require_ready: bool,
         #[arg(long, help = "Emit JSON")]
         json: bool,
     },
@@ -465,6 +496,12 @@ pub(crate) enum KoboCommand {
         /// File to treat as changed when rendering a watch plan.
         #[arg(long, value_name = "FILE")]
         changed: Option<PathBuf>,
+        /// Import an observed watcher/process trace into a replayable witness.
+        #[arg(long = "import-trace", value_name = "FILE")]
+        import_trace: Option<PathBuf>,
+        /// Output path for --import-trace witness.
+        #[arg(long = "witness-out", value_name = "FILE")]
+        witness_out: Option<PathBuf>,
     },
     /// Explain a Kobo diagnostic code.
     Explain {

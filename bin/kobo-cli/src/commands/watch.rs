@@ -1,8 +1,62 @@
+mod evidence;
+mod trace;
+
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::session::{build_session, render_diagnostics};
+use evidence::{
+    DebounceWindowInput, DuplicateStatus, EventEvidenceGrade, RawWatchEventInput,
+    RestartPolicyBranch, WatchEventInput, WatchEventKind, WatchEventPathInput, WatchEvidence,
+    WatchExecutionMode, WatchPathRole, WatchRerunOutcome, WatchRerunReport, DEBOUNCE_INTERVAL_MS,
+};
 use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
+
+const PATH_FILTER_ADAPTER_KIND: &str = "path_filter";
+const ASYNC_RUNTIME_ADAPTER_KIND: &str = "async_runtime";
+const PATH_FILTER_CONFORMANCE_TEST: &str = "source-watch-path-match";
+const ASYNC_RUNTIME_CONFORMANCE_TEST: &str = "source-watch-task-order";
+const ASYNC_RUNTIME_SCHEDULER_FACT: &str = "source-watch-task-order";
+const REQUIRED_GENERATED_BACKEND_FLAGS: &[&str] = &[
+    "reviewable",
+    "deterministic",
+    "source_mapped",
+    "diagnostics_on_kobo_source",
+    "replay_on_kobo_source",
+    "debt_on_kobo_source",
+    "proof_on_kobo_source",
+    "lsp_on_kobo_source",
+];
+const REQUIRED_ASYNC_RELEASE_SEMANTICS: &[&str] = &[
+    "spawn",
+    "join",
+    "cancel",
+    "select",
+    "timer",
+    "channel",
+    "backpressure",
+    "shutdown",
+    "blocking",
+];
+const REQUIRED_ASYNC_RELEASE_MUTATIONS: &[&str] = &[
+    "task-order",
+    "timer-order",
+    "cancel-order",
+    "channel-delivery",
+];
+const REQUIRED_RELEASE_PARITY_FIELDS: &[&str] = &[
+    "upstream_tests",
+    "kobo_replay_tests",
+    "kobo_liveness_tests",
+    "cli_behavior",
+    "config_behavior",
+    "exit_behavior",
+    "logging_behavior",
+    "package_behavior",
+    "platform_behavior",
+    "install_behavior",
+];
 
 /// File-watcher re-run on save.
 ///
@@ -18,7 +72,12 @@ pub(super) fn cmd_watch(
     build: bool,
     plan: bool,
     changed: Option<&Path>,
+    import_trace: Option<&Path>,
+    witness_out: Option<&Path>,
 ) -> anyhow::Result<()> {
+    if let Some(trace_path) = import_trace {
+        return trace::cmd_import_trace(trace_path, witness_out);
+    }
     if plan {
         return cmd_watch_plan(file, changed);
     }
@@ -32,10 +91,11 @@ pub(super) fn cmd_watch(
 
     let mode_label = if build { "build" } else { "simple" };
     let run_once = std::env::var_os("KOBO_WATCH_ONCE").is_some();
+    let max_windows = watch_max_windows();
     let scope = watch_scope(file)?;
     let state_path = source_watch_state_path()?;
     let persisted_state_loaded = state_path.is_file();
-    persist_source_watch_state(file, &scope, &[], persisted_state_loaded)?;
+    persist_source_watch_state(file, &scope, persisted_state_loaded, &[])?;
     println!(
         "Watching {} ({mode_label} mode, scoped-persist-reload, Ctrl+C to stop)",
         file.display(),
@@ -46,32 +106,392 @@ pub(super) fn cmd_watch(
     println!("reload checkpoint: source-map-and-diagnostics");
     println!("restartable: true");
 
-    let mut watched = watched_files(&scope)?;
+    let mut scope = scope;
+    let snapshot_source = FsWatchSnapshotSource;
+    let mut watched = watched_files(&scope, &snapshot_source)?;
+    let mut change_sequence = 0;
+    let mut evidence_history = Vec::new();
 
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
 
-        let Some(change) = next_change(&mut watched) else {
+        let Some(window) = collect_debounce_window(&mut scope, &mut watched, &snapshot_source)?
+        else {
             continue;
         };
+        change_sequence += 1;
+        let mut evidence = WatchEvidence::for_window(
+            change_sequence,
+            relative_display(file),
+            window
+                .changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: window.has_timer_extension,
+                extension_cause_paths: window.extension_cause_paths,
+            },
+            if build {
+                WatchExecutionMode::Build
+            } else {
+                WatchExecutionMode::Simple
+            },
+        );
 
+        let changed_paths = evidence.changed_paths();
         println!(
             "[kobo-watch] Change detected in {}, recompiling...",
-            change.display
+            changed_paths.join(", ")
         );
-        println!("changed file: {}", change.display);
-        let changes = vec![change.to_json()];
-        persist_source_watch_state(file, &scope, &changes, persisted_state_loaded)?;
-        if build {
-            on_file_changed_build(file);
-        } else {
-            on_file_changed(file);
+        for changed_path in changed_paths {
+            println!("changed file: {changed_path}");
         }
-        if run_once {
+        let report = if build {
+            on_file_changed_build(file)
+        } else {
+            on_file_changed(file)
+        };
+        evidence.record_rerun_report(report);
+        for line in evidence.human_lines() {
+            println!("{line}");
+        }
+        evidence_history.push(evidence);
+        persist_source_watch_state(file, &scope, persisted_state_loaded, &evidence_history)?;
+        if run_once || max_windows.is_some_and(|limit| evidence_history.len() >= limit) {
             break;
         }
     }
 
+    Ok(())
+}
+
+pub(super) fn is_watch_trace_witness(witness: &serde_json::Value) -> bool {
+    trace::is_watch_trace_witness(witness)
+}
+
+pub(super) fn replay_watch_trace_witness(
+    witness: &serde_json::Value,
+    error_format: crate::ErrorFormat,
+) -> anyhow::Result<()> {
+    trace::replay_watch_trace_witness(witness, error_format)
+}
+
+pub(super) fn enforce_release_lifecycle_gate(
+    file: &Path,
+    error_format: crate::ErrorFormat,
+) -> anyhow::Result<()> {
+    if let Some(reason) = release_project_support_gate_reason(file)? {
+        emit_release_gate("project_support", "release project support gate", &reason, error_format)?;
+        anyhow::bail!("release project support gate blocked {reason}");
+    }
+    let Some(state) = source_watch_state_for_file(file)? else {
+        return Ok(());
+    };
+    let Some(reason) = release_lifecycle_gate_reason(&state) else {
+        return Ok(());
+    };
+    emit_release_gate("watch_lifecycle", "release watch lifecycle gate", &reason, error_format)?;
+    anyhow::bail!("release watch lifecycle gate blocked {reason}")
+}
+
+fn release_project_support_gate_reason(file: &Path) -> anyhow::Result<Option<String>> {
+    let Some(manifest) = project_support_manifest_for_file(file)? else {
+        return Ok(None);
+    };
+    if let Some(reason) = release_generated_backend_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    if let Some(reason) = release_async_runtime_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    if let Some(reason) = release_test_parity_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    if let Some(reason) = release_proof_debt_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    Ok(None)
+}
+
+fn project_support_manifest_for_file(file: &Path) -> anyhow::Result<Option<serde_json::Value>> {
+    for directory in file.parent().into_iter().flat_map(Path::ancestors) {
+        let manifest_path = directory.join(".kobo").join("project-support.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let source = std::fs::read_to_string(&manifest_path).map_err(|error| {
+            anyhow::anyhow!("failed to read {}: {error}", manifest_path.display())
+        })?;
+        let manifest = serde_json::from_str::<serde_json::Value>(&source).map_err(|error| {
+            anyhow::anyhow!("failed to parse {}: {error}", manifest_path.display())
+        })?;
+        return Ok(Some(manifest));
+    }
+    Ok(None)
+}
+
+fn release_generated_backend_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let backend = &manifest["generated_backend"];
+    for flag in REQUIRED_GENERATED_BACKEND_FLAGS {
+        if backend[*flag].as_bool() != Some(true) {
+            return Some(format!("generated backend release gate missing {flag}"));
+        }
+    }
+    if backend["targets"].as_array().is_none_or(Vec::is_empty) {
+        return Some("generated backend release gate missing supported targets".to_owned());
+    }
+    None
+}
+
+fn release_async_runtime_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let async_runtime = &manifest["async_runtime"];
+    for semantic in REQUIRED_ASYNC_RELEASE_SEMANTICS {
+        if !json_array_contains(&async_runtime["semantics"], semantic) {
+            return Some(format!("async runtime release gate missing {semantic}"));
+        }
+    }
+    for mutation in REQUIRED_ASYNC_RELEASE_MUTATIONS {
+        if !json_array_contains(&async_runtime["mutation_checks"], mutation) {
+            return Some(format!("async runtime release gate missing {mutation}"));
+        }
+    }
+    if async_runtime["conformance_evidence"].as_str().is_none() {
+        return Some("async runtime release gate missing conformance evidence".to_owned());
+    }
+    None
+}
+
+fn release_test_parity_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let parity = &manifest["test_release_parity"];
+    for field in REQUIRED_RELEASE_PARITY_FIELDS {
+        if parity[*field].as_str().is_none() {
+            return Some(format!("test release parity gate missing {field}"));
+        }
+    }
+    if parity["release_artifacts"].as_array().is_none_or(Vec::is_empty) {
+        return Some("test release parity gate missing release artifacts".to_owned());
+    }
+    if parity["performance"]
+        .as_object()
+        .is_none_or(serde_json::Map::is_empty)
+    {
+        return Some("test release parity gate missing performance evidence".to_owned());
+    }
+    None
+}
+
+fn release_proof_debt_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let Some(entries) = manifest["proof_debt_map"].as_array() else {
+        return Some("proof debt release gate missing project map".to_owned());
+    };
+    for entry in entries {
+        if entry["criticality"].as_str() == Some("correctness-critical")
+            && entry["release_blocking"].as_bool() == Some(true)
+        {
+            let module = entry["module"].as_str().unwrap_or("unknown module");
+            return Some(format!("proof debt release gate blocked {module}"));
+        }
+    }
+    let reports = &manifest["proof_debt_map_reports"];
+    for field in ["debt_summary", "proof_report", "replay_report", "inspect_output"] {
+        if reports[field].as_str().is_none() {
+            return Some(format!("proof debt release gate missing {field}"));
+        }
+    }
+    None
+}
+
+fn source_watch_state_for_file(file: &Path) -> anyhow::Result<Option<serde_json::Value>> {
+    for directory in file.parent().into_iter().flat_map(Path::ancestors) {
+        let state_path = directory
+            .join(".kobo")
+            .join("watch")
+            .join("source-watch.json");
+        if !state_path.is_file() {
+            continue;
+        }
+        let source = std::fs::read_to_string(&state_path)
+            .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", state_path.display()))?;
+        let value = serde_json::from_str::<serde_json::Value>(&source).map_err(|error| {
+            anyhow::anyhow!("failed to parse {}: {error}", state_path.display())
+        })?;
+        if value["mode"].as_str() == Some("source_watch_state") {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+fn release_lifecycle_gate_reason(state: &serde_json::Value) -> Option<String> {
+    let Some(lifecycle) = state["child_lifecycle_obligations"].as_array() else {
+        return Some("missing child lifecycle evidence".to_owned());
+    };
+    if lifecycle.is_empty() {
+        return Some("empty child lifecycle evidence".to_owned());
+    }
+    for entry in lifecycle {
+        let resolution = entry["resolution"].as_str().unwrap_or("missing");
+        if !is_release_lifecycle_resolution(resolution) {
+            return Some(format!(
+                "unresolved child lifecycle obligation: {resolution}"
+            ));
+        }
+    }
+    if let Some(reason) = release_watch_replay_gate_reason(state) {
+        return Some(reason);
+    }
+
+    let Some(debounce_windows) = state["debounce_windows"].as_array() else {
+        return Some("missing debounce evidence".to_owned());
+    };
+    if debounce_windows.is_empty() {
+        return Some("empty debounce evidence".to_owned());
+    }
+    if debounce_windows.iter().any(|window| {
+        window["timer_evidence"].as_str() == Some("missing")
+            || window["replay_grade"].as_str() == Some("debt")
+    }) {
+        return Some("incomplete debounce shutdown evidence".to_owned());
+    }
+    release_adapter_gate_reason(state)
+}
+
+fn release_watch_replay_gate_reason(state: &serde_json::Value) -> Option<String> {
+    let Some(event_batches) = state["event_batches"].as_array() else {
+        return Some("missing watch replay evidence".to_owned());
+    };
+    if event_batches.is_empty() {
+        return Some("empty watch replay evidence".to_owned());
+    }
+    for batch in event_batches {
+        if !is_release_replay_grade(batch["replay_grade"].as_str().unwrap_or("missing")) {
+            return Some("incomplete watch replay evidence".to_owned());
+        }
+        let Some(events) = batch["events"].as_array() else {
+            return Some("missing watch platform event evidence".to_owned());
+        };
+        if events.is_empty() {
+            return Some("empty watch platform event evidence".to_owned());
+        }
+        if events.iter().any(|event| {
+            !is_release_event_evidence_grade(event["evidence_grade"].as_str().unwrap_or("missing"))
+        }) {
+            return Some("unknown watch platform event evidence".to_owned());
+        }
+    }
+    None
+}
+
+fn release_adapter_gate_reason(state: &serde_json::Value) -> Option<String> {
+    let Some(adapter_summaries) = state["adapter_summaries"].as_array() else {
+        return Some("missing path filter adapter evidence".to_owned());
+    };
+    if adapter_summaries.is_empty() {
+        return Some("missing path filter adapter evidence".to_owned());
+    }
+    if !has_adapter_conformance(
+        adapter_summaries,
+        PATH_FILTER_ADAPTER_KIND,
+        PATH_FILTER_CONFORMANCE_TEST,
+    ) {
+        return Some("missing path filter adapter evidence".to_owned());
+    }
+    if !has_adapter_conformance(
+        adapter_summaries,
+        ASYNC_RUNTIME_ADAPTER_KIND,
+        ASYNC_RUNTIME_CONFORMANCE_TEST,
+    ) {
+        return Some("missing async runtime adapter evidence".to_owned());
+    }
+    if !has_adapter_scheduler_fact(
+        adapter_summaries,
+        ASYNC_RUNTIME_ADAPTER_KIND,
+        ASYNC_RUNTIME_SCHEDULER_FACT,
+    ) {
+        return Some("missing async runtime scheduler evidence".to_owned());
+    }
+    if state["external_comparisons"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+    {
+        return Some("missing external comparison evidence".to_owned());
+    }
+    None
+}
+
+fn is_release_replay_grade(grade: &str) -> bool {
+    matches!(
+        grade,
+        "exact" | "modelled" | "modeled" | "sampled" | "partial"
+    )
+}
+
+fn is_release_event_evidence_grade(grade: &str) -> bool {
+    matches!(grade, "exact" | "modelled" | "modeled" | "metadata_only")
+}
+
+fn is_release_lifecycle_resolution(resolution: &str) -> bool {
+    matches!(
+        resolution,
+        "no_child_started"
+            | "in_process_rerun_finished"
+            | "exited"
+            | "signaled"
+            | "graceful_stop"
+            | "killed"
+            | "kill_timeout"
+            | "detached"
+            | "cancelled"
+    )
+}
+
+fn has_adapter_conformance(
+    adapter_summaries: &[serde_json::Value],
+    kind: &str,
+    conformance_test: &str,
+) -> bool {
+    adapter_summaries.iter().any(|summary| {
+        summary["kind"].as_str() == Some(kind)
+            && json_array_contains(&summary["conformance_tests"], conformance_test)
+    })
+}
+
+fn has_adapter_scheduler_fact(
+    adapter_summaries: &[serde_json::Value],
+    kind: &str,
+    scheduler_fact: &str,
+) -> bool {
+    adapter_summaries.iter().any(|summary| {
+        summary["kind"].as_str() == Some(kind)
+            && json_array_contains(&summary["scheduler_facts"], scheduler_fact)
+    })
+}
+
+fn json_array_contains(value: &serde_json::Value, expected: &str) -> bool {
+    value
+        .as_array()
+        .is_some_and(|entries| entries.iter().any(|entry| entry.as_str() == Some(expected)))
+}
+
+fn emit_release_gate(
+    gate: &str,
+    gate_label: &str,
+    reason: &str,
+    error_format: crate::ErrorFormat,
+) -> anyhow::Result<()> {
+    let message = format!("{gate_label} blocked {reason}");
+    match error_format {
+        crate::ErrorFormat::Human => eprintln!("error: {message}"),
+        crate::ErrorFormat::Json => println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "kind": "ci_release_gate",
+                "gate": gate,
+                "message": message,
+            }))?
+        ),
+    }
     Ok(())
 }
 
@@ -83,7 +503,11 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     };
     let scope = watch_scope(file)?;
     let target = relative_display(file);
-    let changed = changed.map(relative_display);
+    let changed_display = changed.map(relative_display);
+    let plan_branch = changed
+        .map(|path| plan_change_branch(&scope, path))
+        .unwrap_or(RestartPolicyBranch::PlanOnly);
+    let evidence = WatchEvidence::for_plan(1, target.clone(), changed_display.clone(), plan_branch);
     println!("Watch plan");
     println!("mode: scoped-persist-reload");
     println!("scope: {target}");
@@ -97,28 +521,103 @@ fn cmd_watch_plan(file: Option<&Path>, changed: Option<&Path>) -> anyhow::Result
     println!("rerun targets:");
     println!("rerun target: kobo check {target}");
     println!("rerun target: kobo inspect {target}");
-    if let Some(changed) = changed {
-        println!("invalidated: {changed}");
-        println!("reason: changed file belongs to scoped watch plan");
-        println!("rerun target: kobo check {target}");
-        println!("rerun target: kobo inspect {target}");
+    for line in evidence.human_lines() {
+        println!("{line}");
+    }
+    if let Some(changed) = changed_display {
+        if matches!(plan_branch, RestartPolicyBranch::ChangedInScope) {
+            println!("invalidated: {changed}");
+            println!("reason: changed file belongs to scoped watch plan");
+            println!("rerun target: kobo check {target}");
+            println!("rerun target: kobo inspect {target}");
+        } else {
+            println!("ignored: {changed}");
+            println!("reason: changed file is outside scoped watch plan");
+        }
     }
     Ok(())
 }
 
 struct WatchScope {
+    root: PathBuf,
+    root_file: PathBuf,
     files: Vec<PathBuf>,
 }
 
 struct WatchedFile {
     path: PathBuf,
+    snapshot: Option<FileSnapshot>,
+    unresolved_error: Option<WatchErrorFingerprint>,
+    pending_startup_error: Option<WatchErrorFingerprint>,
+}
+
+#[derive(Clone, Copy)]
+struct FileSnapshot {
     modified: SystemTime,
+    len: u64,
+    is_readonly: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct WatchErrorFingerprint {
+    kind: io::ErrorKind,
+    raw_os_error: Option<i32>,
+    message: String,
+}
+
+trait WatchSnapshotSource {
+    fn snapshot(&self, file: &Path) -> io::Result<FileSnapshot>;
+}
+
+struct FsWatchSnapshotSource;
+
+impl WatchErrorFingerprint {
+    fn from_error(error: &io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            raw_os_error: error.raw_os_error(),
+            message: error.to_string(),
+        }
+    }
+
+    fn as_label(&self) -> String {
+        let kind = match self.kind {
+            io::ErrorKind::NotFound => "not_found",
+            io::ErrorKind::PermissionDenied => "permission_denied",
+            io::ErrorKind::AlreadyExists => "already_exists",
+            io::ErrorKind::InvalidInput => "invalid_input",
+            io::ErrorKind::InvalidData => "invalid_data",
+            io::ErrorKind::TimedOut => "timed_out",
+            io::ErrorKind::Interrupted => "interrupted",
+            io::ErrorKind::WouldBlock => "would_block",
+            io::ErrorKind::UnexpectedEof => "unexpected_eof",
+            io::ErrorKind::OutOfMemory => "out_of_memory",
+            _ => "other",
+        };
+        let identity = self
+            .raw_os_error
+            .map(|code| format!("os:{code}"))
+            .unwrap_or_else(|| format!("message:{}", self.message));
+        format!("{kind}:{identity}")
+    }
 }
 
 struct WatchChange {
     display: String,
-    previous_modified_ms: u128,
-    current_modified_ms: u128,
+    event_kind: WatchEventKind,
+    previous_modified_ms: Option<u128>,
+    current_modified_ms: Option<u128>,
+    duplicate_status: DuplicateStatus,
+    evidence_grade: EventEvidenceGrade,
+    error_fingerprint: Option<String>,
+    additional_paths: Vec<WatchEventPathInput>,
+    raw_events: Vec<RawWatchEventInput>,
+}
+
+struct DebounceWindow {
+    changes: Vec<WatchChange>,
+    has_timer_extension: bool,
+    extension_cause_paths: Vec<String>,
 }
 
 fn watch_scope(file: &Path) -> anyhow::Result<WatchScope> {
@@ -129,7 +628,11 @@ fn watch_scope(file: &Path) -> anyhow::Result<WatchScope> {
         files.push(file.to_path_buf());
     }
     files.sort();
-    Ok(WatchScope { files })
+    Ok(WatchScope {
+        root: root.to_path_buf(),
+        root_file: file.to_path_buf(),
+        files,
+    })
 }
 
 fn collect_kobo_watch_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -155,17 +658,37 @@ fn collect_kobo_watch_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Res
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
-    left.canonicalize().ok() == right.canonicalize().ok()
+    normalized_path(left) == normalized_path(right)
 }
 
-fn relative_display(path: &Path) -> String {
-    let absolute = if path.is_absolute() {
+fn normalized_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| absolute_path(path))
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()
             .map(|cwd| cwd.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
-    };
+    }
+}
+
+fn plan_change_branch(scope: &WatchScope, changed: &Path) -> RestartPolicyBranch {
+    if path_in_scope(scope, changed) {
+        RestartPolicyBranch::ChangedInScope
+    } else {
+        RestartPolicyBranch::IgnoredOutOfScope
+    }
+}
+
+fn path_in_scope(scope: &WatchScope, changed: &Path) -> bool {
+    scope.files.iter().any(|file| same_path(file, changed))
+}
+
+fn relative_display(path: &Path) -> String {
+    let absolute = absolute_path(path);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     absolute
         .strip_prefix(&cwd)
@@ -185,19 +708,62 @@ fn source_watch_state_path() -> anyhow::Result<PathBuf> {
     Ok(state_dir.join("source-watch.json"))
 }
 
+fn watch_max_windows() -> Option<usize> {
+    std::env::var("KOBO_WATCH_MAX_WINDOWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|limit| *limit > 0)
+}
+
 fn persist_source_watch_state(
     root_file: &Path,
     scope: &WatchScope,
-    changes: &[serde_json::Value],
     persisted_state_loaded: bool,
+    evidence_history: &[WatchEvidence],
 ) -> anyhow::Result<()> {
     let state_path = source_watch_state_path()?;
+    let value =
+        source_watch_state_json(root_file, scope, persisted_state_loaded, evidence_history)?;
+    std::fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
+        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", state_path.display()))
+}
+
+fn source_watch_state_json(
+    root_file: &Path,
+    scope: &WatchScope,
+    persisted_state_loaded: bool,
+    evidence_history: &[WatchEvidence],
+) -> anyhow::Result<serde_json::Value> {
     let scope_files = scope
         .files
         .iter()
         .map(|file| relative_display(file))
         .collect::<Vec<_>>();
-    let value = serde_json::json!({
+    let event_batches = evidence_history
+        .iter()
+        .map(WatchEvidence::event_batch_json)
+        .collect::<Vec<_>>();
+    let debounce_windows = evidence_history
+        .iter()
+        .map(WatchEvidence::debounce_window_json)
+        .collect::<Vec<_>>();
+    let restart_decisions = evidence_history
+        .iter()
+        .map(WatchEvidence::restart_decision_json)
+        .collect::<Vec<_>>();
+    let child_lifecycle_obligations = evidence_history
+        .iter()
+        .map(WatchEvidence::child_lifecycle_json)
+        .collect::<Vec<_>>();
+    let changes = evidence_history
+        .last()
+        .map(WatchEvidence::changes_json)
+        .unwrap_or_default();
+    let watcher_evidence = evidence_history
+        .last()
+        .map(WatchEvidence::watcher_evidence)
+        .unwrap_or("metadata-only");
+    Ok(serde_json::json!({
         "schema_version": 1,
         "mode": "source_watch_state",
         "scope": {
@@ -207,55 +773,491 @@ fn persist_source_watch_state(
         "reload_checkpoint": "source-map-and-diagnostics",
         "restartable": true,
         "persisted_state_loaded": persisted_state_loaded,
+        "watcher_evidence": watcher_evidence,
         "rerun_targets": [
             format!("kobo check {}", relative_display(root_file)),
             format!("kobo inspect {}", relative_display(root_file)),
         ],
         "changes": changes,
-    });
-    std::fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
-        .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", state_path.display()))
+        "event_batches": event_batches,
+        "debounce_windows": debounce_windows,
+        "restart_decisions": restart_decisions,
+        "child_lifecycle_obligations": child_lifecycle_obligations,
+        "adapter_summaries": trace::source_watch_state_adapter_summaries(),
+        "external_comparisons": trace::source_watch_state_external_comparisons()?,
+    }))
 }
 
-fn watched_files(scope: &WatchScope) -> anyhow::Result<Vec<WatchedFile>> {
+fn watched_files(
+    scope: &WatchScope,
+    snapshot_source: &impl WatchSnapshotSource,
+) -> anyhow::Result<Vec<WatchedFile>> {
     scope
         .files
         .iter()
         .map(|path| {
+            let (snapshot, pending_startup_error) = match snapshot_source.snapshot(path) {
+                Ok(snapshot) => (Some(snapshot), None),
+                Err(error) => (None, Some(WatchErrorFingerprint::from_error(&error))),
+            };
             Ok(WatchedFile {
                 path: path.clone(),
-                modified: get_mtime(path)?,
+                snapshot,
+                unresolved_error: None,
+                pending_startup_error,
             })
         })
         .collect()
 }
 
-fn next_change(watched: &mut [WatchedFile]) -> Option<WatchChange> {
+fn collect_debounce_window(
+    scope: &mut WatchScope,
+    watched: &mut Vec<WatchedFile>,
+    snapshot_source: &impl WatchSnapshotSource,
+) -> anyhow::Result<Option<DebounceWindow>> {
+    let mut changes = collect_watch_changes(scope, watched, snapshot_source)?;
+    if changes.is_empty() {
+        return Ok(None);
+    }
+    let mut has_timer_extension = false;
+    let mut extension_cause_paths = Vec::new();
+
+    loop {
+        std::thread::sleep(Duration::from_millis(DEBOUNCE_INTERVAL_MS));
+        let later_changes = collect_watch_changes(scope, watched, snapshot_source)?;
+        if later_changes.is_empty() {
+            return Ok(Some(finalize_debounce_window(
+                changes,
+                has_timer_extension,
+                extension_cause_paths,
+            )));
+        }
+        if repeated_unknown_changes(&changes, &later_changes) {
+            has_timer_extension = true;
+            extension_cause_paths.extend(later_changes.iter().map(|change| change.display.clone()));
+            merge_window_changes(&mut changes, later_changes);
+            return Ok(Some(finalize_debounce_window(
+                changes,
+                has_timer_extension,
+                extension_cause_paths,
+            )));
+        }
+        has_timer_extension = true;
+        extension_cause_paths.extend(later_changes.iter().map(|change| change.display.clone()));
+        merge_window_changes(&mut changes, later_changes);
+    }
+}
+
+fn finalize_debounce_window(
+    mut changes: Vec<WatchChange>,
+    has_timer_extension: bool,
+    mut extension_cause_paths: Vec<String>,
+) -> DebounceWindow {
+    changes = normalize_rename_events(changes);
+    changes.sort_by(|left, right| left.display.cmp(&right.display));
+    extension_cause_paths.sort();
+    extension_cause_paths.dedup();
+    DebounceWindow {
+        changes,
+        has_timer_extension,
+        extension_cause_paths,
+    }
+}
+
+fn repeated_unknown_changes(existing: &[WatchChange], later: &[WatchChange]) -> bool {
+    !later.is_empty()
+        && later.iter().all(|later_change| {
+            matches!(later_change.event_kind, WatchEventKind::Unknown)
+                && existing
+                    .iter()
+                    .any(|existing_change| existing_change.can_coalesce_with(later_change))
+        })
+}
+
+fn normalize_rename_events(changes: Vec<WatchChange>) -> Vec<WatchChange> {
+    let mut remaining = changes;
+    let remove_count = remaining
+        .iter()
+        .filter(|change| matches!(change.event_kind, WatchEventKind::Remove))
+        .count();
+    let create_count = remaining
+        .iter()
+        .filter(|change| matches!(change.event_kind, WatchEventKind::Create))
+        .count();
+    if remove_count != 1 || create_count != 1 {
+        return remaining;
+    }
+
+    let remove_index = remaining
+        .iter()
+        .position(|change| matches!(change.event_kind, WatchEventKind::Remove));
+    let create_index = remaining
+        .iter()
+        .position(|change| matches!(change.event_kind, WatchEventKind::Create));
+
+    let (Some(remove_index), Some(create_index)) = (remove_index, create_index) else {
+        return remaining;
+    };
+    if remove_index == create_index {
+        return remaining;
+    }
+    if remaining[remove_index].display == remaining[create_index].display {
+        return remaining;
+    }
+
+    let create = remaining.remove(create_index);
+    let adjusted_remove_index = if create_index < remove_index {
+        remove_index - 1
+    } else {
+        remove_index
+    };
+    let remove = remaining.remove(adjusted_remove_index);
+
+    if !same_parent_display(&remove.display, &create.display) {
+        remaining.push(remove);
+        remaining.push(create);
+        return remaining;
+    }
+
+    remaining.push(WatchChange::rename_candidate(remove, create));
+    remaining
+}
+
+fn same_parent_display(left: &str, right: &str) -> bool {
+    Path::new(left).parent() == Path::new(right).parent()
+}
+
+fn collect_watch_changes(
+    scope: &mut WatchScope,
+    watched: &mut Vec<WatchedFile>,
+    snapshot_source: &impl WatchSnapshotSource,
+) -> anyhow::Result<Vec<WatchChange>> {
+    let mut changes = changed_existing_files(watched, snapshot_source);
+    refresh_watch_scope(scope)?;
+    changes.extend(created_watch_files(scope, watched, snapshot_source));
+    Ok(changes)
+}
+
+fn changed_existing_files(
+    watched: &mut [WatchedFile],
+    snapshot_source: &impl WatchSnapshotSource,
+) -> Vec<WatchChange> {
+    let mut changes = Vec::new();
     for file in watched {
-        let Ok(current) = get_mtime(&file.path) else {
-            continue;
-        };
-        if current != file.modified {
-            let previous = file.modified;
-            file.modified = current;
-            return Some(WatchChange {
-                display: relative_display(&file.path),
-                previous_modified_ms: system_time_millis(previous),
-                current_modified_ms: system_time_millis(current),
-            });
+        let pending_startup_error = file.pending_startup_error.take();
+        match snapshot_source.snapshot(&file.path) {
+            Ok(current) => {
+                if let Some(fingerprint) = pending_startup_error {
+                    changes.push(WatchChange::unknown(
+                        &file.path,
+                        file.snapshot,
+                        Some(&fingerprint),
+                    ));
+                }
+                file.unresolved_error = None;
+                match file.snapshot {
+                    Some(previous) if current.has_modified_change(previous) => {
+                        file.snapshot = Some(current);
+                        changes.push(WatchChange::modified(
+                            &file.path,
+                            previous.modified,
+                            current.modified,
+                        ));
+                    }
+                    Some(previous) if current.has_metadata_change(previous) => {
+                        file.snapshot = Some(current);
+                        changes.push(WatchChange::metadata(
+                            &file.path,
+                            previous.modified,
+                            current.modified,
+                        ));
+                    }
+                    None => {
+                        file.snapshot = Some(current);
+                        changes.push(WatchChange::created(&file.path, current.modified));
+                    }
+                    _ => {}
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let fingerprint = WatchErrorFingerprint::from_error(&error);
+                if let Some(pending) =
+                    pending_startup_error.filter(|pending| pending.kind != io::ErrorKind::NotFound)
+                {
+                    changes.push(WatchChange::unknown(
+                        &file.path,
+                        file.snapshot,
+                        Some(&pending),
+                    ));
+                }
+                if file.unresolved_error.as_ref() == Some(&fingerprint) {
+                    continue;
+                }
+                let previous = file.snapshot.take();
+                file.unresolved_error = Some(fingerprint.clone());
+                changes.push(WatchChange::removed(
+                    &file.path,
+                    previous,
+                    Some(&fingerprint),
+                ));
+            }
+            Err(error) => {
+                let fingerprint = WatchErrorFingerprint::from_error(&error);
+                if let Some(pending) = pending_startup_error {
+                    changes.push(WatchChange::unknown(
+                        &file.path,
+                        file.snapshot,
+                        Some(&pending),
+                    ));
+                    if pending == fingerprint {
+                        file.unresolved_error = Some(fingerprint);
+                        continue;
+                    }
+                }
+                if file.unresolved_error.as_ref() == Some(&fingerprint) {
+                    continue;
+                }
+                file.unresolved_error = Some(fingerprint.clone());
+                changes.push(WatchChange::unknown(
+                    &file.path,
+                    file.snapshot,
+                    Some(&fingerprint),
+                ));
+            }
         }
     }
-    None
+    changes
+}
+
+fn refresh_watch_scope(scope: &mut WatchScope) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    collect_kobo_watch_files(&scope.root, &mut files)?;
+    if !files
+        .iter()
+        .any(|candidate| same_path(candidate, &scope.root_file))
+    {
+        files.push(scope.root_file.clone());
+    }
+    files.sort();
+    scope.files = files;
+    Ok(())
+}
+
+fn created_watch_files(
+    scope: &WatchScope,
+    watched: &mut Vec<WatchedFile>,
+    snapshot_source: &impl WatchSnapshotSource,
+) -> Vec<WatchChange> {
+    let mut changes = Vec::new();
+    for file in &scope.files {
+        if watched
+            .iter()
+            .any(|watched_file| same_path(&watched_file.path, file))
+        {
+            continue;
+        }
+        match snapshot_source.snapshot(file) {
+            Ok(current) => {
+                watched.push(WatchedFile {
+                    path: file.clone(),
+                    snapshot: Some(current),
+                    unresolved_error: None,
+                    pending_startup_error: None,
+                });
+                changes.push(WatchChange::created(file, current.modified));
+            }
+            Err(error) => {
+                let fingerprint = WatchErrorFingerprint::from_error(&error);
+                watched.push(WatchedFile {
+                    path: file.clone(),
+                    snapshot: None,
+                    unresolved_error: Some(fingerprint.clone()),
+                    pending_startup_error: None,
+                });
+                if error.kind() == io::ErrorKind::NotFound {
+                    changes.push(WatchChange::removed(file, None, Some(&fingerprint)));
+                } else {
+                    changes.push(WatchChange::unknown(file, None, Some(&fingerprint)));
+                }
+            }
+        }
+    }
+    changes
+}
+
+fn merge_window_changes(changes: &mut Vec<WatchChange>, later_changes: Vec<WatchChange>) {
+    for later_change in later_changes {
+        if let Some(existing) = changes
+            .iter_mut()
+            .find(|existing| existing.can_coalesce_with(&later_change))
+        {
+            existing.event_kind = later_change.event_kind;
+            existing.current_modified_ms = later_change.current_modified_ms;
+            existing.duplicate_status = DuplicateStatus::Coalesced;
+            existing.evidence_grade = later_change.evidence_grade;
+            existing.error_fingerprint = later_change.error_fingerprint;
+            existing.additional_paths = later_change.additional_paths;
+            existing.raw_events = later_change.raw_events;
+        } else {
+            changes.push(later_change);
+        }
+    }
 }
 
 impl WatchChange {
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "kind": "source_change",
-            "path": self.display,
-            "previous_modified_ms": self.previous_modified_ms,
-            "current_modified_ms": self.current_modified_ms,
-        })
+    fn can_coalesce_with(&self, other: &Self) -> bool {
+        self.display == other.display
+            && self.event_kind.as_str() == other.event_kind.as_str()
+            && self.error_fingerprint == other.error_fingerprint
+    }
+
+    fn modified(path: &Path, previous: SystemTime, current: SystemTime) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Modify,
+            previous_modified_ms: Some(system_time_millis(previous)),
+            current_modified_ms: Some(system_time_millis(current)),
+            duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: None,
+            additional_paths: Vec::new(),
+            raw_events: Vec::new(),
+        }
+    }
+
+    fn created(path: &Path, current: SystemTime) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Create,
+            previous_modified_ms: None,
+            current_modified_ms: Some(system_time_millis(current)),
+            duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: None,
+            additional_paths: Vec::new(),
+            raw_events: Vec::new(),
+        }
+    }
+
+    fn metadata(path: &Path, previous: SystemTime, current: SystemTime) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Metadata,
+            previous_modified_ms: Some(system_time_millis(previous)),
+            current_modified_ms: Some(system_time_millis(current)),
+            duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: None,
+            additional_paths: Vec::new(),
+            raw_events: Vec::new(),
+        }
+    }
+
+    fn removed(
+        path: &Path,
+        previous: Option<FileSnapshot>,
+        fingerprint: Option<&WatchErrorFingerprint>,
+    ) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Remove,
+            previous_modified_ms: previous.map(|snapshot| system_time_millis(snapshot.modified)),
+            current_modified_ms: None,
+            duplicate_status: DuplicateStatus::Unique,
+            evidence_grade: EventEvidenceGrade::MetadataOnly,
+            error_fingerprint: fingerprint.map(WatchErrorFingerprint::as_label),
+            additional_paths: Vec::new(),
+            raw_events: Vec::new(),
+        }
+    }
+
+    fn unknown(
+        path: &Path,
+        previous: Option<FileSnapshot>,
+        fingerprint: Option<&WatchErrorFingerprint>,
+    ) -> Self {
+        Self {
+            display: relative_display(path),
+            event_kind: WatchEventKind::Unknown,
+            previous_modified_ms: previous.map(|snapshot| system_time_millis(snapshot.modified)),
+            current_modified_ms: None,
+            duplicate_status: DuplicateStatus::Unknown,
+            evidence_grade: EventEvidenceGrade::Unknown,
+            error_fingerprint: fingerprint.map(WatchErrorFingerprint::as_label),
+            additional_paths: Vec::new(),
+            raw_events: Vec::new(),
+        }
+    }
+
+    fn rename_candidate(remove: WatchChange, create: WatchChange) -> Self {
+        let parent_path = Path::new(&create.display)
+            .parent()
+            .map(|path| {
+                path.components()
+                    .map(|part| part.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default();
+        let source_path = remove.display;
+        let destination_path = create.display;
+        Self {
+            display: source_path.clone(),
+            event_kind: WatchEventKind::RenameCandidate,
+            previous_modified_ms: remove.previous_modified_ms,
+            current_modified_ms: create.current_modified_ms,
+            duplicate_status: DuplicateStatus::Coalesced,
+            evidence_grade: EventEvidenceGrade::ModelledFromMetadata,
+            error_fingerprint: None,
+            additional_paths: vec![
+                WatchEventPathInput {
+                    role: WatchPathRole::DestinationPath,
+                    path: destination_path.clone(),
+                },
+                WatchEventPathInput {
+                    role: WatchPathRole::ParentPath,
+                    path: parent_path,
+                },
+            ],
+            raw_events: vec![
+                RawWatchEventInput {
+                    event_kind: WatchEventKind::Remove,
+                    paths: vec![WatchEventPathInput {
+                        role: WatchPathRole::SourcePath,
+                        path: source_path,
+                    }],
+                    evidence_grade: remove.evidence_grade,
+                    error_fingerprint: remove.error_fingerprint,
+                },
+                RawWatchEventInput {
+                    event_kind: WatchEventKind::Create,
+                    paths: vec![WatchEventPathInput {
+                        role: WatchPathRole::DestinationPath,
+                        path: destination_path,
+                    }],
+                    evidence_grade: create.evidence_grade,
+                    error_fingerprint: create.error_fingerprint,
+                },
+            ],
+        }
+    }
+
+    fn into_event_input(self) -> WatchEventInput {
+        let mut paths = vec![WatchEventPathInput {
+            role: WatchPathRole::SourcePath,
+            path: self.display,
+        }];
+        paths.extend(self.additional_paths);
+        WatchEventInput {
+            paths,
+            event_kind: self.event_kind,
+            previous_modified_ms: self.previous_modified_ms,
+            current_modified_ms: self.current_modified_ms,
+            duplicate_status: self.duplicate_status,
+            evidence_grade: self.evidence_grade,
+            error_fingerprint: self.error_fingerprint,
+            raw_events: self.raw_events,
+        }
     }
 }
 
@@ -275,8 +1277,34 @@ fn get_mtime(file: &Path) -> anyhow::Result<SystemTime> {
         .map_err(|e| anyhow::anyhow!("cannot get mtime for {}: {}", file.display(), e))
 }
 
+impl WatchSnapshotSource for FsWatchSnapshotSource {
+    fn snapshot(&self, file: &Path) -> io::Result<FileSnapshot> {
+        get_file_snapshot(file)
+    }
+}
+
+fn get_file_snapshot(file: &Path) -> io::Result<FileSnapshot> {
+    let metadata = std::fs::metadata(file)?;
+    let modified = metadata.modified()?;
+    Ok(FileSnapshot {
+        modified,
+        len: metadata.len(),
+        is_readonly: metadata.permissions().readonly(),
+    })
+}
+
+impl FileSnapshot {
+    fn has_modified_change(self, previous: Self) -> bool {
+        self.modified != previous.modified
+    }
+
+    fn has_metadata_change(self, previous: Self) -> bool {
+        self.len != previous.len || self.is_readonly != previous.is_readonly
+    }
+}
+
 /// Called when a file change is detected — runs the check pipeline.
-fn on_file_changed(file: &Path) {
+fn on_file_changed(file: &Path) -> WatchRerunReport {
     println!("[kobo-watch] Triggering rebuild for {}", file.display());
     match build_session(file, None) {
         Ok(mut session) => match run_check_pipeline(&mut session, file) {
@@ -287,20 +1315,32 @@ fn on_file_changed(file: &Path) {
                 } else {
                     println!("[kobo-watch] {} diagnostic(s)", session.diagnostics.len());
                 }
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Succeeded,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
             Err(()) => {
                 render_diagnostics(&session);
                 eprintln!("[kobo-watch] check failed");
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Failed,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
         },
         Err(e) => {
             eprintln!("[kobo-watch] session error: {e}");
+            WatchRerunReport {
+                outcome: WatchRerunOutcome::Failed,
+                diagnostic_count: 0,
+            }
         }
     }
 }
 
 /// S-29: Called when a file change is detected in --build mode — runs full codegen pipeline.
-fn on_file_changed_build(file: &Path) {
+fn on_file_changed_build(file: &Path) -> WatchRerunReport {
     println!(
         "[kobo-watch] Triggering codegen build for {}",
         file.display()
@@ -313,14 +1353,26 @@ fn on_file_changed_build(file: &Path) {
                     "[kobo-watch] codegen OK — wrote {}",
                     artifacts.rs_path.display()
                 );
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Succeeded,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
             Err(()) => {
                 render_diagnostics(&session);
                 eprintln!("[kobo-watch] codegen failed");
+                WatchRerunReport {
+                    outcome: WatchRerunOutcome::Failed,
+                    diagnostic_count: session.diagnostics.len(),
+                }
             }
         },
         Err(e) => {
             eprintln!("[kobo-watch] session error: {e}");
+            WatchRerunReport {
+                outcome: WatchRerunOutcome::Failed,
+                diagnostic_count: 0,
+            }
         }
     }
 }
@@ -335,12 +1387,64 @@ pub(crate) fn detect_change(file: &Path, since: SystemTime) -> anyhow::Result<bo
 
 /// Debounce interval in milliseconds.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const DEBOUNCE_MS: u64 = 200;
+pub(crate) const DEBOUNCE_MS: u64 = DEBOUNCE_INTERVAL_MS;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    struct ErrorSnapshotSource {
+        kind: io::ErrorKind,
+        message: &'static str,
+    }
+
+    impl WatchSnapshotSource for ErrorSnapshotSource {
+        fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
+            Err(io::Error::new(self.kind, self.message))
+        }
+    }
+
+    struct OkSnapshotSource {
+        snapshot: FileSnapshot,
+    }
+
+    impl WatchSnapshotSource for OkSnapshotSource {
+        fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
+            Ok(self.snapshot)
+        }
+    }
+
+    struct SequenceSnapshotSource {
+        steps: std::sync::Mutex<Vec<io::Result<FileSnapshot>>>,
+    }
+
+    impl SequenceSnapshotSource {
+        fn new(mut steps: Vec<io::Result<FileSnapshot>>) -> Self {
+            steps.reverse();
+            Self {
+                steps: std::sync::Mutex::new(steps),
+            }
+        }
+    }
+
+    impl WatchSnapshotSource for SequenceSnapshotSource {
+        fn snapshot(&self, _file: &Path) -> io::Result<FileSnapshot> {
+            self.steps
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or_else(|| Ok(test_snapshot(99)))
+        }
+    }
+
+    fn test_snapshot(seconds: u64) -> FileSnapshot {
+        FileSnapshot {
+            modified: UNIX_EPOCH + Duration::from_secs(seconds),
+            len: 13,
+            is_readonly: false,
+        }
+    }
 
     #[test]
     fn watch_detects_file_change() {
@@ -395,5 +1499,858 @@ mod tests {
     #[test]
     fn debounce_interval_is_200ms() {
         assert_eq!(DEBOUNCE_MS, 200);
+    }
+
+    #[test]
+    fn unknown_watch_change_persists_partial_unknown_evidence() {
+        let change = WatchChange::unknown(Path::new("src/raced.kobo"), None, None);
+        let evidence = WatchEvidence::for_window(
+            1,
+            "src/main.kobo".to_owned(),
+            vec![change.into_event_input()],
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let batch = evidence.event_batch_json();
+
+        assert_eq!(batch["events"][0]["kind"], "unknown");
+        assert_eq!(batch["replay_grade"], "partial");
+        assert_eq!(batch["events"][0]["duplicate_or_coalesced"], "unknown");
+        assert_eq!(batch["events"][0]["evidence_grade"], "unknown");
+    }
+
+    #[test]
+    fn scanner_snapshot_error_persists_unknown_event() {
+        let root = temp_watch_root("unknown-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(FileSnapshot {
+                modified: UNIX_EPOCH,
+                len: 13,
+                is_readonly: false,
+            }),
+            unresolved_error: None,
+            pending_startup_error: None,
+        }];
+
+        let changes = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied first",
+            },
+        )
+        .unwrap();
+        assert_eq!(changes[0].event_kind.as_str(), "unknown");
+        assert!(
+            watched[0].snapshot.is_some(),
+            "non-NotFound snapshot failures should keep the prior snapshot instead of inventing a remove",
+        );
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["evidence_grade"],
+            "unknown"
+        );
+        assert_eq!(state["changes"][0]["event_kind"], "unknown");
+        assert_eq!(state["changes"][0]["replay_grade"], "partial");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["error_fingerprint"],
+            "permission_denied:message:permission denied first"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn persistent_unknown_snapshot_error_closes_debounce_window() {
+        let root = temp_watch_root("persistent-unknown-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(FileSnapshot {
+                modified: UNIX_EPOCH,
+                len: 13,
+                is_readonly: false,
+            }),
+            unresolved_error: None,
+            pending_startup_error: None,
+        }];
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied first",
+            },
+        )
+        .unwrap()
+        .expect("persistent unknown evidence should still close a debounce window");
+        assert_eq!(window.changes.len(), 1);
+        assert_eq!(window.changes[0].event_kind.as_str(), "unknown");
+        assert!(matches!(
+            window.changes[0].duplicate_status,
+            DuplicateStatus::Unknown
+        ));
+        assert!(
+            !window.has_timer_extension,
+            "remembered identical unknown evidence should make the next scan quiet"
+        );
+        assert!(
+            watched[0].snapshot.is_some(),
+            "persistent unknown should preserve the last usable snapshot for recovery",
+        );
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            window
+                .changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: window.has_timer_extension,
+                extension_cause_paths: window.extension_cause_paths,
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["duplicate_or_coalesced"],
+            "unknown"
+        );
+        assert_eq!(state["debounce_windows"][0]["timer_cancelled"], false);
+        assert_eq!(state["changes"][0]["event_kind"], "unknown");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["error_fingerprint"],
+            "permission_denied:message:permission denied first"
+        );
+
+        let second_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied first",
+            },
+        )
+        .unwrap();
+        assert!(
+            second_window.is_none(),
+            "same unresolved snapshot error should not create another restart window",
+        );
+
+        let changed_error_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "permission denied second",
+            },
+        )
+        .unwrap()
+        .expect("changed snapshot error identity should reopen watcher evidence");
+        assert_eq!(
+            changed_error_window.changes[0].event_kind.as_str(),
+            "unknown"
+        );
+        assert_eq!(
+            changed_error_window.changes[0].error_fingerprint.as_deref(),
+            Some("permission_denied:message:permission denied second")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_snapshot_error_enters_unknown_state_and_suppresses_repeat() {
+        let root = temp_watch_root("startup-unknown-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+        assert_eq!(watched.len(), 1);
+        assert!(
+            watched[0].snapshot.is_none(),
+            "startup snapshot failures should not abort watch setup",
+        );
+        assert!(
+            watched[0].pending_startup_error.is_some(),
+            "startup errors should wait as pending typed evidence for the first scan",
+        );
+
+        let first_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap()
+        .expect("startup snapshot failure should become unknown evidence");
+        assert_eq!(first_window.changes[0].event_kind.as_str(), "unknown");
+        assert_eq!(
+            first_window.changes[0].error_fingerprint.as_deref(),
+            Some("permission_denied:message:startup denied")
+        );
+
+        let repeated_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+        assert!(
+            repeated_window.is_none(),
+            "same startup snapshot failure should not trigger another restart window",
+        );
+
+        let changed_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied but different",
+            },
+        )
+        .unwrap()
+        .expect("same error kind with changed identity should reopen evidence");
+        assert_eq!(
+            changed_window.changes[0].error_fingerprint.as_deref(),
+            Some("permission_denied:message:startup denied but different")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_snapshot_error_then_recovery_preserves_unknown_evidence() {
+        let root = temp_watch_root("startup-unknown-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+
+        let changes = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &OkSnapshotSource {
+                snapshot: FileSnapshot {
+                    modified: UNIX_EPOCH + Duration::from_secs(1),
+                    len: 13,
+                    is_readonly: false,
+                },
+            },
+        )
+        .unwrap();
+        let kinds = changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec!["unknown", "create"],
+            "startup unknown evidence should be kept before the recovery create",
+        );
+        assert_eq!(
+            changes[0].error_fingerprint.as_deref(),
+            Some("permission_denied:message:startup denied"),
+        );
+        assert!(watched[0].pending_startup_error.is_none());
+        assert!(watched[0].unresolved_error.is_none());
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "unknown");
+        assert_eq!(state["event_batches"][0]["events"][1]["kind"], "create");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_unknown_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("startup-unknown-window-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "startup denied",
+            },
+        )
+        .unwrap();
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![Ok(test_snapshot(1)), Ok(test_snapshot(1))]),
+        )
+        .unwrap()
+        .expect("startup unknown followed by create should produce one window");
+        let kinds = window
+            .changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["unknown", "create"]);
+        assert_eq!(
+            window
+                .changes
+                .iter()
+                .find(|change| change.event_kind.as_str() == "unknown")
+                .and_then(|change| change.error_fingerprint.as_deref()),
+            Some("permission_denied:message:startup denied"),
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn changed_unknown_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("changed-unknown-window-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::PermissionDenied,
+                message: "first denied",
+            },
+        )
+        .unwrap();
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "second denied",
+                )),
+                Ok(test_snapshot(1)),
+                Ok(test_snapshot(1)),
+            ]),
+        )
+        .unwrap()
+        .expect("changed unknown followed by create should produce one window");
+        let event_inputs = window
+            .changes
+            .into_iter()
+            .map(WatchChange::into_event_input)
+            .collect::<Vec<_>>();
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            event_inputs,
+            DebounceWindowInput {
+                has_timer_extension: window.has_timer_extension,
+                extension_cause_paths: window.extension_cause_paths,
+            },
+            WatchExecutionMode::Simple,
+        );
+        let batch = evidence.event_batch_json();
+        let events = batch["events"]
+            .as_array()
+            .expect("events should be an array");
+        let kinds = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(kinds, vec!["unknown", "unknown", "create"]);
+        assert_eq!(
+            events[0]["error_fingerprint"],
+            "permission_denied:message:first denied"
+        );
+        assert_eq!(
+            events[1]["error_fingerprint"],
+            "permission_denied:message:second denied"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn startup_not_found_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("startup-not-found-window-recovery");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing",
+            },
+        )
+        .unwrap();
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![
+                Err(io::Error::new(io::ErrorKind::NotFound, "startup missing")),
+                Ok(test_snapshot(1)),
+                Ok(test_snapshot(1)),
+            ]),
+        )
+        .unwrap()
+        .expect("startup NotFound followed by create should produce one window");
+        let kinds = window
+            .changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["remove", "create"]);
+        assert_eq!(
+            window
+                .changes
+                .iter()
+                .find(|change| change.event_kind.as_str() == "remove")
+                .and_then(|change| change.error_fingerprint.as_deref()),
+            Some("not_found:message:startup missing"),
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn same_path_remove_then_create_within_debounce_window_stays_visible() {
+        let root = temp_watch_root("same-path-remove-create-window");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(test_snapshot(0)),
+            unresolved_error: None,
+            pending_startup_error: None,
+        }];
+
+        let window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &SequenceSnapshotSource::new(vec![
+                Err(io::Error::new(io::ErrorKind::NotFound, "gone")),
+                Ok(test_snapshot(1)),
+                Ok(test_snapshot(1)),
+            ]),
+        )
+        .unwrap()
+        .expect("same-path remove/create should produce one window");
+        let kinds = window
+            .changes
+            .iter()
+            .map(|change| change.event_kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, vec!["remove", "create"]);
+        assert_eq!(
+            window
+                .changes
+                .iter()
+                .find(|change| change.event_kind.as_str() == "remove")
+                .and_then(|change| change.error_fingerprint.as_deref()),
+            Some("not_found:message:gone"),
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rename_candidate_raw_remove_keeps_not_found_fingerprint() {
+        let fingerprint = WatchErrorFingerprint {
+            kind: io::ErrorKind::NotFound,
+            raw_os_error: None,
+            message: "startup missing".to_owned(),
+        };
+        let window = finalize_debounce_window(
+            vec![
+                WatchChange::removed(Path::new("src/service.kobo"), None, Some(&fingerprint)),
+                WatchChange::created(
+                    Path::new("src/moved_service.kobo"),
+                    UNIX_EPOCH + Duration::from_secs(1),
+                ),
+            ],
+            false,
+            Vec::new(),
+        );
+        assert_eq!(window.changes.len(), 1);
+        assert_eq!(window.changes[0].event_kind.as_str(), "rename_candidate");
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            "src/main.kobo".to_owned(),
+            window
+                .changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let batch = evidence.event_batch_json();
+        let raw_events = batch["events"][0]["raw_events"]
+            .as_array()
+            .expect("rename candidate raw events should be an array");
+
+        assert_eq!(raw_events[0]["kind"], "remove");
+        assert_eq!(
+            raw_events[0]["error_fingerprint"],
+            "not_found:message:startup missing",
+        );
+        assert_eq!(raw_events[0]["evidence_grade"], "metadata_only");
+        assert_eq!(raw_events[1]["kind"], "create");
+    }
+
+    #[test]
+    fn startup_not_found_becomes_fingerprinted_remove_evidence() {
+        let root = temp_watch_root("startup-not-found-remove");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = watched_files(
+            &scope,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing",
+            },
+        )
+        .unwrap();
+
+        let first_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing",
+            },
+        )
+        .unwrap()
+        .expect("startup NotFound should become remove evidence");
+        assert_eq!(first_window.changes.len(), 1);
+        assert_eq!(first_window.changes[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            first_window.changes[0].error_fingerprint.as_deref(),
+            Some("not_found:message:startup missing"),
+        );
+
+        let changed_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing but different",
+            },
+        )
+        .unwrap()
+        .expect("changed startup NotFound identity should reopen remove evidence");
+        assert_eq!(changed_window.changes[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            changed_window.changes[0].error_fingerprint.as_deref(),
+            Some("not_found:message:startup missing but different"),
+        );
+
+        let repeated_window = collect_debounce_window(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "startup missing but different",
+            },
+        )
+        .unwrap();
+        assert!(
+            repeated_window.is_none(),
+            "same startup NotFound identity should not repeat remove evidence",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn snapshot_none_not_found_and_recovery_are_tracked() {
+        let root = temp_watch_root("snapshot-none-transitions");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: None,
+            unresolved_error: None,
+            pending_startup_error: None,
+        }];
+
+        let not_found = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "missing",
+            },
+        )
+        .unwrap();
+        assert_eq!(not_found[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            not_found[0].error_fingerprint.as_deref(),
+            Some("not_found:message:missing"),
+        );
+        assert!(watched[0].snapshot.is_none());
+        assert_eq!(
+            watched[0]
+                .unresolved_error
+                .as_ref()
+                .map(WatchErrorFingerprint::as_label)
+                .as_deref(),
+            Some("not_found:message:missing"),
+        );
+
+        let repeated_not_found = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "missing",
+            },
+        )
+        .unwrap();
+        assert!(
+            repeated_not_found.is_empty(),
+            "same snapshot-none NotFound should not repeat remove evidence",
+        );
+
+        let changed_not_found = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "still missing but different",
+            },
+        )
+        .unwrap();
+        assert_eq!(changed_not_found[0].event_kind.as_str(), "remove");
+        assert_eq!(
+            changed_not_found[0].error_fingerprint.as_deref(),
+            Some("not_found:message:still missing but different"),
+        );
+
+        let recovered = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &OkSnapshotSource {
+                snapshot: FileSnapshot {
+                    modified: UNIX_EPOCH + Duration::from_secs(1),
+                    len: 13,
+                    is_readonly: false,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(recovered[0].event_kind.as_str(), "create");
+        assert!(watched[0].snapshot.is_some());
+        assert!(
+            watched[0].unresolved_error.is_none(),
+            "successful snapshot should clear unresolved error state",
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scanner_not_found_snapshot_persists_remove_event() {
+        let root = temp_watch_root("not-found-snapshot");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let root_file = src.join("main.kobo");
+        std::fs::write(&root_file, "fn main() {}\n").unwrap();
+        let mut scope = WatchScope {
+            root: root.clone(),
+            root_file: root_file.clone(),
+            files: vec![root_file.clone()],
+        };
+        let mut watched = vec![WatchedFile {
+            path: root_file.clone(),
+            snapshot: Some(FileSnapshot {
+                modified: UNIX_EPOCH,
+                len: 13,
+                is_readonly: false,
+            }),
+            unresolved_error: None,
+            pending_startup_error: None,
+        }];
+
+        let changes = collect_watch_changes(
+            &mut scope,
+            &mut watched,
+            &ErrorSnapshotSource {
+                kind: io::ErrorKind::NotFound,
+                message: "gone",
+            },
+        )
+        .unwrap();
+        assert_eq!(changes[0].event_kind.as_str(), "remove");
+        assert!(
+            watched[0].snapshot.is_none(),
+            "NotFound is the snapshot failure that clears the watched file state",
+        );
+
+        let evidence = WatchEvidence::for_window(
+            1,
+            relative_display(&root_file),
+            changes
+                .into_iter()
+                .map(WatchChange::into_event_input)
+                .collect(),
+            DebounceWindowInput {
+                has_timer_extension: false,
+                extension_cause_paths: Vec::new(),
+            },
+            WatchExecutionMode::Simple,
+        );
+        let state = source_watch_state_json(&root_file, &scope, false, &[evidence]);
+
+        assert_eq!(state["event_batches"][0]["events"][0]["kind"], "remove");
+        assert_eq!(
+            state["event_batches"][0]["events"][0]["evidence_grade"],
+            "metadata_only"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn temp_watch_root(label: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "kobo-watch-{label}-{}-{suffix}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
     }
 }

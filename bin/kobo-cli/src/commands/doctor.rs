@@ -4,6 +4,11 @@ use std::process::Command;
 use anyhow::Context;
 use toml::Value as TomlValue;
 
+#[path = "doctor/project_support.rs"]
+mod project_support;
+#[path = "doctor/supervisor_slice.rs"]
+mod supervisor_slice;
+
 pub(super) struct DoctorOptions {
     pub mode: DoctorMode,
     pub output_format: DoctorOutputFormat,
@@ -12,6 +17,13 @@ pub(super) struct DoctorOptions {
 pub(super) enum DoctorMode {
     Dependencies(DependencyInspection),
     SelfHost,
+    ProjectSupport {
+        require_ready: bool,
+    },
+    SupervisorSlice {
+        require_ready: bool,
+        state_path: Option<PathBuf>,
+    },
 }
 
 pub(super) enum DependencyInspection {
@@ -19,6 +31,7 @@ pub(super) enum DependencyInspection {
     Requested,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum DoctorOutputFormat {
     Human,
     Json,
@@ -96,6 +109,18 @@ pub(super) fn cmd_doctor(options: DoctorOptions) -> anyhow::Result<()> {
             let report = SelfHostReport::from_project(&cwd);
             print_self_host_report(&report, options.output_format)
         }
+        DoctorMode::ProjectSupport { require_ready } => {
+            project_support::cmd_project_support(&cwd, options.output_format, require_ready)
+        }
+        DoctorMode::SupervisorSlice {
+            require_ready,
+            state_path,
+        } => supervisor_slice::cmd_supervisor_slice(
+            &cwd,
+            options.output_format,
+            require_ready,
+            state_path.as_deref(),
+        ),
     }
 }
 

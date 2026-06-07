@@ -14,7 +14,9 @@ use kobo_ir::MustCallObligation;
 use kobo_migrate::{greedy_resolve, GreedyConfig};
 use syn::visit::Visit;
 
-use super::{boundary_projection, session::build_session, summary_validation};
+use super::{
+    boundary_projection, project_map::ProjectMapReport, session::build_session, summary_validation,
+};
 
 mod migration_estimate;
 mod ownership;
@@ -25,6 +27,42 @@ use ownership::{
     colorize_debt_output, extend_unique_ownership_debt, format_ownership_debt,
     ownership_debt_records, resolve_debt_color_mode, rustc_escape_debt_for_file,
 };
+
+pub(super) fn default_debt_file() -> anyhow::Result<PathBuf> {
+    let cwd = std::env::current_dir().context("failed to determine current directory")?;
+    for candidate in [cwd.join("src").join("main.kobo"), cwd.join("main.kobo")] {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    let mut sources = collect_default_source_candidates(&cwd.join("src"))?;
+    if sources.len() == 1 {
+        return Ok(sources.remove(0));
+    }
+
+    anyhow::bail!(
+        "kobo debt requires FILE, --cargo DIR, or a project default source such as src/main.kobo"
+    )
+}
+
+fn collect_default_source_candidates(src_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut sources = Vec::new();
+    if !src_dir.is_dir() {
+        return Ok(sources);
+    }
+    for entry in fs::read_dir(src_dir)
+        .with_context(|| format!("failed to read source directory {}", src_dir.display()))?
+    {
+        let entry = entry.context("failed to read source directory entry")?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|value| value.to_str()) == Some("kobo") {
+            sources.push(path);
+        }
+    }
+    sources.sort();
+    Ok(sources)
+}
 
 pub(super) fn cmd_debt(
     file: &Path,
@@ -41,6 +79,7 @@ pub(super) fn cmd_debt(
     extend_unique_ownership_debt(&mut ownership_debt, rustc_escape_debt_for_file(file)?);
     let report = build_debt_report(&kir, file_count, line_count, ownership_debt);
     let boundary_policies = boundary_projection::projections_for_file(file, &session.config)?;
+    let project_map = ProjectMapReport::for_file(file)?;
 
     if json {
         let mut value =
@@ -76,6 +115,12 @@ pub(super) fn cmd_debt(
                         .collect(),
                 ),
             );
+            object.insert("adapter_debt".to_owned(), project_map.adapter_debt_json());
+            object.insert(
+                "module_ownership".to_owned(),
+                project_map.module_ownership_json(),
+            );
+            object.insert("project_map".to_owned(), project_map.to_json_value());
         }
         let json_str = serde_json::to_string_pretty(&value)
             .context("failed to serialize debt report to JSON")?;
@@ -85,7 +130,7 @@ pub(super) fn cmd_debt(
 
     if summary {
         println!(
-            "{} file(s), {} line(s) - {} RcMutShared site(s) [T1:{} T2:{} T3:{}] - {} warning(s) - migration estimate: {}",
+            "{} file(s), {} line(s) - {} RcMutShared site(s) [T1:{} T2:{} T3:{}] - {} warning(s) - migration estimate: {} - {} - {} - {}",
             report.file_count,
             report.line_count,
             report.inventory.rc_mut_shared,
@@ -94,6 +139,9 @@ pub(super) fn cmd_debt(
             report.complexity.tier3,
             report.warn_early.len() + report.ownership_debt.len(),
             migration_estimate_label(&report),
+            project_map.adapter_debt_label(),
+            project_map.module_ownership_label(),
+            project_map.human_label(),
         );
         return Ok(());
     }

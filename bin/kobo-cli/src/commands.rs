@@ -18,6 +18,7 @@ mod migrate;
 mod ownership_analysis;
 mod perf;
 mod policy;
+mod project_map;
 mod proof;
 mod replay;
 mod run;
@@ -154,6 +155,10 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
         KoboCommand::Doctor {
             deps,
             self_host,
+            project_support,
+            supervisor_slice,
+            supervisor_slice_state,
+            require_ready,
             json,
         } => {
             let output_format = if json {
@@ -166,7 +171,18 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             } else {
                 doctor::DependencyInspection::Default
             };
-            let mode = if self_host {
+            let mode = if project_support {
+                doctor::DoctorMode::ProjectSupport { require_ready }
+            } else if supervisor_slice {
+                doctor::DoctorMode::SupervisorSlice {
+                    require_ready,
+                    state_path: supervisor_slice_state,
+                }
+            } else if require_ready {
+                anyhow::bail!(
+                    "doctor --require-ready needs --project-support or --supervisor-slice"
+                )
+            } else if self_host {
                 doctor::DoctorMode::SelfHost
             } else {
                 doctor::DoctorMode::Dependencies(dependency_inspection)
@@ -308,8 +324,10 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
                 );
                 return debt::cmd_debt_cargo(&cargo_root, json, summary);
             }
-            let Some(file) = file else {
-                anyhow::bail!("kobo debt requires FILE or --cargo DIR");
+            let file = if let Some(file) = file {
+                file
+            } else {
+                debt::default_debt_file()?
             };
             if casts {
                 anyhow::ensure!(
@@ -387,7 +405,17 @@ pub(crate) fn dispatch(command: KoboCommand) -> anyhow::Result<()> {
             build,
             plan,
             changed,
-        } => watch::cmd_watch(file.as_deref(), simple, build, plan, changed.as_deref()),
+            import_trace,
+            witness_out,
+        } => watch::cmd_watch(
+            file.as_deref(),
+            simple,
+            build,
+            plan,
+            changed.as_deref(),
+            import_trace.as_deref(),
+            witness_out.as_deref(),
+        ),
         KoboCommand::Explain {
             code,
             location,

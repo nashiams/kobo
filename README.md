@@ -57,7 +57,7 @@ model, and that bridge remains sample-scoped.
 The primary workflow is:
 
 - `kobo check` for diagnostics and early warning precursors.
-- `kobo test --sim quick --witness-dir .kobo/witnesses` for scenario evidence.
+- `kobo test --sim quick src/main.kobo --witness-dir .kobo/witnesses` for scenario evidence.
 - `kobo replay <witness.kwit>` for exact witness validation when evidence allows.
 - `kobo inspect --clean --cargo <dir>` for the clean Rust exit ramp.
 - `kobo debt --summary`, `kobo debt --json`, and `kobo debt --watch` for scoped
@@ -66,8 +66,8 @@ The primary workflow is:
   and reloads a bounded watch plan.
 
 Experts can stay on the Kobo workflow while inspecting or pinning simulation
-engines when needed: `kobo sim scout --why`, `kobo inspect --sim --harness`,
-`kobo test --sim exhaustive --profile sync --backend loom --scheduler exhaustive`,
+engines when needed: `kobo sim scout --why`, `kobo inspect --sim --harness src/main.kobo`,
+`kobo test --sim exhaustive --profile sync --backend loom --scheduler exhaustive src/main.kobo`,
 and backend-native controls when the adapter can represent them without changing
 normal source imports. Unsupported native adapter knobs are rejected with
 scenario-debt guidance rather than accepted as metadata.

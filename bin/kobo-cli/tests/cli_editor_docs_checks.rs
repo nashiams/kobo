@@ -121,6 +121,47 @@ fn inspect_clean_and_inspect_cargo_preserve_clean_rust_exit_ramp() {
         &command_output(check),
         "clean Rust Cargo output should build",
     );
+    let backend_manifest_path = out_dir.join(".kobo/generated-backend.json");
+    assert!(
+        backend_manifest_path.is_file(),
+        "inspect --clean --cargo should write a backend manifest"
+    );
+    let backend_manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&backend_manifest_path)
+            .expect("backend manifest should be readable"),
+    )
+    .expect("backend manifest should parse");
+    assert_eq!(backend_manifest["source_of_truth"], "kobo");
+    let backend_manifest_text = backend_manifest.to_string();
+    for expected in [
+        "diagnostics",
+        "replay",
+        "debt",
+        "proof",
+        "lsp",
+        "source_map_diagnostics",
+        "generated Rust is a backend",
+    ] {
+        assert_contains(
+            &backend_manifest_text,
+            expected,
+            "backend manifest should keep project debugging anchored to Kobo source",
+        );
+    }
+    let source_map_path = out_dir.join("src/main.kobo.map");
+    assert!(
+        source_map_path.is_file(),
+        "inspect --clean --cargo should write a source map beside generated Rust"
+    );
+    let source_map: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&source_map_path).expect("source map should be readable"),
+    )
+    .expect("source map should parse");
+    assert_contains(
+        &source_map["sources"].to_string(),
+        "main.kobo",
+        "clean Cargo source map should point back to Kobo source",
+    );
 
     let clippy = Command::new("cargo")
         .arg("clippy")
@@ -136,6 +177,90 @@ fn inspect_clean_and_inspect_cargo_preserve_clean_rust_exit_ramp() {
         &command_output(clippy),
         "clean Rust Cargo output should satisfy clippy warning baseline",
     );
+}
+
+#[test]
+fn inspect_clean_cargo_records_generated_backend_target_parity() {
+    let project = TestProject::new("model-clean-cargo-target-parity");
+    project.write(
+        "Kobo.toml",
+        r#"
+[package]
+name = "target-parity"
+version = "0.1.0"
+edition = "2021"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = "0.59"
+
+[target.'cfg(unix)'.dev-dependencies]
+tempfile = "3"
+"#,
+    );
+    let file = project.main_file(clean_exit_source());
+    let out_dir = project.root.join("target/target-parity-cargo");
+
+    let cargo_export = run_kobo(
+        &[
+            s("inspect"),
+            s("--clean"),
+            s("--cargo"),
+            path_arg(&out_dir),
+            path_arg(&file),
+        ],
+        &project.root,
+    );
+    assert_success(
+        &cargo_export,
+        "inspect --clean --cargo should export Cargo project with target metadata",
+    );
+
+    let cargo_toml = std::fs::read_to_string(out_dir.join("Cargo.toml"))
+        .expect("generated Cargo.toml should be readable");
+    assert_contains(
+        &cargo_toml,
+        "target.\"cfg(windows)\".dependencies",
+        "generated Cargo.toml should preserve target-specific dependencies",
+    );
+    let backend_manifest_path = out_dir.join(".kobo/generated-backend.json");
+    let backend_manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&backend_manifest_path)
+            .expect("backend manifest should be readable"),
+    )
+    .expect("backend manifest should parse");
+    assert_eq!(backend_manifest["target_matrix"]["status"], "preserved");
+    assert_eq!(backend_manifest["source_map_gate"]["status"], "complete");
+    assert_eq!(backend_manifest["source_map_gate"]["release_gate"], "allowed");
+    assert_eq!(
+        backend_manifest["debug_ownership"]["generated_rust"],
+        "backend_only"
+    );
+    assert_eq!(
+        backend_manifest["files"][0]["source_map_present"],
+        true,
+        "backend manifest should prove generated Rust is source-mapped"
+    );
+    let backend_manifest_text = backend_manifest.to_string();
+    for expected in [
+        "cfg(windows)",
+        "windows-sys",
+        "cfg(unix)",
+        "tempfile",
+        "release_workflows",
+        "debug_ownership",
+        "debug_without_generated_rust_edits",
+        "same_package_layout",
+        "source_order",
+        "release_artifacts",
+        "target/release/target-parity",
+        "cargo_check",
+    ] {
+        assert_contains(
+            &backend_manifest_text,
+            expected,
+            "backend manifest should expose target and release workflow parity",
+        );
+    }
 }
 
 fn command_output(output: std::process::Output) -> CliOutput {
@@ -1170,6 +1295,39 @@ fn docs_explain_gradual_guarantees_without_gradual_typing_claim() {
             &combined,
             forbidden,
             "model evidence docs should avoid overclaim language",
+        );
+    }
+}
+
+#[test]
+fn public_docs_use_supported_sim_command_shapes() {
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).expect("README should read");
+    let migration = std::fs::read_to_string(repo_root.join("docs/migration-guide.md"))
+        .expect("migration guide should read");
+    let combined = format!("{readme}\n{migration}");
+
+    for invalid in [
+        "kobo test --sim quick\n",
+        "kobo test --sim quick --witness-dir .kobo/witnesses",
+        "kobo test --sim deep --profile async\n",
+        "kobo inspect --sim --harness\n",
+    ] {
+        assert_not_contains(
+            &combined,
+            invalid,
+            "public docs should include the required FILE argument in command examples",
+        );
+    }
+    for expected in [
+        "kobo test --sim quick src/main.kobo --witness-dir .kobo/witnesses",
+        "kobo test --sim deep --profile async src/main.kobo",
+        "kobo inspect --sim --harness src/main.kobo",
+    ] {
+        assert_contains(
+            &combined,
+            expected,
+            "public docs should show copy-paste valid scoped command examples",
         );
     }
 }

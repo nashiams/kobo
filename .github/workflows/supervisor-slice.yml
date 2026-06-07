@@ -1,0 +1,17 @@
+name: supervisor-slice
+
+on:
+  pull_request:
+  push:
+    branches:
+      - alpha
+
+jobs:
+  doctor-gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -q -p kobo-cli --test watchexec_watch_trace_checks
+      - run: cargo test -q -p kobo-cli --test project_support_checks
+      - run: cargo run -q -p kobo-cli --bin kobo -- doctor --supervisor-slice --supervisor-slice-state tests\fixtures\watchexec_supervisor_policy\source_watch_ready.json --require-ready --json

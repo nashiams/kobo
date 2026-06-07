@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "mode": "source_watch_state",
+  "scenarios": [
+    "save_burst",
+    "multi_window",
+    "child_exit_race",
+    "shutdown_pending_timer",
+    "signal_process_group",
+    "changed_path_delivery"
+  ],
+  "watcher_evidence": "modeled",
+  "event_batches": [
+    {
+      "id": "watch-batch-1",
+      "replay_grade": "modeled",
+      "events": [
+        {
+          "kind": "modify",
+          "paths": [
+            {
+              "role": "source_path",
+              "path": "src/main.kobo"
+            }
+          ],
+          "duplicate_or_coalesced": "unique",
+          "evidence_grade": "modeled"
+        },
+        {
+          "kind": "modify",
+          "paths": [
+            {
+              "role": "source_path",
+              "path": "src/main.kobo"
+            }
+          ],
+          "duplicate_or_coalesced": "duplicate",
+          "evidence_grade": "modeled"
+        },
+        {
+          "kind": "rename",
+          "paths": [
+            {
+              "role": "source_path",
+              "path": "src/.main.kobo.tmp"
+            },
+            {
+              "role": "destination_path",
+              "path": "src/main.kobo"
+            }
+          ],
+          "duplicate_or_coalesced": "coalesced",
+          "evidence_grade": "modeled"
+        }
+      ]
+    },
+    {
+      "id": "watch-batch-2",
+      "replay_grade": "modeled",
+      "events": [
+        {
+          "kind": "modify",
+          "paths": [
+            {
+              "role": "source_path",
+              "path": "src/supervisor.kobo"
+            }
+          ],
+          "duplicate_or_coalesced": "unique",
+          "evidence_grade": "modeled"
+        }
+      ]
+    }
+  ],
+  "debounce_windows": [
+    {
+      "id": "watch-window-1",
+      "timer_evidence": "modeled",
+      "replay_grade": "modeled",
+      "event_batch_ids": [
+        "watch-batch-1"
+      ],
+      "fired": true
+    },
+    {
+      "id": "watch-window-2",
+      "timer_evidence": "modeled",
+      "replay_grade": "modeled",
+      "event_batch_ids": [
+        "watch-batch-2"
+      ],
+      "fired": true
+    }
+  ],
+  "restart_decisions": [
+    {
+      "policy_branch": "watchexec.restart.changed_in_scope",
+      "action": "rerun",
+      "selected_by": [
+        "src/main.kobo"
+      ],
+      "changed_path_delivery": [
+        "env",
+        "stdin"
+      ]
+    },
+    {
+      "policy_branch": "watchexec.restart.child_exit_race",
+      "action": "rerun_after_exit",
+      "selected_by": [
+        "src/supervisor.kobo"
+      ],
+      "changed_path_delivery": [
+        "env",
+        "stdin"
+      ]
+    }
+  ],
+  "child_lifecycle_obligations": [
+    {
+      "command_kind": "in_process_check",
+      "resolution": "in_process_rerun_finished",
+      "evidence_grade": "modeled"
+    },
+    {
+      "command_kind": "external_child",
+      "resolution": "child_exit_observed",
+      "evidence_grade": "modeled"
+    },
+    {
+      "command_kind": "external_child",
+      "resolution": "process_group_signaled",
+      "evidence_grade": "modeled"
+    },
+    {
+      "command_kind": "external_child",
+      "resolution": "shutdown_child_waited",
+      "evidence_grade": "modeled"
+    }
+  ],
+  "shutdown_resolutions": [
+    {
+      "kind": "pending_timer",
+      "resolution": "cancelled_before_exit",
+      "evidence_grade": "modeled"
+    },
+    {
+      "kind": "active_child",
+      "resolution": "waited_before_exit",
+      "evidence_grade": "modeled"
+    }
+  ],
+  "signal_process_group": {
+    "signal": "interrupt",
+    "process_group": true,
+    "fallback": "kill_timeout",
+    "evidence_grade": "modeled"
+  }
+}

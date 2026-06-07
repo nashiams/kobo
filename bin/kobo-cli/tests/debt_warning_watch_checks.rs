@@ -29,6 +29,57 @@ fn run_kobo(args: &[String], cwd: &Path) -> CliOutput {
     run_kobo_with_timeout(args, cwd, TEST_TIMEOUT)
 }
 
+fn release_watch_state_with_adapters(replay_grade: &str, event_evidence_grade: &str) -> String {
+    serde_json::json!({
+        "schema_version": 1,
+        "mode": "source_watch_state",
+        "watcher_evidence": "metadata-only",
+        "event_batches": [
+            {
+                "replay_grade": replay_grade,
+                "events": [
+                    {
+                        "evidence_grade": event_evidence_grade
+                    }
+                ]
+            }
+        ],
+        "debounce_windows": [
+            {
+                "timer_evidence": "runtime-observed",
+                "replay_grade": "partial"
+            }
+        ],
+        "child_lifecycle_obligations": [
+            {
+                "command_kind": "in_process_check",
+                "resolution": "in_process_rerun_finished"
+            }
+        ],
+        "adapter_summaries": [
+            {
+                "kind": "path_filter",
+                "replay_confidence": "modelled",
+                "conformance_tests": ["source-watch-path-match"]
+            },
+            {
+                "kind": "async_runtime",
+                "replay_confidence": "partial",
+                "scheduler_facts": ["source-watch-task-order"],
+                "conformance_tests": ["source-watch-task-order"]
+            }
+        ],
+        "external_comparisons": [
+            {
+                "implementation": "source-watch",
+                "behavior": "path filtering and async ordering",
+                "disposition": "formal_adapter_contract"
+            }
+        ]
+    })
+    .to_string()
+}
+
 fn command_output(output: std::process::Output) -> CliOutput {
     CliOutput {
         status: output.status,
@@ -453,6 +504,149 @@ fn release_profile_blocks_incomplete_watch_debounce_debt() {
         &build.combined(),
         "incomplete debounce shutdown evidence",
         "release build should name debounce debt",
+    );
+}
+
+#[test]
+fn release_profile_blocks_missing_watch_adapter_debt() {
+    let project = TestProject::new("release-watch-adapter-gate");
+    let main = project.main_file("fn main() {}\n");
+    let watch_dir = project.root.join(".kobo/watch");
+    std::fs::create_dir_all(&watch_dir).expect("watch state directory should create");
+    std::fs::write(
+        watch_dir.join("source-watch.json"),
+        r#"{
+  "schema_version": 1,
+  "mode": "source_watch_state",
+  "watcher_evidence": "metadata-only",
+  "event_batches": [
+    {
+      "replay_grade": "partial",
+      "events": [
+        {
+          "evidence_grade": "metadata_only"
+        }
+      ]
+    }
+  ],
+  "debounce_windows": [
+    {
+      "timer_evidence": "runtime-observed",
+      "replay_grade": "partial"
+    }
+  ],
+  "child_lifecycle_obligations": [
+    {
+      "command_kind": "in_process_check",
+      "resolution": "in_process_rerun_finished"
+    }
+  ]
+}"#,
+    )
+    .expect("watch state should write");
+
+    let check = run_kobo(
+        &[s("check"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &check,
+        "release check should block missing watch adapter debt",
+    );
+    assert_contains(
+        &check.combined(),
+        "missing path filter adapter evidence",
+        "release check should name missing path filter adapter evidence",
+    );
+
+    let build = run_kobo(
+        &[s("build"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &build,
+        "release build should block missing watch adapter debt",
+    );
+    assert_contains(
+        &build.combined(),
+        "missing path filter adapter evidence",
+        "release build should name missing path filter adapter evidence",
+    );
+}
+
+#[test]
+fn release_profile_blocks_watch_replay_debt() {
+    let project = TestProject::new("release-watch-replay-gate");
+    let main = project.main_file("fn main() {}\n");
+    let watch_dir = project.root.join(".kobo/watch");
+    std::fs::create_dir_all(&watch_dir).expect("watch state directory should create");
+    std::fs::write(
+        watch_dir.join("source-watch.json"),
+        release_watch_state_with_adapters("debt", "metadata_only"),
+    )
+    .expect("watch state should write");
+
+    let check = run_kobo(
+        &[s("check"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(&check, "release check should block watch replay debt");
+    assert_contains(
+        &check.combined(),
+        "incomplete watch replay evidence",
+        "release check should name replay debt",
+    );
+
+    let build = run_kobo(
+        &[s("build"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(&build, "release build should block watch replay debt");
+    assert_contains(
+        &build.combined(),
+        "incomplete watch replay evidence",
+        "release build should name replay debt",
+    );
+}
+
+#[test]
+fn release_profile_blocks_unknown_platform_event_evidence() {
+    let project = TestProject::new("release-watch-platform-gate");
+    let main = project.main_file("fn main() {}\n");
+    let watch_dir = project.root.join(".kobo/watch");
+    std::fs::create_dir_all(&watch_dir).expect("watch state directory should create");
+    std::fs::write(
+        watch_dir.join("source-watch.json"),
+        release_watch_state_with_adapters("partial", "unknown"),
+    )
+    .expect("watch state should write");
+
+    let check = run_kobo(
+        &[s("check"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &check,
+        "release check should block unknown platform event evidence",
+    );
+    assert_contains(
+        &check.combined(),
+        "unknown watch platform event evidence",
+        "release check should name platform event evidence debt",
+    );
+
+    let build = run_kobo(
+        &[s("build"), s("--profile"), s("release"), path_arg(&main)],
+        &project.root,
+    );
+    assert_failure(
+        &build,
+        "release build should block unknown platform event evidence",
+    );
+    assert_contains(
+        &build.combined(),
+        "unknown watch platform event evidence",
+        "release build should name platform event evidence debt",
     );
 }
 

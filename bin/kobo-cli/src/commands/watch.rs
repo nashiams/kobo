@@ -13,6 +13,12 @@ use evidence::{
 };
 use kobo_driver::{run_check_pipeline, run_codegen_pipeline};
 
+const PATH_FILTER_ADAPTER_KIND: &str = "path_filter";
+const ASYNC_RUNTIME_ADAPTER_KIND: &str = "async_runtime";
+const PATH_FILTER_CONFORMANCE_TEST: &str = "source-watch-path-match";
+const ASYNC_RUNTIME_CONFORMANCE_TEST: &str = "source-watch-task-order";
+const ASYNC_RUNTIME_SCHEDULER_FACT: &str = "source-watch-task-order";
+
 /// File-watcher re-run on save.
 ///
 /// In `--simple` mode: polls the file's modification time, and when it changes,
@@ -182,6 +188,9 @@ fn release_lifecycle_gate_reason(state: &serde_json::Value) -> Option<String> {
             ));
         }
     }
+    if let Some(reason) = release_watch_replay_gate_reason(state) {
+        return Some(reason);
+    }
 
     let Some(debounce_windows) = state["debounce_windows"].as_array() else {
         return Some("missing debounce evidence".to_owned());
@@ -195,7 +204,81 @@ fn release_lifecycle_gate_reason(state: &serde_json::Value) -> Option<String> {
     }) {
         return Some("incomplete debounce shutdown evidence".to_owned());
     }
+    release_adapter_gate_reason(state)
+}
+
+fn release_watch_replay_gate_reason(state: &serde_json::Value) -> Option<String> {
+    let Some(event_batches) = state["event_batches"].as_array() else {
+        return Some("missing watch replay evidence".to_owned());
+    };
+    if event_batches.is_empty() {
+        return Some("empty watch replay evidence".to_owned());
+    }
+    for batch in event_batches {
+        if !is_release_replay_grade(batch["replay_grade"].as_str().unwrap_or("missing")) {
+            return Some("incomplete watch replay evidence".to_owned());
+        }
+        let Some(events) = batch["events"].as_array() else {
+            return Some("missing watch platform event evidence".to_owned());
+        };
+        if events.is_empty() {
+            return Some("empty watch platform event evidence".to_owned());
+        }
+        if events.iter().any(|event| {
+            !is_release_event_evidence_grade(event["evidence_grade"].as_str().unwrap_or("missing"))
+        }) {
+            return Some("unknown watch platform event evidence".to_owned());
+        }
+    }
     None
+}
+
+fn release_adapter_gate_reason(state: &serde_json::Value) -> Option<String> {
+    let Some(adapter_summaries) = state["adapter_summaries"].as_array() else {
+        return Some("missing path filter adapter evidence".to_owned());
+    };
+    if adapter_summaries.is_empty() {
+        return Some("missing path filter adapter evidence".to_owned());
+    }
+    if !has_adapter_conformance(
+        adapter_summaries,
+        PATH_FILTER_ADAPTER_KIND,
+        PATH_FILTER_CONFORMANCE_TEST,
+    ) {
+        return Some("missing path filter adapter evidence".to_owned());
+    }
+    if !has_adapter_conformance(
+        adapter_summaries,
+        ASYNC_RUNTIME_ADAPTER_KIND,
+        ASYNC_RUNTIME_CONFORMANCE_TEST,
+    ) {
+        return Some("missing async runtime adapter evidence".to_owned());
+    }
+    if !has_adapter_scheduler_fact(
+        adapter_summaries,
+        ASYNC_RUNTIME_ADAPTER_KIND,
+        ASYNC_RUNTIME_SCHEDULER_FACT,
+    ) {
+        return Some("missing async runtime scheduler evidence".to_owned());
+    }
+    if state["external_comparisons"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+    {
+        return Some("missing external comparison evidence".to_owned());
+    }
+    None
+}
+
+fn is_release_replay_grade(grade: &str) -> bool {
+    matches!(
+        grade,
+        "exact" | "modelled" | "modeled" | "sampled" | "partial"
+    )
+}
+
+fn is_release_event_evidence_grade(grade: &str) -> bool {
+    matches!(grade, "exact" | "modelled" | "modeled" | "metadata_only")
 }
 
 fn is_release_lifecycle_resolution(resolution: &str) -> bool {
@@ -208,6 +291,34 @@ fn is_release_lifecycle_resolution(resolution: &str) -> bool {
             | "killed"
             | "detached"
     )
+}
+
+fn has_adapter_conformance(
+    adapter_summaries: &[serde_json::Value],
+    kind: &str,
+    conformance_test: &str,
+) -> bool {
+    adapter_summaries.iter().any(|summary| {
+        summary["kind"].as_str() == Some(kind)
+            && json_array_contains(&summary["conformance_tests"], conformance_test)
+    })
+}
+
+fn has_adapter_scheduler_fact(
+    adapter_summaries: &[serde_json::Value],
+    kind: &str,
+    scheduler_fact: &str,
+) -> bool {
+    adapter_summaries.iter().any(|summary| {
+        summary["kind"].as_str() == Some(kind)
+            && json_array_contains(&summary["scheduler_facts"], scheduler_fact)
+    })
+}
+
+fn json_array_contains(value: &serde_json::Value, expected: &str) -> bool {
+    value
+        .as_array()
+        .is_some_and(|entries| entries.iter().any(|entry| entry.as_str() == Some(expected)))
 }
 
 fn emit_release_lifecycle_gate(

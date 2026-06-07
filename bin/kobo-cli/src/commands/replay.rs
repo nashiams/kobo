@@ -11,7 +11,7 @@ use super::formal_core;
 use super::sim_model;
 use super::test_cmd;
 use super::witness_evidence;
-use super::{declarations, summary_validation};
+use super::{declarations, project_map::ProjectMapReport, summary_validation};
 
 pub(super) fn cmd_replay(
     file: &Path,
@@ -370,6 +370,7 @@ fn replay_v1(
             "backend": backend_for_profile(&run.profile),
             "failure": witness["failure"],
             "events": run.events.len(),
+            "project_map": ProjectMapReport::for_file(&verified_source.path)?.to_json_value(),
         }))?
     );
     Ok(())

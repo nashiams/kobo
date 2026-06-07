@@ -320,6 +320,12 @@ fn replay_exact_kwit_succeeds_and_reports_same_failure() {
     let text = output.combined();
     assert_contains(&text, "exact", "replay must state exactness");
     assert_contains(&text, "K0100", "replay must report original failure code");
+    let replay_json: serde_json::Value =
+        serde_json::from_str(&output.stdout).expect("replay success JSON should parse");
+    assert!(
+        replay_json["project_map"]["digest"].as_str().is_some(),
+        "replay success JSON should carry the shared project map digest: {replay_json}"
+    );
 }
 
 #[test]

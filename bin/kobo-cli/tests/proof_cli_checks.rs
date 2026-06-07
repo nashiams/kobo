@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cli_test_support::{
-    assert_failure, assert_success, first_json, path_arg, run_kobo_with_timeout, s, CliOutput,
-    TestProject,
+    assert_contains, assert_failure, assert_success, first_json, path_arg, run_kobo_with_timeout,
+    s, CliOutput, TestProject,
 };
 use kobo_proof::{certificate_material_hash, ArtifactKind, ProofCertificate};
 use serde_json::Value;
@@ -73,6 +73,42 @@ fn emit_project(label: &str, scenario_name: &str) -> (TestProject, PathBuf, Path
 fn read_json(path: &Path) -> Value {
     serde_json::from_str(&fs::read_to_string(path).expect("artifact should read"))
         .expect("artifact should parse")
+}
+
+#[test]
+fn proof_emit_and_verify_report_project_map() {
+    let project = TestProject::new("proof-project-map");
+    let source_file = project.main_file(&source("proof_project_map_case"));
+    let artifact_path = project.root.join("proof.kproof");
+    let emit = run_kobo(
+        &[
+            s("proof"),
+            s("emit"),
+            path_arg(&source_file),
+            s("--target"),
+            s("proof_project_map_case"),
+            s("--output"),
+            path_arg(&artifact_path),
+        ],
+        &project.root,
+    );
+    assert_success(&emit, "proof emit should succeed");
+    assert_contains(
+        &emit.combined(),
+        "project map:",
+        "proof emit should report project map digest",
+    );
+
+    let verify = run_kobo(
+        &[s("proof"), s("verify"), path_arg(&artifact_path)],
+        &project.root,
+    );
+    assert_success(&verify, "proof verify should succeed");
+    assert_contains(
+        &verify.combined(),
+        "project map:",
+        "proof verify should report project map digest",
+    );
 }
 
 #[test]

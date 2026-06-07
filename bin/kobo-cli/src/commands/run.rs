@@ -13,6 +13,7 @@ use kobo_parser::{parse_ward_syntax, WardItem};
 use super::{
     backend_debt::{self, DebtControlSource},
     boundary_projection, ownership_analysis, policy,
+    project_map::ProjectMapReport,
     session::{build_session, line_number_for_offset, render_diagnostics},
     sim_model, summary_validation,
 };
@@ -93,6 +94,7 @@ pub(super) fn cmd_inspect(
     let mut session = build_session(file, cli_policy.clone())?;
     let summary_usages = validate_configured_summaries(&session)?;
     let boundary_policies = boundary_projection::projections_for_file(file, &session.config)?;
+    let project_map = ProjectMapReport::for_file(file)?;
 
     if audit == Some("json") {
         let source = std::fs::read_to_string(file)
@@ -114,6 +116,7 @@ pub(super) fn cmd_inspect(
             session.guarantee_profile().as_str()
         );
         emit_boundary_policy_comments(&boundary_policies);
+        emit_project_map_comment(&project_map);
         print!("{output}");
         return Ok(());
     }
@@ -126,6 +129,7 @@ pub(super) fn cmd_inspect(
             session.guarantee_profile().as_str()
         );
         emit_boundary_policy_comments(&boundary_policies);
+        emit_project_map_comment(&project_map);
         print!("{}", scenario_metadata_output_for_file(file, &source)?);
         return Ok(());
     }
@@ -149,6 +153,7 @@ pub(super) fn cmd_inspect(
             session.guarantee_profile().as_str()
         );
         emit_boundary_policy_comments(&boundary_policies);
+        emit_project_map_comment(&project_map);
         print!("{main_output}");
         return Ok(());
     }
@@ -202,6 +207,7 @@ pub(super) fn cmd_inspect(
         );
     }
     emit_boundary_policy_comments(&boundary_policies);
+    emit_project_map_comment(&project_map);
     print!("{output}");
     Ok(())
 }
@@ -212,6 +218,10 @@ fn emit_boundary_policy_comments(
     for boundary in boundary_policies {
         println!("{}", boundary.inspect_comment());
     }
+}
+
+fn emit_project_map_comment(project_map: &ProjectMapReport) {
+    println!("{}", project_map.inspect_comment());
 }
 
 struct SummaryUsage {

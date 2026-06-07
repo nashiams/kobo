@@ -18,6 +18,7 @@ mod migrate;
 mod ownership_analysis;
 mod perf;
 mod policy;
+mod project_map;
 mod proof;
 mod replay;
 mod run;

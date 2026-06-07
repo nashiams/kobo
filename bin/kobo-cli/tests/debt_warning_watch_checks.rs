@@ -80,6 +80,19 @@ fn release_watch_state_with_adapters(replay_grade: &str, event_evidence_grade: &
     .to_string()
 }
 
+fn project_map_digest_from_inspect(stdout: &str) -> Option<String> {
+    stdout.lines().find_map(|line| {
+        line.strip_prefix("// kobo-project-map: ")
+            .and_then(|fields| {
+                fields
+                    .split_whitespace()
+                    .find(|field| field.starts_with("digest="))
+            })
+            .and_then(|field| field.strip_prefix("digest="))
+            .map(str::to_owned)
+    })
+}
+
 fn command_output(output: std::process::Output) -> CliOutput {
     CliOutput {
         status: output.status,
@@ -140,6 +153,30 @@ fn wait_for_watch_output(mut child: Child, timeout: Duration) -> CliOutput {
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn debt_json_and_inspect_share_project_map_digest() {
+    let project = TestProject::new("project-map-debt-inspect");
+    let main = project.main_file("fn main() {}\n");
+    project.write("src/generated.rs", "pub fn generated_backend() {}\n");
+
+    let debt = run_kobo(&[s("debt"), s("--json"), path_arg(&main)], &project.root);
+    assert_success(&debt, "debt JSON should report the project map");
+    let debt_json: Value = serde_json::from_str(&debt.stdout).expect("debt JSON should parse");
+    let debt_digest = debt_json["project_map"]["digest"]
+        .as_str()
+        .expect("debt JSON should carry project map digest");
+
+    let inspect = run_kobo(&[s("inspect"), path_arg(&main)], &project.root);
+    assert_success(&inspect, "inspect should report the project map");
+    let inspect_digest = project_map_digest_from_inspect(&inspect.stdout)
+        .expect("inspect output should carry project map digest");
+
+    assert_eq!(
+        inspect_digest, debt_digest,
+        "debt and inspect should agree on the same project map"
+    );
 }
 
 #[test]

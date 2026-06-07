@@ -173,7 +173,15 @@ fn bare_debt_commands_use_project_default_source() {
         r#"{
   "schema_version": 1,
   "mode": "source_watch_state",
+  "scope": {
+    "root": "src/main.kobo",
+    "files": ["src/main.kobo"]
+  },
   "watcher_evidence": "metadata-only",
+  "adapter_summaries": [
+    {"kind": "path_filter", "replay_confidence": "modelled", "conformance_tests": ["source-watch-path-match"]},
+    {"kind": "async_runtime", "replay_confidence": "partial", "scheduler_facts": ["source-watch-task-order"], "conformance_tests": ["source-watch-task-order"]}
+  ],
   "event_batches": [
     {
       "replay_grade": "partial",
@@ -225,6 +233,16 @@ fn bare_debt_commands_use_project_default_source() {
         "time=acceptable",
         "debounce timer evidence should be visible by subsystem",
     );
+    assert_contains(
+        &adapter_summary.stdout,
+        "path_filter=acceptable",
+        "path filter evidence should be visible by subsystem",
+    );
+    assert_contains(
+        &adapter_summary.stdout,
+        "async_runtime=acceptable",
+        "async runtime evidence should be visible by subsystem",
+    );
 }
 
 #[test]
@@ -272,7 +290,7 @@ fn debt_report_explains_kobo_rust_and_boundary_modules() {
         "modules:",
         "kobo-owned=1",
         "rust-owned=1",
-        "boundary-debt=3",
+        "boundary-debt=5",
     ] {
         assert_contains(
             &summary.stdout,
@@ -300,7 +318,7 @@ fn debt_report_explains_kobo_rust_and_boundary_modules() {
         value["module_ownership"]["boundary_debt"]
             .as_array()
             .map(Vec::len),
-        Some(3)
+        Some(5)
     );
 }
 
@@ -667,6 +685,21 @@ fn watch_simple_observes_module_change_and_persists_reload_state() {
         state["child_lifecycle_obligations"][0]["resolution"],
         "in_process_rerun_finished"
     );
+    let state_text = state.to_string();
+    for expected in [
+        "adapter_summaries",
+        "path_filter",
+        "async_runtime",
+        "external_comparisons",
+        "source-watch-task-order",
+        "source-watch-path-match",
+    ] {
+        assert_contains(
+            &state_text,
+            expected,
+            "persisted watch state should carry the same formal adapter summaries used by replay",
+        );
+    }
 }
 
 #[test]

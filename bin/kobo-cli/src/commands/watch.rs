@@ -456,7 +456,8 @@ fn persist_source_watch_state(
     evidence_history: &[WatchEvidence],
 ) -> anyhow::Result<()> {
     let state_path = source_watch_state_path()?;
-    let value = source_watch_state_json(root_file, scope, persisted_state_loaded, evidence_history);
+    let value =
+        source_watch_state_json(root_file, scope, persisted_state_loaded, evidence_history)?;
     std::fs::write(&state_path, serde_json::to_vec_pretty(&value)?)
         .map_err(|error| anyhow::anyhow!("failed to write {}: {error}", state_path.display()))
 }
@@ -466,7 +467,7 @@ fn source_watch_state_json(
     scope: &WatchScope,
     persisted_state_loaded: bool,
     evidence_history: &[WatchEvidence],
-) -> serde_json::Value {
+) -> anyhow::Result<serde_json::Value> {
     let scope_files = scope
         .files
         .iter()
@@ -496,7 +497,7 @@ fn source_watch_state_json(
         .last()
         .map(WatchEvidence::watcher_evidence)
         .unwrap_or("metadata-only");
-    serde_json::json!({
+    Ok(serde_json::json!({
         "schema_version": 1,
         "mode": "source_watch_state",
         "scope": {
@@ -516,7 +517,9 @@ fn source_watch_state_json(
         "debounce_windows": debounce_windows,
         "restart_decisions": restart_decisions,
         "child_lifecycle_obligations": child_lifecycle_obligations,
-    })
+        "adapter_summaries": trace::source_watch_state_adapter_summaries(),
+        "external_comparisons": trace::source_watch_state_external_comparisons()?,
+    }))
 }
 
 fn watched_files(

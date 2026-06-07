@@ -336,7 +336,7 @@ fn source_watch_state_trace(value: Value) -> anyhow::Result<Value> {
     }))
 }
 
-fn source_watch_state_adapter_summaries() -> Vec<Value> {
+pub(super) fn source_watch_state_adapter_summaries() -> Vec<Value> {
     vec![
         json!({
             "kind": "watcher",
@@ -437,7 +437,7 @@ fn adapter_platform_observations() -> Vec<Value> {
         .collect()
 }
 
-fn source_watch_state_external_comparisons() -> anyhow::Result<Vec<Value>> {
+pub(super) fn source_watch_state_external_comparisons() -> anyhow::Result<Vec<Value>> {
     REQUIRED_EXTERNAL_COMPARISON_COVERAGE
         .iter()
         .map(|(implementation, behavior)| {

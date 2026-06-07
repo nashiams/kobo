@@ -66,6 +66,8 @@ struct AdapterDebtSummary {
     watcher: AdapterDebtStatus,
     process: AdapterDebtStatus,
     time: AdapterDebtStatus,
+    path_filter: AdapterDebtStatus,
+    async_runtime: AdapterDebtStatus,
 }
 
 struct AdapterDebtStatus {
@@ -85,15 +87,19 @@ impl AdapterDebtSummary {
             watcher: AdapterDebtStatus::none(),
             process: AdapterDebtStatus::none(),
             time: AdapterDebtStatus::none(),
+            path_filter: AdapterDebtStatus::none(),
+            async_runtime: AdapterDebtStatus::none(),
         }
     }
 
     fn human_label(&self) -> String {
         format!(
-            "adapter debt: watcher={}, process={}, time={}",
+            "adapter debt: watcher={}, process={}, time={}, path_filter={}, async_runtime={}",
             self.watcher.human_label(),
             self.process.human_label(),
-            self.time.human_label()
+            self.time.human_label(),
+            self.path_filter.human_label(),
+            self.async_runtime.human_label()
         )
     }
 
@@ -102,6 +108,8 @@ impl AdapterDebtSummary {
             "watcher": self.watcher.to_json_value(),
             "process": self.process.to_json_value(),
             "time": self.time.to_json_value(),
+            "path_filter": self.path_filter.to_json_value(),
+            "async_runtime": self.async_runtime.to_json_value(),
         })
     }
 }
@@ -167,6 +175,8 @@ fn adapter_debt_summary_for_file(file: &Path) -> AdapterDebtSummary {
         watcher: watcher_adapter_debt(&state),
         process: process_adapter_debt(&state),
         time: time_adapter_debt(&state),
+        path_filter: path_filter_adapter_debt(&state),
+        async_runtime: async_runtime_adapter_debt(&state),
     }
 }
 
@@ -227,6 +237,86 @@ fn time_adapter_debt(state: &serde_json::Value) -> AdapterDebtStatus {
         return AdapterDebtStatus::blocker("incomplete timer evidence");
     }
     AdapterDebtStatus::acceptable("debounce evidence")
+}
+
+fn path_filter_adapter_debt(state: &serde_json::Value) -> AdapterDebtStatus {
+    let Some(summary) = adapter_summary_by_kind(state, "path_filter") else {
+        return AdapterDebtStatus::blocker("missing path filter adapter summary");
+    };
+    if !summary_has_conformance(summary, "source-watch-path-match") {
+        return AdapterDebtStatus::blocker("missing path filter conformance evidence");
+    }
+    if state_has_path_scope(state) || state_has_path_filter_decision(state) {
+        return AdapterDebtStatus::acceptable("path filter summary modeled");
+    }
+    AdapterDebtStatus::blocker("missing source-visible path filter facts")
+}
+
+fn async_runtime_adapter_debt(state: &serde_json::Value) -> AdapterDebtStatus {
+    let Some(summary) = adapter_summary_by_kind(state, "async_runtime") else {
+        return AdapterDebtStatus::blocker("missing async runtime adapter summary");
+    };
+    if !summary_has_scheduler_fact(summary, "source-watch-task-order") {
+        return AdapterDebtStatus::blocker("missing async scheduler facts");
+    }
+    if state_has_timer_or_restart_order(state) {
+        return AdapterDebtStatus::acceptable("async runtime summary modeled");
+    }
+    AdapterDebtStatus::blocker("missing source-visible async runtime facts")
+}
+
+fn adapter_summary_by_kind<'a>(
+    state: &'a serde_json::Value,
+    kind: &str,
+) -> Option<&'a serde_json::Value> {
+    state["adapter_summaries"]
+        .as_array()?
+        .iter()
+        .find(|summary| summary["kind"].as_str() == Some(kind))
+}
+
+fn summary_has_conformance(summary: &serde_json::Value, required: &str) -> bool {
+    summary["conformance_tests"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|test| test.as_str() == Some(required))
+}
+
+fn summary_has_scheduler_fact(summary: &serde_json::Value, required: &str) -> bool {
+    summary["scheduler_facts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|fact| fact.as_str() == Some(required))
+}
+
+fn state_has_path_scope(state: &serde_json::Value) -> bool {
+    state["scope"]["files"]
+        .as_array()
+        .is_some_and(|files| !files.is_empty())
+}
+
+fn state_has_path_filter_decision(state: &serde_json::Value) -> bool {
+    state["event_batches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|batch| batch["events"].as_array().into_iter().flatten())
+        .any(|event| {
+            event["filter_decisions"]
+                .as_array()
+                .is_some_and(|filters| !filters.is_empty())
+        })
+}
+
+fn state_has_timer_or_restart_order(state: &serde_json::Value) -> bool {
+    state["debounce_windows"]
+        .as_array()
+        .is_some_and(|windows| !windows.is_empty())
+        || state["restart_decisions"]
+            .as_array()
+            .is_some_and(|decisions| !decisions.is_empty())
 }
 
 fn module_ownership_summary_for_file(
@@ -299,6 +389,8 @@ fn adapter_boundary_debt_modules(adapter_debt: &AdapterDebtSummary) -> Vec<Strin
         ("watcher adapter", &adapter_debt.watcher),
         ("process adapter", &adapter_debt.process),
         ("time adapter", &adapter_debt.time),
+        ("path filter adapter", &adapter_debt.path_filter),
+        ("async runtime adapter", &adapter_debt.async_runtime),
     ]
     .into_iter()
     .filter_map(|(name, status)| {

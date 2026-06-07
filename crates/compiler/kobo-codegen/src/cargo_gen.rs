@@ -263,30 +263,100 @@ fn backend_manifest_json(
         "role": "generated Rust is a backend, not the source of truth",
         "debug_workflows": ["inspect_clean_cargo", "cargo_check", "source_map_diagnostics", "replay_debug"],
         "release_workflows": ["cargo_check", "cargo_clippy", "cargo_test", "source_map_diagnostics", "replay_debug"],
+        "debug_ownership": {
+            "ordinary_source": "kobo",
+            "generated_rust": "backend_only",
+            "diagnostics": "kobo_source",
+            "replay": "kobo_source",
+            "debt": "kobo_source",
+            "proof": "kobo_source",
+            "lsp": "kobo_source",
+            "edit_policy": "debug watcher and restart behavior from Kobo source, witnesses, and source maps before editing generated Rust",
+        },
+        "determinism": {
+            "source_order": source_order(source_files),
+            "dependency_order": "sorted_by_manifest_name",
+            "target_order": "sorted_by_cfg",
+            "clean_build_stability": "manifest_and_paths_are_stable",
+        },
+        "source_map_gate": source_map_gate(source_files),
+        "release_artifacts": expected_release_artifacts(config),
+        "parity_checks": [
+            "same_package_layout",
+            "feature_gated_builds",
+            "target_specific_dependencies",
+            "clean_build_stability",
+            "debug_without_generated_rust_edits"
+        ],
         "target_matrix": target_matrix_json(config),
         "project_concepts": ["diagnostics", "replay", "debt", "proof", "lsp"],
-        "files": source_files
-            .iter()
-            .map(|source_file| {
-                let rust_output = if source_files.len() == 1 {
-                    PathBuf::from("src").join("main.rs")
-                } else {
-                    PathBuf::from("src").join(rs_relative_path(&source_file.kobo_path))
-                };
-                serde_json::json!({
-                    "kobo_source": normalized_display(&source_file.kobo_path),
-                    "rust_output": normalized_display(&rust_output),
-                    "source_map": normalized_display(
-                        &PathBuf::from("src")
-                            .join(source_map_relative_path(&source_file.kobo_path, source_files.len())),
-                    ),
-                    "generated_rust_role": "backend",
-                    "source_of_truth": "kobo",
-                    "project_concepts": ["diagnostics", "replay", "debt", "proof", "lsp"],
-                })
-            })
-            .collect::<Vec<_>>(),
+        "files": backend_file_entries(source_files),
     })
+}
+
+fn backend_file_entries(source_files: &[CargoSourceFile]) -> Vec<serde_json::Value> {
+    source_files
+        .iter()
+        .map(|source_file| {
+            let rust_output = if source_files.len() == 1 {
+                PathBuf::from("src").join("main.rs")
+            } else {
+                PathBuf::from("src").join(rs_relative_path(&source_file.kobo_path))
+            };
+            serde_json::json!({
+                "kobo_source": normalized_display(&source_file.kobo_path),
+                "rust_output": normalized_display(&rust_output),
+                "source_map": normalized_display(
+                    &PathBuf::from("src")
+                        .join(source_map_relative_path(&source_file.kobo_path, source_files.len())),
+                ),
+                "source_map_present": source_file.source_map.is_some(),
+                "generated_rust_role": "backend",
+                "source_of_truth": "kobo",
+                "debug_from": ["kobo_source", "witness", "source_map"],
+                "project_concepts": ["diagnostics", "replay", "debt", "proof", "lsp"],
+            })
+        })
+        .collect()
+}
+
+fn source_order(source_files: &[CargoSourceFile]) -> Vec<String> {
+    source_files
+        .iter()
+        .map(|source_file| normalized_display(&source_file.kobo_path))
+        .collect()
+}
+
+fn source_map_gate(source_files: &[CargoSourceFile]) -> serde_json::Value {
+    let mapped_files = source_files
+        .iter()
+        .filter(|source_file| source_file.source_map.is_some())
+        .count();
+    let status = if mapped_files == source_files.len() {
+        "complete"
+    } else {
+        "missing_source_maps"
+    };
+    serde_json::json!({
+        "required": true,
+        "status": status,
+        "generated_files": source_files.len(),
+        "mapped_files": mapped_files,
+        "release_gate": if status == "complete" { "allowed" } else { "blocked" },
+    })
+}
+
+fn expected_release_artifacts(config: &KoboProjectConfig) -> Vec<serde_json::Value> {
+    ["debug", "release"]
+        .into_iter()
+        .map(|profile| {
+            serde_json::json!({
+                "profile": profile,
+                "path": format!("target/{profile}/{}", config.name),
+                "source": "generated Cargo package",
+            })
+        })
+        .collect()
 }
 
 fn target_matrix_json(config: &KoboProjectConfig) -> serde_json::Value {

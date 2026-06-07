@@ -229,6 +229,17 @@ tempfile = "3"
     )
     .expect("backend manifest should parse");
     assert_eq!(backend_manifest["target_matrix"]["status"], "preserved");
+    assert_eq!(backend_manifest["source_map_gate"]["status"], "complete");
+    assert_eq!(backend_manifest["source_map_gate"]["release_gate"], "allowed");
+    assert_eq!(
+        backend_manifest["debug_ownership"]["generated_rust"],
+        "backend_only"
+    );
+    assert_eq!(
+        backend_manifest["files"][0]["source_map_present"],
+        true,
+        "backend manifest should prove generated Rust is source-mapped"
+    );
     let backend_manifest_text = backend_manifest.to_string();
     for expected in [
         "cfg(windows)",
@@ -236,6 +247,12 @@ tempfile = "3"
         "cfg(unix)",
         "tempfile",
         "release_workflows",
+        "debug_ownership",
+        "debug_without_generated_rust_edits",
+        "same_package_layout",
+        "source_order",
+        "release_artifacts",
+        "target/release/target-parity",
         "cargo_check",
     ] {
         assert_contains(

@@ -71,7 +71,12 @@
         "process_group",
         "stdio",
         "terminal",
-        "environment"
+        "environment",
+        "stop_signal",
+        "interrupt_signal",
+        "kill_timeout",
+        "shutdown_resolution",
+        "child_tree"
       ],
       "unsupported_guarantees": [
         "platform_signal_equivalence"
@@ -164,7 +169,12 @@
         "absolute_path_match",
         "case_mode",
         "config_generation",
-        "filesystem_boundary"
+        "filesystem_boundary",
+        "root_scope",
+        "symlink_policy",
+        "recursive_scope",
+        "dynamic_config_reload",
+        "external_config_boundary"
       ],
       "unsupported_guarantees": [
         "remote_filesystem_canonicalization"
@@ -218,7 +228,11 @@
         "timer_order",
         "cancel_order",
         "channel_delivery",
-        "wake_order"
+        "wake_order",
+        "task_handoff",
+        "shutdown_resolution",
+        "scheduler_boundary",
+        "blocking_work"
       ],
       "unsupported_guarantees": [
         "arbitrary_scheduler_equivalence"

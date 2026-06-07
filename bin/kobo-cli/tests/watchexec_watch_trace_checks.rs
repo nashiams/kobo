@@ -171,7 +171,7 @@ fn required_adapter_summaries_json() -> String {
       "schema_version": 1,
       "version_range": "^1",
       "operations": ["spawn", "exit", "signal", "kill", "detach", "timeout", "cancel"],
-      "modeled_facts": ["child_id", "policy", "exit_code", "resolution", "process_group", "stdio", "terminal", "environment"],
+      "modeled_facts": ["child_id", "policy", "exit_code", "resolution", "process_group", "stdio", "terminal", "environment", "stop_signal", "interrupt_signal", "kill_timeout", "shutdown_resolution", "child_tree"],
       "unsupported_guarantees": ["platform_signal_equivalence"],
       "replay_confidence": "modelled",
       "source_map_anchor": "events[]",
@@ -211,7 +211,7 @@ fn required_adapter_summaries_json() -> String {
       "schema_version": 1,
       "version_range": "^1",
       "operations": ["match_path", "reload_config", "root_discovery"],
-      "modeled_facts": ["pure_path_match", "absolute_path_match", "case_mode", "config_generation", "filesystem_boundary"],
+      "modeled_facts": ["pure_path_match", "absolute_path_match", "case_mode", "config_generation", "filesystem_boundary", "root_scope", "symlink_policy", "recursive_scope", "dynamic_config_reload", "external_config_boundary"],
       "unsupported_guarantees": ["remote_filesystem_canonicalization"],
       "replay_confidence": "modelled",
       "source_map_anchor": "events[].filter_decision",
@@ -231,7 +231,7 @@ fn required_adapter_summaries_json() -> String {
       "schema_version": 1,
       "version_range": "^1",
       "operations": ["spawn", "join", "cancel", "select", "timer", "channel", "backpressure", "shutdown", "blocking"],
-      "modeled_facts": ["task_order", "timer_order", "cancel_order", "channel_delivery", "wake_order"],
+      "modeled_facts": ["task_order", "timer_order", "cancel_order", "channel_delivery", "wake_order", "task_handoff", "shutdown_resolution", "scheduler_boundary", "blocking_work"],
       "unsupported_guarantees": ["arbitrary_scheduler_equivalence"],
       "replay_confidence": "partial",
       "source_map_anchor": "events[].async_step",
@@ -1500,8 +1500,45 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
       "timestamp_ms": 1563
     },
     {
-      "kind": "child_cancel",
+      "kind": "child_signal",
       "child_id": "cmd-3",
+      "signal": "terminate",
+      "resolution": "graceful_stop",
+      "timestamp_ms": 1580,
+      "async_step": {"cancel_order": 1}
+    },
+    {
+      "kind": "child_start",
+      "child_id": "cmd-4",
+      "policy": "exclusive",
+      "command": "cargo test",
+      "timestamp_ms": 1581
+    },
+    {
+      "kind": "watcher_event",
+      "event_kind": "modify",
+      "path": "src/lib.kobo",
+      "window": 4,
+      "timestamp_ms": 1585,
+      "duplicate_marker": "unique",
+      "evidence_grade": "modeled",
+      "filter_decision": {"status": "accepted", "source_span": "Kobo.toml:4", "generation": 2, "rules": ["src/**/*.kobo"]}
+    },
+    {
+      "kind": "restart_decision",
+      "policy_branch": "watchexec.restart.shutdown_pending",
+      "action": "restart",
+      "path": "src/lib.kobo",
+      "changed_paths": ["src/lib.kobo"],
+      "timestamp_ms": 1590,
+      "async_step": {"task_order": 5}
+    },
+    {
+      "kind": "shutdown",
+      "resolves_timers": true,
+      "resolves_children": true,
+      "pending_windows": [4],
+      "child_resolution": "cancelled",
       "reason": "final_shutdown",
       "timestamp_ms": 1600
     }
@@ -1543,8 +1580,23 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
         "ignored",
         "relevant_after_config_change",
         "graceful_stop",
+        "terminate",
         "kill_timeout",
         "cancelled",
+        "pending_windows",
+        "shutdown_pending",
+        "shutdown_resolved",
+        "renamed_temp_saves",
+        "config_relevance_changes",
+        "child_signals",
+        "child_timeouts",
+        "child_cancellations",
+        "shutdown_pending_restarts",
+        "stop_signal",
+        "dynamic_config_reload",
+        "scheduler_boundary",
+        "release_gate",
+        "metadata-only",
         "WATCHEXEC_CHANGED_PATH",
         "stdout",
         "tty",
@@ -1556,6 +1608,34 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
             "rich boundary witness should preserve required v0.16.2 boundary evidence",
         );
     }
+    assert_eq!(
+        witness_json["normalized"]["source_visible_facts"]["renamed_temp_saves"], 1,
+        "rename plus destination path should be counted as a replayable temp-file save pattern"
+    );
+    assert_eq!(
+        witness_json["normalized"]["source_visible_facts"]["config_relevance_changes"], 2,
+        "config reload and the later relevant path should both remain source-visible"
+    );
+    assert_eq!(
+        witness_json["normalized"]["source_visible_facts"]["child_signals"], 1,
+        "child signal events should be replayable lifecycle boundaries"
+    );
+    assert_eq!(
+        witness_json["normalized"]["source_visible_facts"]["child_timeouts"], 1,
+        "child timeout events should be replayable lifecycle boundaries"
+    );
+    assert_eq!(
+        witness_json["normalized"]["source_visible_facts"]["child_cancellations"], 1,
+        "shutdown child cancellation should be replayable lifecycle evidence"
+    );
+    assert_eq!(
+        witness_json["normalized"]["source_visible_facts"]["shutdown_pending_restarts"], 1,
+        "shutdown while restart is pending should be explicit replay evidence"
+    );
+    assert_eq!(
+        witness_json["normalized"]["shutdown_resolutions"][0]["pending_windows"][0], 4,
+        "shutdown should name the pending restart window it resolves"
+    );
     assert_eq!(
         witness_json["normalized"]["platform_model"]["status"], "source_visible",
         "normalized witness should expose a first-class platform model summary"

@@ -669,7 +669,23 @@ pub(super) fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "schema_version": 1,
             "version_range": "^1",
             "operations": ["spawn", "exit", "signal", "kill", "timeout", "cancel", "rerun_start", "rerun_finish"],
-            "modeled_facts": ["child_id", "policy", "exit_code", "resolution", "process_group", "stdio", "terminal", "environment", "command_kind", "diagnostic_count"],
+            "modeled_facts": [
+                "child_id",
+                "policy",
+                "exit_code",
+                "resolution",
+                "process_group",
+                "stdio",
+                "terminal",
+                "environment",
+                "command_kind",
+                "diagnostic_count",
+                "stop_signal",
+                "interrupt_signal",
+                "kill_timeout",
+                "shutdown_resolution",
+                "child_tree"
+            ],
             "unsupported_guarantees": ["os_process_group_signal_equivalence"],
             "replay_confidence": "modelled",
             "source_map_anchor": "child_lifecycle_obligations[]",
@@ -701,7 +717,18 @@ pub(super) fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "schema_version": 1,
             "version_range": "^1",
             "operations": ["match_path", "reload_config", "root_discovery"],
-            "modeled_facts": ["pure_path_match", "absolute_path_match", "case_mode", "config_generation", "filesystem_boundary"],
+            "modeled_facts": [
+                "pure_path_match",
+                "absolute_path_match",
+                "case_mode",
+                "config_generation",
+                "filesystem_boundary",
+                "root_scope",
+                "symlink_policy",
+                "recursive_scope",
+                "dynamic_config_reload",
+                "external_config_boundary"
+            ],
             "unsupported_guarantees": ["remote_filesystem_canonicalization"],
             "replay_confidence": "modelled",
             "source_map_anchor": "event_batches[].events[].filter_decision",
@@ -717,7 +744,17 @@ pub(super) fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "schema_version": 1,
             "version_range": "^1",
             "operations": ["spawn", "join", "cancel", "select", "timer", "channel", "backpressure", "shutdown", "blocking"],
-            "modeled_facts": ["task_order", "timer_order", "cancel_order", "channel_delivery", "wake_order"],
+            "modeled_facts": [
+                "task_order",
+                "timer_order",
+                "cancel_order",
+                "channel_delivery",
+                "wake_order",
+                "task_handoff",
+                "shutdown_resolution",
+                "scheduler_boundary",
+                "blocking_work"
+            ],
             "unsupported_guarantees": ["arbitrary_scheduler_equivalence"],
             "replay_confidence": "partial",
             "source_map_anchor": "event_batches[].events[].async_step",
@@ -1230,6 +1267,28 @@ fn require_platform_observations(summary: &Value, kind: AdapterKind) -> anyhow::
                 );
             }
         }
+    }
+    for observation in observations {
+        require_supported_platform_grade(observation, kind)?;
+    }
+    Ok(())
+}
+
+fn require_supported_platform_grade(observation: &Value, kind: AdapterKind) -> anyhow::Result<()> {
+    let grade = observation["grade"].as_str().ok_or_else(|| {
+        anyhow::anyhow!("missing adapter platform grade: {}", kind.as_str())
+    })?;
+    if grade == "opaque" {
+        anyhow::bail!(
+            "adapter {} cannot use opaque platform evidence for correctness-critical behavior",
+            kind.as_str()
+        );
+    }
+    if !matches!(grade, "exact" | "modeled" | "sampled" | "metadata-only") {
+        anyhow::bail!(
+            "adapter {} has unsupported platform evidence grade: {grade}",
+            kind.as_str()
+        );
     }
     Ok(())
 }
@@ -1869,6 +1928,7 @@ fn normalized_json(
         &async_runtime_evidence,
         replay_grade,
     );
+    let source_visible_facts = platform_model["source_visible_facts"].clone();
     let event_batches = windows
         .iter()
         .enumerate()
@@ -1887,6 +1947,7 @@ fn normalized_json(
         "restart_decisions": restart_decisions,
         "child_lifecycle_obligations": child_lifecycle,
         "shutdown_resolutions": shutdown_resolutions,
+        "source_visible_facts": source_visible_facts,
         "path_filter_evidence": path_filter_evidence,
         "platform_evidence": platform_evidence,
         "platform_model": platform_model,
@@ -2335,11 +2396,13 @@ fn platform_model_entries() -> Vec<Value> {
                 "coalesced",
             ][..],
             "event_batches",
+            "modeled",
         ),
         (
             "watcher_backend",
             &["backend_identity", "ordering_guarantee", "polling_fallback"][..],
             "platform_evidence",
+            "metadata-only",
         ),
         (
             "paths",
@@ -2353,6 +2416,7 @@ fn platform_model_entries() -> Vec<Value> {
                 "unsupported_filesystem",
             ][..],
             "path_filter_evidence",
+            "modeled",
         ),
         (
             "process_execution",
@@ -2366,6 +2430,7 @@ fn platform_model_entries() -> Vec<Value> {
                 "detached_process",
             ][..],
             "child_lifecycle_obligations",
+            "modeled",
         ),
         (
             "signals",
@@ -2378,26 +2443,31 @@ fn platform_model_entries() -> Vec<Value> {
                 "unsupported_signal",
             ][..],
             "child_lifecycle_obligations",
+            "modeled",
         ),
         (
             "process_groups",
             &["process_group", "session", "job_object", "child_tree"][..],
             "child_lifecycle_obligations",
+            "modeled",
         ),
         (
             "environment_variables",
             &["changed_paths", "inheritance", "command_environment"][..],
             "restart_decisions",
+            "modeled",
         ),
         (
             "terminal_io",
             &["tty", "inherited_handles", "log_forwarding"][..],
             "child_lifecycle_obligations",
+            "modeled",
         ),
         (
             "stdio",
             &["stdin", "stdout", "stderr", "changed_path_delivery"][..],
             "child_lifecycle_obligations",
+            "modeled",
         ),
         (
             "timers",
@@ -2410,14 +2480,18 @@ fn platform_model_entries() -> Vec<Value> {
                 "timeout_firing",
             ][..],
             "debounce_windows",
+            "modeled",
         ),
     ]
     .into_iter()
-    .map(|(model, facts, evidence_anchor)| {
+    .map(|(model, facts, evidence_anchor, replay_grade)| {
         json!({
             "model": model,
             "facts": facts,
             "evidence_anchor": evidence_anchor,
+            "replay_grade": replay_grade,
+            "release_gate": if replay_grade == "opaque" { "blocked" } else { "allowed" },
+            "correctness_critical": true,
         })
     })
     .collect()
@@ -2507,9 +2581,15 @@ fn source_visible_fact_summary(
     json!({
         "filesystem_events": watcher_event_count(windows),
         "paths": watcher_paths(windows),
+        "renamed_temp_saves": renamed_temp_save_count(windows),
         "filter_decisions": path_filter_evidence.len(),
+        "config_relevance_changes": config_relevance_change_count(path_filter_evidence),
         "process_execution": child_lifecycle.len(),
         "signals": child_lifecycle.iter().filter(|entry| lifecycle_has_signal_fact(entry)).count(),
+        "child_signals": child_lifecycle.iter().filter(|entry| !entry["signal"].is_null()).count(),
+        "child_timeouts": child_lifecycle.iter().filter(|entry| entry["resolution"].as_str() == Some("kill_timeout")).count(),
+        "child_cancellations": child_lifecycle.iter().filter(|entry| entry["resolution"].as_str() == Some("cancelled")).count(),
+        "child_exit_races": child_exit_race_count(restart_decisions, child_lifecycle),
         "process_groups": child_lifecycle.iter().filter(|entry| !entry["process_group"].is_null()).count(),
         "environment_variables": restart_decisions.iter().filter(|entry| !entry["environment"].is_null()).count(),
         "terminal_io": child_lifecycle.iter().filter(|entry| !entry["terminal"].is_null()).count(),
@@ -2517,6 +2597,7 @@ fn source_visible_fact_summary(
         "timers": windows.values().map(|trace| trace.timer_events.len()).sum::<usize>(),
         "async_runtime": async_runtime_evidence.len(),
         "shutdown": shutdown_resolutions.len(),
+        "shutdown_pending_restarts": shutdown_resolutions.iter().filter(|entry| entry["pending_windows"].as_array().is_some_and(|windows| !windows.is_empty())).count(),
     })
 }
 
@@ -2535,6 +2616,42 @@ fn watcher_paths(windows: &BTreeMap<u64, WindowTrace>) -> Vec<String> {
         }
     }
     paths.into_iter().collect()
+}
+
+fn renamed_temp_save_count(windows: &BTreeMap<u64, WindowTrace>) -> usize {
+    windows
+        .values()
+        .flat_map(|trace| trace.watcher_events.iter())
+        .filter(|event| {
+            event.event_kind == "rename"
+                || event
+                    .paths
+                    .iter()
+                    .any(|path| path["role"].as_str() == Some("destination_path"))
+        })
+        .count()
+}
+
+fn config_relevance_change_count(path_filter_evidence: &[Value]) -> usize {
+    path_filter_evidence
+        .iter()
+        .filter(|entry| {
+            entry["decision"]["status"].as_str() == Some("config_reload")
+                || entry["decision"]["relevant_after_config_change"]
+                    .as_bool()
+                    .unwrap_or(false)
+        })
+        .count()
+}
+
+fn child_exit_race_count(restart_decisions: &[Value], child_lifecycle: &[Value]) -> usize {
+    if restart_decisions.is_empty() {
+        return 0;
+    }
+    child_lifecycle
+        .iter()
+        .filter(|entry| entry["source_event"]["kind"].as_str() == Some("child_exit"))
+        .count()
 }
 
 fn lifecycle_has_signal_fact(entry: &Value) -> bool {
@@ -2814,6 +2931,11 @@ impl AdapterKind {
                 "stdio",
                 "terminal",
                 "environment",
+                "stop_signal",
+                "interrupt_signal",
+                "kill_timeout",
+                "shutdown_resolution",
+                "child_tree",
             ],
             Self::Time => &["window", "membership", "fire_order"],
             Self::PathFilter => &[
@@ -2822,6 +2944,11 @@ impl AdapterKind {
                 "case_mode",
                 "config_generation",
                 "filesystem_boundary",
+                "root_scope",
+                "symlink_policy",
+                "recursive_scope",
+                "dynamic_config_reload",
+                "external_config_boundary",
             ],
             Self::AsyncRuntime => &[
                 "task_order",
@@ -2829,6 +2956,10 @@ impl AdapterKind {
                 "cancel_order",
                 "channel_delivery",
                 "wake_order",
+                "task_handoff",
+                "shutdown_resolution",
+                "scheduler_boundary",
+                "blocking_work",
             ],
         }
     }

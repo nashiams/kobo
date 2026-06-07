@@ -196,6 +196,16 @@ const REQUIRED_REVIEW_SECTIONS: &[&str] = &[
     "release_artifacts",
 ];
 
+const REQUIRED_PLATFORM_BEHAVIOR_TESTS: &[&str] =
+    &["watcher", "restart", "signal", "stdin", "path_filter"];
+
+const REQUIRED_BACKEND_WORKFLOWS: &[&str] = &[
+    "inspect_clean_cargo",
+    "cargo_check",
+    "source_map_diagnostics",
+    "replay_debug",
+];
+
 const REQUIRED_UPSTREAM_INVENTORY_FIELDS: &[&str] = &[
     "crate_tree",
     "modules",
@@ -1333,6 +1343,7 @@ fn validate_proof_debt_map(
             )));
         }
     }
+    require_complete_proof_debt_map(manifest, &entries, blockers);
     let reports = &manifest["proof_debt_map_reports"];
     if !reports.is_object() {
         blockers.push(ProjectSupportBlocker::new(
@@ -1355,6 +1366,31 @@ fn validate_proof_debt_map(
                     "{report} does not agree with the proof debt map"
                 )));
             }
+        }
+    }
+}
+
+fn require_complete_proof_debt_map(
+    manifest: &Value,
+    entries: &[Value],
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let classified_modules = entries
+        .iter()
+        .filter_map(|entry| entry["module"].as_str())
+        .collect::<BTreeSet<_>>();
+    for module in manifest["upstream_inventory"]["modules"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let Some(module) = module.as_str() else {
+            continue;
+        };
+        if !classified_modules.contains(module) {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "proof debt map missing upstream module {module}"
+            )));
         }
     }
 }
@@ -1574,6 +1610,7 @@ fn validate_evidence_document(
         }
     }
     require_subject_coverage(document, expected_kind, expected_subject, label, blockers);
+    require_covered_paths_exist(root, document, label, blockers);
     let commands = document["commands"].as_array();
     if commands.map_or(true, Vec::is_empty) {
         blockers.push(ProjectSupportBlocker::new(format!(
@@ -1603,6 +1640,8 @@ fn validate_evidence_document(
                             blockers,
                         );
                         validate_subject_command_evidence(
+                            root,
+                            document,
                             command,
                             &argv,
                             transcript_evidence,
@@ -1645,6 +1684,7 @@ fn validate_evidence_document(
         require_non_empty_array(document, "measurements", label, blockers);
         validate_performance_measurements(document, &target_name, label, blockers);
     }
+    validate_structured_future_evidence(document, expected_kind, &target_name, label, blockers);
     if expected_kind == "reviewer_report" {
         validate_reviewer_report_document(document, &target_name, label, blockers);
     }
@@ -1676,6 +1716,44 @@ fn require_subject_coverage(
     }
 }
 
+fn require_covered_paths_exist(
+    root: &Path,
+    document: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let base = evidence_source_base(root, document);
+    for covered_path in document["covered_paths"].as_array().into_iter().flatten() {
+        let Some(covered_path) = covered_path.as_str() else {
+            continue;
+        };
+        if covered_path.trim().is_empty() {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence covered path is empty"
+            )));
+            continue;
+        }
+        if !project_path(&base, covered_path).exists() {
+            blockers.push(ProjectSupportBlocker::new(format!(
+                "{label} evidence covered path does not exist: {covered_path}"
+            )));
+        }
+    }
+}
+
+fn evidence_source_base(root: &Path, document: &Value) -> PathBuf {
+    if let Some(upstream_root) = document["upstream_root"].as_str() {
+        return project_path(root, upstream_root);
+    }
+    document["commands"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|command| command["cwd"].as_str())
+        .map(|cwd| project_path(root, cwd))
+        .unwrap_or_else(|| root.to_path_buf())
+}
+
 fn required_subject_paths(
     expected_kind: &str,
     expected_subject: &str,
@@ -1683,13 +1761,14 @@ fn required_subject_paths(
     match (expected_kind, expected_subject) {
         ("platform_model", "filesystem_events") => Some(&[
             "crates/events/src/fs.rs",
-            "crates/platform/src",
+            "crates/lib/src/sources/fs.rs",
+            "crates/lib/src/watchexec.rs",
+        ]),
+        ("platform_model", "watcher_backend") => Some(&[
+            "crates/lib/src/watchexec.rs",
             "crates/lib/src/sources/fs.rs",
         ]),
-        ("platform_model", "watcher_backend") => {
-            Some(&["crates/platform/src", "crates/lib/src/sources/fs.rs"])
-        }
-        ("platform_model", "paths") => Some(&["crates/platform/src", "crates/lib/src/paths.rs"]),
+        ("platform_model", "paths") => Some(&["crates/lib/src/paths.rs"]),
         ("platform_model", "process_execution") => {
             Some(&["crates/supervisor/src", "crates/lib/src/action"])
         }
@@ -1700,12 +1779,15 @@ fn required_subject_paths(
         ("platform_model", "environment_variables") => Some(&["crates/cli/src/config.rs"]),
         ("platform_model", "terminal_io") => Some(&["crates/cli/src/lib.rs"]),
         ("platform_model", "stdio") => Some(&["crates/cli/src/lib.rs"]),
-        ("platform_model", "timers") => Some(&["crates/supervisor/src/debounce.rs"]),
+        ("platform_model", "timers") => Some(&[
+            "crates/lib/src/action/worker.rs",
+            "crates/cli/src/config.rs",
+        ]),
         ("adapter_summary", "watcher_backend") => Some(&["crates/lib/src/sources/fs.rs"]),
         ("adapter_summary", "async_runtime") => Some(&["crates/lib/src/late_join_set.rs"]),
         ("adapter_summary", "process_handling") => Some(&["crates/supervisor/src/command.rs"]),
         ("adapter_summary", "signal_handling") => Some(&["crates/signals/src"]),
-        ("adapter_summary", "ignore_path") => Some(&["crates/ignore"]),
+        ("adapter_summary", "ignore_path") => Some(&["crates/ignore-files/src"]),
         ("adapter_summary", "config") => Some(&["crates/cli/src/config.rs"]),
         ("adapter_summary", "cli") => Some(&["crates/cli/src/args"]),
         ("adapter_summary", "shell_parsing") => Some(&["crates/supervisor/src/command"]),
@@ -1728,14 +1810,18 @@ fn required_subject_paths(
         ("test_release_parity", "config_behavior") => Some(&["crates/cli/src/config.rs"]),
         ("test_release_parity", "exit_behavior") => Some(&["crates/lib/src/action/return.rs"]),
         ("test_release_parity", "logging_behavior") => Some(&["crates/cli/src/args/logging.rs"]),
-        ("test_release_parity", "package_behavior") => Some(&["Cargo.toml", "release.toml"]),
-        ("test_release_parity", "platform_behavior") => Some(&["crates/platform/src"]),
-        ("test_release_parity", "install_behavior") => Some(&["release.toml", "install"]),
+        ("test_release_parity", "package_behavior") => Some(&["Cargo.toml", "cliff.toml"]),
+        ("test_release_parity", "platform_behavior") => {
+            Some(&["crates/lib/src/paths.rs", "crates/lib/src/sources/fs.rs"])
+        }
+        ("test_release_parity", "install_behavior") => {
+            Some(&["crates/cli/Cargo.toml", "completions"])
+        }
         ("performance", "startup")
         | ("performance", "steady_state")
         | ("performance", "restart") => Some(&["crates/lib/src/watchexec.rs"]),
         ("performance", "memory") | ("performance", "binary") => {
-            Some(&["Cargo.toml", "release.toml"])
+            Some(&["Cargo.toml", "crates/cli/Cargo.toml"])
         }
         ("performance", "watch_tree_scaling") | ("performance", "event_burst_scaling") => {
             Some(&["crates/lib/src/sources/fs.rs"])
@@ -1780,6 +1866,228 @@ fn validate_performance_measurements(
     if !has_subject_measurement {
         blockers.push(ProjectSupportBlocker::new(format!(
             "{label} performance measurements missing {expected_subject}"
+        )));
+    }
+}
+
+fn validate_structured_future_evidence(
+    document: &Value,
+    expected_kind: &str,
+    target_name: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    match expected_kind {
+        "language_surface" => validate_language_evidence_document(document, label, blockers),
+        "platform_model" => validate_platform_evidence_document(document, target_name, blockers),
+        "adapter_summary" => {
+            validate_adapter_evidence_document(document, target_name, label, blockers)
+        }
+        "async_runtime" => validate_async_evidence_document(document, label, blockers),
+        "generated_backend" => validate_generated_backend_evidence(document, label, blockers),
+        "test_release_parity" => {
+            validate_parity_evidence_document(document, target_name, label, blockers)
+        }
+        "performance" => {
+            validate_performance_evidence_document(document, target_name, label, blockers)
+        }
+        "upstream_tests" => validate_replacement_suite_document(document, label, blockers),
+        _ => {}
+    }
+}
+
+fn validate_language_evidence_document(
+    document: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    if document["source_kind"].as_str() != Some("kobo_whole_project") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence source_kind must be kobo_whole_project"
+        )));
+    }
+    require_non_empty_array(document, "kobo_owned_modules", label, blockers);
+    require_set(
+        document,
+        "checks",
+        REQUIRED_LANGUAGE_FLAGS,
+        |check| format!("{label} evidence missing language check {check}"),
+        blockers,
+    );
+}
+
+fn validate_platform_evidence_document(
+    document: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    validate_platform_observations(document, label, blockers);
+    require_set(
+        document,
+        "behavior_tests",
+        REQUIRED_PLATFORM_BEHAVIOR_TESTS,
+        |behavior| format!("{label} evidence missing platform behavior test {behavior}"),
+        blockers,
+    );
+}
+
+fn validate_platform_observations(
+    document: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let observations = document["platform_observations"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if observations.is_empty() {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence missing platform_observations"
+        )));
+        return;
+    }
+    for platform in REQUIRED_PLATFORMS {
+        let observed_behaviors = observations
+            .iter()
+            .filter(|observation| observation["platform"].as_str() == Some(platform))
+            .flat_map(|observation| string_set(&observation["behaviors"]))
+            .collect::<BTreeSet<_>>();
+        for behavior in REQUIRED_PLATFORM_BEHAVIOR_TESTS {
+            if !observed_behaviors.contains(behavior) {
+                blockers.push(ProjectSupportBlocker::new(format!(
+                    "{label} evidence missing {platform} {behavior} platform observation"
+                )));
+            }
+        }
+    }
+}
+
+fn validate_adapter_evidence_document(
+    document: &Value,
+    target_name: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    require_non_empty_str(document, "adapter_name", label, blockers);
+    require_non_empty_str(document, "adapter_version", label, blockers);
+    require_non_empty_array(document, "conformance_results", label, blockers);
+    let has_subject_result = document["conformance_results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|result| {
+            result["adapter_kind"].as_str() == Some(target_name)
+                && result["status"].as_str() == Some("passed")
+        });
+    if !has_subject_result {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence missing passed conformance result for {target_name}"
+        )));
+    }
+}
+
+fn validate_async_evidence_document(
+    document: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    require_set(
+        document,
+        "runtime_semantics",
+        REQUIRED_ASYNC_SEMANTICS,
+        |semantic| format!("{label} evidence missing runtime semantic {semantic}"),
+        blockers,
+    );
+    require_set(
+        document,
+        "mutation_results",
+        REQUIRED_ASYNC_MUTATIONS,
+        |mutation| format!("{label} evidence missing async mutation {mutation}"),
+        blockers,
+    );
+}
+
+fn validate_generated_backend_evidence(
+    document: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    require_non_empty_array(document, "generated_artifacts", label, blockers);
+    require_set(
+        document,
+        "debug_workflows",
+        REQUIRED_BACKEND_WORKFLOWS,
+        |workflow| format!("{label} evidence missing generated backend workflow {workflow}"),
+        blockers,
+    );
+    for artifact in document["generated_artifacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        require_non_empty_str(
+            artifact,
+            "path",
+            &format!("{label} generated artifact"),
+            blockers,
+        );
+        require_non_empty_str(
+            artifact,
+            "source_map",
+            &format!("{label} generated artifact"),
+            blockers,
+        );
+    }
+}
+
+fn validate_parity_evidence_document(
+    document: &Value,
+    target_name: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    require_non_empty_array(document, "parity_results", label, blockers);
+    let has_subject_result = document["parity_results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|result| {
+            result["name"].as_str() == Some(target_name)
+                && result["status"].as_str() == Some("passed")
+        });
+    if !has_subject_result {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence missing passed parity result for {target_name}"
+        )));
+    }
+    if target_name == "install_behavior" {
+        require_non_empty_array(document, "install_artifacts", label, blockers);
+    }
+}
+
+fn validate_performance_evidence_document(
+    document: &Value,
+    target_name: &str,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    let source = document["measurement_source"].as_str().unwrap_or("");
+    if !matches!(source, "bench_run" | "release_profile_run" | "stress_run") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} performance evidence measurement_source does not prove {target_name}"
+        )));
+    }
+}
+
+fn validate_replacement_suite_document(
+    document: &Value,
+    label: &str,
+    blockers: &mut Vec<ProjectSupportBlocker>,
+) {
+    require_non_empty_str(document, "replacement_root", label, blockers);
+    if document["replacement_source"].as_str() != Some("kobo_generated") {
+        blockers.push(ProjectSupportBlocker::new(format!(
+            "{label} evidence replacement_source must be kobo_generated"
         )));
     }
 }
@@ -1887,6 +2195,8 @@ fn validate_command_proof_markers(
 }
 
 fn validate_subject_command_evidence(
+    root: &Path,
+    document: &Value,
     command: &Value,
     argv: &[String],
     transcript_evidence: &CommandTranscriptEvidence,
@@ -1901,11 +2211,21 @@ fn validate_subject_command_evidence(
             | ("upstream_tests", "upstream_tests")
             | ("test_release_parity", "upstream_tests")
     ) {
-        validate_original_upstream_test_suite(command, argv, transcript_evidence, label, blockers);
+        validate_original_upstream_test_suite(
+            root,
+            document,
+            command,
+            argv,
+            transcript_evidence,
+            label,
+            blockers,
+        );
     }
 }
 
 fn validate_original_upstream_test_suite(
+    root: &Path,
+    document: &Value,
     command: &Value,
     argv: &[String],
     transcript_evidence: &CommandTranscriptEvidence,
@@ -1917,9 +2237,9 @@ fn validate_original_upstream_test_suite(
             "{label} evidence must run the original upstream workspace test suite"
         )));
     }
-    if !command_cwd_is_upstream_root(command) {
+    if !command_cwd_matches_replacement_root(root, document, command) {
         blockers.push(ProjectSupportBlocker::new(format!(
-            "{label} evidence upstream test command must run from the upstream project root"
+            "{label} evidence upstream test command must run from the Kobo-generated replacement root"
         )));
     }
     let transcript_output = command_output_from_json(&transcript_evidence.transcript);
@@ -1927,6 +2247,25 @@ fn validate_original_upstream_test_suite(
     if let Some(observed) = transcript_evidence.observed.as_ref() {
         let observed_output = command_output_from_observed(observed);
         validate_upstream_test_output(&observed_output, "rerun command output", label, blockers);
+    }
+}
+
+fn command_cwd_matches_replacement_root(root: &Path, document: &Value, command: &Value) -> bool {
+    let Some(replacement_root) = document["replacement_root"].as_str() else {
+        return false;
+    };
+    let Some(cwd) = command["cwd"].as_str() else {
+        return false;
+    };
+    let replacement_root = project_path(root, replacement_root);
+    let cwd = project_path(root, cwd);
+    paths_match(&replacement_root, &cwd)
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
     }
 }
 
@@ -1967,12 +2306,6 @@ fn is_upstream_test_filter_argument(argument: &str) -> bool {
         || argument.starts_with("--example=")
         || argument.starts_with("--test=")
         || argument.starts_with("--bench=")
-}
-
-fn command_cwd_is_upstream_root(command: &Value) -> bool {
-    let cwd = command["cwd"].as_str().unwrap_or("");
-    let normalized = cwd.replace('\\', "/").to_ascii_lowercase();
-    normalized.ends_with("upstream/watchexec")
 }
 
 fn command_output_from_json(transcript: &Value) -> String {

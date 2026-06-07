@@ -233,7 +233,7 @@ members = [
   "crates/supervisor",
   "crates/platform",
   "crates/signals",
-  "crates/ignore",
+  "crates/ignore-files",
   "crates/config",
   "crates/logging",
   "crates/errors",
@@ -322,7 +322,7 @@ default = []
 polling = []
 "#,
     );
-    for crate_name in ["signals", "ignore", "config", "logging", "errors"] {
+    for crate_name in ["signals", "ignore-files", "config", "logging", "errors"] {
         project.write(
             &format!("upstream/watchexec/crates/{crate_name}/Cargo.toml"),
             &format!(
@@ -450,7 +450,7 @@ default = []
         "pub struct SignalPlan;\npub fn interrupt_group() {}\n",
     );
     project.write(
-        "upstream/watchexec/crates/ignore/src/lib.rs",
+        "upstream/watchexec/crates/ignore-files/src/lib.rs",
         "pub struct IgnoreMatcher;\npub fn matches_path() {}\n",
     );
     project.write(
@@ -486,7 +486,7 @@ default = []
         "#[test]\nfn config_reload() {}\n",
     );
     project.write(
-        "upstream/watchexec/crates/ignore/tests/ignore.rs",
+        "upstream/watchexec/crates/ignore-files/tests/ignore.rs",
         "#[test]\nfn ignore_match() {}\n",
     );
     project.write("upstream/watchexec/examples/restart.rs", "fn main() {}\n");
@@ -497,15 +497,22 @@ default = []
     project.write("upstream/watchexec/fixtures/signals.json", "{}\n");
     project.write("upstream/watchexec/fixtures/config.toml", "debounce = 50\n");
     project.write("upstream/watchexec/fixtures/logging.json", "{}\n");
+    project.write("upstream/watchexec/cliff.toml", "tag_pattern = \"v*\"\n");
     project.write(
-        "upstream/watchexec/release.toml",
-        "artifact = \"watchexec\"\n",
+        "upstream/watchexec/completions/bash",
+        "complete -C watchexec watchexec\n",
+    );
+    project.write(
+        "upstream/watchexec/crates/cli/README.md",
+        "Install watchexec with cargo install or packaged completions.\n",
     );
     project.write(
         "upstream/watchexec/install/install.ps1",
         "Write-Output watchexec\n",
     );
     project.write("upstream/watchexec/target/release/watchexec", "binary\n");
+    project.write(".kobo/evidence/generated-main.rs", "fn main() {}\n");
+    project.write(".kobo/evidence/generated-main.kobo.map", "{}\n");
     write_project_support_proof_marker_test(project);
 }
 
@@ -625,7 +632,7 @@ fn upstream_module_paths() -> &'static [&'static str] {
         "crates/platform/src/macos.rs",
         "crates/platform/src/polling.rs",
         "crates/signals/src/lib.rs",
-        "crates/ignore/src/lib.rs",
+        "crates/ignore-files/src/lib.rs",
         "crates/config/src/lib.rs",
         "crates/logging/src/lib.rs",
         "crates/errors/src/lib.rs",
@@ -633,12 +640,7 @@ fn upstream_module_paths() -> &'static [&'static str] {
 }
 
 fn proof_debt_modules() -> &'static [&'static str] {
-    &[
-        "src/supervisor.kobo",
-        "src/adapters/notify.rs",
-        "src/adapters/process.rs",
-        "examples/restart.kobo",
-    ]
+    upstream_module_paths()
 }
 
 fn build_evidence_command_transcript(
@@ -707,12 +709,13 @@ fn subject_covered_paths(evidence_kind: &str, subject: &str) -> &'static [&'stat
         ("platform_model", "filesystem_events") => &[
             "crates/events/src/fs.rs",
             "crates/lib/src/sources/fs.rs",
-            "crates/platform/src/lib.rs",
+            "crates/lib/src/watchexec.rs",
         ],
-        ("platform_model", "watcher_backend") => {
-            &["crates/platform/src/lib.rs", "crates/lib/src/sources/fs.rs"]
-        }
-        ("platform_model", "paths") => &["crates/platform/src/lib.rs", "crates/lib/src/paths.rs"],
+        ("platform_model", "watcher_backend") => &[
+            "crates/lib/src/watchexec.rs",
+            "crates/lib/src/sources/fs.rs",
+        ],
+        ("platform_model", "paths") => &["crates/lib/src/paths.rs"],
         ("platform_model", "process_execution") => &[
             "crates/supervisor/src/command.rs",
             "crates/lib/src/action/worker.rs",
@@ -726,12 +729,15 @@ fn subject_covered_paths(evidence_kind: &str, subject: &str) -> &'static [&'stat
         ("platform_model", "terminal_io") | ("platform_model", "stdio") => {
             &["crates/cli/src/lib.rs"]
         }
-        ("platform_model", "timers") => &["crates/supervisor/src/debounce.rs"],
+        ("platform_model", "timers") => &[
+            "crates/lib/src/action/worker.rs",
+            "crates/cli/src/config.rs",
+        ],
         ("adapter_summary", "watcher_backend") => &["crates/lib/src/sources/fs.rs"],
         ("adapter_summary", "async_runtime") => &["crates/lib/src/late_join_set.rs"],
         ("adapter_summary", "process_handling") => &["crates/supervisor/src/command.rs"],
         ("adapter_summary", "signal_handling") => &["crates/signals/src/lib.rs"],
-        ("adapter_summary", "ignore_path") => &["crates/ignore/src/lib.rs"],
+        ("adapter_summary", "ignore_path") => &["crates/ignore-files/src/lib.rs"],
         ("adapter_summary", "config") => &["crates/cli/src/config.rs"],
         ("adapter_summary", "cli") => &["crates/cli/src/args/logging.rs"],
         ("adapter_summary", "shell_parsing") => &["crates/supervisor/src/command.rs"],
@@ -754,17 +760,21 @@ fn subject_covered_paths(evidence_kind: &str, subject: &str) -> &'static [&'stat
         ("test_release_parity", "config_behavior") => &["crates/cli/src/config.rs"],
         ("test_release_parity", "exit_behavior") => &["crates/lib/src/action/return.rs"],
         ("test_release_parity", "logging_behavior") => &["crates/cli/src/args/logging.rs"],
-        ("test_release_parity", "package_behavior")
-        | ("test_release_parity", "install_behavior") => {
-            &["Cargo.toml", "release.toml", "install/install.ps1"]
+        ("test_release_parity", "package_behavior") => &["Cargo.toml", "cliff.toml"],
+        ("test_release_parity", "install_behavior") => {
+            &["crates/cli/Cargo.toml", "completions/bash"]
         }
-        ("test_release_parity", "platform_behavior") => &["crates/platform/src/lib.rs"],
+        ("test_release_parity", "platform_behavior") => {
+            &["crates/lib/src/paths.rs", "crates/lib/src/sources/fs.rs"]
+        }
         ("performance", "startup")
         | ("performance", "steady_state")
         | ("performance", "restart") => &["crates/lib/src/watchexec.rs"],
-        ("performance", "memory") | ("performance", "binary") => {
-            &["Cargo.toml", "release.toml", "target/release/watchexec"]
-        }
+        ("performance", "memory") | ("performance", "binary") => &[
+            "Cargo.toml",
+            "crates/cli/Cargo.toml",
+            "target/release/watchexec",
+        ],
         ("performance", "watch_tree_scaling") | ("performance", "event_burst_scaling") => {
             &["crates/lib/src/sources/fs.rs"]
         }
@@ -944,6 +954,7 @@ fn write_evidence(
     let covered_paths = json_string_array(subject_covered_paths(evidence_kind, subject));
     let covered_modules = json_string_array(proof_debt_modules());
     let measurements_json = measurements_json(evidence_kind, subject);
+    let future_fields = future_fields_json(evidence_kind, subject, &evidence_command.hash);
     let reviewer_fields = reviewer_fields_json(evidence_kind, subject, &evidence_command.hash);
     let decision = if evidence_kind == "proof_debt_report" {
         "same_project_map"
@@ -957,6 +968,8 @@ fn write_evidence(
   "schema_version": 1,
   "evidence_kind": "{evidence_kind}",
   "subject": "{subject}",
+  "source_revision": "test-upstream-fixture",
+  "upstream_root": "upstream/watchexec",
   "checks": ["parse", "check", "lower", "source_map", "rare_diagnostics"],
   "covered_paths": [{covered_paths}],
   "covered_modules": [{covered_modules}],
@@ -972,13 +985,71 @@ fn write_evidence(
   "measurements": {measurements_json},
   "mutation_results": ["task-order", "timer-order", "cancel-order", "channel-delivery"],
   "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"],
-  "decision": "{decision}"{reviewer_fields}
+  "decision": "{decision}"{future_fields}{reviewer_fields}
 }}"#
             ,
             argv_json = evidence_command.argv_json.as_str(),
             transcript_hash = evidence_command.hash.as_str(),
         ),
     );
+}
+
+fn future_fields_json(evidence_kind: &str, subject: &str, command_hash: &str) -> String {
+    match evidence_kind {
+        "language_surface" => r#",
+  "source_kind": "kobo_whole_project",
+  "kobo_owned_modules": ["src/supervisor.kobo", "examples/restart.kobo"]"#
+            .to_owned(),
+        "platform_model" => r#",
+  "platform_observations": [
+    {"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "artifact_path": ".kobo/evidence/platform-windows.json"},
+    {"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "artifact_path": ".kobo/evidence/platform-macos.json"},
+    {"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "artifact_path": ".kobo/evidence/platform-linux.json"}
+  ]"#
+        .to_owned(),
+        "adapter_summary" => format!(
+            r#",
+  "adapter_name": "{}",
+  "adapter_version": "1.0.0",
+  "conformance_results": [{{"adapter_kind": "{}", "status": "passed", "command_output_hash": "{}"}}]"#,
+            subject, subject, command_hash
+        ),
+        "async_runtime" => r#",
+  "runtime_semantics": ["spawn", "join", "cancel", "select", "timer", "channel", "backpressure", "shutdown", "blocking"]"#
+            .to_owned(),
+        "generated_backend" => r#",
+  "generated_artifacts": [{"path": ".kobo/evidence/generated-main.rs", "source_map": ".kobo/evidence/generated-main.kobo.map"}],
+  "debug_workflows": ["inspect_clean_cargo", "cargo_check", "source_map_diagnostics", "replay_debug"]"#
+            .to_owned(),
+        "test_release_parity" => {
+            let install_artifacts = if subject == "install_behavior" {
+                r#",
+  "install_artifacts": ["upstream/watchexec/completions/bash"]"#
+            } else {
+                ""
+            };
+            let replacement = if subject == "upstream_tests" {
+                r#",
+  "replacement_root": "upstream/watchexec",
+  "replacement_source": "kobo_generated""#
+            } else {
+                ""
+            };
+            format!(
+                r#",
+  "parity_results": [{{"name": "{}", "status": "passed", "command_output_hash": "{}"}}]{}{}"#,
+                subject, command_hash, install_artifacts, replacement
+            )
+        }
+        "performance" => r#",
+  "measurement_source": "bench_run""#
+            .to_owned(),
+        "upstream_tests" => r#",
+  "replacement_root": "upstream/watchexec",
+  "replacement_source": "kobo_generated""#
+            .to_owned(),
+        _ => String::new(),
+    }
 }
 
 fn reviewer_fields_json(evidence_kind: &str, reviewer: &str, command_hash: &str) -> String {
@@ -1045,7 +1116,7 @@ fn write_complete_support_manifest(project: &TestProject) {
       "crates/platform/src/macos.rs",
       "crates/platform/src/polling.rs",
       "crates/signals/src/lib.rs",
-      "crates/ignore/src/lib.rs",
+      "crates/ignore-files/src/lib.rs",
       "crates/config/src/lib.rs",
       "crates/logging/src/lib.rs",
       "crates/errors/src/lib.rs"
@@ -1065,7 +1136,7 @@ fn write_complete_support_manifest(project: &TestProject) {
       "crates/platform/src/macos.rs",
       "crates/platform/src/polling.rs",
       "crates/signals/src/lib.rs",
-      "crates/ignore/src/lib.rs",
+      "crates/ignore-files/src/lib.rs",
       "crates/config/src/lib.rs",
       "crates/logging/src/lib.rs",
       "crates/errors/src/lib.rs"
@@ -1079,7 +1150,7 @@ fn write_complete_support_manifest(project: &TestProject) {
       "crates/platform/tests/platform.rs",
       "crates/signals/tests/signals.rs",
       "crates/config/tests/config.rs",
-      "crates/ignore/tests/ignore.rs",
+      "crates/ignore-files/tests/ignore.rs",
       "fixtures/save.json",
       "fixtures/rename.json",
       "fixtures/delete.json",
@@ -1192,10 +1263,38 @@ fn write_complete_support_manifest(project: &TestProject) {
     "release_artifacts": [".kobo/evidence/release.zip"]
   },
   "proof_debt_map": [
-    {"module": "src/supervisor.kobo", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
-    {"module": "src/adapters/notify.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
-    {"module": "src/adapters/process.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
-    {"module": "examples/restart.kobo", "classification": "debt", "criticality": "non-critical", "release_blocking": false, "justification": "example-only trace parity is not release blocking"}
+    {"module": "crates/lib/src/lib.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/lib/src/watchexec.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/lib/src/paths.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/lib/src/late_join_set.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/lib/src/action/worker.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/lib/src/action/return.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/lib/src/sources/fs.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/lib/src/sources/signal.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/events/src/lib.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/events/src/fs.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/events/src/serde_formats.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/cli/src/main.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/cli/src/lib.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/cli/src/args/logging.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/cli/src/config.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/supervisor/src/lib.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/supervisor/src/command.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/supervisor/src/errors.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/supervisor/src/job/state.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/supervisor/src/policy.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/supervisor/src/debounce.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/supervisor/tests/project_support_proof_markers.rs", "classification": "sampled", "criticality": "non-critical", "release_blocking": false, "justification": "test harness evidence only"},
+    {"module": "crates/platform/src/lib.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/platform/src/windows.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/platform/src/linux.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/platform/src/macos.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/platform/src/polling.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/signals/src/lib.rs", "classification": "modeled", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/ignore-files/src/lib.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/config/src/lib.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/logging/src/lib.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false},
+    {"module": "crates/errors/src/lib.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false}
   ],
   "proof_debt_map_reports": {
     "debt_summary": ".kobo/evidence/proof-debt-debt_summary.json",
@@ -1566,8 +1665,8 @@ fn doctor_project_support_gate_blocks_missing_or_opaque_critical_evidence() {
                 r#""kind": "signals", "platforms": ["windows", "macos", "linux"], "replay_grade": "opaque""#,
             )
             .replace(
-                r#"{"module": "src/adapters/process.rs", "classification": "adapter-backed", "criticality": "correctness-critical", "release_blocking": false}"#,
-                r#"{"module": "src/adapters/process.rs", "classification": "debt", "criticality": "correctness-critical", "release_blocking": false}"#,
+                r#"{"module": "crates/supervisor/src/command.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false}"#,
+                r#"{"module": "crates/supervisor/src/command.rs", "classification": "debt", "criticality": "correctness-critical", "release_blocking": false}"#,
             ),
     )
     .expect("support manifest should write");
@@ -1586,7 +1685,7 @@ fn doctor_project_support_gate_blocks_missing_or_opaque_critical_evidence() {
     );
     assert_contains(
         &value["project_support"]["blockers"].to_string(),
-        "critical module src/adapters/process.rs is classified as debt",
+        "critical module crates/supervisor/src/command.rs is classified as debt",
         "correctness-critical debt should be a named blocker",
     );
 
@@ -1811,6 +1910,39 @@ fn doctor_project_support_rejects_unrelated_subject_coverage() {
         &value["project_support"]["blockers"].to_string(),
         "replay_evidence evidence does not cover async_runtime subject path",
         "adapter evidence must cover paths tied to its subject",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_missing_covered_source_path() {
+    let project = TestProject::new("doctor-project-support-missing-covered-path");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let evidence_path = project.root.join(".kobo/evidence/language.json");
+    let mut evidence: Value =
+        serde_json::from_str(&fs::read_to_string(&evidence_path).expect("evidence should read"))
+            .expect("evidence should parse");
+    evidence["covered_paths"][0] = serde_json::json!("crates/lib/src/missing.rs");
+    fs::write(
+        &evidence_path,
+        serde_json::to_string_pretty(&evidence).expect("evidence should serialize"),
+    )
+    .expect("evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "missing covered path report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "evidence_path evidence covered path does not exist: crates/lib/src/missing.rs",
+        "evidence coverage should be tied to real source files",
     );
 }
 
@@ -2109,6 +2241,39 @@ fn doctor_project_support_rejects_filtered_upstream_test_command() {
 }
 
 #[test]
+fn doctor_project_support_rejects_upstream_tests_outside_replacement_root() {
+    let project = TestProject::new("doctor-project-support-upstream-not-replacement");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let evidence_path = project.root.join(".kobo/evidence/upstream-tests.json");
+    let mut evidence: Value =
+        serde_json::from_str(&fs::read_to_string(&evidence_path).expect("evidence should read"))
+            .expect("evidence should parse");
+    evidence["replacement_root"] = serde_json::json!("target/generated-watchexec");
+    fs::write(
+        &evidence_path,
+        serde_json::to_string_pretty(&evidence).expect("evidence should serialize"),
+    )
+    .expect("evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "wrong replacement-root report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "original_upstream_tests evidence upstream test command must run from the Kobo-generated replacement root",
+        "upstream tests should exercise the replacement root",
+    );
+}
+
+#[test]
 fn doctor_project_support_rejects_incomplete_reviewer_comparison() {
     let project = TestProject::new("doctor-project-support-incomplete-reviewer");
     write_project_files(&project);
@@ -2157,6 +2322,46 @@ fn doctor_project_support_rejects_incomplete_reviewer_comparison() {
 }
 
 #[test]
+fn doctor_project_support_rejects_missing_platform_observation() {
+    let project = TestProject::new("doctor-project-support-missing-platform-observation");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let evidence_path = project.root.join(".kobo/evidence/filesystem-events.json");
+    let mut evidence: Value =
+        serde_json::from_str(&fs::read_to_string(&evidence_path).expect("evidence should read"))
+            .expect("evidence should parse");
+    let observations = evidence["platform_observations"]
+        .as_array()
+        .expect("platform observations should exist")
+        .iter()
+        .filter(|observation| observation["platform"].as_str() != Some("linux"))
+        .cloned()
+        .collect::<Vec<_>>();
+    evidence["platform_observations"] = serde_json::json!(observations);
+    fs::write(
+        &evidence_path,
+        serde_json::to_string_pretty(&evidence).expect("evidence should serialize"),
+    )
+    .expect("evidence should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "missing platform observation report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "filesystem_events evidence missing linux watcher platform observation",
+        "platform evidence should cover required behavior per platform",
+    );
+}
+
+#[test]
 fn doctor_project_support_rejects_incomplete_future_release_evidence() {
     let project = TestProject::new("doctor-project-support-future-gates");
     write_project_files(&project);
@@ -2189,6 +2394,46 @@ fn doctor_project_support_rejects_incomplete_future_release_evidence() {
         &value["project_support"]["blockers"].to_string(),
         "missing equivalence mutation test generated_backend_output",
         "project support gate should require generated backend mutation evidence",
+    );
+}
+
+#[test]
+fn doctor_project_support_rejects_incomplete_proof_debt_map() {
+    let project = TestProject::new("doctor-project-support-incomplete-proof-map");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    let mut manifest: Value =
+        serde_json::from_str(&manifest).expect("support manifest should parse");
+    let entries = manifest["proof_debt_map"]
+        .as_array()
+        .expect("proof map should exist")
+        .iter()
+        .filter(|entry| entry["module"].as_str() != Some("crates/events/src/lib.rs"))
+        .cloned()
+        .collect::<Vec<_>>();
+    manifest["proof_debt_map"] = serde_json::json!(entries);
+    fs::write(
+        &manifest_path,
+        serde_json::to_string_pretty(&manifest).expect("support manifest should serialize"),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(
+        &output,
+        "incomplete-proof-map report should stay inspectable",
+    );
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "proof debt map missing upstream module crates/events/src/lib.rs",
+        "proof debt map should classify every upstream module",
     );
 }
 

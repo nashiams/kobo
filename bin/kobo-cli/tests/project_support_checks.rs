@@ -1511,6 +1511,48 @@ fn doctor_project_support_reports_complete_general_project_support() {
 }
 
 #[test]
+fn project_map_exposes_whole_project_coverage_from_support_manifest() {
+    let project = TestProject::new("project-map-whole-project-coverage");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let main = project.root.join("src/main.kobo");
+
+    let debt = run_kobo(&[s("debt"), s("--json"), path_arg(&main)], &project.root);
+    assert_success(&debt, "debt JSON should include whole-project coverage");
+    let value = parse_stdout_json(&debt);
+    let coverage = &value["project_map"]["whole_project_coverage"];
+    assert_eq!(coverage["status"], "evidence_present");
+    assert_eq!(coverage["feature_combinations"], 4);
+    assert_eq!(coverage["upstream_inventory_counts"]["crate_tree"], 18);
+    assert_eq!(coverage["upstream_inventory_counts"]["platform_paths"], 4);
+    assert_eq!(coverage["language_flags"]["parse"], true);
+    assert_eq!(
+        coverage["adapter_decisions"]["watcher_backend"],
+        "formal_adapter"
+    );
+    assert_eq!(
+        coverage["adapter_decisions"]["signal_handling"],
+        "kobo_owned_adapter"
+    );
+    assert_eq!(coverage["platform_model_grades"]["terminal_io"], "sampled");
+    assert_eq!(coverage["generated_backend_flags"]["source_mapped"], true);
+    assert_eq!(coverage["test_release_parity_counts"]["performance"], 7);
+    assert_eq!(coverage["test_release_parity_counts"]["release_artifacts"], 1);
+    assert_eq!(coverage["proof_debt_modules"], 32);
+    assert_eq!(coverage["mutation_tests"], 8);
+    assert_eq!(coverage["reviewer_reports"], 2);
+    assert_eq!(coverage["release_gate"], "evidence_visible");
+
+    let inspect = run_kobo(&[s("inspect"), path_arg(&main)], &project.root);
+    assert_success(&inspect, "inspect should include the expanded project map");
+    assert_contains(
+        &inspect.stdout,
+        "coverage=evidence_present",
+        "inspect should expose the same whole-project coverage status as debt",
+    );
+}
+
+#[test]
 fn doctor_project_support_rejects_replacement_claim_overreach() {
     let project = TestProject::new("doctor-project-support-claim-overreach");
     write_project_files(&project);

@@ -1513,6 +1513,11 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
     for expected in [
         "path_filter",
         "async_runtime",
+        "platform_model",
+        "filesystem_events",
+        "process_execution",
+        "terminal_io",
+        "source_visible_facts",
         ".gitignore and .ignore loading",
         "Windows-specific async timeout behavior",
         "destination_path",
@@ -1532,6 +1537,20 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
             "rich boundary witness should preserve required v0.16.2 boundary evidence",
         );
     }
+    assert_eq!(
+        witness_json["normalized"]["platform_model"]["status"], "source_visible",
+        "normalized witness should expose a first-class platform model summary"
+    );
+    assert_contains(
+        &witness_json["normalized"]["platform_model"].to_string(),
+        "linux",
+        "platform model should retain observed backend identity",
+    );
+    assert_contains(
+        &witness_json["normalized"]["platform_model"].to_string(),
+        "stdin",
+        "platform model should retain stdio and changed-path routing facts",
+    );
 
     print_project_support_future_proof_markers();
 

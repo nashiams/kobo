@@ -1530,6 +1530,16 @@ fn normalized_json(
     let platform_evidence = platform_evidence(&windows);
     let async_runtime_evidence =
         async_runtime_evidence(&windows, &restart_decisions, &child_lifecycle);
+    let platform_model = platform_model_summary(
+        &windows,
+        &restart_decisions,
+        &child_lifecycle,
+        &shutdown_resolutions,
+        &path_filter_evidence,
+        &platform_evidence,
+        &async_runtime_evidence,
+        replay_grade,
+    );
     let event_batches = windows
         .iter()
         .enumerate()
@@ -1550,6 +1560,7 @@ fn normalized_json(
         "shutdown_resolutions": shutdown_resolutions,
         "path_filter_evidence": path_filter_evidence,
         "platform_evidence": platform_evidence,
+        "platform_model": platform_model,
         "async_runtime_evidence": async_runtime_evidence,
     })
 }
@@ -1744,6 +1755,278 @@ fn async_runtime_evidence(
         }
     }
     evidence
+}
+
+fn platform_model_summary(
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    shutdown_resolutions: &[Value],
+    path_filter_evidence: &[Value],
+    platform_evidence: &[Value],
+    async_runtime_evidence: &[Value],
+    replay_grade: TraceReplayGrade,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "status": "source_visible",
+        "replay_grade": replay_grade.as_str(),
+        "models": platform_model_entries(),
+        "platforms": platform_observation_summary(platform_evidence),
+        "behavior_tests": platform_behavior_tests(
+            windows,
+            restart_decisions,
+            child_lifecycle,
+            path_filter_evidence,
+        ),
+        "source_visible_facts": source_visible_fact_summary(
+            windows,
+            restart_decisions,
+            child_lifecycle,
+            shutdown_resolutions,
+            path_filter_evidence,
+            async_runtime_evidence,
+        ),
+        "unsupported_guarantees": [
+            "native_backend_total_order",
+            "arbitrary_scheduler_equivalence",
+            "unrecorded_platform_signal_equivalence",
+        ],
+    })
+}
+
+fn platform_model_entries() -> Vec<Value> {
+    [
+        (
+            "filesystem_events",
+            &[
+                "create",
+                "modify",
+                "delete",
+                "move",
+                "rename",
+                "close",
+                "metadata",
+                "rescan",
+                "synthetic",
+                "duplicate",
+                "coalesced",
+            ][..],
+            "event_batches",
+        ),
+        (
+            "watcher_backend",
+            &["backend_identity", "ordering_guarantee", "polling_fallback"][..],
+            "platform_evidence",
+        ),
+        (
+            "paths",
+            &[
+                "case_sensitive",
+                "case_only_rename",
+                "canonical_path",
+                "symlink_policy",
+                "project_root",
+                "recursive_scope",
+                "unsupported_filesystem",
+            ][..],
+            "path_filter_evidence",
+        ),
+        (
+            "process_execution",
+            &[
+                "spawn",
+                "command_arguments",
+                "environment",
+                "current_directory",
+                "shell_wrapping",
+                "no_shell_execution",
+                "detached_process",
+            ][..],
+            "child_lifecycle_obligations",
+        ),
+        (
+            "signals",
+            &[
+                "stop_signal",
+                "interrupt_signal",
+                "kill_fallback",
+                "graceful_shutdown",
+                "kill_timeout",
+                "unsupported_signal",
+            ][..],
+            "child_lifecycle_obligations",
+        ),
+        (
+            "process_groups",
+            &["process_group", "session", "job_object", "child_tree"][..],
+            "child_lifecycle_obligations",
+        ),
+        (
+            "environment_variables",
+            &["changed_paths", "inheritance", "command_environment"][..],
+            "restart_decisions",
+        ),
+        (
+            "terminal_io",
+            &["tty", "inherited_handles", "log_forwarding"][..],
+            "child_lifecycle_obligations",
+        ),
+        (
+            "stdio",
+            &["stdin", "stdout", "stderr", "changed_path_delivery"][..],
+            "child_lifecycle_obligations",
+        ),
+        (
+            "timers",
+            &[
+                "debounce_window",
+                "delay_run",
+                "stop_timeout",
+                "poll_interval",
+                "cancellation",
+                "timeout_firing",
+            ][..],
+            "debounce_windows",
+        ),
+    ]
+    .into_iter()
+    .map(|(model, facts, evidence_anchor)| {
+        json!({
+            "model": model,
+            "facts": facts,
+            "evidence_anchor": evidence_anchor,
+        })
+    })
+    .collect()
+}
+
+fn platform_observation_summary(platform_evidence: &[Value]) -> Vec<Value> {
+    let mut observations = BTreeMap::<String, BTreeSet<String>>::new();
+    for evidence in platform_evidence {
+        let platform = &evidence["platform"];
+        let os = platform["os"].as_str().unwrap_or("unknown").to_owned();
+        let backend = platform["backend"].as_str().unwrap_or("unknown");
+        observations
+            .entry(os)
+            .or_default()
+            .insert(backend.to_owned());
+    }
+    observations
+        .into_iter()
+        .map(|(os, backends)| {
+            json!({
+                "os": os,
+                "backends": backends.into_iter().collect::<Vec<_>>(),
+                "source_visible": true,
+            })
+        })
+        .collect()
+}
+
+fn platform_behavior_tests(
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    path_filter_evidence: &[Value],
+) -> Vec<Value> {
+    REQUIRED_PLATFORM_BEHAVIORS
+        .iter()
+        .map(|behavior| {
+            json!({
+                "behavior": behavior,
+                "observed": platform_behavior_is_observed(
+                    behavior,
+                    windows,
+                    restart_decisions,
+                    child_lifecycle,
+                    path_filter_evidence,
+                ),
+                "grade": "modeled",
+            })
+        })
+        .collect()
+}
+
+fn platform_behavior_is_observed(
+    behavior: &str,
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    path_filter_evidence: &[Value],
+) -> bool {
+    match behavior {
+        "watcher" => windows
+            .values()
+            .any(|trace| !trace.watcher_events.is_empty()),
+        "restart" => restart_decisions
+            .iter()
+            .any(|decision| decision["action"].as_str() == Some("restart")),
+        "signal" => child_lifecycle.iter().any(lifecycle_has_signal_fact),
+        "stdin" => {
+            child_lifecycle.iter().any(lifecycle_has_stdio_fact)
+                || restart_decisions
+                    .iter()
+                    .any(|decision| !decision["stdin_paths"].is_null())
+        }
+        "path_filter" => !path_filter_evidence.is_empty(),
+        _ => false,
+    }
+}
+
+fn source_visible_fact_summary(
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    shutdown_resolutions: &[Value],
+    path_filter_evidence: &[Value],
+    async_runtime_evidence: &[Value],
+) -> Value {
+    json!({
+        "filesystem_events": watcher_event_count(windows),
+        "paths": watcher_paths(windows),
+        "filter_decisions": path_filter_evidence.len(),
+        "process_execution": child_lifecycle.len(),
+        "signals": child_lifecycle.iter().filter(|entry| lifecycle_has_signal_fact(entry)).count(),
+        "process_groups": child_lifecycle.iter().filter(|entry| !entry["process_group"].is_null()).count(),
+        "environment_variables": restart_decisions.iter().filter(|entry| !entry["environment"].is_null()).count(),
+        "terminal_io": child_lifecycle.iter().filter(|entry| !entry["terminal"].is_null()).count(),
+        "stdio": child_lifecycle.iter().filter(|entry| lifecycle_has_stdio_fact(entry)).count(),
+        "timers": windows.values().map(|trace| trace.timer_events.len()).sum::<usize>(),
+        "async_runtime": async_runtime_evidence.len(),
+        "shutdown": shutdown_resolutions.len(),
+    })
+}
+
+fn watcher_event_count(windows: &BTreeMap<u64, WindowTrace>) -> usize {
+    windows
+        .values()
+        .map(|trace| trace.watcher_events.len())
+        .sum()
+}
+
+fn watcher_paths(windows: &BTreeMap<u64, WindowTrace>) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    for trace in windows.values() {
+        for event in &trace.watcher_events {
+            paths.insert(event.path.clone());
+        }
+    }
+    paths.into_iter().collect()
+}
+
+fn lifecycle_has_signal_fact(entry: &Value) -> bool {
+    !entry["signal"].is_null()
+        || !entry["extra"]["signal"].is_null()
+        || matches!(
+            entry["resolution"].as_str(),
+            Some("graceful_stop" | "kill_timeout" | "killed" | "cancelled")
+        )
+}
+
+fn lifecycle_has_stdio_fact(entry: &Value) -> bool {
+    let stdio = &entry["stdio"];
+    !stdio["stdin"].is_null() || !stdio["stdout"].is_null() || !stdio["stderr"].is_null()
 }
 
 fn replay_grade_for_windows(windows: &BTreeMap<u64, WindowTrace>) -> TraceReplayGrade {

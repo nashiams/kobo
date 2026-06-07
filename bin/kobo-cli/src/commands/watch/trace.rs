@@ -119,6 +119,27 @@ const REQUIRED_EXTERNAL_COMPARISON_COVERAGE: &[(&str, &str)] = &[
     ),
 ];
 
+const REQUIRED_PLATFORMS: &[&str] = &["windows", "macos", "linux"];
+const REQUIRED_PLATFORM_BEHAVIORS: &[&str] =
+    &["watcher", "restart", "signal", "stdin", "path_filter"];
+const REQUIRED_ASYNC_SEMANTICS: &[&str] = &[
+    "spawn",
+    "join",
+    "cancel",
+    "select",
+    "timer",
+    "channel",
+    "backpressure",
+    "shutdown",
+    "blocking",
+];
+const REQUIRED_ASYNC_MUTATIONS: &[&str] = &[
+    "task-order",
+    "timer-order",
+    "cancel-order",
+    "channel-delivery",
+];
+
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 enum AdapterKind {
     Watcher,
@@ -322,24 +343,32 @@ fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "name": "kobo-source-watch-state",
             "schema_version": 1,
             "version_range": "^1",
-            "operations": ["poll_snapshot", "normalize_event_batch"],
-            "modeled_facts": ["event_kind", "paths", "ordering", "duplicates", "evidence_grade"],
+            "operations": ["raw_event", "poll_snapshot", "normalize_event_batch"],
+            "modeled_facts": ["event_kind", "paths", "ordering", "duplicates", "platform_backend", "raw_boundary", "evidence_grade"],
             "unsupported_guarantees": ["native_backend_order", "platform_specific_raw_event_identity"],
             "replay_confidence": "metadata-only",
             "source_map_anchor": "event_batches[]",
             "cargo_features": ["default"],
+            "conformance_tests": ["source-watch-event-kind", "source-watch-duplicate-batch"],
+            "replay_evidence": {"grade": "metadata-only", "artifact": "source_watch_state.event_batches", "source_map_anchor": "event_batches[]"},
+            "stale_check": {"status": "passed", "summary_version": "1", "features": ["default"]},
+            "platform_observations": adapter_platform_observations(),
         }),
         json!({
             "kind": "process",
             "name": "kobo-in-process-supervisor",
             "schema_version": 1,
             "version_range": "^1",
-            "operations": ["rerun_start", "rerun_finish"],
-            "modeled_facts": ["command_kind", "resolution", "diagnostic_count"],
+            "operations": ["spawn", "exit", "signal", "kill", "timeout", "cancel", "rerun_start", "rerun_finish"],
+            "modeled_facts": ["child_id", "policy", "exit_code", "resolution", "process_group", "stdio", "terminal", "environment", "command_kind", "diagnostic_count"],
             "unsupported_guarantees": ["os_process_group_signal_equivalence"],
             "replay_confidence": "modelled",
             "source_map_anchor": "child_lifecycle_obligations[]",
             "cargo_features": ["default"],
+            "conformance_tests": ["source-watch-child-start-exit", "source-watch-no-orphan-child"],
+            "replay_evidence": {"grade": "modelled", "artifact": "source_watch_state.child_lifecycle_obligations", "source_map_anchor": "child_lifecycle_obligations[]"},
+            "stale_check": {"status": "passed", "summary_version": "1", "features": ["default"]},
+            "platform_observations": adapter_platform_observations(),
         }),
         json!({
             "kind": "time",
@@ -352,6 +381,10 @@ fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "replay_confidence": "partial",
             "source_map_anchor": "debounce_windows[]",
             "cargo_features": ["default"],
+            "conformance_tests": ["source-watch-timer-fire", "source-watch-window-membership"],
+            "replay_evidence": {"grade": "partial", "artifact": "source_watch_state.debounce_windows", "source_map_anchor": "debounce_windows[]"},
+            "stale_check": {"status": "passed", "summary_version": "1", "features": ["default"]},
+            "platform_observations": adapter_platform_observations(),
         }),
         json!({
             "kind": "path_filter",
@@ -364,6 +397,10 @@ fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "replay_confidence": "modelled",
             "source_map_anchor": "event_batches[].events[].filter_decision",
             "cargo_features": ["default"],
+            "conformance_tests": ["source-watch-path-match", "source-watch-config-generation"],
+            "replay_evidence": {"grade": "modelled", "artifact": "source_watch_state.event_batches[].events[].filter_decision", "source_map_anchor": "event_batches[].events[].filter_decision"},
+            "stale_check": {"status": "passed", "summary_version": "1", "features": ["default"]},
+            "platform_observations": adapter_platform_observations(),
         }),
         json!({
             "kind": "async_runtime",
@@ -376,8 +413,28 @@ fn source_watch_state_adapter_summaries() -> Vec<Value> {
             "replay_confidence": "partial",
             "source_map_anchor": "event_batches[].events[].async_step",
             "cargo_features": ["rt", "time", "sync"],
+            "conformance_tests": ["source-watch-task-order", "source-watch-cancel-order", "source-watch-channel-delivery"],
+            "replay_evidence": {"grade": "partial", "artifact": "source_watch_state.async_step", "source_map_anchor": "event_batches[].events[].async_step"},
+            "stale_check": {"status": "passed", "summary_version": "1", "features": ["rt", "time", "sync"]},
+            "platform_observations": adapter_platform_observations(),
+            "async_semantics": ["spawn", "join", "cancel", "select", "timer", "channel", "backpressure", "shutdown", "blocking"],
+            "mutation_checks": ["task-order", "timer-order", "cancel-order", "channel-delivery"],
+            "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"],
         }),
     ]
+}
+
+fn adapter_platform_observations() -> Vec<Value> {
+    REQUIRED_PLATFORMS
+        .iter()
+        .map(|platform| {
+            json!({
+                "platform": platform,
+                "behaviors": REQUIRED_PLATFORM_BEHAVIORS,
+                "grade": "modeled",
+            })
+        })
+        .collect()
 }
 
 fn source_watch_state_external_comparisons() -> anyhow::Result<Vec<Value>> {
@@ -745,10 +802,154 @@ fn parse_adapter_summary(summary: &Value) -> anyhow::Result<AdapterSummary> {
     require_non_empty_str(summary, "replay_confidence", kind)?;
     require_non_empty_str(summary, "source_map_anchor", kind)?;
     require_non_empty_array(summary, "cargo_features", kind)?;
+    require_adapter_kind_contract(summary, kind)?;
     Ok(AdapterSummary {
         kind,
         json: summary.clone(),
     })
+}
+
+fn require_adapter_kind_contract(summary: &Value, kind: AdapterKind) -> anyhow::Result<()> {
+    require_adapter_values(
+        summary,
+        "operations",
+        kind.required_operations(),
+        kind,
+        "operation",
+    )?;
+    require_adapter_values(
+        summary,
+        "modeled_facts",
+        kind.required_modeled_facts(),
+        kind,
+        "modeled fact",
+    )?;
+    require_non_empty_array(summary, "conformance_tests", kind)?;
+    require_non_empty_object(summary, "replay_evidence", kind)?;
+    require_stale_check(summary, kind)?;
+    require_platform_observations(summary, kind)?;
+    if kind == AdapterKind::AsyncRuntime {
+        require_adapter_values(
+            summary,
+            "async_semantics",
+            REQUIRED_ASYNC_SEMANTICS,
+            kind,
+            "async semantic",
+        )?;
+        require_adapter_values(
+            summary,
+            "mutation_checks",
+            REQUIRED_ASYNC_MUTATIONS,
+            kind,
+            "async mutation",
+        )?;
+        require_non_empty_array(summary, "scheduler_facts", kind)?;
+    }
+    Ok(())
+}
+
+fn require_adapter_values(
+    summary: &Value,
+    field: &str,
+    required: &[&str],
+    kind: AdapterKind,
+    label: &str,
+) -> anyhow::Result<()> {
+    let observed = string_set(&summary[field]);
+    for required in required {
+        if !observed.contains(required) {
+            anyhow::bail!(
+                "adapter {} missing required {label}: {required}",
+                kind.as_str()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn require_non_empty_object(value: &Value, field: &str, kind: AdapterKind) -> anyhow::Result<()> {
+    let object = value[field]
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("missing adapter {field}: {}", kind.as_str()))?;
+    if object.is_empty() {
+        anyhow::bail!("empty adapter {field}: {}", kind.as_str());
+    }
+    Ok(())
+}
+
+fn require_stale_check(summary: &Value, kind: AdapterKind) -> anyhow::Result<()> {
+    require_non_empty_object(summary, "stale_check", kind)?;
+    let stale_check = &summary["stale_check"];
+    if stale_check["status"].as_str() != Some("passed") {
+        anyhow::bail!("adapter {} stale_check must pass", kind.as_str());
+    }
+    require_adapter_field_str(stale_check, "summary_version", kind, "stale_check")?;
+    require_adapter_field_array(stale_check, "features", kind, "stale_check")?;
+    Ok(())
+}
+
+fn require_platform_observations(summary: &Value, kind: AdapterKind) -> anyhow::Result<()> {
+    let observations = summary["platform_observations"].as_array().ok_or_else(|| {
+        anyhow::anyhow!("missing adapter platform_observations: {}", kind.as_str())
+    })?;
+    if observations.is_empty() {
+        anyhow::bail!("empty adapter platform_observations: {}", kind.as_str());
+    }
+    for platform in REQUIRED_PLATFORMS {
+        let observed_behaviors = observations
+            .iter()
+            .filter(|observation| observation["platform"].as_str() == Some(platform))
+            .flat_map(|observation| string_set(&observation["behaviors"]))
+            .collect::<BTreeSet<_>>();
+        for behavior in REQUIRED_PLATFORM_BEHAVIORS {
+            if !observed_behaviors.contains(behavior) {
+                anyhow::bail!(
+                    "adapter {} missing {platform} {behavior} platform observation",
+                    kind.as_str()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_adapter_field_str(
+    value: &Value,
+    field: &str,
+    kind: AdapterKind,
+    parent: &str,
+) -> anyhow::Result<()> {
+    let text = value[field]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing adapter {parent} {field}: {}", kind.as_str()))?;
+    if text.trim().is_empty() {
+        anyhow::bail!("empty adapter {parent} {field}: {}", kind.as_str());
+    }
+    Ok(())
+}
+
+fn require_adapter_field_array(
+    value: &Value,
+    field: &str,
+    kind: AdapterKind,
+    parent: &str,
+) -> anyhow::Result<()> {
+    let values = value[field]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing adapter {parent} {field}: {}", kind.as_str()))?;
+    if values.is_empty() {
+        anyhow::bail!("empty adapter {parent} {field}: {}", kind.as_str());
+    }
+    Ok(())
+}
+
+fn string_set(value: &Value) -> BTreeSet<&str> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 fn require_adapter_kind(
@@ -1766,6 +1967,64 @@ impl AdapterKind {
             Self::Time => "time",
             Self::PathFilter => "path_filter",
             Self::AsyncRuntime => "async_runtime",
+        }
+    }
+
+    fn required_operations(self) -> &'static [&'static str] {
+        match self {
+            Self::Watcher => &["raw_event", "normalize_event_batch"],
+            Self::Process => &["spawn", "exit", "signal", "kill", "timeout", "cancel"],
+            Self::Time => &["timer_create", "timer_cancel", "timer_fire"],
+            Self::PathFilter => &["match_path", "reload_config", "root_discovery"],
+            Self::AsyncRuntime => &[
+                "spawn",
+                "join",
+                "cancel",
+                "select",
+                "timer",
+                "channel",
+                "backpressure",
+                "shutdown",
+                "blocking",
+            ],
+        }
+    }
+
+    fn required_modeled_facts(self) -> &'static [&'static str] {
+        match self {
+            Self::Watcher => &[
+                "event_kind",
+                "paths",
+                "ordering",
+                "duplicates",
+                "platform_backend",
+                "raw_boundary",
+            ],
+            Self::Process => &[
+                "child_id",
+                "policy",
+                "exit_code",
+                "resolution",
+                "process_group",
+                "stdio",
+                "terminal",
+                "environment",
+            ],
+            Self::Time => &["window", "membership", "fire_order"],
+            Self::PathFilter => &[
+                "pure_path_match",
+                "absolute_path_match",
+                "case_mode",
+                "config_generation",
+                "filesystem_boundary",
+            ],
+            Self::AsyncRuntime => &[
+                "task_order",
+                "timer_order",
+                "cancel_order",
+                "channel_delivery",
+                "wake_order",
+            ],
         }
     }
 }

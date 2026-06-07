@@ -8,7 +8,8 @@
       "schema_version": 1,
       "version_range": "^1",
       "operations": [
-        "raw_event"
+        "raw_event",
+        "normalize_event_batch"
       ],
       "modeled_facts": [
         "event_kind",
@@ -25,6 +26,27 @@
       "source_map_anchor": "events[]",
       "cargo_features": [
         "default"
+      ],
+      "conformance_tests": [
+        "raw-event-normalization",
+        "duplicate-coalescing"
+      ],
+      "replay_evidence": {
+        "grade": "modelled",
+        "artifact": "events[]",
+        "source_map_anchor": "events[]"
+      },
+      "stale_check": {
+        "status": "passed",
+        "summary_version": "1",
+        "features": [
+          "default"
+        ]
+      },
+      "platform_observations": [
+        {"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}
       ]
     },
     {
@@ -58,6 +80,28 @@
       "source_map_anchor": "events[]",
       "cargo_features": [
         "default"
+      ],
+      "conformance_tests": [
+        "child-start-exit",
+        "exclusive-replacement",
+        "signal-before-kill"
+      ],
+      "replay_evidence": {
+        "grade": "modelled",
+        "artifact": "child_lifecycle_obligations",
+        "source_map_anchor": "events[]"
+      },
+      "stale_check": {
+        "status": "passed",
+        "summary_version": "1",
+        "features": [
+          "default"
+        ]
+      },
+      "platform_observations": [
+        {"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}
       ]
     },
     {
@@ -82,6 +126,27 @@
       "source_map_anchor": "events[]",
       "cargo_features": [
         "default"
+      ],
+      "conformance_tests": [
+        "timer-fire",
+        "debounce-window-membership"
+      ],
+      "replay_evidence": {
+        "grade": "modelled",
+        "artifact": "debounce_windows",
+        "source_map_anchor": "events[]"
+      },
+      "stale_check": {
+        "status": "passed",
+        "summary_version": "1",
+        "features": [
+          "default"
+        ]
+      },
+      "platform_observations": [
+        {"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}
       ]
     },
     {
@@ -108,6 +173,28 @@
       "source_map_anchor": "events[].filter_decision",
       "cargo_features": [
         "default"
+      ],
+      "conformance_tests": [
+        "path-match",
+        "config-generation",
+        "root-discovery"
+      ],
+      "replay_evidence": {
+        "grade": "modelled",
+        "artifact": "path_filter_evidence",
+        "source_map_anchor": "events[].filter_decision"
+      },
+      "stale_check": {
+        "status": "passed",
+        "summary_version": "1",
+        "features": [
+          "default"
+        ]
+      },
+      "platform_observations": [
+        {"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}
       ]
     },
     {
@@ -142,6 +229,53 @@
         "rt",
         "time",
         "sync"
+      ],
+      "conformance_tests": [
+        "task-order",
+        "cancel-order",
+        "channel-delivery"
+      ],
+      "replay_evidence": {
+        "grade": "modelled",
+        "artifact": "async_runtime_evidence",
+        "source_map_anchor": "events[].async_step"
+      },
+      "stale_check": {
+        "status": "passed",
+        "summary_version": "1",
+        "features": [
+          "rt",
+          "time",
+          "sync"
+        ]
+      },
+      "platform_observations": [
+        {"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"},
+        {"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}
+      ],
+      "async_semantics": [
+        "spawn",
+        "join",
+        "cancel",
+        "select",
+        "timer",
+        "channel",
+        "backpressure",
+        "shutdown",
+        "blocking"
+      ],
+      "mutation_checks": [
+        "task-order",
+        "timer-order",
+        "cancel-order",
+        "channel-delivery"
+      ],
+      "scheduler_facts": [
+        "watcher-batching",
+        "restart-ordering",
+        "signal-delivery",
+        "child-exit-race"
       ]
     }
   ],

@@ -150,12 +150,20 @@ fn required_adapter_summaries_json() -> String {
       "name": "notify-like",
       "schema_version": 1,
       "version_range": "^1",
-      "operations": ["raw_event"],
+      "operations": ["raw_event", "normalize_event_batch"],
       "modeled_facts": ["event_kind", "paths", "ordering", "duplicates", "platform_backend", "raw_boundary"],
       "unsupported_guarantees": ["global_total_order"],
       "replay_confidence": "metadata-only",
       "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
+      "cargo_features": ["default"],
+      "conformance_tests": ["raw-event-normalization", "duplicate-coalescing"],
+      "replay_evidence": {{"grade": "metadata-only", "artifact": "events[]", "source_map_anchor": "events[]"}},
+      "stale_check": {{"status": "passed", "summary_version": "1", "features": ["default"]}},
+      "platform_observations": [
+        {{"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}}
+      ]
     }},
     {{
       "kind": "process",
@@ -167,7 +175,15 @@ fn required_adapter_summaries_json() -> String {
       "unsupported_guarantees": ["platform_signal_equivalence"],
       "replay_confidence": "modelled",
       "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
+      "cargo_features": ["default"],
+      "conformance_tests": ["child-start-exit", "exclusive-replacement", "signal-before-kill"],
+      "replay_evidence": {{"grade": "modelled", "artifact": "child_lifecycle_obligations", "source_map_anchor": "events[]"}},
+      "stale_check": {{"status": "passed", "summary_version": "1", "features": ["default"]}},
+      "platform_observations": [
+        {{"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}}
+      ]
     }},
     {{
       "kind": "time",
@@ -179,7 +195,15 @@ fn required_adapter_summaries_json() -> String {
       "unsupported_guarantees": ["real_os_time_determinism"],
       "replay_confidence": "partial",
       "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
+      "cargo_features": ["default"],
+      "conformance_tests": ["timer-fire", "debounce-window-membership"],
+      "replay_evidence": {{"grade": "partial", "artifact": "debounce_windows", "source_map_anchor": "events[]"}},
+      "stale_check": {{"status": "passed", "summary_version": "1", "features": ["default"]}},
+      "platform_observations": [
+        {{"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}}
+      ]
     }},
     {{
       "kind": "path_filter",
@@ -191,7 +215,15 @@ fn required_adapter_summaries_json() -> String {
       "unsupported_guarantees": ["remote_filesystem_canonicalization"],
       "replay_confidence": "modelled",
       "source_map_anchor": "events[].filter_decision",
-      "cargo_features": ["default"]
+      "cargo_features": ["default"],
+      "conformance_tests": ["path-match", "config-generation", "root-discovery"],
+      "replay_evidence": {{"grade": "modelled", "artifact": "path_filter_evidence", "source_map_anchor": "events[].filter_decision"}},
+      "stale_check": {{"status": "passed", "summary_version": "1", "features": ["default"]}},
+      "platform_observations": [
+        {{"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}}
+      ]
     }},
     {{
       "kind": "async_runtime",
@@ -203,7 +235,18 @@ fn required_adapter_summaries_json() -> String {
       "unsupported_guarantees": ["arbitrary_scheduler_equivalence"],
       "replay_confidence": "partial",
       "source_map_anchor": "events[].async_step",
-      "cargo_features": ["rt", "time", "sync"]
+      "cargo_features": ["rt", "time", "sync"],
+      "conformance_tests": ["task-order", "cancel-order", "channel-delivery"],
+      "replay_evidence": {{"grade": "partial", "artifact": "async_runtime_evidence", "source_map_anchor": "events[].async_step"}},
+      "stale_check": {{"status": "passed", "summary_version": "1", "features": ["rt", "time", "sync"]}},
+      "platform_observations": [
+        {{"platform": "windows", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "macos", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}},
+        {{"platform": "linux", "behaviors": ["watcher", "restart", "signal", "stdin", "path_filter"], "grade": "modeled"}}
+      ],
+      "async_semantics": ["spawn", "join", "cancel", "select", "timer", "channel", "backpressure", "shutdown", "blocking"],
+      "mutation_checks": ["task-order", "timer-order", "cancel-order", "channel-delivery"],
+      "scheduler_facts": ["watcher-batching", "restart-ordering", "signal-delivery", "child-exit-race"]
     }}
   ]"#
     )
@@ -1499,39 +1542,27 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
 #[test]
 fn watch_trace_import_requires_fresh_watcher_process_and_time_summaries() {
     let project = TestProject::new("watchexec-trace-summary");
+    let mut summaries: Value =
+        serde_json::from_str(&required_adapter_summaries_json()).expect("summaries should parse");
+    let filtered = summaries
+        .as_array_mut()
+        .expect("summaries should be an array")
+        .iter()
+        .filter(|summary| summary["kind"].as_str() != Some("time"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let summaries = Value::from(filtered);
     let missing_time = project.write(
         "traces/missing_time.json",
-        r#"{
+        &format!(
+            r#"{{
   "schema_version": 1,
   "mode": "watch_trace_input",
-  "adapter_summaries": [
-    {
-      "kind": "watcher",
-      "name": "notify-like",
-      "schema_version": 1,
-      "version_range": "^1",
-      "operations": ["raw_event"],
-      "modeled_facts": ["event_kind"],
-      "unsupported_guarantees": ["global_total_order"],
-      "replay_confidence": "metadata-only",
-      "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
-    },
-    {
-      "kind": "process",
-      "name": "process-supervisor",
-      "schema_version": 1,
-      "version_range": "^1",
-      "operations": ["spawn"],
-      "modeled_facts": ["child_id"],
-      "unsupported_guarantees": ["platform_signal_equivalence"],
-      "replay_confidence": "modelled",
-      "source_map_anchor": "events[]",
-      "cargo_features": ["default"]
-    }
-  ],
+  "adapter_summaries": {summaries},
   "events": []
-}"#,
+}}"#,
+            summaries = serde_json::to_string(&summaries).expect("summaries should serialize")
+        ),
     );
     let output = run_kobo(
         &[s("watch"), s("--import-trace"), path_arg(&missing_time)],
@@ -1784,6 +1815,127 @@ fn watch_trace_import_requires_adapter_cargo_feature_evidence() {
         &output.combined(),
         "missing adapter cargo_features: watcher",
         "adapter summaries should require feature compatibility evidence",
+    );
+}
+
+#[test]
+fn watch_trace_import_requires_formal_adapter_conformance_platform_and_async_evidence() {
+    let project = TestProject::new("watchexec-trace-formal-adapter-contracts");
+
+    let mut missing_conformance: Value =
+        serde_json::from_str(&required_adapter_summaries_json()).expect("summaries should parse");
+    missing_conformance[0]
+        .as_object_mut()
+        .expect("watcher summary should be an object")
+        .remove("conformance_tests");
+    let missing_conformance_trace = project.write(
+        "traces/missing_conformance.json",
+        &format!(
+            r#"{{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": {summaries},
+  "external_comparisons": {comparisons},
+  "events": {events}
+}}"#,
+            summaries =
+                serde_json::to_string(&missing_conformance).expect("summaries should serialize"),
+            comparisons = required_external_comparisons_json(),
+            events = valid_watchexec_events(),
+        ),
+    );
+    let missing_conformance_output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&missing_conformance_trace),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &missing_conformance_output,
+        "summary without conformance tests should fail import",
+    );
+    assert_contains(
+        &missing_conformance_output.combined(),
+        "missing adapter conformance_tests: watcher",
+        "formal adapters should require conformance tests",
+    );
+
+    let mut missing_platform: Value =
+        serde_json::from_str(&required_adapter_summaries_json()).expect("summaries should parse");
+    missing_platform[0]["platform_observations"][2]["behaviors"] =
+        Value::from(vec!["watcher", "restart", "stdin", "path_filter"]);
+    let missing_platform_trace = project.write(
+        "traces/missing_platform_observation.json",
+        &format!(
+            r#"{{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": {summaries},
+  "external_comparisons": {comparisons},
+  "events": {events}
+}}"#,
+            summaries =
+                serde_json::to_string(&missing_platform).expect("summaries should serialize"),
+            comparisons = required_external_comparisons_json(),
+            events = valid_watchexec_events(),
+        ),
+    );
+    let missing_platform_output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&missing_platform_trace),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &missing_platform_output,
+        "summary without per-platform behavior coverage should fail import",
+    );
+    assert_contains(
+        &missing_platform_output.combined(),
+        "adapter watcher missing linux signal platform observation",
+        "platform summaries should cover required behavior per platform",
+    );
+
+    let mut missing_async_mutation: Value =
+        serde_json::from_str(&required_adapter_summaries_json()).expect("summaries should parse");
+    missing_async_mutation[4]["mutation_checks"] =
+        Value::from(vec!["task-order", "timer-order", "channel-delivery"]);
+    let missing_async_mutation_trace = project.write(
+        "traces/missing_async_mutation.json",
+        &format!(
+            r#"{{
+  "schema_version": 1,
+  "mode": "watch_trace_input",
+  "adapter_summaries": {summaries},
+  "external_comparisons": {comparisons},
+  "events": {events}
+}}"#,
+            summaries =
+                serde_json::to_string(&missing_async_mutation).expect("summaries should serialize"),
+            comparisons = required_external_comparisons_json(),
+            events = valid_watchexec_events(),
+        ),
+    );
+    let missing_async_output = run_kobo(
+        &[
+            s("watch"),
+            s("--import-trace"),
+            path_arg(&missing_async_mutation_trace),
+        ],
+        &project.root,
+    );
+    assert_failure(
+        &missing_async_output,
+        "async summary without mutation evidence should fail import",
+    );
+    assert_contains(
+        &missing_async_output.combined(),
+        "adapter async_runtime missing required async mutation: cancel-order",
+        "async adapter should require scheduler mutation evidence",
     );
 }
 

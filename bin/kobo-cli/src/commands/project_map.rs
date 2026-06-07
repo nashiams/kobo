@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,7 +10,20 @@ pub(super) struct ProjectMapReport {
     source_root: String,
     digest: String,
     module_ownership: ModuleOwnershipSummary,
+    module_classification: ModuleClassificationSummary,
     adapter_debt: AdapterDebtSummary,
+}
+
+struct ModuleClassificationSummary {
+    entries: Vec<ModuleClassificationEntry>,
+}
+
+struct ModuleClassificationEntry {
+    module: String,
+    classification: &'static str,
+    criticality: &'static str,
+    release_blocking: bool,
+    justification: String,
 }
 
 struct AdapterDebtSummary {
@@ -36,12 +50,20 @@ impl ProjectMapReport {
         let source_root = source_tree_root(file);
         let adapter_debt = adapter_debt_summary_for_file(file);
         let module_ownership = module_ownership_summary_for_root(&source_root, &adapter_debt)?;
+        let module_classification =
+            ModuleClassificationSummary::from_ownership(&module_ownership, &adapter_debt);
         let source_root = normalized_display(&source_root);
-        let digest = project_map_digest(&source_root, &module_ownership, &adapter_debt)?;
+        let digest = project_map_digest(
+            &source_root,
+            &module_ownership,
+            &module_classification,
+            &adapter_debt,
+        )?;
         Ok(Self {
             source_root,
             digest,
             module_ownership,
+            module_classification,
             adapter_debt,
         })
     }
@@ -52,6 +74,7 @@ impl ProjectMapReport {
             "source_root": self.source_root,
             "digest": self.digest,
             "module_ownership": self.module_ownership.to_json_value(),
+            "module_classification": self.module_classification.to_json_value(),
             "adapter_debt": self.adapter_debt.to_json_value(),
         })
     }
@@ -78,7 +101,7 @@ impl ProjectMapReport {
             self.digest,
             self.module_ownership.kobo_owned.len(),
             self.module_ownership.rust_owned.len(),
-            self.module_ownership.boundary_debt.len()
+            self.module_ownership.boundary_debt.len(),
         )
     }
 
@@ -88,12 +111,117 @@ impl ProjectMapReport {
 
     fn human_label_fields(&self) -> String {
         format!(
-            "digest={} kobo-owned={} rust-owned={} boundary-debt={}",
+            "digest={} kobo-owned={} rust-owned={} boundary-debt={} classified={}",
             self.digest,
             self.module_ownership.kobo_owned.len(),
             self.module_ownership.rust_owned.len(),
-            self.module_ownership.boundary_debt.len()
+            self.module_ownership.boundary_debt.len(),
+            self.module_classification.entries.len()
         )
+    }
+}
+
+impl ModuleClassificationSummary {
+    fn from_ownership(
+        module_ownership: &ModuleOwnershipSummary,
+        adapter_debt: &AdapterDebtSummary,
+    ) -> Self {
+        let mut entries = Vec::new();
+        entries.extend(
+            module_ownership
+                .kobo_owned
+                .iter()
+                .map(ModuleClassificationEntry::modeled_kobo_module),
+        );
+        entries.extend(
+            module_ownership
+                .rust_owned
+                .iter()
+                .map(ModuleClassificationEntry::adapter_backed_rust_module),
+        );
+        entries.extend(
+            adapter_boundary_debt_modules(adapter_debt)
+                .into_iter()
+                .map(ModuleClassificationEntry::adapter_boundary),
+        );
+        entries.sort_by(|left, right| left.module.cmp(&right.module));
+        Self { entries }
+    }
+
+    fn to_json_value(&self) -> serde_json::Value {
+        let mut by_classification = BTreeMap::<&str, Vec<&str>>::new();
+        let mut criticality_totals = BTreeMap::<&str, usize>::new();
+        let mut release_blocking = Vec::new();
+        let mut release_blocking_justifications = Vec::new();
+        for entry in &self.entries {
+            by_classification
+                .entry(entry.classification)
+                .or_default()
+                .push(entry.module.as_str());
+            *criticality_totals.entry(entry.criticality).or_default() += 1;
+            if entry.release_blocking {
+                release_blocking.push(entry.module.as_str());
+                release_blocking_justifications.push(serde_json::json!({
+                    "module": entry.module,
+                    "justification": entry.justification,
+                }));
+            }
+        }
+        serde_json::json!({
+            "schema_version": 1,
+            "vocabulary": [
+                "proved",
+                "modeled",
+                "adapter-backed",
+                "sampled",
+                "metadata-only",
+                "opaque",
+                "debt",
+            ],
+            "by_classification": by_classification,
+            "criticality_totals": criticality_totals,
+            "release_blocking": release_blocking,
+            "release_blocking_justifications": release_blocking_justifications,
+        })
+    }
+}
+
+impl ModuleClassificationEntry {
+    fn modeled_kobo_module(module: &String) -> Self {
+        Self {
+            module: module.clone(),
+            classification: "modeled",
+            criticality: "correctness-critical",
+            release_blocking: false,
+            justification: "Kobo-owned source participates in parser, checker, lowering, diagnostics, replay, debt, and proof reports"
+                .to_owned(),
+        }
+    }
+
+    fn adapter_backed_rust_module(module: &String) -> Self {
+        Self {
+            module: module.clone(),
+            classification: "adapter-backed",
+            criticality: "adapter-boundary",
+            release_blocking: false,
+            justification: "Rust source is kept as an explicit backend or adapter boundary rather than hidden source of truth"
+                .to_owned(),
+        }
+    }
+
+    fn adapter_boundary(module: String) -> Self {
+        let classification = adapter_boundary_classification(&module);
+        Self {
+            release_blocking: classification == "debt",
+            criticality: if classification == "debt" {
+                "correctness-critical"
+            } else {
+                "adapter-boundary"
+            },
+            justification: module.clone(),
+            module,
+            classification,
+        }
     }
 }
 
@@ -186,12 +314,14 @@ impl ModuleOwnershipSummary {
 fn project_map_digest(
     source_root: &str,
     module_ownership: &ModuleOwnershipSummary,
+    module_classification: &ModuleClassificationSummary,
     adapter_debt: &AdapterDebtSummary,
 ) -> anyhow::Result<String> {
     let payload = serde_json::json!({
         "schema_version": PROJECT_MAP_SCHEMA_VERSION,
         "source_root": source_root,
         "module_ownership": module_ownership.to_json_value(),
+        "module_classification": module_classification.to_json_value(),
         "adapter_debt": adapter_debt.to_json_value(),
     });
     Ok(kobo_sim_core::digest::stable_hash(&serde_json::to_string(
@@ -429,6 +559,20 @@ fn adapter_boundary_debt_modules(adapter_debt: &AdapterDebtSummary) -> Vec<Strin
         (status.status != "none").then(|| format!("{name}: {}", status.human_label()))
     })
     .collect()
+}
+
+fn adapter_boundary_classification(module: &str) -> &'static str {
+    if module.contains("blocker(") {
+        "debt"
+    } else if module.contains("metadata-only") {
+        "metadata-only"
+    } else if module.contains("opaque") {
+        "opaque"
+    } else if module.contains("sampled") {
+        "sampled"
+    } else {
+        "adapter-backed"
+    }
 }
 
 fn normalized_display(path: &Path) -> String {

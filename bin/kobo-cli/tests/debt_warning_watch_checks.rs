@@ -167,6 +167,14 @@ fn debt_json_and_inspect_share_project_map_digest() {
     let debt_digest = debt_json["project_map"]["digest"]
         .as_str()
         .expect("debt JSON should carry project map digest");
+    let classification_text = debt_json["project_map"]["module_classification"].to_string();
+    for expected in ["main.kobo", "modeled", "generated.rs", "adapter-backed"] {
+        assert_contains(
+            &classification_text,
+            expected,
+            "project map should classify every local source module",
+        );
+    }
 
     let inspect = run_kobo(&[s("inspect"), path_arg(&main)], &project.root);
     assert_success(&inspect, "inspect should report the project map");

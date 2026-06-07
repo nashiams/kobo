@@ -18,6 +18,45 @@ const ASYNC_RUNTIME_ADAPTER_KIND: &str = "async_runtime";
 const PATH_FILTER_CONFORMANCE_TEST: &str = "source-watch-path-match";
 const ASYNC_RUNTIME_CONFORMANCE_TEST: &str = "source-watch-task-order";
 const ASYNC_RUNTIME_SCHEDULER_FACT: &str = "source-watch-task-order";
+const REQUIRED_GENERATED_BACKEND_FLAGS: &[&str] = &[
+    "reviewable",
+    "deterministic",
+    "source_mapped",
+    "diagnostics_on_kobo_source",
+    "replay_on_kobo_source",
+    "debt_on_kobo_source",
+    "proof_on_kobo_source",
+    "lsp_on_kobo_source",
+];
+const REQUIRED_ASYNC_RELEASE_SEMANTICS: &[&str] = &[
+    "spawn",
+    "join",
+    "cancel",
+    "select",
+    "timer",
+    "channel",
+    "backpressure",
+    "shutdown",
+    "blocking",
+];
+const REQUIRED_ASYNC_RELEASE_MUTATIONS: &[&str] = &[
+    "task-order",
+    "timer-order",
+    "cancel-order",
+    "channel-delivery",
+];
+const REQUIRED_RELEASE_PARITY_FIELDS: &[&str] = &[
+    "upstream_tests",
+    "kobo_replay_tests",
+    "kobo_liveness_tests",
+    "cli_behavior",
+    "config_behavior",
+    "exit_behavior",
+    "logging_behavior",
+    "package_behavior",
+    "platform_behavior",
+    "install_behavior",
+];
 
 /// File-watcher re-run on save.
 ///
@@ -142,14 +181,125 @@ pub(super) fn enforce_release_lifecycle_gate(
     file: &Path,
     error_format: crate::ErrorFormat,
 ) -> anyhow::Result<()> {
+    if let Some(reason) = release_project_support_gate_reason(file)? {
+        emit_release_gate("project_support", "release project support gate", &reason, error_format)?;
+        anyhow::bail!("release project support gate blocked {reason}");
+    }
     let Some(state) = source_watch_state_for_file(file)? else {
         return Ok(());
     };
     let Some(reason) = release_lifecycle_gate_reason(&state) else {
         return Ok(());
     };
-    emit_release_lifecycle_gate(&reason, error_format)?;
+    emit_release_gate("watch_lifecycle", "release watch lifecycle gate", &reason, error_format)?;
     anyhow::bail!("release watch lifecycle gate blocked {reason}")
+}
+
+fn release_project_support_gate_reason(file: &Path) -> anyhow::Result<Option<String>> {
+    let Some(manifest) = project_support_manifest_for_file(file)? else {
+        return Ok(None);
+    };
+    if let Some(reason) = release_generated_backend_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    if let Some(reason) = release_async_runtime_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    if let Some(reason) = release_test_parity_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    if let Some(reason) = release_proof_debt_gate_reason(&manifest) {
+        return Ok(Some(reason));
+    }
+    Ok(None)
+}
+
+fn project_support_manifest_for_file(file: &Path) -> anyhow::Result<Option<serde_json::Value>> {
+    for directory in file.parent().into_iter().flat_map(Path::ancestors) {
+        let manifest_path = directory.join(".kobo").join("project-support.json");
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let source = std::fs::read_to_string(&manifest_path).map_err(|error| {
+            anyhow::anyhow!("failed to read {}: {error}", manifest_path.display())
+        })?;
+        let manifest = serde_json::from_str::<serde_json::Value>(&source).map_err(|error| {
+            anyhow::anyhow!("failed to parse {}: {error}", manifest_path.display())
+        })?;
+        return Ok(Some(manifest));
+    }
+    Ok(None)
+}
+
+fn release_generated_backend_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let backend = &manifest["generated_backend"];
+    for flag in REQUIRED_GENERATED_BACKEND_FLAGS {
+        if backend[*flag].as_bool() != Some(true) {
+            return Some(format!("generated backend release gate missing {flag}"));
+        }
+    }
+    if backend["targets"].as_array().is_none_or(Vec::is_empty) {
+        return Some("generated backend release gate missing supported targets".to_owned());
+    }
+    None
+}
+
+fn release_async_runtime_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let async_runtime = &manifest["async_runtime"];
+    for semantic in REQUIRED_ASYNC_RELEASE_SEMANTICS {
+        if !json_array_contains(&async_runtime["semantics"], semantic) {
+            return Some(format!("async runtime release gate missing {semantic}"));
+        }
+    }
+    for mutation in REQUIRED_ASYNC_RELEASE_MUTATIONS {
+        if !json_array_contains(&async_runtime["mutation_checks"], mutation) {
+            return Some(format!("async runtime release gate missing {mutation}"));
+        }
+    }
+    if async_runtime["conformance_evidence"].as_str().is_none() {
+        return Some("async runtime release gate missing conformance evidence".to_owned());
+    }
+    None
+}
+
+fn release_test_parity_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let parity = &manifest["test_release_parity"];
+    for field in REQUIRED_RELEASE_PARITY_FIELDS {
+        if parity[*field].as_str().is_none() {
+            return Some(format!("test release parity gate missing {field}"));
+        }
+    }
+    if parity["release_artifacts"].as_array().is_none_or(Vec::is_empty) {
+        return Some("test release parity gate missing release artifacts".to_owned());
+    }
+    if parity["performance"]
+        .as_object()
+        .is_none_or(serde_json::Map::is_empty)
+    {
+        return Some("test release parity gate missing performance evidence".to_owned());
+    }
+    None
+}
+
+fn release_proof_debt_gate_reason(manifest: &serde_json::Value) -> Option<String> {
+    let Some(entries) = manifest["proof_debt_map"].as_array() else {
+        return Some("proof debt release gate missing project map".to_owned());
+    };
+    for entry in entries {
+        if entry["criticality"].as_str() == Some("correctness-critical")
+            && entry["release_blocking"].as_bool() == Some(true)
+        {
+            let module = entry["module"].as_str().unwrap_or("unknown module");
+            return Some(format!("proof debt release gate blocked {module}"));
+        }
+    }
+    let reports = &manifest["proof_debt_map_reports"];
+    for field in ["debt_summary", "proof_report", "replay_report", "inspect_output"] {
+        if reports[field].as_str().is_none() {
+            return Some(format!("proof debt release gate missing {field}"));
+        }
+    }
+    None
 }
 
 fn source_watch_state_for_file(file: &Path) -> anyhow::Result<Option<serde_json::Value>> {
@@ -288,8 +438,11 @@ fn is_release_lifecycle_resolution(resolution: &str) -> bool {
             | "in_process_rerun_finished"
             | "exited"
             | "signaled"
+            | "graceful_stop"
             | "killed"
+            | "kill_timeout"
             | "detached"
+            | "cancelled"
     )
 }
 
@@ -321,18 +474,20 @@ fn json_array_contains(value: &serde_json::Value, expected: &str) -> bool {
         .is_some_and(|entries| entries.iter().any(|entry| entry.as_str() == Some(expected)))
 }
 
-fn emit_release_lifecycle_gate(
+fn emit_release_gate(
+    gate: &str,
+    gate_label: &str,
     reason: &str,
     error_format: crate::ErrorFormat,
 ) -> anyhow::Result<()> {
-    let message = format!("release watch lifecycle gate blocked {reason}");
+    let message = format!("{gate_label} blocked {reason}");
     match error_format {
         crate::ErrorFormat::Human => eprintln!("error: {message}"),
         crate::ErrorFormat::Json => println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
                 "kind": "ci_release_gate",
-                "gate": "watch_lifecycle",
+                "gate": gate,
                 "message": message,
             }))?
         ),

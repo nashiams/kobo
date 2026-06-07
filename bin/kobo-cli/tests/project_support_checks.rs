@@ -1553,6 +1553,112 @@ fn project_map_exposes_whole_project_coverage_from_support_manifest() {
 }
 
 #[test]
+fn release_profile_blocks_generated_backend_support_debt() {
+    let project = TestProject::new("release-project-support-generated-backend");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(r#""source_mapped": true"#, r#""source_mapped": false"#),
+    )
+    .expect("support manifest should write");
+
+    assert_release_project_support_gate_blocks(
+        &project,
+        "generated backend release gate missing source_mapped",
+    );
+}
+
+#[test]
+fn release_profile_blocks_async_runtime_support_debt() {
+    let project = TestProject::new("release-project-support-async");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(r#""channel-delivery""#, r#""channel-delivery-missing""#),
+    )
+    .expect("support manifest should write");
+
+    assert_release_project_support_gate_blocks(
+        &project,
+        "async runtime release gate missing channel-delivery",
+    );
+}
+
+#[test]
+fn release_profile_blocks_test_release_parity_support_debt() {
+    let project = TestProject::new("release-project-support-parity");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            r#""release_artifacts": [".kobo/evidence/release.zip"]"#,
+            r#""release_artifacts": []"#,
+        ),
+    )
+    .expect("support manifest should write");
+
+    assert_release_project_support_gate_blocks(
+        &project,
+        "test release parity gate missing release artifacts",
+    );
+}
+
+#[test]
+fn release_profile_blocks_proof_debt_support_debt() {
+    let project = TestProject::new("release-project-support-proof-debt");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            r#"{"module": "crates/supervisor/src/command.rs", "classification": "proved", "criticality": "correctness-critical", "release_blocking": false}"#,
+            r#"{"module": "crates/supervisor/src/command.rs", "classification": "debt", "criticality": "correctness-critical", "release_blocking": true}"#,
+        ),
+    )
+    .expect("support manifest should write");
+
+    assert_release_project_support_gate_blocks(
+        &project,
+        "proof debt release gate blocked crates/supervisor/src/command.rs",
+    );
+}
+
+fn assert_release_project_support_gate_blocks(project: &TestProject, expected: &str) {
+    let main = project.root.join("src/main.kobo");
+    for command in ["check", "build"] {
+        let output = run_kobo(
+            &[s(command), s("--profile"), s("release"), path_arg(&main)],
+            &project.root,
+        );
+        assert_failure(
+            &output,
+            &format!("release {command} should block project support debt"),
+        );
+        assert_contains(
+            &output.combined(),
+            "release project support gate",
+            "release profile should name the project support gate",
+        );
+        assert_contains(
+            &output.combined(),
+            expected,
+            "release project support gate should name the blocking evidence",
+        );
+    }
+}
+
+#[test]
 fn doctor_project_support_rejects_replacement_claim_overreach() {
     let project = TestProject::new("doctor-project-support-claim-overreach");
     write_project_files(&project);

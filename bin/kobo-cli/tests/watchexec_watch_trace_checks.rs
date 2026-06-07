@@ -1551,6 +1551,27 @@ fn watch_trace_import_models_platform_path_signal_stdio_terminal_and_async_bound
         "stdin",
         "platform model should retain stdio and changed-path routing facts",
     );
+    assert_eq!(
+        witness_json["normalized"]["async_runtime_model"]["status"], "source_visible",
+        "normalized witness should expose a first-class async runtime model"
+    );
+    for expected in [
+        "spawn",
+        "join",
+        "cancel",
+        "timer",
+        "channel",
+        "task-order",
+        "timer-order",
+        "cancel-order",
+        "channel-delivery",
+    ] {
+        assert_contains(
+            &witness_json["normalized"]["async_runtime_model"].to_string(),
+            expected,
+            "async model should retain required semantics and mutation checks",
+        );
+    }
 
     print_project_support_future_proof_markers();
 

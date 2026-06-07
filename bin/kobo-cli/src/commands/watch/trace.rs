@@ -1530,6 +1530,14 @@ fn normalized_json(
     let platform_evidence = platform_evidence(&windows);
     let async_runtime_evidence =
         async_runtime_evidence(&windows, &restart_decisions, &child_lifecycle);
+    let async_runtime_model = async_runtime_model_summary(
+        &windows,
+        &restart_decisions,
+        &child_lifecycle,
+        &shutdown_resolutions,
+        &async_runtime_evidence,
+        replay_grade,
+    );
     let platform_model = platform_model_summary(
         &windows,
         &restart_decisions,
@@ -1562,6 +1570,7 @@ fn normalized_json(
         "platform_evidence": platform_evidence,
         "platform_model": platform_model,
         "async_runtime_evidence": async_runtime_evidence,
+        "async_runtime_model": async_runtime_model,
     })
 }
 
@@ -1755,6 +1764,198 @@ fn async_runtime_evidence(
         }
     }
     evidence
+}
+
+fn async_runtime_model_summary(
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    shutdown_resolutions: &[Value],
+    async_runtime_evidence: &[Value],
+    replay_grade: TraceReplayGrade,
+) -> Value {
+    json!({
+        "schema_version": 1,
+        "status": "source_visible",
+        "runtime": "trace-modeled-async-runtime",
+        "replay_grade": replay_grade.as_str(),
+        "semantics": async_semantic_entries(
+            windows,
+            restart_decisions,
+            child_lifecycle,
+            shutdown_resolutions,
+            async_runtime_evidence,
+        ),
+        "mutation_checks": async_mutation_entries(
+            windows,
+            restart_decisions,
+            child_lifecycle,
+            shutdown_resolutions,
+            async_runtime_evidence,
+        ),
+        "scheduler_facts": async_scheduler_facts(async_runtime_evidence),
+        "unsupported_guarantees": ["arbitrary_scheduler_equivalence"],
+    })
+}
+
+fn async_semantic_entries(
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    shutdown_resolutions: &[Value],
+    async_runtime_evidence: &[Value],
+) -> Vec<Value> {
+    REQUIRED_ASYNC_SEMANTICS
+        .iter()
+        .map(|semantic| {
+            json!({
+                "semantic": semantic,
+                "observed": async_semantic_is_observed(
+                    semantic,
+                    windows,
+                    restart_decisions,
+                    child_lifecycle,
+                    shutdown_resolutions,
+                    async_runtime_evidence,
+                ),
+                "evidence_anchor": async_semantic_anchor(semantic),
+            })
+        })
+        .collect()
+}
+
+fn async_semantic_is_observed(
+    semantic: &str,
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    shutdown_resolutions: &[Value],
+    async_runtime_evidence: &[Value],
+) -> bool {
+    match semantic {
+        "spawn" => child_lifecycle
+            .iter()
+            .any(|entry| !entry["command"].is_null()),
+        "join" => child_lifecycle
+            .iter()
+            .any(|entry| !entry["resolution"].is_null()),
+        "cancel" => {
+            child_lifecycle.iter().any(lifecycle_is_cancelled) || !shutdown_resolutions.is_empty()
+        }
+        "select" => !restart_decisions.is_empty() && has_timer_evidence(windows),
+        "timer" => has_timer_evidence(windows),
+        "channel" => restart_decisions.iter().any(restart_has_channel_delivery),
+        "backpressure" => windows
+            .values()
+            .any(|trace| trace.watcher_events.len() > 1 || trace.has_coalesced_watcher_event()),
+        "shutdown" => {
+            !shutdown_resolutions.is_empty() || child_lifecycle.iter().any(lifecycle_is_cancelled)
+        }
+        "blocking" => child_lifecycle
+            .iter()
+            .any(|entry| !entry["command"].is_null()),
+        _ => async_runtime_evidence
+            .iter()
+            .any(|entry| !entry["async_step"].is_null()),
+    }
+}
+
+fn async_semantic_anchor(semantic: &str) -> &'static str {
+    match semantic {
+        "spawn" | "join" | "blocking" => "child_lifecycle_obligations",
+        "cancel" | "shutdown" => "child_lifecycle_obligations",
+        "select" | "timer" => "async_runtime_evidence",
+        "channel" => "restart_decisions",
+        "backpressure" => "event_batches",
+        _ => "async_runtime_evidence",
+    }
+}
+
+fn async_mutation_entries(
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    shutdown_resolutions: &[Value],
+    async_runtime_evidence: &[Value],
+) -> Vec<Value> {
+    REQUIRED_ASYNC_MUTATIONS
+        .iter()
+        .map(|mutation| {
+            json!({
+                "mutation": mutation,
+                "observed": async_mutation_is_observed(
+                    mutation,
+                    windows,
+                    restart_decisions,
+                    child_lifecycle,
+                    shutdown_resolutions,
+                    async_runtime_evidence,
+                ),
+                "expected_detection": "replay hash changes or async model evidence changes",
+            })
+        })
+        .collect()
+}
+
+fn async_mutation_is_observed(
+    mutation: &str,
+    windows: &BTreeMap<u64, WindowTrace>,
+    restart_decisions: &[Value],
+    child_lifecycle: &[Value],
+    shutdown_resolutions: &[Value],
+    async_runtime_evidence: &[Value],
+) -> bool {
+    match mutation {
+        "task-order" => async_runtime_evidence
+            .iter()
+            .any(|entry| !entry["async_step"]["task_order"].is_null()),
+        "timer-order" => async_runtime_evidence
+            .iter()
+            .any(|entry| !entry["async_step"]["timer_order"].is_null()),
+        "cancel-order" => async_semantic_is_observed(
+            "cancel",
+            windows,
+            restart_decisions,
+            child_lifecycle,
+            shutdown_resolutions,
+            async_runtime_evidence,
+        ),
+        "channel-delivery" => restart_decisions.iter().any(restart_has_channel_delivery),
+        _ => false,
+    }
+}
+
+fn async_scheduler_facts(async_runtime_evidence: &[Value]) -> Value {
+    json!({
+        "task_order": async_order_values(async_runtime_evidence, "task_order"),
+        "timer_order": async_order_values(async_runtime_evidence, "timer_order"),
+        "source_visible": true,
+    })
+}
+
+fn async_order_values(async_runtime_evidence: &[Value], field: &str) -> Vec<u64> {
+    let mut values = BTreeSet::new();
+    for entry in async_runtime_evidence {
+        if let Some(value) = entry["async_step"][field].as_u64() {
+            values.insert(value);
+        }
+    }
+    values.into_iter().collect()
+}
+
+fn has_timer_evidence(windows: &BTreeMap<u64, WindowTrace>) -> bool {
+    windows.values().any(|trace| !trace.timer_events.is_empty())
+}
+
+fn restart_has_channel_delivery(decision: &Value) -> bool {
+    !decision["changed_paths"].is_null()
+        || !decision["stdin_paths"].is_null()
+        || !decision["environment"].is_null()
+}
+
+fn lifecycle_is_cancelled(entry: &Value) -> bool {
+    entry["resolution"].as_str() == Some("cancelled")
+        || entry["reason"].as_str() == Some("final_shutdown")
 }
 
 fn platform_model_summary(
@@ -2408,6 +2609,12 @@ impl WindowTrace {
         } else {
             "metadata-only"
         }
+    }
+
+    fn has_coalesced_watcher_event(&self) -> bool {
+        self.watcher_events
+            .iter()
+            .any(|event| matches!(event.duplicate_marker.as_str(), "duplicate" | "coalesced"))
     }
 
     fn timer_evidence_label(&self) -> &'static str {

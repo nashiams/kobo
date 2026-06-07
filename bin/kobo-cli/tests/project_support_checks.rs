@@ -1459,6 +1459,19 @@ fn doctor_project_support_reports_complete_general_project_support() {
         value["project_support"]["blockers"]
     );
     assert_eq!(value["project_support"]["claim"], "project_support");
+    assert_eq!(
+        value["project_support"]["replacement_claim"]["full_rewrite"], "blocked",
+        "project support must not imply a full rewrite claim"
+    );
+    assert_eq!(
+        value["project_support"]["replacement_claim"]["clean_replacement"], "blocked",
+        "project support must not imply a clean replacement claim"
+    );
+    assert_contains(
+        &value["project_support"]["replacement_claim"].to_string(),
+        "supports the project",
+        "claim posture should say Kobo supports the project without being designed for dogfood",
+    );
     assert_contains(
         &value["project_support"]["inventory"].to_string(),
         "supervisor.kobo",
@@ -1495,6 +1508,49 @@ fn doctor_project_support_reports_complete_general_project_support() {
         &project.root,
     );
     assert_success(&gate, "ready project should pass the CI support gate");
+}
+
+#[test]
+fn doctor_project_support_rejects_replacement_claim_overreach() {
+    let project = TestProject::new("doctor-project-support-claim-overreach");
+    write_project_files(&project);
+    write_complete_support_manifest(&project);
+    let manifest_path = project.root.join(".kobo/project-support.json");
+    let manifest = fs::read_to_string(&manifest_path).expect("support manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            r#""claim": "project_support","#,
+            r#""claim": "project_support",
+  "replacement_claim": {
+    "full_rewrite": "ready",
+    "clean_replacement": "ready"
+  },"#,
+        ),
+    )
+    .expect("support manifest should write");
+
+    let output = run_kobo(
+        &[s("doctor"), s("--project-support"), s("--json")],
+        &project.root,
+    );
+    assert_success(&output, "overclaim report should stay inspectable");
+    let value = parse_stdout_json(&output);
+    assert_eq!(value["project_support"]["status"], "blocked");
+    assert_eq!(
+        value["project_support"]["replacement_claim"]["clean_replacement"], "blocked",
+        "report posture stays conservative even when the manifest overclaims"
+    );
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "project support full rewrite claim must remain blocked",
+        "project support should block full rewrite overclaims",
+    );
+    assert_contains(
+        &value["project_support"]["blockers"].to_string(),
+        "project support clean replacement claim must remain blocked",
+        "project support should block clean replacement overclaims",
+    );
 }
 
 #[test]

@@ -16,9 +16,18 @@ use super::DoctorOutputFormat;
 struct ProjectSupportReport {
     status: ProjectSupportStatus,
     claim: String,
+    replacement_claim: ReplacementClaimPosture,
     inventory: ProjectInventory,
     evidence: ProjectSupportEvidence,
     blockers: Vec<ProjectSupportBlocker>,
+}
+
+struct ReplacementClaimPosture {
+    full_rewrite: ReplacementClaimState,
+    clean_replacement: ReplacementClaimState,
+    support_scope: &'static str,
+    statement: &'static str,
+    required_before_clean_replacement: &'static [&'static str],
 }
 
 struct ProjectInventory {
@@ -70,6 +79,11 @@ type CommandStreamHandle = thread::JoinHandle<std::io::Result<Vec<u8>>>;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProjectSupportStatus {
     Ready,
+    Blocked,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplacementClaimState {
     Blocked,
 }
 
@@ -253,6 +267,14 @@ const REQUIRED_PROOF_DEBT_REPORTS: &[&str] = &[
 const DEFAULT_EVIDENCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_EVIDENCE_COMMAND_TIMEOUT_SECONDS: u64 = 1_800;
 
+const REQUIRED_CLEAN_REPLACEMENT_GATES: &[&str] = &[
+    "whole_application_source_semantics",
+    "external_crates_replaced_or_formally_modeled",
+    "platform_differences_replayable_or_declared",
+    "upstream_behavior_and_release_workflow_equivalent_or_stronger",
+    "two_independent_reviewers",
+];
+
 static EVIDENCE_COMMAND_CACHE: OnceLock<Mutex<BTreeMap<String, ObservedCommand>>> = OnceLock::new();
 
 pub(super) fn cmd_project_support(
@@ -291,6 +313,7 @@ impl ProjectSupportReport {
         Self {
             status,
             claim,
+            replacement_claim: ReplacementClaimPosture::scoped_project_support(),
             inventory,
             evidence,
             blockers,
@@ -304,11 +327,34 @@ impl ProjectSupportReport {
             "project_support": {
                 "status": self.status.as_str(),
                 "claim": self.claim.as_str(),
+                "replacement_claim": self.replacement_claim.to_json(),
                 "manifest": self.evidence.manifest_path.as_ref().map(|path| path.display().to_string()),
                 "inventory": self.inventory.to_json(),
                 "blockers": self.blockers.iter().map(ProjectSupportBlocker::message).collect::<Vec<_>>(),
                 "evidence": self.evidence.manifest.clone().unwrap_or(Value::Null),
             }
+        })
+    }
+}
+
+impl ReplacementClaimPosture {
+    fn scoped_project_support() -> Self {
+        Self {
+            full_rewrite: ReplacementClaimState::Blocked,
+            clean_replacement: ReplacementClaimState::Blocked,
+            support_scope: "scoped_project_support",
+            statement: "Kobo supports the project where the evidence covers the project; scoped dogfood is evidence of language capability, not a special-purpose language design.",
+            required_before_clean_replacement: REQUIRED_CLEAN_REPLACEMENT_GATES,
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        serde_json::json!({
+            "full_rewrite": self.full_rewrite.as_str(),
+            "clean_replacement": self.clean_replacement.as_str(),
+            "support_scope": self.support_scope,
+            "statement": self.statement,
+            "required_before_clean_replacement": self.required_before_clean_replacement,
         })
     }
 }
@@ -386,6 +432,14 @@ impl ProjectSupportStatus {
     }
 }
 
+impl ReplacementClaimState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
 impl AdapterDependencyIndex {
     fn from_cargo_metadata(metadata: Option<&Value>) -> Self {
         let mut index = Self::default();
@@ -436,6 +490,15 @@ fn emit_project_support_report(
         DoctorOutputFormat::Human => {
             println!("doctor --project-support: {}", report.status.as_str());
             println!("claim: {}", report.claim);
+            println!(
+                "full rewrite: {}",
+                report.replacement_claim.full_rewrite.as_str()
+            );
+            println!(
+                "clean replacement: {}",
+                report.replacement_claim.clean_replacement.as_str()
+            );
+            println!("{}", report.replacement_claim.statement);
             if report.blockers.is_empty() {
                 println!("blockers: none");
             } else {
@@ -496,6 +559,24 @@ fn validate_schema(manifest: &Value, blockers: &mut Vec<ProjectSupportBlocker>) 
     if manifest["claim"].as_str() != Some("project_support") {
         blockers.push(ProjectSupportBlocker::new(
             "project support claim must be project_support",
+        ));
+    }
+    validate_replacement_claim_posture(manifest, blockers);
+}
+
+fn validate_replacement_claim_posture(manifest: &Value, blockers: &mut Vec<ProjectSupportBlocker>) {
+    let replacement_claim = &manifest["replacement_claim"];
+    if replacement_claim.is_null() {
+        return;
+    }
+    if replacement_claim["full_rewrite"].as_str() != Some("blocked") {
+        blockers.push(ProjectSupportBlocker::new(
+            "project support full rewrite claim must remain blocked",
+        ));
+    }
+    if replacement_claim["clean_replacement"].as_str() != Some("blocked") {
+        blockers.push(ProjectSupportBlocker::new(
+            "project support clean replacement claim must remain blocked",
         ));
     }
 }
